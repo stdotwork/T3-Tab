@@ -5,7 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { BrowserStatus, ToolContent, ToolMethod } from '@t3-tab/protocol';
 
 import { callTool, getStatus } from './client.js';
-import { readShape, screenshotShape, tabsShape } from './tool-schemas.js';
+import { actShape, readShape, runJsShape, screenshotShape, tabsShape } from './tool-schemas.js';
 
 export async function runMcpServer(): Promise<void> {
   const server = new McpServer({ name: 't3-tab', version: '0.1.0' });
@@ -50,6 +50,19 @@ export async function runMcpServer(): Promise<void> {
     'screenshot',
     { description: "JPEG of a tab's viewport, downscaled.", inputSchema: screenshotShape },
     browserTool('screenshot'),
+  );
+  server.registerTool(
+    'act',
+    { description: 'Run ordered page steps; returns the page diff.', inputSchema: actShape },
+    browserTool('act'),
+  );
+  server.registerTool(
+    'run_js',
+    {
+      description: 'Evaluate an expression or async function body in the page. Escape hatch; prefer act.',
+      inputSchema: runJsShape,
+    },
+    browserTool('run_js'),
   );
   await server.connect(new StdioServerTransport());
 }

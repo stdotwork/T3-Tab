@@ -1,9 +1,10 @@
-import type { BrowserMethods, BrowserRequestMessage, PageReadResult } from '@t3-tab/protocol';
+import type { BrowserMethods, BrowserRequestMessage } from '@t3-tab/protocol';
 
-import { slimAxNodes } from './ax';
-import { documentEpoch, ensureAttached, sendCommand } from './cdp';
+import { actOnPage } from './actions';
+import { evaluatePage } from './evaluate';
+import { readPage } from './page';
 import { captureViewport } from './screenshot';
-import { closeTab, getTabInfo, listTabs, openTab, resolveTabId, switchTab } from './tabs';
+import { closeTab, listTabs, openTab, resolveTabId, switchTab } from './tabs';
 
 /** Runs one request from the background program and returns its result. Throws a readable message on failure. */
 export async function handleRequest(request: BrowserRequestMessage): Promise<unknown> {
@@ -20,17 +21,13 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
       return await readPage(request.params.tab);
     case 'page.screenshot':
       return await captureViewport(await resolveTabId(request.params.tab), request.params.maxEdge);
+    case 'page.act': {
+      const tabId = await resolveTabId(request.params.tab);
+      return await actOnPage(tabId, request.params.steps, request.params.backendIds, request.params.epoch);
+    }
+    case 'page.eval':
+      return await evaluatePage(request.params.tab, request.params.expression);
     default:
       throw new Error(`Unknown request: ${String((request as { method?: unknown }).method)}`);
   }
-}
-
-async function readPage(tab: number | undefined): Promise<PageReadResult> {
-  const tabId = await resolveTabId(tab);
-  await ensureAttached(tabId);
-  // Taken before the tree: a navigation during the read then shows up as a new value on the next one.
-  const epoch = documentEpoch(tabId);
-  const tree = await sendCommand<{ nodes?: unknown }>(tabId, 'Accessibility.getFullAXTree');
-  const info = await getTabInfo(tabId);
-  return { tab: tabId, title: info.title, url: info.url, epoch, nodes: slimAxNodes(tree.nodes) };
 }

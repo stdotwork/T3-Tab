@@ -14,6 +14,16 @@ export interface BrowserHelloMessage {
   browserName: string;
 }
 
+export interface BrowserPingMessage {
+  type: 'browser.ping';
+  protocolVersion: typeof PROTOCOL_VERSION;
+}
+
+export interface BrowserPongMessage {
+  type: 'browser.pong';
+  protocolVersion: typeof PROTOCOL_VERSION;
+}
+
 export interface BrowserTabCountMessage {
   type: 'browser.tabCount';
   protocolVersion: typeof PROTOCOL_VERSION;
@@ -60,6 +70,63 @@ export interface PageReadResult {
   nodes: AxNode[];
 }
 
+export interface ActClickStep {
+  click: { ref: string };
+}
+
+export interface ActTypeStep {
+  type: { ref?: string | undefined; text: string };
+}
+
+export interface ActFillStep {
+  fill: { ref: string; value: string };
+}
+
+export interface ActPressStep {
+  press: { key: string };
+}
+
+export interface ActSelectStep {
+  select: { ref: string; value: string };
+}
+
+export interface ActScrollStep {
+  scroll: { ref?: string | undefined; dx?: number | undefined; dy?: number | undefined };
+}
+
+export interface ActHoverStep {
+  hover: { ref: string };
+}
+
+export interface ActWaitStep {
+  wait: { ms: number } | { for: string };
+}
+
+/** One action in an ordered `act` batch. */
+export type ActStep =
+  | ActClickStep
+  | ActTypeStep
+  | ActFillStep
+  | ActPressStep
+  | ActSelectStep
+  | ActScrollStep
+  | ActHoverStep
+  | ActWaitStep;
+
+export type ActAction = 'click' | 'type' | 'fill' | 'press' | 'select' | 'scroll' | 'hover' | 'wait';
+
+export interface ActFailure {
+  /** One-based position in the batch. */
+  step: number;
+  action: ActAction;
+  error: string;
+}
+
+export interface PageActionResult extends PageReadResult {
+  /** Set when the batch stopped before its last step. */
+  failure?: ActFailure;
+}
+
 export interface ScreenshotResult {
   tab: number;
   /** Base64 JPEG. */
@@ -78,6 +145,11 @@ export interface BrowserMethods {
   'tabs.close': { params: { tab: number }; result: { closed: number } };
   'page.read': { params: { tab?: number }; result: PageReadResult };
   'page.screenshot': { params: { tab?: number; maxEdge: number }; result: ScreenshotResult };
+  'page.act': {
+    params: { tab?: number; steps: ActStep[]; backendIds: Array<number | null>; epoch: number };
+    result: PageActionResult;
+  };
+  'page.eval': { params: { tab?: number; expression: string }; result: { value: unknown } };
 }
 
 export type BrowserMethod = keyof BrowserMethods;
@@ -112,6 +184,8 @@ export type BrowserResponseMessage = BrowserResponseOkMessage | BrowserResponseE
 
 export type BrowserMessage =
   | BrowserHelloMessage
+  | BrowserPingMessage
+  | BrowserPongMessage
   | BrowserTabCountMessage
   | BrowserTabClosedMessage
   | BrowserResponseMessage;
@@ -129,7 +203,7 @@ export interface ControlStatusRequest {
   method: 'status';
 }
 
-export type ToolMethod = 'tabs' | 'read' | 'screenshot';
+export type ToolMethod = 'tabs' | 'read' | 'screenshot' | 'act' | 'run_js';
 
 /** A browser tool call from an MCP server. `session` is the calling MCP process: it scopes read diffs. */
 export interface ControlToolRequest {
