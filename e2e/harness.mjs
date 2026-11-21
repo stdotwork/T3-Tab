@@ -163,10 +163,19 @@ export async function stopDaemon(statePath) {
   }
 }
 
+/**
+ * The caller's environment without what would point a child at the machine's own agent setup: Claude Code's and
+ * Codex's config folders, T3 Code's home and thread (`T3CODE_*`, set inside a T3 thread), and T3-Tab's overrides.
+ */
 export function cleanEnv(env) {
   return Object.fromEntries(
     Object.entries(env).filter(
-      ([key, value]) => value !== undefined && key !== 'CLAUDE_CONFIG_DIR' && key !== 'CODEX_HOME',
+      ([key, value]) =>
+        value !== undefined &&
+        key !== 'CLAUDE_CONFIG_DIR' &&
+        key !== 'CODEX_HOME' &&
+        !key.startsWith('T3CODE_') &&
+        !key.startsWith('T3_TAB_'),
     ),
   );
 }

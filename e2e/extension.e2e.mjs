@@ -26,6 +26,7 @@ import {
   text,
   waitForBrowser,
 } from './harness.mjs';
+import { checkPanelSessions, installFakeAgents } from './panel-sessions.mjs';
 
 const execFileAsync = promisify(execFile);
 const home = await createHome();
@@ -123,6 +124,10 @@ let framesPage = () => '';
 try {
   await requireBuild(home);
   await checkInstallCommand();
+  // After the install check, which uses the real agent CLIs: from here on the daemon finds the fakes first.
+  const fakes = await installFakeAgents(home);
+  // The install check's `mcp list` started a daemon without the fakes on its PATH; the next client starts another.
+  await stopDaemon(statePath);
 
   const siteHandler = (request, response) => {
     const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
@@ -216,6 +221,15 @@ try {
   if (newCheckFailures.length > 0) {
     throw new Error(`New slice 4 checks failed:\n${newCheckFailures.join('\n')}`);
   }
+  await checkPanelSessions({
+    browserContext,
+    serviceWorker,
+    panelPage,
+    siteUrl,
+    fakes,
+    mcpClient,
+    screenshotPath: process.env.T3_TAB_E2E_SCREENSHOT,
+  });
 } finally {
   if (mcpClient !== undefined) {
     await mcpClient.close().catch(() => undefined);
