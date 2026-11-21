@@ -11,6 +11,7 @@ work, with the browser tools injected.
 - `packages/server` — the Node.js/TypeScript daemon, Chrome native host and stdio MCP server. The
   `t3-tab` binary in `dist/cli.js` provides all three commands.
 - `packages/protocol` — the versioned types shared by the extension and background program.
+- `docs/decisions.md` — lasting v1 design decisions, tradeoffs and out-of-scope boundaries.
 - `e2e/` — the Playwright end-to-end harness; `e2e/harness.mjs` holds the setup the end-to-end run and the
   benchmark share (temporary HOME, headless Chromium with the extension, MCP clients).
 - `bench/` — the token benchmark, its fixed pages and its budget.
