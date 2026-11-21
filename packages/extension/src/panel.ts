@@ -1,4 +1,4 @@
-import type { AgentConversation, AgentsStatus, AgentVia } from '@t3-tab/protocol';
+import type { AgentConversation, AgentsStatus, AgentVia, T3Access } from '@t3-tab/protocol';
 
 import { newClaimCode, removeConversationTab, type ClaimTab } from './claims';
 import { askDaemon } from './daemon-link';
@@ -26,11 +26,15 @@ export interface PanelState {
   sites: StoredSitePermission[];
 }
 
-/** What the panel's agent section shows: which agents can run, the tabs a start would share, and the conversations. */
+/**
+ * What the panel's agent section shows: which agents can run, the tabs a start would share, the conversations, and
+ * T3-Tab's read-only T3 sign-in with T3's project and model lists.
+ */
 export interface AgentPanelState {
   status: AgentsStatus;
   shareTabs: PanelTab[];
   conversations: AgentConversation[];
+  t3Access: T3Access;
   /** The owner's tabs each conversation holds, by conversation id. A closed tab is left out. */
   conversationTabs: Record<string, PanelTab[]>;
 }
@@ -50,6 +54,8 @@ export type PanelRequest =
   | { type: 'panel.agents'; refresh?: boolean; tabId?: number }
   | AgentStartRequest
   | { type: 'panel.agentSend'; id: string; message: string }
+  | { type: 'panel.t3SignIn' }
+  | { type: 'panel.t3SignOut' }
   | { type: 'panel.agentRemoveTab'; id: string; tabId: number }
   | { type: 'panel.shareTab'; sessionId: string; tabId?: number }
   | { type: 'panel.unshareTab'; sessionId: string; tabId?: number }
@@ -59,12 +65,14 @@ export type PanelRequest =
 /** The extension API the side panel uses; the end-to-end harness calls the same messages. */
 export async function handlePanelRequest(
   value: unknown,
-): Promise<PanelState | AgentPanelState | { conversation: AgentConversation } | { ok: true }> {
+): Promise<PanelState | AgentPanelState | { conversation: AgentConversation } | T3Access | { ok: true }> {
   const request = parsePanelRequest(value);
   if (request.type === 'panel.state') return await panelState(request.tabId);
   if (request.type === 'panel.agents') return await agentPanelState(request.refresh === true, request.tabId);
   if (request.type === 'panel.agentStart') return await startAgent(request);
   if (request.type === 'panel.agentSend') return await sendToAgent(request.id, request.message);
+  if (request.type === 'panel.t3SignIn') return await signInToT3();
+  if (request.type === 'panel.t3SignOut') return await askDaemon('t3.signOut', {});
   if (request.type === 'panel.agentRemoveTab') {
     await removeConversationTab(claimStore, sessionStore, request.id, request.tabId);
     return { ok: true };
@@ -107,18 +115,34 @@ async function panelState(tabId: number | undefined): Promise<PanelState> {
 }
 
 async function agentPanelState(refresh: boolean, tabId: number | undefined): Promise<AgentPanelState> {
-  const [status, list, shareTabs, held] = await Promise.all([
+  const [status, list, shareTabs, held, t3Access] = await Promise.all([
     askDaemon('agents.status', refresh ? { refresh: true } : {}),
     askDaemon('agents.list', {}),
     shareTargets(tabId).catch(() => []),
     claimStore.conversationTabs(),
+    askDaemon('t3.access', refresh ? { refresh: true } : {}).catch(
+      (error: unknown): T3Access => ({ state: 'signed-out', detail: error instanceof Error ? error.message : String(error) }),
+    ),
   ]);
   const conversationTabs: Record<string, PanelTab[]> = {};
   for (const conversation of list.conversations) {
     const tabs = await Promise.all((held[conversation.id] ?? []).map(async ({ tabId: id }) => await panelTab(id).catch(() => undefined)));
     conversationTabs[conversation.id] = tabs.filter((tab) => tab !== undefined);
   }
-  return { status, conversations: list.conversations, shareTabs, conversationTabs };
+  return { status, conversations: list.conversations, shareTabs, conversationTabs, t3Access };
+}
+
+/**
+ * Asks the background program to start the sign-in, then opens T3's approval page in a normal tab of this browser,
+ * where the owner approves it in T3 Code's own page. The tab joins no session, and the extension never sees the
+ * credential: T3 sends the answer to the background program's one-use listener.
+ */
+async function signInToT3(): Promise<{ ok: true }> {
+  const { url } = await askDaemon('t3.signIn', {});
+  const page = new URL(url);
+  if (page.protocol !== 'http:' && page.protocol !== 'https:') throw new Error('The T3 sign-in page has an address T3-Tab does not open');
+  await chrome.tabs.create({ url: page.href, active: true });
+  return { ok: true };
 }
 
 /**
@@ -219,6 +243,7 @@ function parsePanelRequest(value: unknown): PanelRequest {
     if (Number.isInteger(candidate.tabId)) request.tabId = candidate.tabId as number;
     return request;
   }
+  if (candidate.type === 'panel.t3SignIn' || candidate.type === 'panel.t3SignOut') return { type: candidate.type };
   if (candidate.type === 'panel.agentSend' && typeof candidate.id === 'string' && typeof candidate.message === 'string') {
     return { type: 'panel.agentSend', id: candidate.id, message: candidate.message };
   }

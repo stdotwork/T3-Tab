@@ -13,6 +13,16 @@ T3-Tab is Apache-2.0 licensed. Files copied or adapted from another project are 
   The line diff that falls back to the full text when at least half of the lines changed, or when the
   diff is no shorter than the text, is Playwriter's.
 
+## T3 Code
+
+- Source: https://github.com/pingdotgg/t3code, `apps/server/src/auth/McpOAuth.ts` (`redirectMatches`) and
+  `apps/server/src/mcp/McpHttpServer.ts` (the `/mcp` 401 answer)
+- Revision: `c90b67859a6d85fc957f9ffe25ba95113c6479d3`
+- Licence: MIT, Copyright (c) 2026 T3 Tools Inc. (noted at the top of the local file)
+- Local files: `e2e/fakes/t3-server.mjs`, the end-to-end run's fake T3 environment
+- Changes: rewritten in plain JavaScript without Effect; the rest of the fake is T3-Tab's own and only
+  imitates T3's answers.
+
 <!-- Entry format:
 ## Project name
 

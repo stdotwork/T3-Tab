@@ -28,7 +28,7 @@ async function start(): Promise<DaemonHandle> {
 
 async function open(handle: DaemonHandle, origin?: string): Promise<WebSocket> {
   const socket = new WebSocket(`ws://127.0.0.1:${handle.port}/`, {
-    headers: { authorization: `Bearer ${handle.token}`, ...(origin === undefined ? {} : { origin }) },
+    headers: { authorization: `Bearer ${origin === undefined ? handle.token : handle.extensionToken}`, ...(origin === undefined ? {} : { origin }) },
   });
   sockets.push(socket);
   await new Promise<void>((resolve, reject) => {

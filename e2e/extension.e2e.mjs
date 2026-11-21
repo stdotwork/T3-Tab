@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { createServer } from 'node:http';
+import { randomBytes } from 'node:crypto';
+import { createServer, request as httpRequest } from 'node:http';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -26,7 +27,7 @@ import {
   text,
   waitForBrowser,
 } from './harness.mjs';
-import { checkPanelSessions, installFakeAgents } from './panel-sessions.mjs';
+import { checkPanelSessions, installFakeAgents, startFakeT3Environment } from './panel-sessions.mjs';
 
 const execFileAsync = promisify(execFile);
 const home = await createHome();
@@ -120,12 +121,15 @@ let autoPromptSessionId;
 let permissionServiceWorker;
 let panelPage;
 let framesPage = () => '';
+let fakeT3;
 
 try {
   await requireBuild(home);
   await checkInstallCommand();
   // After the install check, which uses the real agent CLIs: from here on the daemon finds the fakes first.
   const fakes = await installFakeAgents(home);
+  // A fake T3 environment (OAuth and /mcp) recorded under the temporary T3 home; the real T3 is never reached.
+  fakeT3 = await startFakeT3Environment(home);
   // The install check's `mcp list` started a daemon without the fakes on its PATH; the next client starts another.
   await stopDaemon(statePath);
 
@@ -177,6 +181,9 @@ try {
     throw new Error('A control connection with the wrong token was accepted');
   }
   console.log('Wrong-token control connection: refused');
+  const posing = await upgradeStatus(state.port, state.token, `chrome-extension://${extensionId}`);
+  assert(posing === 403, `The daemon.json token took the extension role: HTTP ${posing}`);
+  console.log(`daemon.json token with the extension Origin: refused (HTTP ${posing}) while the real extension stays connected`);
 
   ({ client: mcpClientB } = await connectMcp(home, 't3-tab-e2e-b'));
 
@@ -227,6 +234,8 @@ try {
     panelPage,
     siteUrl,
     fakes,
+    fakeT3,
+    home,
     mcpClient,
     screenshotPath: process.env.T3_TAB_E2E_SCREENSHOT,
   });
@@ -240,6 +249,7 @@ try {
   if (browserContext !== undefined) {
     await browserContext.close();
   }
+  if (fakeT3 !== undefined) await fakeT3.close();
   if (pageServer !== undefined) await closeServer(pageServer);
   if (pageServerB !== undefined) await closeServer(pageServerB);
   await stopDaemon(statePath);
@@ -1328,6 +1338,34 @@ async function commandOnPath(name, pathValue) {
 
 function countMatches(value, expression) {
   return [...value.matchAll(expression)].length;
+}
+
+/** The status a WebSocket upgrade gets with this token and Origin; 101 means the daemon accepted it. */
+async function upgradeStatus(port, token, origin) {
+  return await new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: '127.0.0.1',
+      port,
+      headers: {
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-version': '13',
+        'sec-websocket-key': randomBytes(16).toString('base64'),
+        authorization: `Bearer ${token}`,
+        origin,
+      },
+    });
+    request.on('upgrade', (response, socket) => {
+      socket.destroy();
+      resolve(response.statusCode);
+    });
+    request.on('response', (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    request.on('error', reject);
+    request.end();
+  });
 }
 
 async function wrongTokenIsRefused(port) {
