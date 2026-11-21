@@ -9,7 +9,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['packages/*/test/**/*.test.ts'],
+    include: ['packages/*/test/**/*.test.ts', 'bench/**/*.test.mjs'],
     exclude: ['**/node_modules/**', '**/dist/**', '**/.output/**'],
     passWithNoTests: false,
   },

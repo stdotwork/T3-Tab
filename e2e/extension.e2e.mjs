@@ -1,33 +1,35 @@
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { chromium } from 'playwright';
+import {
+  assert,
+  closeServer,
+  cleanEnv,
+  connectMcp,
+  createHome,
+  extensionWorker,
+  installNativeHost,
+  jpegSize,
+  launchBrowser,
+  listen,
+  panelRequest,
+  parseStatusTabCount,
+  refFor,
+  requireBuild,
+  setSite,
+  sleep,
+  stopDaemon,
+  text,
+  waitForBrowser,
+} from './harness.mjs';
 
 const execFileAsync = promisify(execFile);
-const rootDir = join(dirname(fileURLToPath(import.meta.url)), '..');
-const extensionDir =
-  process.env.T3_TAB_E2E_EXTENSION_DIR ?? join(rootDir, 'packages/extension/.output/chrome-mv3');
-const cliPath = join(rootDir, 'packages/server/dist/cli.js');
-const tempHome = await mkdtemp(join(tmpdir(), 't3-tab-e2e-'));
-const profileDir = join(tempHome, '.config', 'chromium');
-const stateDir = join(tempHome, '.local', 'state', 't3-tab');
-const statePath = join(stateDir, 'daemon.json');
-const childEnv = cleanEnv({
-  ...process.env,
-  HOME: tempHome,
-  XDG_STATE_HOME: join(tempHome, '.local', 'state'),
-  XDG_CONFIG_HOME: join(tempHome, '.config'),
-  XDG_CACHE_HOME: join(tempHome, '.cache'),
-  XDG_DATA_HOME: join(tempHome, '.local', 'share'),
-});
+const home = await createHome();
+const { cliPath, tempHome, statePath, childEnv } = home;
 
 const SITE_NOT_FOUND = '<!doctype html><html lang="en"><head><title>Not found</title></head><body><h1>Not found</h1></body></html>';
 
@@ -110,9 +112,7 @@ const SITE = {
 
 let browserContext;
 let mcpClient;
-let mcpTransport;
 let mcpClientB;
-let mcpTransportB;
 let pageServer;
 let pageServerB;
 let autoPromptSessionId;
@@ -121,8 +121,7 @@ let panelPage;
 let framesPage = () => '';
 
 try {
-  await stat(join(extensionDir, 'manifest.json'));
-  await mkdir(profileDir, { recursive: true });
+  await requireBuild(home);
   await checkInstallCommand();
 
   const siteHandler = (request, response) => {
@@ -146,24 +145,9 @@ try {
 <iframe title="other origin" src="http://127.0.0.1:${addressB.port}/perm-b"></iframe>
 <iframe title="same origin" src="/perm-a"></iframe></body></html>`;
 
-  await execFileAsync(
-    process.execPath,
-    [cliPath, 'native-host', 'install', '--browser', 'chromium'],
-    { env: childEnv },
-  );
+  await installNativeHost(home);
 
-  browserContext = await chromium.launchPersistentContext(profileDir, {
-    channel: 'chromium',
-    headless: true,
-    // No viewport emulation: the window is wider than 1280, so a screenshot has to be scaled down.
-    viewport: null,
-    env: childEnv,
-    args: [
-      '--window-size=1600,1000',
-      `--disable-extensions-except=${extensionDir}`,
-      `--load-extension=${extensionDir}`,
-    ],
-  });
+  browserContext = await launchBrowser(home);
 
   const page = browserContext.pages()[0] ?? (await browserContext.newPage());
   await page.goto(`http://127.0.0.1:${address.port}`);
@@ -171,48 +155,12 @@ try {
   const siteUrl = `http://127.0.0.1:${address.port}`;
   const otherSiteUrl = `http://127.0.0.1:${addressB.port}`;
 
-  const isExtensionWorker = (worker) => worker.url().startsWith('chrome-extension://');
-  let serviceWorker = browserContext.serviceWorkers().find(isExtensionWorker);
-  if (serviceWorker === undefined) {
-    serviceWorker = await browserContext.waitForEvent('serviceworker', {
-      predicate: isExtensionWorker,
-      timeout: 15_000,
-    });
-  }
-
+  const { serviceWorker, extensionId } = await extensionWorker(browserContext);
   permissionServiceWorker = serviceWorker;
-  const extensionId = await serviceWorker.evaluate(() => chrome.runtime.id);
-  if (!/^[a-p]{32}$/.test(extensionId)) {
-    throw new Error(`Unexpected extension id from service worker: ${extensionId}`);
-  }
   console.log(`Extension ID: ${extensionId}`);
 
-  mcpTransport = new StdioClientTransport({
-    command: process.execPath,
-    args: [cliPath, 'mcp'],
-    env: childEnv,
-    stderr: 'pipe',
-  });
-  mcpTransport.stderr?.on('data', (chunk) => process.stderr.write(chunk));
-  mcpClient = new Client({ name: 't3-tab-e2e-a', version: '1.0.0' });
-  await mcpClient.connect(mcpTransport);
-
-  let statusText = '';
-  let tabCount = 0;
-  for (let attempt = 0; attempt < 160; attempt += 1) {
-    const result = await mcpClient.callTool({ name: 'status', arguments: {} });
-    statusText = result.content
-      .filter((item) => item.type === 'text')
-      .map((item) => item.text)
-      .join('\n');
-    tabCount = parseStatusTabCount(statusText);
-    if (/^Browsers: 1$/m.test(statusText) && tabCount >= 1) break;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-
-  if (!/^Browsers: 1$/m.test(statusText) || tabCount < 1) {
-    throw new Error(`Expected one connected browser with at least one tab. Got:\n${statusText}`);
-  }
+  ({ client: mcpClient } = await connectMcp(home, 't3-tab-e2e-a'));
+  const statusText = await waitForBrowser(mcpClient);
   console.log(`MCP status result:\n${statusText}`);
 
   const state = JSON.parse(await readFile(statePath, 'utf8'));
@@ -225,15 +173,7 @@ try {
   }
   console.log('Wrong-token control connection: refused');
 
-  mcpTransportB = new StdioClientTransport({
-    command: process.execPath,
-    args: [cliPath, 'mcp'],
-    env: childEnv,
-    stderr: 'pipe',
-  });
-  mcpTransportB.stderr?.on('data', (chunk) => process.stderr.write(chunk));
-  mcpClientB = new Client({ name: 't3-tab-e2e-b', version: '1.0.0' });
-  await mcpClientB.connect(mcpTransportB);
+  ({ client: mcpClientB } = await connectMcp(home, 't3-tab-e2e-b'));
 
   await rawCall(mcpClient, 'tabs', {});
   await rawCall(mcpClientB, 'tabs', {});
@@ -288,7 +228,7 @@ try {
   }
   if (pageServer !== undefined) await closeServer(pageServer);
   if (pageServerB !== undefined) await closeServer(pageServerB);
-  await stopDaemon();
+  await stopDaemon(statePath);
   await rm(tempHome, { recursive: true, force: true });
 }
 
@@ -1021,21 +961,6 @@ async function decidePrompt(serviceWorker, promptId, decision) {
   await panelRequest(serviceWorker, { type: 'panel.decide', promptId, decision });
 }
 
-async function setSite(serviceWorker, origin, setting) {
-  await panelRequest(serviceWorker, { type: 'panel.setSite', origin, setting });
-}
-
-async function panelRequest(serviceWorker, request) {
-  const response = await serviceWorker.evaluate(async (message) => {
-    const handle = globalThis.__t3tabHandlePanelRequest;
-    if (typeof handle !== 'function') throw new Error('Panel handler is unavailable');
-    return await handle(message);
-  }, request);
-  if (response === undefined) throw new Error(`The extension did not answer ${request.type}`);
-  if (response?.ok === false) throw new Error(`${request.type}: ${response.error}`);
-  return response;
-}
-
 async function tabGroup(serviceWorker, tabId) {
   return await serviceWorker.evaluate(async (id) => {
     const tab = await chrome.tabs.get(id);
@@ -1074,10 +999,6 @@ async function withDeadline(promise, milliseconds, label) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function checkBrowserTools({ mcpClient, page, siteUrl }) {
@@ -1305,10 +1226,6 @@ function listsTab(result, tabId) {
     .some((line) => line.startsWith(`${tabId} `));
 }
 
-function refFor(readText, label) {
-  return /^\s*(e\d+) /.exec(readText.split('\n').find((line) => line.includes(label)) ?? '')?.[1];
-}
-
 /** The page's viewport once it stops changing: attaching the debugger makes the browser show a banner, which resizes it. */
 async function settledViewport(page) {
   let previous = '';
@@ -1348,13 +1265,6 @@ async function call(client, name, args) {
   return await result;
 }
 
-function text(result) {
-  return result.content
-    .filter((item) => item.type === 'text')
-    .map((item) => item.text)
-    .join('\n');
-}
-
 function replySize(result) {
   const characters = result.content.reduce((total, item) => total + (item.type === 'text' ? item.text.length : item.data.length), 0);
   return `${characters} characters${result.isError === true ? ', error' : ''}`;
@@ -1362,56 +1272,6 @@ function replySize(result) {
 
 function show(label, result) {
   console.log(`--- ${label} (${replySize(result)}) ---\n${text(result)}`);
-}
-
-function assert(condition, message) {
-  if (!condition) throw new Error(message);
-}
-
-/** Pixel size of a JPEG, from its start-of-frame marker. */
-function jpegSize(bytes) {
-  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return undefined;
-  let offset = 2;
-  while (offset + 9 < bytes.length) {
-    if (bytes[offset] !== 0xff) {
-      offset += 1;
-      continue;
-    }
-    const marker = bytes[offset + 1];
-    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-      return { height: (bytes[offset + 5] << 8) | bytes[offset + 6], width: (bytes[offset + 7] << 8) | bytes[offset + 8] };
-    }
-    offset += 2 + ((bytes[offset + 2] << 8) | bytes[offset + 3]);
-  }
-  return undefined;
-}
-
-async function listen(server) {
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', reject);
-      resolve();
-    });
-  });
-}
-
-async function closeServer(server) {
-  if (server.listening !== true) return;
-  await new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
-}
-
-function cleanEnv(env) {
-  return Object.fromEntries(
-    Object.entries(env).filter(
-      ([key, value]) => value !== undefined && key !== 'CLAUDE_CONFIG_DIR' && key !== 'CODEX_HOME',
-    ),
-  );
 }
 
 async function fileExists(path) {
@@ -1441,11 +1301,6 @@ function countMatches(value, expression) {
   return [...value.matchAll(expression)].length;
 }
 
-function parseStatusTabCount(text) {
-  const match = /^- .*: (\d+) tabs?$/m.exec(text);
-  return match === null ? 0 : Number(match[1]);
-}
-
 async function wrongTokenIsRefused(port) {
   return await new Promise((resolve) => {
     const socket = new WebSocket(`ws://127.0.0.1:${port}/?token=wrong-token`);
@@ -1463,28 +1318,4 @@ async function wrongTokenIsRefused(port) {
       resolve(true);
     });
   });
-}
-
-async function stopDaemon() {
-  try {
-    const state = JSON.parse(await readFile(statePath, 'utf8'));
-    if (typeof state.pid === 'number') {
-      process.kill(state.pid, 'SIGTERM');
-      for (let attempt = 0; attempt < 40; attempt += 1) {
-        if (!processIsAlive(state.pid)) break;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-  } catch {
-    // The daemon never started, or it exited before cleanup.
-  }
-}
-
-function processIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }

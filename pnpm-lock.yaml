@@ -184,6 +184,9 @@ importers:
       '@types/node':
         specifier: 26.6.6
         version: 26.6.6
+      gpt-tokenizer:
+        specifier: 4.1.2
+        version: 4.1.2
       oxlint:
         specifier: 1.94.0
         version: 1.94.0
@@ -1084,6 +1087,9 @@ packages:
   gopd@1.2.0:
     resolution: {integrity: sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg==}
     engines: {node: '>= 0.4'}
+
+  gpt-tokenizer@4.1.2:
+    resolution: {integrity: sha512-5GwcLcZd6IqCdrGTTPcoKqbJk8cCWHHsoTHR/uQGZKT29CFcnJEg69qisGbKesQpzxRq9yQO4lBgsaZ8SawcGQ==}
 
   has-symbols@1.1.0:
     resolution: {integrity: sha512-1cDNdwJ2Jaohmb3sg4OmKaMBwuC48sYni5HUw2DvsC8LjGTLK9h+eb1X6RyuOHe4hT0ULCW68iomhjUoKUqlPQ==}
@@ -2441,6 +2447,8 @@ snapshots:
   giget@3.3.1: {}
 
   gopd@1.2.0: {}
+
+  gpt-tokenizer@4.1.2: {}
 
   has-symbols@1.1.0: {}
 
