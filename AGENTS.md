@@ -226,7 +226,10 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
   `/proc/net/tcp{,6}` and `/proc/<pid>/fd` show that the recorded pid accepted that connection and that the process
   did not start after T3's `startedAt` (`t3-connection.ts`). That comparison has no tolerance: the start time read
   from `/proc` is rounded down by at most 1.01 s, so a process started less than that after the record can still
-  pass, and a forward wall-clock step after T3 started can refuse T3 until it restarts. Where there is no `/proc` (any platform but Linux),
+  pass, and a forward wall-clock step after T3 started can refuse T3 until it restarts. A backward wall-clock step
+  makes processes look as if they started earlier, so a process that reused T3's recorded pid could pass the
+  start-time check; it still has to hold the accepted connection, and programs running as the owner are outside
+  T3-Tab's trust model anyway. Where there is no `/proc` (any platform but Linux),
   T3-Tab sends nothing, so the sign-in and the lists are unavailable and the project and model are typed instead.
   T3 issues no refresh tokens and offers a client no way to revoke itself: a
   sign-in lasts 30 days, a refused token is deleted, and "Sign out" deletes the file and any temporary copy a crash left (the

@@ -171,7 +171,9 @@ async function processHoldsSocket(pid: number, inode: string): Promise<boolean> 
  * time drops its fraction of a tick, so the result is at most 1.01 s before the real start and never after it. T3 writes
  * its record after it starts, so the real T3 passes with no tolerance, and a process that started more than 1.01 s after
  * the record is refused. The boot time moves when the wall clock is stepped: a forward step after T3 started, larger
- * than the time T3 took to write its record plus that rounding, refuses T3 until it restarts.
+ * than the time T3 took to write its record plus that rounding, refuses T3 until it restarts. A backward step makes
+ * processes look as if they started earlier, so a process that reused T3's recorded pid could pass this check; it still
+ * has to hold the accepted connection, and programs running as the owner are outside T3-Tab's trust model anyway.
  */
 async function processStartMs(pid: number): Promise<number> {
   const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
