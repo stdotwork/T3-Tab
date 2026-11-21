@@ -4,6 +4,9 @@ import { EXTENSION_ORIGIN } from '@t3-tab/protocol';
 
 export type ConnectionRole = 'extension' | 'control';
 
+/** Which of the daemon's two secrets a connection presented. */
+export type ConnectionCredential = 'extension' | 'control';
+
 export function tokensMatch(expected: string, provided: string | undefined): boolean {
   if (provided === undefined) return false;
   const expectedBytes = Buffer.from(expected, 'utf8');
@@ -15,8 +18,12 @@ export function isExtensionOrigin(origin: string | undefined): boolean {
   return origin === EXTENSION_ORIGIN;
 }
 
-export function connectionRole(origin: string | undefined): ConnectionRole | undefined {
-  if (origin === undefined) return 'control';
+/**
+ * The role comes from the secret: the control token, which every MCP server reads, can never take the extension role.
+ * The Origin must agree as well, so a web page that somehow held a token is still refused.
+ */
+export function connectionRole(origin: string | undefined, credential: ConnectionCredential): ConnectionRole | undefined {
+  if (credential === 'control') return origin === undefined ? 'control' : undefined;
   return isExtensionOrigin(origin) ? 'extension' : undefined;
 }
 

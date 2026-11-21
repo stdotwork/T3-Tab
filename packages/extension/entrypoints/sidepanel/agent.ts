@@ -1,4 +1,4 @@
-import type { AgentConversation, AgentsStatus, AgentVia } from '@t3-tab/protocol';
+import type { AgentConversation, AgentsStatus, AgentVia, T3Access, T3Catalog } from '@t3-tab/protocol';
 
 import type { AgentPanelState, AgentStartRequest, PanelRequest, PanelTab } from '../../src/panel';
 
@@ -12,6 +12,9 @@ const STATUS_NAMES: Record<AgentConversation['status'], string> = {
   failed: 'Failed',
 };
 const FIELDS_KEY = 't3tab.agentFields';
+/** List choices that are not a project or model: type the value instead, or use the project's default model. */
+const TYPED = 'typed';
+const DEFAULT = 'default';
 
 /**
  * The agent half of the side panel: start a T3 thread or a direct Claude Code or Codex run with the current tab,
@@ -34,19 +37,58 @@ export function initAgentPanel(root: HTMLElement, send: Send): { render(state: A
   const project = input('agent-project');
   const provider = input('agent-provider', 'Optional, such as claudeAgent');
   const model = input('agent-model', "Optional: the project's default");
+  // T3's own lists, once T3-Tab is signed in to T3 (read only); the text fields stay for typing a value.
+  const projectList = document.createElement('select');
+  projectList.id = 'agent-project-list';
+  const modelList = document.createElement('select');
+  modelList.id = 'agent-model-list';
+  const access = document.createElement('div');
+  access.id = 't3-access';
+  access.className = 'stack';
+  const accessLine = element('p', 'muted', '');
+  accessLine.id = 't3-access-line';
+  const signIn = element('button', '', 'Sign in to T3 Code') as HTMLButtonElement;
+  signIn.id = 't3-sign-in';
+  signIn.type = 'button';
+  const reload = element('button', '', 'Reload lists') as HTMLButtonElement;
+  reload.id = 't3-reload';
+  reload.type = 'button';
+  const signOut = element('button', '', 'Sign out of T3') as HTMLButtonElement;
+  signOut.id = 't3-sign-out';
+  signOut.type = 'button';
+  const accessButtons = document.createElement('div');
+  accessButtons.className = 'buttons';
+  accessButtons.append(signIn, reload, signOut);
+  const accessError = element('p', 'error', '');
+  access.append(accessLine, accessButtons, accessError);
+  const projectListLabel = labelled('Project', projectList);
+  const modelListLabel = labelled('Provider and model', modelList);
   const message = document.createElement('textarea');
   message.id = 'agent-message';
   message.rows = 3;
   message.placeholder = 'What should the agent do with this tab?';
   const projectLabel = labelled('Project', project);
   const providerLabel = labelled('Provider instance', provider);
+  const modelLabel = labelled('Model', model);
   const share = element('p', 'muted line', '');
   share.id = 'agent-share';
   const start = element('button', '', 'Start') as HTMLButtonElement;
   start.type = 'submit';
   const error = element('p', 'error', '');
   error.id = 'agent-error';
-  form.append(labelled('Run with', via), projectLabel, providerLabel, labelled('Model', model), labelled('Message', message), share, start, error);
+  form.append(
+    labelled('Run with', via),
+    access,
+    projectListLabel,
+    projectLabel,
+    modelListLabel,
+    providerLabel,
+    modelLabel,
+    labelled('Message', message),
+    share,
+    start,
+    error,
+  );
 
   const list = document.createElement('ul');
   list.id = 'agent-conversations';
@@ -78,21 +120,53 @@ export function initAgentPanel(root: HTMLElement, send: Send): { render(state: A
   let selected: string | undefined;
   let chosenVia = false;
   let shownMessages = '';
+  let catalog: T3Catalog | undefined;
   let shownGrants = '';
-  restoreFields();
+  const saved = restoreFields();
 
   const showFields = (): void => {
     const direct = via.value !== 't3';
-    projectLabel.querySelector('span')!.textContent = direct ? 'Folder (optional)' : 'Project';
+    const lists = !direct && catalog !== undefined;
+    const typedProject = !lists || projectList.value === TYPED;
+    const typedModel = !lists || modelList.value === TYPED;
+    access.hidden = direct;
+    projectListLabel.hidden = !lists;
+    modelListLabel.hidden = !lists;
+    projectLabel.hidden = !typedProject;
+    projectLabel.querySelector('span')!.textContent = direct ? 'Folder (optional)' : lists ? 'Project id or folder' : 'Project';
     project.placeholder = direct ? 'Absolute path; default: your home folder' : 'Project id, or a folder inside the project';
-    providerLabel.hidden = direct;
+    providerLabel.hidden = direct || !typedModel;
+    modelLabel.hidden = !direct && !typedModel;
     model.placeholder = direct ? "Optional: the CLI's default" : "Optional: the project's default";
+    defaultOption(modelList, catalog, projectList.value);
     if (state !== undefined) status.textContent = statusLine(state.status, via.value as AgentVia);
   };
   via.addEventListener('change', () => {
     chosenVia = true;
     showFields();
   });
+  projectList.addEventListener('change', showFields);
+  modelList.addEventListener('change', showFields);
+
+  const accessAction = (button: HTMLButtonElement, request: PanelRequest, force: boolean): void => {
+    button.addEventListener('click', () => {
+      void (async () => {
+        accessError.textContent = '';
+        button.disabled = true;
+        try {
+          await send(request);
+          await refresh(force);
+        } catch (failure) {
+          accessError.textContent = failure instanceof Error ? failure.message : String(failure);
+        } finally {
+          button.disabled = false;
+        }
+      })();
+    });
+  };
+  accessAction(signIn, { type: 'panel.t3SignIn' }, false);
+  accessAction(signOut, { type: 'panel.t3SignOut' }, false);
+  accessAction(reload, { type: 'panel.agents', refresh: true }, true);
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -101,9 +175,20 @@ export function initAgentPanel(root: HTMLElement, send: Send): { render(state: A
       start.disabled = true;
       try {
         const request: AgentStartRequest = { type: 'panel.agentStart', via: via.value as AgentVia, message: message.value };
-        if (project.value.trim() !== '') request.project = project.value.trim();
-        if (provider.value.trim() !== '' && via.value === 't3') request.provider = provider.value.trim();
-        if (model.value.trim() !== '') request.model = model.value.trim();
+        const lists = via.value === 't3' && catalog !== undefined;
+        const picked = lists ? choice(projectList.value, modelList.value) : {};
+        if (lists && projectList.value !== TYPED) {
+          if (picked.project !== undefined) request.project = picked.project;
+        } else if (project.value.trim() !== '') request.project = project.value.trim();
+        if (lists && modelList.value !== TYPED) {
+          if (picked.provider !== undefined && picked.model !== undefined) {
+            request.provider = picked.provider;
+            request.model = picked.model;
+          }
+        } else {
+          if (provider.value.trim() !== '' && via.value === 't3') request.provider = provider.value.trim();
+          if (model.value.trim() !== '') request.model = model.value.trim();
+        }
         const result = (await send(request)) as { conversation: AgentConversation };
         saveFields();
         message.value = '';
@@ -138,10 +223,25 @@ export function initAgentPanel(root: HTMLElement, send: Send): { render(state: A
 
   function render(next: AgentPanelState): void {
     state = next;
-    if (!chosenVia) {
-      via.value = defaultVia(next.status);
-      showFields();
+    accessLine.textContent = accessText(next.t3Access);
+    signIn.hidden = next.t3Access.state === 'signed-in';
+    signIn.textContent = next.t3Access.state === 'signing-in' ? 'Start the sign-in again' : 'Sign in to T3 Code';
+    reload.hidden = next.t3Access.state !== 'signed-in';
+    signOut.hidden = next.t3Access.state !== 'signed-in';
+    const nextCatalog = next.t3Access.catalog;
+    // Rebuilt only when T3's lists change, so a refresh never closes an open list or drops the owner's pick.
+    if (nextCatalog?.fetchedAt !== catalog?.fetchedAt) {
+      const projectPick = projectList.options.length > 0 ? projectList.value : saved.projectChoice;
+      const modelPick = modelList.options.length > 0 ? modelList.value : saved.modelChoice;
+      catalog = nextCatalog;
+      if (catalog !== undefined) fillLists(projectList, modelList, catalog, projectPick, modelPick);
+      else {
+        projectList.replaceChildren();
+        modelList.replaceChildren();
+      }
     }
+    if (!chosenVia) via.value = defaultVia(next.status);
+    showFields();
     status.textContent = statusLine(next.status, via.value as AgentVia);
     share.textContent = shareLine(next.shareTabs);
     start.disabled = next.shareTabs.length === 0;
@@ -229,26 +329,113 @@ export function initAgentPanel(root: HTMLElement, send: Send): { render(state: A
 
   function saveFields(): void {
     try {
-      localStorage.setItem(FIELDS_KEY, JSON.stringify({ project: project.value, provider: provider.value, model: model.value }));
+      const fields: SavedFields = { project: project.value, provider: provider.value, model: model.value };
+      if (projectList.options.length > 0) fields.projectChoice = projectList.value;
+      if (modelList.options.length > 0) fields.modelChoice = modelList.value;
+      localStorage.setItem(FIELDS_KEY, JSON.stringify(fields));
     } catch {
       // Storage may be unavailable; the fields just start empty next time.
     }
   }
 
-  function restoreFields(): void {
+  function restoreFields(): SavedFields {
     try {
-      const saved: unknown = JSON.parse(localStorage.getItem(FIELDS_KEY) ?? '{}');
-      if (typeof saved !== 'object' || saved === null) return;
-      const fields = saved as Record<string, unknown>;
+      const stored: unknown = JSON.parse(localStorage.getItem(FIELDS_KEY) ?? '{}');
+      if (typeof stored !== 'object' || stored === null) return {};
+      const fields = stored as Record<string, unknown>;
       if (typeof fields.project === 'string') project.value = fields.project;
       if (typeof fields.provider === 'string') provider.value = fields.provider;
       if (typeof fields.model === 'string') model.value = fields.model;
+      const restored: SavedFields = {};
+      if (typeof fields.projectChoice === 'string') restored.projectChoice = fields.projectChoice;
+      if (typeof fields.modelChoice === 'string') restored.modelChoice = fields.modelChoice;
+      return restored;
     } catch {
       // Nothing saved, or storage is unavailable.
+      return {};
     }
   }
 
   return { render, refresh };
+}
+
+interface SavedFields {
+  project?: string;
+  provider?: string;
+  model?: string;
+  projectChoice?: string;
+  modelChoice?: string;
+}
+
+/** What the lists' values mean: a project id, a provider instance and model, or the project's default (neither). */
+export function choice(projectValue: string, modelValue: string): { project?: string; provider?: string; model?: string } {
+  const picked: { project?: string; provider?: string; model?: string } = {};
+  if (projectValue.startsWith('p:')) picked.project = projectValue.slice(2);
+  if (modelValue.startsWith('m:')) {
+    try {
+      const [provider, model] = JSON.parse(modelValue.slice(2)) as unknown[];
+      if (typeof provider === 'string' && typeof model === 'string') {
+        picked.provider = provider;
+        picked.model = model;
+      }
+    } catch {
+      // Not a model choice.
+    }
+  }
+  return picked;
+}
+
+/** Fills the project and model lists from T3's catalog, keeping the earlier pick when it is still listed. */
+export function fillLists(projectList: HTMLSelectElement, modelList: HTMLSelectElement, catalog: T3Catalog, projectPick?: string, modelPick?: string): void {
+  projectList.replaceChildren(
+    ...catalog.projects.map((project) => option(`p:${project.id}`, `${project.title} — ${project.workspaceRoot}`)),
+    option(TYPED, 'Type a project id or folder…'),
+  );
+  const groups = catalog.providers.map((provider) => {
+    const group = document.createElement('optgroup');
+    group.label = provider.unavailable === undefined ? provider.name : `${provider.name} (unavailable: ${provider.unavailable})`;
+    group.disabled = provider.unavailable !== undefined;
+    group.append(...provider.models.map((model) => option(`m:${JSON.stringify([provider.instanceId, model.id])}`, model.label ?? model.id)));
+    return group;
+  });
+  modelList.replaceChildren(option(DEFAULT, "The project's default"), ...groups, option(TYPED, 'Type a provider and model…'));
+  pick(projectList, projectPick);
+  pick(modelList, modelPick);
+}
+
+/** Names the project's default model on the "default" choice, when T3 reported one. */
+function defaultOption(modelList: HTMLSelectElement, catalog: T3Catalog | undefined, projectValue: string): void {
+  const first = modelList.options[0];
+  if (first?.value !== DEFAULT) return;
+  const project = catalog?.projects.find((candidate) => `p:${candidate.id}` === projectValue);
+  first.textContent =
+    project?.defaultModel === undefined ? "The project's default" : `The project's default (${project.defaultProvider ?? ''}/${project.defaultModel})`;
+}
+
+/** One line on T3-Tab's T3 sign-in and what it gives the panel. */
+export function accessText(access: T3Access): string {
+  const detail = access.detail === undefined ? '' : `${access.detail} `;
+  if (access.state === 'signing-in') return `${detail}Approve T3-Tab in the T3 Code tab that opened, and choose Read only.`;
+  if (access.state === 'signed-out') {
+    return `${detail}Sign in to T3 Code once to pick projects and models from its lists. T3-Tab asks for read-only access.`;
+  }
+  const until = access.expiresAt === undefined ? '' : ` until ${new Date(access.expiresAt).toISOString().slice(0, 10)}`;
+  const counts =
+    access.catalog === undefined
+      ? ''
+      : ` ${access.catalog.projects.length} projects, ${access.catalog.providers.reduce((total, provider) => total + provider.models.length, 0)} models listed.`;
+  return `Signed in to T3 Code${access.environment === undefined ? '' : ` at ${access.environment}`} (read only)${until}.${counts}${access.detail === undefined ? '' : ` ${access.detail}`}`;
+}
+
+function option(value: string, text: string): HTMLOptionElement {
+  const node = document.createElement('option');
+  node.value = value;
+  node.textContent = text;
+  return node;
+}
+
+function pick(list: HTMLSelectElement, value: string | undefined): void {
+  if (value !== undefined && [...list.options].some((candidate) => candidate.value === value && !candidate.disabled)) list.value = value;
 }
 
 export function defaultVia(status: AgentsStatus): AgentVia {
