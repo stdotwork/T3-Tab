@@ -156,6 +156,9 @@ export interface ScreenshotResult {
 /** How a claim code reaches the session that redeems it. */
 export type ClaimRoute = 'launch' | 'message';
 
+/** Why an MCP server could not take the claim code from the private file a direct run named. */
+export type ClaimFileProblem = 'missing' | 'not-private' | 'wrong-owner' | 'not-a-file' | 'invalid' | 'unreadable';
+
 /** Requests the background program sends to the extension, with their params and results. */
 export interface BrowserMethods {
   'session.register': { params: Record<string, never>; result: { registered: true } };
@@ -303,6 +306,8 @@ export interface ControlSessionRegisterRequest {
   clientName: string;
   /** A side-panel claim code the MCP process read from its private file, for a direct run. */
   claim?: string;
+  /** Set instead of `claim` when the MCP process was given a claim file and could not use it. */
+  claimFileProblem?: { file: string; problem: ClaimFileProblem };
 }
 
 export interface ControlStatusRequest {

@@ -1,6 +1,6 @@
 import type { AgentConversation, AgentsStatus, AgentVia } from '@t3-tab/protocol';
 
-import { newClaimCode, type ClaimTab } from './claims';
+import { newClaimCode, removeConversationTab, type ClaimTab } from './claims';
 import { askDaemon } from './daemon-link';
 import {
   isOriginKey,
@@ -31,6 +31,8 @@ export interface AgentPanelState {
   status: AgentsStatus;
   shareTabs: PanelTab[];
   conversations: AgentConversation[];
+  /** The owner's tabs each conversation holds, by conversation id. A closed tab is left out. */
+  conversationTabs: Record<string, PanelTab[]>;
 }
 
 export interface AgentStartRequest {
@@ -48,6 +50,7 @@ export type PanelRequest =
   | { type: 'panel.agents'; refresh?: boolean; tabId?: number }
   | AgentStartRequest
   | { type: 'panel.agentSend'; id: string; message: string }
+  | { type: 'panel.agentRemoveTab'; id: string; tabId: number }
   | { type: 'panel.shareTab'; sessionId: string; tabId?: number }
   | { type: 'panel.unshareTab'; sessionId: string; tabId?: number }
   | { type: 'panel.decide'; promptId: string; decision: PermissionDecision }
@@ -62,6 +65,10 @@ export async function handlePanelRequest(
   if (request.type === 'panel.agents') return await agentPanelState(request.refresh === true, request.tabId);
   if (request.type === 'panel.agentStart') return await startAgent(request);
   if (request.type === 'panel.agentSend') return await sendToAgent(request.id, request.message);
+  if (request.type === 'panel.agentRemoveTab') {
+    await removeConversationTab(claimStore, sessionStore, request.id, request.tabId);
+    return { ok: true };
+  }
   if (request.type === 'panel.shareTab') {
     const tab = await panelTab(request.tabId);
     await sessionStore.share(request.sessionId, tab.id, originOf(tab.url));
@@ -100,12 +107,18 @@ async function panelState(tabId: number | undefined): Promise<PanelState> {
 }
 
 async function agentPanelState(refresh: boolean, tabId: number | undefined): Promise<AgentPanelState> {
-  const [status, list, shareTabs] = await Promise.all([
+  const [status, list, shareTabs, held] = await Promise.all([
     askDaemon('agents.status', refresh ? { refresh: true } : {}),
     askDaemon('agents.list', {}),
     shareTargets(tabId).catch(() => []),
+    claimStore.conversationTabs(),
   ]);
-  return { status, conversations: list.conversations, shareTabs };
+  const conversationTabs: Record<string, PanelTab[]> = {};
+  for (const conversation of list.conversations) {
+    const tabs = await Promise.all((held[conversation.id] ?? []).map(async ({ tabId: id }) => await panelTab(id).catch(() => undefined)));
+    conversationTabs[conversation.id] = tabs.filter((tab) => tab !== undefined);
+  }
+  return { status, conversations: list.conversations, shareTabs, conversationTabs };
 }
 
 /**
@@ -124,7 +137,7 @@ async function startAgent(request: AgentStartRequest): Promise<{ conversation: A
   const params = { via: request.via, message: request.message, claim, ...optionalFields(request) };
   try {
     const started = await askDaemon('agents.start', params);
-    if (request.via !== 't3') await claimStore.bindConversation(grant, started.conversation.id);
+    await claimStore.bindConversation(grant, started.conversation.id);
     return started;
   } catch (error) {
     await claimStore.revoke(claim);
@@ -208,6 +221,9 @@ function parsePanelRequest(value: unknown): PanelRequest {
   }
   if (candidate.type === 'panel.agentSend' && typeof candidate.id === 'string' && typeof candidate.message === 'string') {
     return { type: 'panel.agentSend', id: candidate.id, message: candidate.message };
+  }
+  if (candidate.type === 'panel.agentRemoveTab' && typeof candidate.id === 'string' && Number.isInteger(candidate.tabId)) {
+    return { type: 'panel.agentRemoveTab', id: candidate.id, tabId: candidate.tabId as number };
   }
   if (
     candidate.type === 'panel.decide' &&

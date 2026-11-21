@@ -10,6 +10,7 @@ import {
   type BrowserDaemonRequestMessage,
   type BrowserMessage,
   type BrowserPongMessage,
+  type ClaimFileProblem,
   type ControlResponse,
   type DaemonReplyMessage,
   type ToolMethod,
@@ -17,7 +18,7 @@ import {
 } from '@t3-tab/protocol';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
-import { CLAIM_CODE } from './agents/claim-file.js';
+import { CLAIM_CODE, CLAIM_FILE_PROBLEMS } from './agents/claim-file.js';
 import { Agents } from './agents/conversations.js';
 import { BrowserConnection } from './browser-link.js';
 import { connectionRole, tokensMatch, isLoopbackHostHeader, type ConnectionRole } from './security.js';
@@ -45,11 +46,14 @@ const MAX_BROWSER_MESSAGE_BYTES = 16 * 1_024 * 1_024;
 const TOOL_METHODS: ReadonlySet<string> = new Set<ToolMethod>(['tabs', 'read', 'screenshot', 'act', 'run_js']);
 // The browser's answer for a code it will never honour, as opposed to a moment it could not answer.
 const CLAIM_REFUSED = /^Unknown claim code/;
+const MAX_CLAIM_FILE_PATH = 4_096;
 
 /** What the daemon holds for one control connection: its session, and a claim code it registered with. */
 interface ControlState {
   sessions: Map<WebSocket, ToolSession>;
   claims: Map<WebSocket, string>;
+  /** The redemption running for a connection, so simultaneous first tool calls share it. */
+  redeeming: Map<WebSocket, Promise<void>>;
 }
 
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
@@ -59,7 +63,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const roles = new WeakMap<IncomingMessage, ConnectionRole>();
   const browsers = new Map<WebSocket, BrowserConnection>();
   const sessions = new Map<WebSocket, ToolSession>();
-  const control: ControlState = { sessions, claims: new Map() };
+  const control: ControlState = { sessions, claims: new Map(), redeeming: new Map() };
   const agents =
     options.agents ??
     new Agents({
@@ -275,9 +279,15 @@ function handleControlMessage(
       sendControlError(webSocket, request.requestId, 'Invalid claim code');
       return;
     }
+    const claimFileProblem = parseClaimFileProblem(request.claimFileProblem);
+    if (request.claimFileProblem !== undefined && claimFileProblem === undefined) {
+      sendControlError(webSocket, request.requestId, 'Invalid claim file report');
+      return;
+    }
     const id = randomUUID();
     const session: ToolSession = { id, name: makeSessionName(request.clientName, id) };
     sessions.set(webSocket, session);
+    if (claimFileProblem !== undefined) agents.claimFileFailed(claimFileProblem.file, claimFileProblem.problem);
     // Applied with the session's first tool call, once a browser is sure to have registered it.
     if (typeof request.claim === 'string') control.claims.set(webSocket, request.claim);
     const connection = [...browsers.values()].at(-1);
@@ -333,19 +343,7 @@ async function answerTool(
     if (connection === undefined) throw new Error('No browser is connected. Open the browser with the T3-Tab extension.');
     // Register only the session making this request. A new extension connection never learns other sessions.
     await connection.request(registered, 'session.register', {});
-    const claim = control.claims.get(webSocket);
-    if (claim !== undefined) {
-      // A direct run's MCP server carries the code the panel issued. The tool still runs when the claim fails: the
-      // owner sees why in the conversation, and a failure the browser may recover from is tried on the next call.
-      try {
-        await connection.request(registered, 'session.claim', { code: claim, route: 'launch' });
-        control.claims.delete(webSocket);
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        if (CLAIM_REFUSED.test(reason)) control.claims.delete(webSocket);
-        agents.claimFailed(claim, reason);
-      }
-    }
+    await redeemClaim(webSocket, connection, registered, control, agents);
     const content = await runTool(connection, registered, request.method as ToolMethod, request.params as Record<string, unknown>);
     if (webSocket.readyState !== WebSocket.OPEN) return;
     const response: ControlResponse = {
@@ -361,6 +359,49 @@ async function answerTool(
       sendControlError(webSocket, request.requestId, error instanceof Error ? error.message : String(error));
     }
   }
+}
+
+/**
+ * Redeems the code a direct run's MCP server carries. The tool still runs when the claim fails: the owner sees why
+ * in the conversation, and a failure the browser may recover from is tried on the next call. Calls that arrive
+ * during a redemption wait for it, so one session never redeems its code twice.
+ */
+async function redeemClaim(
+  webSocket: WebSocket,
+  connection: BrowserConnection,
+  session: ToolSession,
+  control: ControlState,
+  agents: Agents,
+): Promise<void> {
+  const running = control.redeeming.get(webSocket);
+  if (running !== undefined) {
+    await running;
+    return;
+  }
+  const claim = control.claims.get(webSocket);
+  if (claim === undefined) return;
+  const redemption = (async () => {
+    try {
+      await connection.request(session, 'session.claim', { code: claim, route: 'launch' });
+      control.claims.delete(webSocket);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (CLAIM_REFUSED.test(reason)) control.claims.delete(webSocket);
+      agents.claimFailed(claim, reason);
+    } finally {
+      control.redeeming.delete(webSocket);
+    }
+  })();
+  control.redeeming.set(webSocket, redemption);
+  await redemption;
+}
+
+function parseClaimFileProblem(value: unknown): { file: string; problem: ClaimFileProblem } | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { file, problem } = value as Record<string, unknown>;
+  if (typeof file !== 'string' || file === '' || file.length > MAX_CLAIM_FILE_PATH) return undefined;
+  if (typeof problem !== 'string' || !CLAIM_FILE_PROBLEMS.has(problem)) return undefined;
+  return { file, problem: problem as ClaimFileProblem };
 }
 
 function isBrowserMessage(value: unknown): value is BrowserMessage {
@@ -391,6 +432,7 @@ function isControlRequest(value: unknown): value is {
   method: string;
   clientName?: unknown;
   claim?: unknown;
+  claimFileProblem?: unknown;
   session?: unknown;
   params?: unknown;
 } {

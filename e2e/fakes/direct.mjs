@@ -2,7 +2,7 @@
 // (`--mcp-config` for Claude Code, `-c mcp_servers.t3-tab.*` for Codex), looks at its tabs, and prints the
 // JSON lines the real CLI prints. Usage: direct.mjs claude|codex <the CLI's arguments>.
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { chmodSync, existsSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { connect, fakeDir, lookAtTabs, readStdin, record } from './common.mjs';
@@ -14,6 +14,7 @@ record(name, args, input);
 if (name === 'claude') {
   const config = JSON.parse(valueOf('--mcp-config'));
   const server = config.mcpServers['t3-tab'];
+  spoilClaimFile(server.args);
   // Claude Code starts a stdio server with its own environment plus the server's `env`.
   const client = await connect('claude-code', { command: server.command, args: server.args, env: { ...process.env, ...server.env } });
   const sessionId = valueOf('--resume') ?? randomUUID();
@@ -45,6 +46,23 @@ if (name === 'claude') {
 } else {
   process.stderr.write(`unknown fake ${name}\n`);
   process.exit(2);
+}
+
+/** A message with `[claim-file:<how>]` damages this turn's private claim file before the MCP server reads it. */
+function spoilClaimFile(serverArgs) {
+  const how = /\[claim-file:(missing|mode|replaced)\]/.exec(input)?.[1];
+  if (how === undefined) return;
+  const file = serverArgs[serverArgs.indexOf('--claim-file') + 1];
+  if (how === 'mode') {
+    chmodSync(file, 0o644);
+    return;
+  }
+  rmSync(file);
+  if (how === 'replaced') {
+    const elsewhere = join(fakeDir, 'not-the-claim');
+    writeFileSync(elsewhere, 'abcdefghijklmnop1234', { mode: 0o600 });
+    symlinkSync(elsewhere, file);
+  }
 }
 
 /** A message with `[hold]` keeps this turn's session open until the run writes `release`, so the owner can act on it. */

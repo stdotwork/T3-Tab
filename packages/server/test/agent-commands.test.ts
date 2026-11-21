@@ -16,6 +16,7 @@ import {
   t3StartArgs,
   withoutClaimNote,
 } from '../src/agents/commands.js';
+import { t3ShowJson } from './t3-show-fixture.js';
 
 const CODE = 'abcdefghijklmnop1234';
 const server = { command: '/usr/bin/node', args: ['/x/cli.js', 'mcp'] };
@@ -328,8 +329,7 @@ describe('direct run isolation', () => {
 });
 
 describe('T3 run status', () => {
-  const show = (status: string, error?: string | null): string =>
-    JSON.stringify({ thread: { status }, messages: [], ...(error === undefined ? {} : { error }) });
+  const show = (status: string): string => t3ShowJson({ status });
 
   // Every status in T3 Code's OrchestratorMcpThreadStatus (idle plus OrchestrationV2RunStatus).
   it.each([
@@ -352,8 +352,10 @@ describe('T3 run status', () => {
     expect(parseT3Show(show('paused'))).toMatchObject({ status: 'running', active: true });
   });
 
-  it('keeps the error text of a run that ended badly', () => {
-    expect(parseT3Show(show('failed', 'The provider crashed'))).toMatchObject({ status: 'failed', error: 'The provider crashed' });
+  it('reads no failure text from a field `t3 thread show --json` does not print', () => {
+    const printed = JSON.parse(show('failed')) as Record<string, unknown>;
+    expect(Object.keys(printed)).toEqual(['thread', 'messages']);
+    expect(parseT3Show(JSON.stringify({ ...printed, error: 'A field T3 does not have' }))).toMatchObject({ status: 'failed', error: 'The run failed.' });
   });
 
   it.each([
@@ -361,11 +363,11 @@ describe('T3 run status', () => {
     ['cancelled', 'The run was cancelled.'],
     ['rolled_back', 'The run was rolled back.'],
     ['failed', 'The run failed.'],
-  ])('says what happened to a %s run that has no error text', (status, text) => {
-    expect(parseT3Show(show(status, null))).toMatchObject({ status: 'failed', error: text });
+  ])('says what happened to a %s run', (status, text) => {
+    expect(parseT3Show(show(status))).toMatchObject({ status: 'failed', error: text });
   });
 
   it('carries no error for a run that completed', () => {
-    expect(parseT3Show(show('completed', null)).error).toBeUndefined();
+    expect(parseT3Show(show('completed')).error).toBeUndefined();
   });
 });

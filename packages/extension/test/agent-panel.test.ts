@@ -1,7 +1,7 @@
 import type { AgentsStatus } from '@t3-tab/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { defaultVia, shareLine, statusLine } from '../entrypoints/sidepanel/agent';
+import { defaultVia, nextTurnLine, shareLine, statusLine } from '../entrypoints/sidepanel/agent';
 
 const running: AgentsStatus = { t3: { state: 'running' } };
 
@@ -44,5 +44,24 @@ describe('shareLine', () => {
     expect(shareLine([{ id: 4, title: 'Home' } as never])).toBe('Shares tab 4 "Home"');
     expect(shareLine([{ id: 4, title: '' } as never])).toBe('Shares tab 4 "(untitled)"');
     expect(shareLine([{ id: 4, title: 'A' }, { id: 5, title: 'B' }] as never)).toBe('Shares 2 tabs of this tab group, starting with tab 4 "A"');
+  });
+});
+
+describe('nextTurnLine', () => {
+  const one = [{ id: 4, title: 'Home', url: 'https://a.test/' }];
+  const two = [...one, { id: 5, title: '', url: 'https://b.test/' }];
+
+  it('says which tabs the next message of a direct run will share', () => {
+    expect(nextTurnLine('claude', one)).toBe('Your next message shares tab 4 "Home".');
+    expect(nextTurnLine('codex', two)).toBe('Your next message shares 2 tabs: tab 4 "Home", tab 5 "(untitled)".');
+  });
+
+  it('says when the next message of a direct run shares nothing', () => {
+    expect(nextTurnLine('claude', [])).toBe('Your next message shares no tabs.');
+  });
+
+  it('describes a T3 thread, whose session keeps its tabs between messages', () => {
+    expect(nextTurnLine('t3', one)).toBe('This thread can use tab 4 "Home".');
+    expect(nextTurnLine('t3', [])).toBe('This thread has no tabs from you.');
   });
 });

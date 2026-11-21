@@ -11,10 +11,11 @@ import type {
   AgentsStatus,
   AgentStartParams,
   AgentVia,
+  ClaimFileProblem,
 } from '@t3-tab/protocol';
 
 import { stateDirectory } from '../state.js';
-import { CLAIM_CODE, writeClaimFile, type ClaimFile } from './claim-file.js';
+import { CLAIM_CODE, claimFileWarning, writeClaimFile, type ClaimFile } from './claim-file.js';
 import {
   claimNote,
   claudeArgs,
@@ -46,6 +47,8 @@ const MAX_WAITING_POLL_MS = 30_000;
 // How long a stopped process gets after SIGTERM, then how long to wait for it to close after SIGKILL.
 const STOP_GRACE_MS = 5_000;
 const KILL_WAIT_MS = 2_000;
+const GROUP_POLL_MS = 25;
+const SHUTTING_DOWN = 'T3-Tab is shutting down.';
 const CLAIM_HIDDEN = '[claim code hidden]';
 const NAME = /^[^\s-][^\s]{0,199}$/;
 
@@ -70,6 +73,8 @@ interface Conversation {
   codes: Set<string>;
   /** The code the current direct turn's MCP server holds. */
   launchCode?: string;
+  /** The private file holding that code, which names this conversation when its MCP server cannot read it. */
+  claimFile?: string;
   cwd?: string;
   child?: ChildProcess;
   /** True while a direct turn is being set up, before it has a process. */
@@ -100,6 +105,8 @@ export class Agents {
   private readonly graceMs: number;
   /** The short `t3` commands running now, so shutdown can stop them. */
   private readonly commands = new Set<ChildProcess>();
+  /** Direct turns being set up. Shutdown waits for them, so each has either refused to start or has a process to stop. */
+  private readonly setups = new Set<Promise<void>>();
   private t3Cache: { at: number; value: AgentsStatus['t3'] } | undefined;
   private t3Probe: Promise<AgentsStatus['t3']> | undefined;
   private closed = false;
@@ -167,6 +174,7 @@ export class Agents {
   /** Stops every polling loop and process, and returns once the processes have closed. */
   async close(): Promise<void> {
     this.closed = true;
+    await Promise.allSettled(this.setups);
     const stopping: Array<Promise<void>> = [...this.commands].map(async (child) => await stopProcess(child, this.graceMs));
     for (const conversation of this.conversations.values()) {
       if (conversation.poll !== undefined) clearTimeout(conversation.poll);
@@ -185,6 +193,15 @@ export class Agents {
         role: 'error',
         text: `T3-Tab could not share your tabs with this turn: ${reason} Share a tab from the session list if the agent needs it.`,
       });
+    }
+  }
+
+  /** Tells the owner, in the conversation whose turn it was, that its MCP server could not use the claim file. */
+  claimFileFailed(path: string, problem: ClaimFileProblem): void {
+    for (const conversation of this.conversations.values()) {
+      if (conversation.claimFile !== path) continue;
+      delete conversation.claimFile;
+      this.push(conversation, { role: 'error', text: claimFileWarning(problem) });
     }
   }
 
@@ -302,6 +319,8 @@ export class Agents {
   }
 
   private async runCommand(path: string, args: string[], input: string | undefined, timeoutMs: number): Promise<RunResult> {
+    // Checked right before the spawn, which registers the child in the same tick, so `close` cannot miss it.
+    if (this.closed) throw new Error(SHUTTING_DOWN);
     let started: ChildProcess | undefined;
     try {
       return await run(this.spawn, path, args, {
@@ -359,6 +378,7 @@ export class Agents {
         conversation.waitingPolls += 1;
       } else conversation.waitingPolls = 0;
     } catch (error) {
+      if (this.closed) return;
       conversation.pollFailures += 1;
       if (conversation.pollFailures >= MAX_POLL_FAILURES) {
         this.failConversation(conversation, error instanceof Error ? error.message : String(error));
@@ -384,6 +404,16 @@ export class Agents {
 
   /** Starts one turn of a direct run and returns once the process is running; replies arrive as it prints them. */
   private async runDirect(conversation: Conversation, message: string, resume: string | undefined, claim: string | undefined): Promise<void> {
+    const setup = this.startTurn(conversation, message, resume, claim);
+    this.setups.add(setup);
+    try {
+      await setup;
+    } finally {
+      this.setups.delete(setup);
+    }
+  }
+
+  private async startTurn(conversation: Conversation, message: string, resume: string | undefined, claim: string | undefined): Promise<void> {
     conversation.starting = true;
     let claimFile: ClaimFile | undefined;
     let child: ChildProcess;
@@ -392,10 +422,12 @@ export class Agents {
       const executable = await findExecutable(via, this.options.env);
       if (executable === undefined) throw new Error(`${via === 'claude' ? 'Claude Code' : 'Codex'} was not found on this machine.`);
       delete conversation.launchCode;
+      delete conversation.claimFile;
       if (claim !== undefined) {
         conversation.codes.add(claim);
         conversation.launchCode = claim;
         claimFile = await writeClaimFile(this.stateDir, claim);
+        conversation.claimFile = claimFile.path;
       }
       const runOptions = {
         server: this.options.server,
@@ -405,6 +437,7 @@ export class Agents {
         resume,
       };
       const args = via === 'claude' ? claudeArgs(runOptions) : codexArgs(runOptions);
+      if (this.closed) throw new Error(SHUTTING_DOWN);
       // Its own process group, so stopping it also stops whatever it started.
       child = this.spawn(executable, args, {
         cwd: conversation.cwd ?? homedir(),
@@ -568,24 +601,56 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   child.kill(signal);
 }
 
-/** SIGTERM to the child's process group, SIGKILL after `graceMs`, and returns once it has closed. */
+/** True while any process of the child's group is alive, the leader included. */
+function groupAlive(child: ChildProcess): boolean {
+  if (child.pid === undefined || process.platform === 'win32') return false;
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/**
+ * SIGTERM to the child's process group, then SIGKILL to the group after `graceMs` if any of it is still alive, even
+ * when the leader has already exited. Returns once the child has closed and its group is gone.
+ */
 export async function stopProcess(child: ChildProcess, graceMs: number): Promise<void> {
-  const closed = new Promise<boolean>((resolve) => {
-    child.once('close', () => resolve(true));
-  });
-  const within = async (ms: number): Promise<boolean> => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const elapsed = new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(false), ms);
+  let leaderClosed = false;
+  const closed = new Promise<void>((resolve) => {
+    child.once('close', () => {
+      leaderClosed = true;
+      resolve();
     });
-    const result = await Promise.race([closed, elapsed]);
+  });
+  const pause = async (ms: number): Promise<void> => await new Promise((resolve) => setTimeout(resolve, ms));
+  const exited = (): boolean => leaderClosed || typeof child.exitCode === 'number' || typeof child.signalCode === 'string';
+  const finished = async (): Promise<void> => {
+    // The leader is gone; its `close` follows once its output has been read.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, KILL_WAIT_MS);
+    });
+    await Promise.race([closed, limit]);
     clearTimeout(timer);
-    return result;
   };
   signalGroup(child, 'SIGTERM');
-  if (await within(graceMs)) return;
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline) {
+    if (exited() && !groupAlive(child)) {
+      await finished();
+      return;
+    }
+    await pause(Math.min(GROUP_POLL_MS, Math.max(1, deadline - Date.now())));
+  }
+  if (exited() && !groupAlive(child)) {
+    await finished();
+    return;
+  }
   signalGroup(child, 'SIGKILL');
-  await within(KILL_WAIT_MS);
+  const killDeadline = Date.now() + KILL_WAIT_MS;
+  while (Date.now() < killDeadline && !(leaderClosed && !groupAlive(child))) await pause(GROUP_POLL_MS);
 }
 
 /** Runs a short command with its input on stdin and collects what it prints. */
