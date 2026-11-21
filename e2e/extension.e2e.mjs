@@ -41,7 +41,7 @@ const SITE = {
     </nav>
     <main>
       <h2>Sign up</h2>
-      <form aria-label="Sign up" onsubmit="return false">
+      <form id="signup" aria-label="Sign up">
         <label>Name <input name="name" type="text" required></label>
         <label>Email <input name="email" type="email"></label>
         <label>Password <input name="password" type="password"></label>
@@ -73,6 +73,15 @@ const SITE = {
         details.hidden = !open;
         toggle.textContent = open ? 'Hide details' : 'Show details';
         toggle.setAttribute('aria-expanded', String(open));
+      });
+      document.getElementById('signup').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const data = new FormData(event.currentTarget);
+        const result = document.createElement('a');
+        result.id = 'signup-result';
+        result.href = '/success';
+        result.textContent = 'Welcome ' + data.get('name') + ' (' + data.get('email') + ')';
+        document.querySelector('main').append(result);
       });
     </script>
   </body>
@@ -192,6 +201,20 @@ try {
   console.log('Wrong-token control connection: refused');
 
   await checkBrowserTools({ mcpClient, page, siteUrl });
+  const newCheckFailures = [];
+  try {
+    await checkActionTools({ mcpClient, page });
+  } catch (error) {
+    newCheckFailures.push(`act/run_js: ${error.message}`);
+  }
+  try {
+    await checkKeepalive(mcpClient);
+  } catch (error) {
+    newCheckFailures.push(`keepalive: ${error.message}`);
+  }
+  if (newCheckFailures.length > 0) {
+    throw new Error(`New slice 4 checks failed:\n${newCheckFailures.join('\n')}`);
+  }
 } finally {
   if (mcpClient !== undefined) {
     await mcpClient.close().catch(() => undefined);
@@ -214,7 +237,7 @@ try {
 async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   const { tools } = await mcpClient.listTools();
   const names = tools.map((tool) => tool.name).sort();
-  assert(JSON.stringify(names) === JSON.stringify(['read', 'screenshot', 'status', 'tabs']), `Unexpected tools: ${names}`);
+  assert(JSON.stringify(names) === JSON.stringify(['act', 'read', 'run_js', 'screenshot', 'status', 'tabs']), `Unexpected tools: ${names}`);
   const sizes = tools.map((tool) => `${tool.name} ${JSON.stringify(tool).length}`);
   const definitionChars = JSON.stringify(tools).length;
   console.log(
@@ -351,6 +374,69 @@ async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   console.log(`--- screenshot maxEdge 640 (${replySize(small)}) ---\n${text(small)}\nimage/jpeg ${smallSize.width}x${smallSize.height}`);
   assert(Math.max(smallSize.width, smallSize.height) <= 640 && smallSize.width >= 630, `maxEdge 640 gave ${smallSize.width}x${smallSize.height}`);
   console.log('Browser tools: all checks passed');
+}
+
+async function checkActionTools({ mcpClient, page }) {
+  await page.getByRole('heading', { name: 'T3-Tab E2E' }).waitFor();
+  await page.getByLabel('Name').fill('Old Name');
+  const before = await call(mcpClient, 'read', { full: true });
+  show('read before act', before);
+  const beforeText = text(before);
+  assert(beforeText.includes('textbox "Name" value="Old Name" [required]'), `The prefilled name is missing:\n${beforeText}`);
+  const nameRef = refFor(beforeText, 'textbox "Name"');
+  const emailRef = refFor(beforeText, 'textbox "Email"');
+  const submitRef = refFor(beforeText, 'button "Create account"');
+  assert(nameRef && emailRef && submitRef, `The form refs are missing:\n${beforeText}`);
+
+  const acted = await call(mcpClient, 'act', {
+    steps: [
+      { fill: { ref: nameRef, value: 'Ada Lovelace' } },
+      { fill: { ref: emailRef, value: 'ada@example.com' } },
+      { click: { ref: submitRef } },
+    ],
+  });
+  show('act (fill, fill, click)', acted);
+  assert(acted.isError !== true, `act failed: ${text(acted)}`);
+  assert(/Changed since the last read:/.test(text(acted)), `act did not return a diff:\n${text(acted)}`);
+  assert(text(acted).includes('Welcome Ada Lovelace (ada@example.com)'), `act did not show the form result:\n${text(acted)}`);
+
+  const title = await call(mcpClient, 'run_js', { expression: 'document.title' });
+  show('run_js document.title', title);
+  assert(title.isError !== true && text(title) === '"T3-Tab E2E"', `run_js returned: ${text(title)}`);
+  const bodyTitle = await call(mcpClient, 'run_js', { expression: 'return document.title;' });
+  show('run_js async body', bodyTitle);
+  assert(bodyTitle.isError !== true && text(bodyTitle) === '"T3-Tab E2E"', `run_js body returned: ${text(bodyTitle)}`);
+
+  const fresh = await call(mcpClient, 'read', { full: true });
+  const freshText = text(fresh);
+  const aboutRef = refFor(freshText, 'link "About"');
+  const staleRef = refFor(freshText, 'textbox "Name"');
+  assert(aboutRef && staleRef, `Navigation refs are missing:\n${freshText}`);
+  const stale = await call(mcpClient, 'act', {
+    steps: [{ click: { ref: aboutRef } }, { click: { ref: staleRef } }],
+  });
+  show('act (click navigation, then stale ref)', stale);
+  assert(stale.isError === true, `A ref from before navigation was accepted: ${text(stale)}`);
+  assert(
+    new RegExp(`${staleRef} is no longer on the page; read again`).test(text(stale)),
+    `The stale-ref error is unclear: ${text(stale)}`,
+  );
+  assert(text(stale).includes('# About'), `The failed act has no page diff after navigation: ${text(stale)}`);
+  console.log('Act, stale ref and run_js: all checks passed');
+}
+
+async function checkKeepalive(mcpClient) {
+  console.log('Keepalive: waiting 36 seconds past the service worker idle timeout...');
+  await new Promise((resolve) => setTimeout(resolve, 36_000));
+  const result = await call(mcpClient, 'status', {});
+  show('status after 36s idle', result);
+  assert(/^Browsers: 1$/m.test(text(result)), `The extension did not stay connected: ${text(result)}`);
+  assert(parseStatusTabCount(text(result)) >= 1, `The kept-alive browser reported no tabs: ${text(result)}`);
+  console.log('Keepalive after 36s: passed');
+}
+
+function refFor(readText, label) {
+  return /^\s*(e\d+) /.exec(readText.split('\n').find((line) => line.includes(label)) ?? '')?.[1];
 }
 
 /** The page's viewport once it stops changing: attaching the debugger makes the browser show a banner, which resizes it. */

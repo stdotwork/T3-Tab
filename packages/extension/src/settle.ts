@@ -1,0 +1,145 @@
+import { documentEpoch, networkRevision, sendCommand } from './cdp';
+
+const QUIET_MS = 150;
+const POLL_MS = 50;
+const MAX_SETTLE_MS = 4_000;
+const OBSERVER_KEY = '__t3TabSettle';
+
+export interface SettleSnapshot {
+  ready: boolean;
+  /** Bumped by a MutationObserver inside the page. */
+  revision: number;
+  /** Viewport, document size and URL; any difference means layout or document changed. */
+  layout: string;
+  /** Bumped by any CDP Network event for the tab. */
+  networkRevision: number;
+}
+
+export interface SettleResult {
+  settled: boolean;
+  timedOut: boolean;
+  elapsedMs: number;
+}
+
+interface PageProbe {
+  ready: boolean;
+  revision: number;
+  width: number;
+  height: number;
+  scrollWidth: number;
+  scrollHeight: number;
+  url: string;
+}
+
+/** Tracks whether a page has stayed still for long enough, independently of timers, for unit tests. */
+export class SettleTracker {
+  private previous: SettleSnapshot | undefined;
+  private lastChangeAt: number;
+
+  constructor(
+    private readonly startedAt: number,
+    private readonly quietMs = QUIET_MS,
+    private readonly maxMs = MAX_SETTLE_MS,
+  ) {
+    this.lastChangeAt = startedAt;
+  }
+
+  observe(snapshot: SettleSnapshot, now: number): 'changed' | 'settled' | 'waiting' {
+    const previous = this.previous;
+    this.previous = snapshot;
+    if (previous === undefined || !snapshot.ready || !sameSnapshot(previous, snapshot)) {
+      this.lastChangeAt = now;
+    }
+    if (snapshot.ready && now - this.lastChangeAt >= this.quietMs) return 'settled';
+    if (now - this.startedAt >= this.maxMs) return 'settled';
+    return previous === undefined || !sameSnapshot(previous, snapshot) || !snapshot.ready ? 'changed' : 'waiting';
+  }
+
+  timedOut(now: number): boolean {
+    return now - this.startedAt >= this.maxMs;
+  }
+}
+
+/** Waits for network quiet and no DOM or layout changes for a short window, capped in duration. */
+export async function settlePage(tabId: number): Promise<SettleResult> {
+  const startedAt = Date.now();
+  const tracker = new SettleTracker(startedAt);
+  while (true) {
+    const probe = await probePage(tabId);
+    const now = Date.now();
+    const snapshot: SettleSnapshot = {
+      ready: probe.ready && probe.url !== '',
+      revision: probe.revision,
+      layout: `${documentEpoch(tabId)}|${probe.width}|${probe.height}|${probe.scrollWidth}|${probe.scrollHeight}|${probe.url}`,
+      networkRevision: networkRevision(tabId),
+    };
+    const state = tracker.observe(snapshot, now);
+    if (state === 'settled') {
+      return { settled: now - startedAt < MAX_SETTLE_MS, timedOut: tracker.timedOut(now), elapsedMs: now - startedAt };
+    }
+    if (tracker.timedOut(now)) return { settled: false, timedOut: true, elapsedMs: now - startedAt };
+    await sleep(POLL_MS);
+  }
+}
+
+async function probePage(tabId: number): Promise<PageProbe> {
+  try {
+    const evaluated = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.evaluate', {
+      expression: `(() => {
+        const state = globalThis[${JSON.stringify(OBSERVER_KEY)}] ||= { revision: 0, observer: null };
+        if (state.observer === null && document.documentElement) {
+          state.observer = new MutationObserver(() => { state.revision += 1; });
+          state.observer.observe(document.documentElement, {
+            subtree: true, childList: true, attributes: true, characterData: true
+          });
+        }
+        return {
+          ready: document.readyState === 'complete',
+          revision: state.revision,
+          width: innerWidth,
+          height: innerHeight,
+          scrollWidth: document.documentElement?.scrollWidth || 0,
+          scrollHeight: document.documentElement?.scrollHeight || 0,
+          url: location.href
+        };
+      })()`,
+      returnByValue: true,
+    });
+    const value = evaluated.result?.value;
+    if (typeof value !== 'object' || value === null) return emptyProbe();
+    const record = value as Record<string, unknown>;
+    return {
+      ready: record.ready === true,
+      revision: numberOrZero(record.revision),
+      width: numberOrZero(record.width),
+      height: numberOrZero(record.height),
+      scrollWidth: numberOrZero(record.scrollWidth),
+      scrollHeight: numberOrZero(record.scrollHeight),
+      url: typeof record.url === 'string' ? record.url : '',
+    };
+  } catch {
+    // A navigation can destroy the execution context between two probes.
+    return emptyProbe();
+  }
+}
+
+function sameSnapshot(a: SettleSnapshot, b: SettleSnapshot): boolean {
+  return (
+    a.ready === b.ready &&
+    a.revision === b.revision &&
+    a.layout === b.layout &&
+    a.networkRevision === b.networkRevision
+  );
+}
+
+function emptyProbe(): PageProbe {
+  return { ready: false, revision: 0, width: 0, height: 0, scrollWidth: 0, scrollHeight: 0, url: '' };
+}
+
+function numberOrZero(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}

@@ -1,9 +1,15 @@
-import { DEFAULT_SCREENSHOT_MAX_EDGE, type TabInfo, type ToolContent, type ToolMethod } from '@t3-tab/protocol';
+import {
+  DEFAULT_SCREENSHOT_MAX_EDGE,
+  type ActStep,
+  type TabInfo,
+  type ToolContent,
+  type ToolMethod,
+} from '@t3-tab/protocol';
 import type { z } from 'zod';
 
 import type { BrowserLink } from './browser-link.js';
-import { formatRead } from './reader/page.js';
-import { readParams, screenshotParams, tabsParams } from './tool-schemas.js';
+import { formatRead, MAX_OUTPUT_CHARS } from './reader/page.js';
+import { actParams, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
 
 const MAX_TAB_TITLE = 80;
 const MAX_TAB_URL = 150;
@@ -22,6 +28,10 @@ export async function runTool(
       return [{ type: 'text', text: await runRead(link, session, parse(readParams, params)) }];
     case 'screenshot':
       return await runScreenshot(link, parse(screenshotParams, params));
+    case 'act':
+      return [{ type: 'text', text: await runAct(link, session, parse(actParams, params)) }];
+    case 'run_js':
+      return [{ type: 'text', text: await runJs(link, parse(runJsParams, params)) }];
   }
 }
 
@@ -66,6 +76,64 @@ async function runScreenshot(link: BrowserLink, params: z.infer<typeof screensho
     { type: 'text', text: `tab ${shot.tab}: ${size}` },
     { type: 'image', data: shot.data, mimeType: 'image/jpeg' },
   ];
+}
+
+async function runAct(
+  link: BrowserLink,
+  session: string,
+  params: z.infer<typeof actParams>,
+): Promise<string> {
+  const tabId = params.tab ?? (await currentTabId(link));
+  const state = link.tabState(tabId);
+  const backendIds = params.steps.map((step) => {
+    const ref = refOf(step);
+    if (ref === undefined) return null;
+    const backendId = state.refTable.backendIdOf(ref);
+    if (backendId === undefined) throw new Error(`Unknown ref ${ref}: read the page again`);
+    return backendId;
+  });
+  const page = await link.request('page.act', {
+    tab: tabId,
+    steps: params.steps,
+    backendIds,
+    epoch: state.currentEpoch,
+  });
+  const reply = formatRead(state, session, page, {});
+  if (page.failure !== undefined) {
+    throw new Error(`Step ${page.failure.step} (${page.failure.action}) failed: ${page.failure.error}\n${reply}`);
+  }
+  return reply;
+}
+
+async function runJs(link: BrowserLink, params: z.infer<typeof runJsParams>): Promise<string> {
+  const result =
+    params.tab === undefined
+      ? await link.request('page.eval', { expression: params.expression })
+      : await link.request('page.eval', { tab: params.tab, expression: params.expression });
+  const json = JSON.stringify(result.value);
+  return limitJson(json === undefined ? 'null' : json);
+}
+
+async function currentTabId(link: BrowserLink): Promise<number> {
+  const { tabs } = await link.request('tabs.list', {});
+  const front = tabs.find((tab) => tab.active) ?? tabs[0];
+  if (front === undefined) throw new Error('No tab is open');
+  return front.id;
+}
+
+function refOf(step: ActStep): string | undefined {
+  if ('click' in step) return step.click.ref;
+  if ('type' in step) return step.type.ref;
+  if ('fill' in step) return step.fill.ref;
+  if ('select' in step) return step.select.ref;
+  if ('scroll' in step) return step.scroll.ref;
+  if ('hover' in step) return step.hover.ref;
+  return undefined;
+}
+
+function limitJson(text: string): string {
+  if (text.length <= MAX_OUTPUT_CHARS) return text;
+  return `${text.slice(0, MAX_OUTPUT_CHARS)}\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use a narrower expression.`;
 }
 
 function tabLine(tab: TabInfo): string {

@@ -117,6 +117,17 @@ describe('browser tools through the daemon', () => {
     expect(reply).toMatchObject({ ok: false, error: 'The browser disconnected' });
   });
 
+  it('answers extension keepalive pings without adding a browser', async () => {
+    const handle = await start();
+    const browser = await open(handle, EXTENSION_ORIGIN);
+    const pong = new Promise<Record<string, unknown>>((resolve) => {
+      browser.once('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+    });
+    browser.send(JSON.stringify({ type: 'browser.ping', protocolVersion: PROTOCOL_VERSION }));
+    expect(await pong).toMatchObject({ type: 'browser.pong', protocolVersion: PROTOCOL_VERSION });
+    expect(browser.readyState).toBe(WebSocket.OPEN);
+  });
+
   it('accepts a browser message larger than a control message may be', async () => {
     const handle = await start();
     const browser = await open(handle, EXTENSION_ORIGIN);

@@ -13,6 +13,7 @@ import type { WebSocket } from 'ws';
 import { TabState } from './reader/page.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const ACT_REQUEST_TIMEOUT_MS = 300_000;
 const MAX_TABS_HELD = 200;
 
 /** What the tool code needs from a browser: ask it something, and look up what is held for a tab. */
@@ -49,10 +50,11 @@ export class BrowserConnection implements BrowserLink {
       params,
     } as BrowserRequestMessage;
     return new Promise((resolve, reject) => {
+      const timeoutMs = method === 'page.act' ? ACT_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
-        reject(new Error(`The browser did not answer ${method} within ${REQUEST_TIMEOUT_MS / 1_000} seconds`));
-      }, REQUEST_TIMEOUT_MS);
+        reject(new Error(`The browser did not answer ${method} within ${timeoutMs / 1_000} seconds`));
+      }, timeoutMs);
       this.pending.set(requestId, { resolve: resolve as (result: unknown) => void, reject, timer });
       this.socket.send(JSON.stringify(message), (error?: Error | null) => {
         if (error === undefined || error === null) return;

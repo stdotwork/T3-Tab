@@ -35,3 +35,47 @@ export const screenshotShape = {
 export const tabsParams = z.object(tabsShape);
 export const readParams = z.object(readShape);
 export const screenshotParams = z.object(screenshotShape);
+
+const ref = z.string().min(1);
+const object = <T extends z.ZodRawShape>(shape: T) => z.object(shape).strict();
+
+export const clickStep = object({ click: object({ ref }) });
+export const typeStep = object({ type: object({ ref: ref.optional(), text: z.string() }) });
+export const fillStep = object({ fill: object({ ref, value: z.string() }) });
+export const pressStep = object({ press: object({ key: z.string().min(1) }) });
+export const selectStep = object({ select: object({ ref, value: z.string() }) });
+export const scrollStep = object({
+  scroll: object({ ref: ref.optional(), dx: z.number().optional(), dy: z.number().optional() }).refine(
+    (value) => (value.ref === undefined) !== (value.dx === undefined && value.dy === undefined),
+    { message: 'use either ref or dx/dy' },
+  ),
+});
+export const hoverStep = object({ hover: object({ ref }) });
+export const waitStep = z.union([
+  object({ wait: object({ ms: z.number().int().min(0).max(10_000) }) }),
+  object({ wait: object({ for: z.string().min(1) }) }),
+]);
+
+export const actStepSchema = z.union([
+  clickStep,
+  typeStep,
+  fillStep,
+  pressStep,
+  selectStep,
+  scrollStep,
+  hoverStep,
+  waitStep,
+]);
+
+export const actShape = {
+  tab: tab.describe('Tab id; default the front tab.'),
+  steps: z.array(actStepSchema).min(1).max(50).describe('Ordered steps; stops at the first failure.'),
+};
+
+export const runJsShape = {
+  tab: tab.describe('Tab id; default the front tab.'),
+  expression: z.string().min(1).describe('Expression or async function body; JSON result.'),
+};
+
+export const actParams = z.object(actShape);
+export const runJsParams = z.object(runJsShape);

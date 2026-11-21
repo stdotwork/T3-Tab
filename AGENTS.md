@@ -32,7 +32,9 @@ The built server is `packages/server/dist/cli.js`; `node_modules/.bin/t3-tab` ru
 `pnpm e2e` launches headless Playwright Chromium with that built extension, starts the real native host and
 an MCP client, and checks the loopback link and the browser tools against a local test site (a form, links
 and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
-`screenshot`. It prints each reply and its size. Every process it starts uses a temporary HOME and XDG
+`screenshot`, `act` and `run_js`. The action run fills and submits the test form, checks a stale ref after
+navigation, evaluates page JavaScript and waits past the extension worker's idle timeout before another
+`status` call. It prints each reply and its size. Every process it starts uses a temporary HOME and XDG
 directories.
 
 ## CLI
@@ -50,9 +52,10 @@ pnpm exec t3-tab mcp
 `daemon` listens on `127.0.0.1:8765` by default. Set `T3_TAB_PORT` or pass `--port <number>` to change the
 port. Its random token is stored in `$XDG_STATE_HOME/t3-tab/daemon.json` with mode `0600`, falling back to
 `$HOME/.local/state/t3-tab/daemon.json`. `native-host` is normally started by Chromium, not by hand. `mcp`
-serves the `status`, `tabs`, `read` and `screenshot` tools over stdio and starts the daemon when needed.
+serves the `status`, `tabs`, `read`, `screenshot`, `act` and `run_js` tools over stdio and starts the daemon
+when needed.
 
-## Page reading
+## Page tools
 
 `read` builds its text in the daemon from the accessibility tree the extension fetches over
 `chrome.debugger` (`Accessibility.getFullAXTree`), trimmed in the extension to what the reader prints
@@ -61,6 +64,12 @@ tree into lines with refs, `refs.ts` keeps a ref stable for an element until the
 replaced, `smart-diff.ts` is the line diff, `find.ts` the search, and `page.ts` puts a reply together and
 caps it at 12,000 characters. Diff baselines are kept per MCP server process, so two agents reading the
 same tab do not take each other's diffs.
+
+`act` resolves refs to backend DOM node ids, runs its steps through Chrome DevTools Protocol input and DOM
+commands, and settles after every step by waiting for network, DOM and layout activity to stay quiet. A
+navigation invalidates refs held from before it. `run_js` evaluates an expression or async function body in
+the page for cases the structured tools do not cover. The extension sends a WebSocket ping every 20 seconds
+while the daemon is connected so Chrome does not stop its service worker.
 
 ## CI
 

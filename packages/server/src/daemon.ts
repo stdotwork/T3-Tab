@@ -6,6 +6,7 @@ import {
   DEFAULT_DAEMON_PORT,
   PROTOCOL_VERSION,
   type BrowserMessage,
+  type BrowserPongMessage,
   type ControlResponse,
   type ToolMethod,
 } from '@t3-tab/protocol';
@@ -31,7 +32,7 @@ export interface DaemonHandle {
 const MAX_CONTROL_MESSAGE_BYTES = 1_024_000;
 // A page's accessibility tree and a screenshot come back from the browser in one message.
 const MAX_BROWSER_MESSAGE_BYTES = 16 * 1_024 * 1_024;
-const TOOL_METHODS: ReadonlySet<string> = new Set<ToolMethod>(['tabs', 'read', 'screenshot']);
+const TOOL_METHODS: ReadonlySet<string> = new Set<ToolMethod>(['tabs', 'read', 'screenshot', 'act', 'run_js']);
 
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   if (options.stateDir === undefined) throw new Error('A state directory is required');
@@ -157,6 +158,11 @@ function handleBrowserMessage(webSocket: WebSocket, browsers: Map<WebSocket, Bro
   const browser = connection.status;
   if (message.type === 'browser.response') {
     connection.handleResponse(message);
+  } else if (message.type === 'browser.ping') {
+    const pong: BrowserPongMessage = { type: 'browser.pong', protocolVersion: PROTOCOL_VERSION };
+    webSocket.send(JSON.stringify(pong));
+  } else if (message.type === 'browser.pong') {
+    // The activity itself keeps the extension's service worker alive.
   } else if (message.type === 'browser.tabClosed') {
     if (Number.isInteger(message.tabId)) connection.forgetTab(message.tabId);
   } else if (message.type === 'browser.hello') {
@@ -239,6 +245,8 @@ function isBrowserMessage(value: unknown): value is BrowserMessage {
   return (
     candidate.protocolVersion === PROTOCOL_VERSION &&
     (candidate.type === 'browser.hello' ||
+      candidate.type === 'browser.ping' ||
+      candidate.type === 'browser.pong' ||
       candidate.type === 'browser.tabCount' ||
       candidate.type === 'browser.tabClosed' ||
       (candidate.type === 'browser.response' && typeof candidate.requestId === 'string' && typeof candidate.ok === 'boolean'))

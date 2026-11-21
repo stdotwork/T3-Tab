@@ -2,6 +2,7 @@ import {
   NATIVE_HOST_NAME,
   PROTOCOL_VERSION,
   type BrowserHelloMessage,
+  type BrowserPingMessage,
   type BrowserRequestMessage,
   type BrowserResponseMessage,
   type BrowserTabClosedMessage,
@@ -20,6 +21,7 @@ const browserName = navigator.userAgent.includes('Brave') ? 'Brave' : 'Chromium'
 export default defineBackground(() => {
   let socket: WebSocket | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let keepaliveTimer: ReturnType<typeof setInterval> | undefined;
   let reconnectAttempt = 0;
   let connecting = false;
 
@@ -59,7 +61,13 @@ export default defineBackground(() => {
     if (current.readyState === WebSocket.OPEN) current.send(JSON.stringify(response));
   };
 
+  const clearKeepalive = (): void => {
+    if (keepaliveTimer !== undefined) clearInterval(keepaliveTimer);
+    keepaliveTimer = undefined;
+  };
+
   const scheduleReconnect = (): void => {
+    clearKeepalive();
     socket = undefined;
     if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
     const delay = Math.min(30_000, 500 * 2 ** Math.min(reconnectAttempt, 6)) + Math.random() * 250;
@@ -86,6 +94,12 @@ export default defineBackground(() => {
         };
         current.send(JSON.stringify(hello));
         reportTabCount();
+        clearKeepalive();
+        keepaliveTimer = setInterval(() => {
+          if (socket !== current || current.readyState !== WebSocket.OPEN) return;
+          const ping: BrowserPingMessage = { type: 'browser.ping', protocolVersion: PROTOCOL_VERSION };
+          current.send(JSON.stringify(ping));
+        }, 20_000);
       });
       current.addEventListener('message', (event) => {
         const request = parseRequest(event.data);
@@ -93,6 +107,7 @@ export default defineBackground(() => {
       });
       current.addEventListener('close', () => {
         if (socket === current) scheduleReconnect();
+        else clearKeepalive();
       });
       current.addEventListener('error', () => {
         if (socket === current) current.close();
