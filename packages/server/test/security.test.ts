@@ -17,8 +17,12 @@ describe('link security checks', () => {
     expect(isExtensionOrigin('chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toBe(false);
     expect(isExtensionOrigin(`${EXTENSION_ORIGIN}/`)).toBe(false);
     expect(isExtensionOrigin('http://127.0.0.1:8765')).toBe(false);
-    expect(connectionRole(undefined)).toBe('control');
-    expect(connectionRole('https://example.com')).toBeUndefined();
+    expect(connectionRole(undefined, 'control')).toBe('control');
+    expect(connectionRole(EXTENSION_ORIGIN, 'extension')).toBe('extension');
+    expect(connectionRole(EXTENSION_ORIGIN, 'control')).toBeUndefined();
+    expect(connectionRole(undefined, 'extension')).toBeUndefined();
+    expect(connectionRole('https://example.com', 'control')).toBeUndefined();
+    expect(connectionRole('https://example.com', 'extension')).toBeUndefined();
   });
 
   it('accepts loopback Host headers and rejects hostnames that can resolve elsewhere', () => {

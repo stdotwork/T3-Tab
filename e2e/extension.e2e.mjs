@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { createServer } from 'node:http';
+import { randomBytes } from 'node:crypto';
+import { createServer, request as httpRequest } from 'node:http';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -180,6 +181,9 @@ try {
     throw new Error('A control connection with the wrong token was accepted');
   }
   console.log('Wrong-token control connection: refused');
+  const posing = await upgradeStatus(state.port, state.token, `chrome-extension://${extensionId}`);
+  assert(posing === 403, `The daemon.json token took the extension role: HTTP ${posing}`);
+  console.log(`daemon.json token with the extension Origin: refused (HTTP ${posing}) while the real extension stays connected`);
 
   ({ client: mcpClientB } = await connectMcp(home, 't3-tab-e2e-b'));
 
@@ -1334,6 +1338,34 @@ async function commandOnPath(name, pathValue) {
 
 function countMatches(value, expression) {
   return [...value.matchAll(expression)].length;
+}
+
+/** The status a WebSocket upgrade gets with this token and Origin; 101 means the daemon accepted it. */
+async function upgradeStatus(port, token, origin) {
+  return await new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: '127.0.0.1',
+      port,
+      headers: {
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-version': '13',
+        'sec-websocket-key': randomBytes(16).toString('base64'),
+        authorization: `Bearer ${token}`,
+        origin,
+      },
+    });
+    request.on('upgrade', (response, socket) => {
+      socket.destroy();
+      resolve(response.statusCode);
+    });
+    request.on('response', (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    request.on('error', reject);
+    request.end();
+  });
 }
 
 async function wrongTokenIsRefused(port) {

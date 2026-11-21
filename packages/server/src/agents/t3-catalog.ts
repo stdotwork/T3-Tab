@@ -2,6 +2,8 @@ import type { T3Catalog, T3Project, T3Provider } from '@t3-tab/protocol';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
+import { T3ConnectionError, type T3Fetch } from './t3-connection.js';
+
 /** The only T3 tools T3-Tab calls. Both are read-only in T3 (`McpToolAccess.reads`). */
 export const T3_LIST_TOOLS = ['t3_project_list', 'orchestrator_capabilities'] as const;
 
@@ -21,17 +23,23 @@ export class T3CatalogError extends Error {
 
 /**
  * Lists T3's projects, provider instances and models through its `/mcp` endpoint with the read-only credential. The
- * token goes in the Authorization header of requests to `resource` only; redirects are refused, so it cannot be
- * forwarded anywhere else.
+ * token goes in the Authorization header of requests to `resource` only, through `t3Fetch`, which sends on a connection
+ * the recorded T3 process accepted and refuses redirects, so it cannot be forwarded anywhere else.
  */
-export async function fetchCatalog(resource: string, accessToken: string): Promise<T3Catalog> {
-  let unauthorized = false;
+export async function fetchCatalog(resource: string, accessToken: string, t3Fetch: T3Fetch): Promise<T3Catalog> {
+  const seen: Seen = { unauthorized: false, unconfirmed: false };
   const guardedFetch = async (url: string | URL, init?: RequestInit): Promise<Response> => {
     const target = new URL(url);
     if (target.href !== new URL(resource).href) throw new T3CatalogError('T3-Tab refused to send its T3 sign-in to another address.');
-    const response = await fetch(target, { ...init, redirect: 'error' });
+    let response: Response;
+    try {
+      response = await t3Fetch(target, init);
+    } catch (error) {
+      if (error instanceof T3ConnectionError) seen.unconfirmed = true;
+      throw error;
+    }
     // 401 is T3's answer to a token it does not accept (McpHttpServer.ts); nothing else ends the sign-in.
-    if (response.status === 401) unauthorized = true;
+    if (response.status === 401) seen.unauthorized = true;
     return response;
   };
   const transport = new StreamableHTTPClientTransport(new URL(resource), {
@@ -43,17 +51,17 @@ export async function fetchCatalog(resource: string, accessToken: string): Promi
     try {
       await client.connect(transport, { timeout: CALL_TIMEOUT_MS });
     } catch {
-      throw failure(unauthorized, 'T3 Code did not answer at its MCP address.');
+      throw failure(seen, 'T3 Code did not answer at its MCP address.');
     }
     const projects: T3Project[] = [];
     let cursor: number | null = 0;
     for (let page = 0; page < MAX_PAGES && cursor !== null; page += 1) {
-      const result = await call(client, 't3_project_list', cursor === 0 ? { limit: PAGE_LIMIT } : { cursor, limit: PAGE_LIMIT }, () => unauthorized);
+      const result = await call(client, 't3_project_list', cursor === 0 ? { limit: PAGE_LIMIT } : { cursor, limit: PAGE_LIMIT }, seen);
       const parsed = parseProjectPage(result);
       projects.push(...parsed.projects);
       cursor = parsed.nextCursor;
     }
-    const capabilities = await call(client, 'orchestrator_capabilities', {}, () => unauthorized);
+    const capabilities = await call(client, 'orchestrator_capabilities', {}, seen);
     return { projects, providers: parseProviders(capabilities), fetchedAt: Date.now() };
   } finally {
     await transport.terminateSession().catch(() => undefined);
@@ -61,12 +69,12 @@ export async function fetchCatalog(resource: string, accessToken: string): Promi
   }
 }
 
-async function call(client: Client, name: (typeof T3_LIST_TOOLS)[number], args: Record<string, unknown>, unauthorized: () => boolean): Promise<unknown> {
+async function call(client: Client, name: (typeof T3_LIST_TOOLS)[number], args: Record<string, unknown>, seen: Seen): Promise<unknown> {
   let result: Awaited<ReturnType<Client['callTool']>>;
   try {
     result = await client.callTool({ name, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
   } catch {
-    throw failure(unauthorized(), `T3 Code did not answer ${name}.`);
+    throw failure(seen, `T3 Code did not answer ${name}.`);
   }
   if (result.isError === true) throw new T3CatalogError(`T3 Code refused ${name}.`);
   if (typeof result.structuredContent === 'object' && result.structuredContent !== null) return result.structuredContent;
@@ -83,8 +91,15 @@ async function call(client: Client, name: (typeof T3_LIST_TOOLS)[number], args: 
   }
 }
 
-function failure(unauthorized: boolean, message: string): T3CatalogError {
-  return unauthorized ? new T3CatalogError('T3 Code no longer accepts T3-Tab\'s sign-in.', true) : new T3CatalogError(message);
+/** What the requests of one fetch ran into. */
+interface Seen {
+  unauthorized: boolean;
+  unconfirmed: boolean;
+}
+
+function failure(seen: Seen, message: string): T3CatalogError {
+  if (seen.unconfirmed) return new T3CatalogError(new T3ConnectionError().message);
+  return seen.unauthorized ? new T3CatalogError('T3 Code no longer accepts T3-Tab\'s sign-in.', true) : new T3CatalogError(message);
 }
 
 export function parseProjectPage(value: unknown): { projects: T3Project[]; nextCursor: number | null } {

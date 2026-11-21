@@ -18,9 +18,10 @@ import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
 import { Agents } from './agents/conversations.js';
 import { T3Access } from './agents/t3-access.js';
+import { removeTemporaryCredentials } from './agents/t3-credential.js';
 import { BrowserConnection } from './browser-link.js';
-import { connectionRole, tokensMatch, isLoopbackHostHeader, type ConnectionRole } from './security.js';
-import { clearDaemonState, writeDaemonState, type DaemonState } from './state.js';
+import { connectionRole, tokensMatch, isLoopbackHostHeader, type ConnectionCredential, type ConnectionRole } from './security.js';
+import { clearDaemonState, clearExtensionState, writeDaemonState, writeExtensionState, type DaemonState } from './state.js';
 import { runTool } from './tools.js';
 
 export interface DaemonOptions {
@@ -35,7 +36,10 @@ export interface DaemonOptions {
 
 export interface DaemonHandle {
   readonly port: number;
+  /** The control token in `daemon.json`, which every MCP server reads. */
   readonly token: string;
+  /** The extension's own secret, in `extension.json`. Only the native host reads it. */
+  readonly extensionToken: string;
   readonly state: DaemonState;
   close(): Promise<void>;
 }
@@ -55,7 +59,12 @@ interface ControlState {
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   if (options.stateDir === undefined) throw new Error('A state directory is required');
   const stateDir = options.stateDir;
+  // A crash can leave a temporary copy of the T3 token. A failure here must not keep the browser tools from starting.
+  await removeTemporaryCredentials(stateDir).catch(() => {
+    process.stderr.write('T3-Tab could not remove a leftover temporary credential file from its state folder.\n');
+  });
   const token = randomBytes(32).toString('base64url');
+  const extensionToken = randomBytes(32).toString('base64url');
   const roles = new WeakMap<IncomingMessage, ConnectionRole>();
   const browsers = new Map<WebSocket, BrowserConnection>();
   const sessions = new Map<WebSocket, ToolSession>();
@@ -82,12 +91,18 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     }
 
     const url = requestUrl(request);
-    if (!tokensMatch(token, requestToken(request, url))) {
+    const presented = requestToken(request, url);
+    const credential: ConnectionCredential | undefined = tokensMatch(token, presented)
+      ? 'control'
+      : tokensMatch(extensionToken, presented)
+        ? 'extension'
+        : undefined;
+    if (credential === undefined) {
       rejectUpgrade(socket, 401, 'Unauthorized');
       return;
     }
 
-    const role = connectionRole(singleHeader(request.headers.origin));
+    const role = connectionRole(singleHeader(request.headers.origin), credential);
     if (role === undefined) {
       rejectUpgrade(socket, 403, 'Forbidden');
       return;
@@ -143,8 +158,11 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     token,
   };
   try {
+    // Written first: whoever finds this daemon in `daemon.json` can then find the extension's secret too.
+    await writeExtensionState(stateDir, { pid: process.pid, port: address.port, token: extensionToken });
     await writeDaemonState(stateDir, state);
   } catch (error) {
+    await clearExtensionState(stateDir, extensionToken);
     await closeServer(httpServer, sockets);
     throw error;
   }
@@ -153,6 +171,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   return {
     port: address.port,
     token,
+    extensionToken,
     state,
     close: async () => {
       if (closed) return;
@@ -160,6 +179,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
       agents.close();
       t3Access.close();
       await clearDaemonState(stateDir, token);
+      await clearExtensionState(stateDir, extensionToken);
       await closeServer(httpServer, sockets);
     },
   };

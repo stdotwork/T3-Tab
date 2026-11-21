@@ -45,7 +45,7 @@ run with the site still set to ask and the harness answering prompts with Allow 
 test form, checks a stale ref after navigation, evaluates page JavaScript and waits past the extension
 worker's idle timeout before another `status` call. It checks the install command through direct config
 edits, `--print`, a second install, uninstall and, when both agent CLIs are available, their CLI path and
-`mcp list` output. It then checks side-panel sessions (`e2e/panel-sessions.mjs`) with fake `t3`, `claude`
+`mcp list` output. The `daemon.json` token sent with the extension's `Origin` is refused. It then checks side-panel sessions (`e2e/panel-sessions.mjs`) with fake `t3`, `claude`
 and `codex` commands (`e2e/fakes/`) first on the daemon's PATH, which record their arguments and drive the
 real `t3-tab mcp` server: a T3 thread started with project, provider and model claims the owner's tab and
 reads it, is continued with `t3 thread send` and polled with `t3 thread show`; the sign-in to a fake T3
@@ -103,7 +103,10 @@ agents.
 
 `daemon` listens on `127.0.0.1:8765` by default. Set `T3_TAB_PORT` or pass `--port <number>` to change the
 port. Its random token is stored in `$XDG_STATE_HOME/t3-tab/daemon.json` with mode `0600`, falling back to
-`$HOME/.local/state/t3-tab/daemon.json`. `native-host` is normally started by Chromium, not by hand. `mcp`
+`$HOME/.local/state/t3-tab/daemon.json`. The extension has its own random token in `extension.json` in the same
+folder, also `0600`, which only the native host reads and hands to the extension. The daemon gives the extension
+role only to that token together with the extension's `Origin`, so the `daemon.json` token every MCP server reads
+cannot take it. `native-host` is normally started by Chromium, not by hand. `mcp`
 serves the `status`, `tabs`, `read`, `screenshot`, `act` and `run_js` tools over stdio and starts the daemon
 when needed.
 
@@ -194,17 +197,23 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
 - **Signing in to T3 for the lists.** A one-time "Sign in to T3 Code" in the panel signs the daemon in to the
   local T3 environment's `/mcp` endpoint the way T3's outside agents do (`packages/server/src/agents/t3-access.ts`):
   OAuth metadata, dynamic client registration as "T3-Tab", and the authorization code flow with PKCE (S256).
-  The address comes from `<T3 home>/userdata/server-runtime.json` (only `origin` and `pid`; its server must be
-  alive, and the address loopback or https). The extension opens T3's approval page in a normal tab; the owner
+  The address comes from `<T3 home>/userdata/server-runtime.json` (only `origin`, `pid` and `startedAt`; its server
+  must be alive, and the address a loopback `http` one). The extension opens T3's approval page in a normal tab; the owner
   approves there and picks the access level. T3 sends the answer to a one-use listener on `127.0.0.1` that
-  checks `state` and `iss` and closes after one answer. T3-Tab keeps the sign-in only when T3 granted exactly
+  checks `state` and `iss` (T3's metadata must promise `iss`, and an answer without it is refused) and closes after
+  one answer. T3-Tab keeps the sign-in only when T3 granted exactly
   `orchestration:read` (T3's "Read only"); anything broader is not stored, and the panel asks the owner to
   revoke it in T3 and sign in again. The token is stored only in `t3-credential.json` in T3-Tab's state folder
   (next to `daemon.json`, written as a new 0600 file and renamed into place), sent only to that environment's
   `/mcp` with redirects refused, and used only for `t3_project_list` and `orchestrator_capabilities`
   (`t3-catalog.ts`). It never reaches the extension, the panel, logs, error messages, agents, or a command's
-  arguments or environment. T3 issues no refresh tokens and offers a client no way to revoke itself: a
-  sign-in lasts 30 days, a refused token is deleted, and "Sign out" deletes the file and tells the owner to
+  arguments or environment. Every request to T3 opens its own connection and is sent on it only after
+  `/proc/net/tcp{,6}` and `/proc/<pid>/fd` show that the recorded pid accepted that connection and that the process
+  did not start after T3's `startedAt` (`t3-connection.ts`). Where there is no `/proc` (any platform but Linux),
+  T3-Tab sends nothing, so the sign-in and the lists are unavailable and the project and model are typed instead.
+  T3 issues no refresh tokens and offers a client no way to revoke itself: a
+  sign-in lasts 30 days, a refused token is deleted, and "Sign out" deletes the file and any temporary copy a crash left (the
+  daemon also removes those when it starts) and tells the owner to
   revoke T3-Tab in T3's Settings → Sharing & access to end it there at once. The lists are fetched on sign-in,
   when the panel opens, and on "Reload lists"; after a failure, at most once a minute. Threads still start and
   continue through `t3 thread`.

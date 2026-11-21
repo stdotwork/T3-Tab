@@ -84,8 +84,12 @@ const TOOLS = [
   { name: 't3_thread_launch', description: 'Start a thread.', annotations: { destructiveHint: true } },
 ].map((tool) => ({ ...tool, inputSchema: { type: 'object', properties: {} } }));
 
-/** Starts the fake on 127.0.0.1. `pageSize` caps a project page, to exercise paging. */
-export async function startFakeT3({ pageSize = 100 } = {}) {
+/**
+ * Starts the fake on 127.0.0.1. `pageSize` caps a project page, to exercise paging. `advertiseIss: false` leaves
+ * `authorization_response_iss_parameter_supported` out of the metadata; `callbackIss` makes the answer to the sign-in
+ * carry the right issuer, another one (`wrong`) or none (`missing`).
+ */
+export async function startFakeT3({ pageSize = 100, advertiseIss = true, callbackIss = 'right' } = {}) {
   const clients = new Set();
   const codes = new Map();
   const tokens = new Map();
@@ -126,7 +130,7 @@ export async function startFakeT3({ pageSize = 100 } = {}) {
         code_challenge_methods_supported: ['S256'],
         token_endpoint_auth_methods_supported: ['none'],
         scopes_supported: [READ, OPERATE],
-        authorization_response_iss_parameter_supported: true,
+        ...(advertiseIss ? { authorization_response_iss_parameter_supported: true } : {}),
       });
     }
     if (request.method === 'POST' && path === '/oauth/mcp/register') {
@@ -173,7 +177,7 @@ export async function startFakeT3({ pageSize = 100 } = {}) {
       const checked = validateAuthorization(authorization);
       if (checked.page !== undefined) return html(response, 400, checked.page);
       if (checked.redirect !== undefined) return redirect(response, checked.redirect);
-      if (decision === 'deny') return redirect(response, withParams(checked.redirectUri, { error: 'access_denied', state: authorization.state, iss: origin }));
+      if (decision === 'deny') return redirect(response, withParams(checked.redirectUri, { error: 'access_denied', state: authorization.state, iss: answerIssuer() }));
       if (decision !== 'read-only' && decision !== 'full-access') return html(response, 400, 'Unknown decision');
       const code = randomBytes(32).toString('base64url');
       codes.set(code, {
@@ -184,7 +188,7 @@ export async function startFakeT3({ pageSize = 100 } = {}) {
         access: decision,
         expiresAt: Date.now() + 60_000,
       });
-      return redirect(response, withParams(checked.redirectUri, { code, state: authorization.state, iss: origin }));
+      return redirect(response, withParams(checked.redirectUri, { code, state: authorization.state, iss: answerIssuer() }));
     }
     if (request.method === 'POST' && path === '/oauth/mcp/token') {
       const form = Object.fromEntries(new URLSearchParams(await readBody(request)));
@@ -242,6 +246,11 @@ export async function startFakeT3({ pageSize = 100 } = {}) {
       return await transport.handleRequest(request, response, body);
     }
     html(response, 404, 'Not found');
+  }
+
+  function answerIssuer() {
+    if (callbackIss === 'missing') return undefined;
+    return callbackIss === 'wrong' ? 'http://127.0.0.1:1' : origin;
   }
 
   function mcpServer(access) {
@@ -303,6 +312,8 @@ export async function startFakeT3({ pageSize = 100 } = {}) {
     log: () => [...log],
     /** What the owner does in T3's Settings → Sharing & access: revoke every sign-in. */
     revokeAll: () => tokens.clear(),
+    /** Accepts a token the test stored itself, as one this fake issued with read-only access. */
+    acceptToken: (token) => void tokens.set(token, 'read-only'),
     close: async () => {
       for (const transport of sessions.values()) await transport.close().catch(() => undefined);
       server.closeAllConnections();

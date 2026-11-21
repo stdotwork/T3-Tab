@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /**
@@ -19,6 +19,8 @@ export interface T3Credential {
 }
 
 export const CREDENTIAL_FILE = 't3-credential.json';
+// The name `writeCredential` gives its temporary file, and nothing looser.
+const TEMPORARY_FILE = /^t3-credential\.json\.[0-9a-f]{16}\.tmp$/;
 
 export function credentialPath(stateDir: string): string {
   return join(stateDir, CREDENTIAL_FILE);
@@ -67,6 +69,29 @@ export async function deleteCredential(stateDir: string): Promise<void> {
   await unlink(credentialPath(stateDir)).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== 'ENOENT') throw error;
   });
+}
+
+/**
+ * Removes temporary files a crash left between writing and renaming: each can hold a copy of the token. Only regular
+ * files directly in the state folder with exactly `writeCredential`'s temporary name are touched.
+ */
+export async function removeTemporaryCredentials(stateDir: string): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(stateDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  for (const name of names) {
+    if (!TEMPORARY_FILE.test(name)) continue;
+    const path = join(stateDir, name);
+    try {
+      if ((await lstat(path)).isFile()) await unlink(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
 }
 
 function isCredential(value: unknown): value is T3Credential {

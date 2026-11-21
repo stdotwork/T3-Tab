@@ -11,6 +11,13 @@ export interface DaemonState {
   token: string;
 }
 
+/** The extension's secret and the daemon it belongs to. Only the native host reads this file, to hand it to the extension. */
+export interface ExtensionState {
+  pid: number;
+  port: number;
+  token: string;
+}
+
 export function stateDirectory(env: NodeJS.ProcessEnv = process.env): string {
   const xdgStateHome = env.XDG_STATE_HOME?.trim();
   if (xdgStateHome !== undefined && xdgStateHome !== '') return join(xdgStateHome, 't3-tab');
@@ -33,11 +40,40 @@ export async function readDaemonState(directory: string): Promise<DaemonState | 
 }
 
 export async function writeDaemonState(directory: string, state: DaemonState): Promise<void> {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const target = daemonStatePath(directory);
-  const temporary = `${target}.${state.pid}.tmp`;
+  await writePrivateJson(directory, daemonStatePath(directory), state.pid, state);
+}
+
+export function extensionStatePath(directory: string): string {
+  return join(directory, 'extension.json');
+}
+
+export async function readExtensionState(directory: string): Promise<ExtensionState | null> {
   try {
-    await writeFile(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+    const parsed = JSON.parse(await readFile(extensionStatePath(directory), 'utf8')) as Partial<ExtensionState> | null;
+    return typeof parsed?.pid === 'number' && typeof parsed.port === 'number' && typeof parsed.token === 'string'
+      ? { pid: parsed.pid, port: parsed.port, token: parsed.token }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function writeExtensionState(directory: string, state: ExtensionState): Promise<void> {
+  await writePrivateJson(directory, extensionStatePath(directory), state.pid, state);
+}
+
+export async function clearExtensionState(directory: string, token: string): Promise<void> {
+  const state = await readExtensionState(directory);
+  if (state?.token === token) {
+    await unlink(extensionStatePath(directory)).catch(() => undefined);
+  }
+}
+
+async function writePrivateJson(directory: string, target: string, pid: number, value: unknown): Promise<void> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = `${target}.${pid}.tmp`;
+  try {
+    await writeFile(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600 });
     await chmod(temporary, 0o600);
     await rename(temporary, target);
     await chmod(target, 0o600);

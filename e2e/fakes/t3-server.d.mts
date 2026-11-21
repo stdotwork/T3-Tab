@@ -4,12 +4,13 @@ export interface FakeT3 {
   issued(): string[];
   log(): Array<{ method?: string; path?: string; bearer?: string; tool?: string; args?: Record<string, unknown> }>;
   revokeAll(): void;
+  acceptToken(token: string): void;
   close(): Promise<void>;
 }
 
 export const FAKE_PROJECTS: Array<Record<string, unknown>>;
 export const FAKE_CAPABILITIES: Record<string, unknown>;
-export function startFakeT3(options?: { pageSize?: number }): Promise<FakeT3>;
+export function startFakeT3(options?: { pageSize?: number; advertiseIss?: boolean; callbackIss?: 'right' | 'wrong' | 'missing' }): Promise<FakeT3>;
 export function approveInBrowser(
   authorizeUrl: string,
   decision: 'read-only' | 'full-access' | 'deny',

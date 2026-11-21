@@ -4,7 +4,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { T3Access as T3AccessView, T3Catalog } from '@t3-tab/protocol';
 
 import { fetchCatalog, T3CatalogError } from './t3-catalog.js';
-import { deleteCredential, readCredential, writeCredential, type T3Credential } from './t3-credential.js';
+import { T3ConnectionError } from './t3-connection.js';
+import { deleteCredential, readCredential, removeTemporaryCredentials, writeCredential, type T3Credential } from './t3-credential.js';
 import { findT3Environment, type T3Environment } from './t3-environment.js';
 
 /** The one scope T3 grants a client approved for "Read only" (`mcpClientScopes('read-only')` in T3 Code). */
@@ -106,7 +107,7 @@ export class T3Access {
       return { ...view, detail: `T3 Code now runs at ${environment.origin}, not where T3-Tab signed in. Sign out, then sign in again.` };
     }
     try {
-      const value = await fetchCatalog(credential.resource, credential.accessToken);
+      const value = await fetchCatalog(credential.resource, credential.accessToken, environment.fetch);
       this.catalog = { resource: credential.resource, value };
       this.detail = undefined;
       return { ...view, catalog: value };
@@ -144,7 +145,7 @@ export class T3Access {
       const redirectUri = `http://127.0.0.1:${address.port}/callback`;
       let clientId: string;
       try {
-        clientId = await register(metadata, redirectUri);
+        clientId = await register(environment, metadata, redirectUri);
       } catch (error) {
         server.close();
         throw error;
@@ -175,7 +176,7 @@ export class T3Access {
       url.searchParams.set('resource', environment.resource);
       return { url: url.toString() };
     } catch (error) {
-      throw new Error(error instanceof SignInError ? error.message : `T3 Code at ${environment.origin} did not answer the sign-in.`);
+      throw new Error(isSafeError(error) ? error.message : `T3 Code at ${environment.origin} did not answer the sign-in.`);
     }
   }
 
@@ -187,6 +188,7 @@ export class T3Access {
     this.cancel();
     const had = (await readCredential(this.options.stateDir)) !== undefined;
     await deleteCredential(this.options.stateDir);
+    await removeTemporaryCredentials(this.options.stateDir);
     this.catalog = undefined;
     this.detail = had
       ? 'Signed out: T3-Tab deleted its T3 sign-in. To end it in T3 Code now, revoke T3-Tab in Settings → Sharing & access; otherwise it ends on its own within 30 days.'
@@ -231,10 +233,10 @@ export class T3Access {
       page(response, 400, 'This sign-in answer is not for the sign-in T3-Tab started. Start it again from the T3-Tab side panel.');
       return;
     }
-    const issuer = url.searchParams.get('iss');
-    if (issuer !== null && issuer !== pending.metadata.issuer) {
-      page(response, 400, 'The sign-in answer came from another server. T3-Tab ignored it.');
-      this.finish(pending, 'The sign-in answer came from another server, so T3-Tab ignored it. Sign in again.');
+    // Discovery required T3 to promise `iss` (RFC 9207), so an answer without it is refused like one from another server.
+    if (url.searchParams.get('iss') !== pending.metadata.issuer) {
+      page(response, 400, 'The sign-in answer did not come from this T3 Code. T3-Tab ignored it.');
+      this.finish(pending, 'The sign-in answer did not come from this T3 Code, so T3-Tab ignored it. Sign in again.');
       return;
     }
     const code = url.searchParams.get('code');
@@ -257,7 +259,7 @@ export class T3Access {
         this.catalog = undefined;
       }
     } catch (error) {
-      detail = error instanceof SignInError ? error.message : 'T3 Code did not complete the sign-in. Sign in again.';
+      detail = isSafeError(error) ? error.message : 'T3 Code did not complete the sign-in. Sign in again.';
     }
     page(response, detail === undefined ? 200 : 400, detail === undefined ? 'Signed in to T3 Code with read-only access. You can close this tab.' : detail);
     this.finish(pending, detail);
@@ -266,12 +268,12 @@ export class T3Access {
 
 /** Reads T3's OAuth metadata (RFC 9728, RFC 8414) and accepts only endpoints on the environment's own address. */
 async function discover(environment: T3Environment): Promise<Metadata> {
-  const resource = await getJson(`${environment.origin}/.well-known/oauth-protected-resource/mcp`);
+  const resource = await getJson(environment, `${environment.origin}/.well-known/oauth-protected-resource/mcp`);
   const servers = Array.isArray(resource.authorization_servers) ? resource.authorization_servers : [];
   if (resource.resource !== environment.resource || servers[0] !== environment.origin) {
     throw new SignInError(`T3 Code at ${environment.origin} described a sign-in T3-Tab does not use.`);
   }
-  const server = await getJson(`${environment.origin}/.well-known/oauth-authorization-server`);
+  const server = await getJson(environment, `${environment.origin}/.well-known/oauth-authorization-server`);
   const endpoints = [server.authorization_endpoint, server.token_endpoint, server.registration_endpoint];
   const methods = Array.isArray(server.code_challenge_methods_supported) ? server.code_challenge_methods_supported : [];
   const sameOrigin = (value: unknown): value is string => {
@@ -282,7 +284,12 @@ async function discover(environment: T3Environment): Promise<Metadata> {
       return false;
     }
   };
-  if (server.issuer !== environment.origin || !endpoints.every(sameOrigin) || !methods.includes('S256')) {
+  if (
+    server.issuer !== environment.origin ||
+    !endpoints.every(sameOrigin) ||
+    !methods.includes('S256') ||
+    server.authorization_response_iss_parameter_supported !== true
+  ) {
     throw new SignInError(`T3 Code at ${environment.origin} described a sign-in T3-Tab does not use.`);
   }
   return {
@@ -294,12 +301,11 @@ async function discover(environment: T3Environment): Promise<Metadata> {
 }
 
 /** Dynamic client registration (RFC 7591): T3 signs the client id; nothing secret comes back. */
-async function register(metadata: Metadata, redirectUri: string): Promise<string> {
-  const response = await fetch(metadata.registrationEndpoint, {
+async function register(environment: T3Environment, metadata: Metadata, redirectUri: string): Promise<string> {
+  const response = await environment.fetch(metadata.registrationEndpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify({ client_name: CLIENT_NAME, redirect_uris: [redirectUri], token_endpoint_auth_method: 'none' }),
-    redirect: 'error',
     signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
   });
   const body = await response.json().catch(() => undefined);
@@ -312,7 +318,7 @@ async function register(metadata: Metadata, redirectUri: string): Promise<string
 
 /** Trades the code for a token with the PKCE verifier, and keeps it only when T3 granted exactly read-only access. */
 async function exchange(pending: PendingSignIn, code: string): Promise<T3Credential> {
-  const response = await fetch(pending.metadata.tokenEndpoint, {
+  const response = await pending.environment.fetch(pending.metadata.tokenEndpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
     body: new URLSearchParams({
@@ -323,10 +329,9 @@ async function exchange(pending: PendingSignIn, code: string): Promise<T3Credent
       code_verifier: pending.verifier,
       resource: pending.environment.resource,
     }).toString(),
-    redirect: 'error',
     signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-  }).catch(() => {
-    throw new SignInError('T3 Code did not answer while finishing the sign-in. Sign in again.');
+  }).catch((error: unknown) => {
+    throw error instanceof T3ConnectionError ? error : new SignInError('T3 Code did not answer while finishing the sign-in. Sign in again.');
   });
   const body: unknown = await response.json().catch(() => undefined);
   const token = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
@@ -359,13 +364,18 @@ async function exchange(pending: PendingSignIn, code: string): Promise<T3Credent
   };
 }
 
-async function getJson(url: string): Promise<Record<string, unknown>> {
-  const response = await fetch(url, { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+async function getJson(environment: T3Environment, url: string): Promise<Record<string, unknown>> {
+  const response = await environment.fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
   const body: unknown = response.ok ? await response.json().catch(() => undefined) : undefined;
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     throw new SignInError(`T3 Code at ${new URL(url).origin} does not offer a sign-in for outside agents. Update T3 Code.`);
   }
   return body as Record<string, unknown>;
+}
+
+/** Errors whose fixed messages may be shown to the owner. */
+function isSafeError(error: unknown): error is Error {
+  return error instanceof SignInError || error instanceof T3ConnectionError;
 }
 
 function sameSecret(presented: string | null, expected: string): boolean {

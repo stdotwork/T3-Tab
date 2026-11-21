@@ -1,4 +1,7 @@
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { createServer } from 'node:http';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,8 +12,9 @@ import WebSocket from 'ws';
 import { approveInBrowser, startFakeT3, type FakeT3 } from '../../../e2e/fakes/t3-server.mjs';
 import { Agents } from '../src/agents/conversations.js';
 import { T3Access } from '../src/agents/t3-access.js';
+import { confirmedFetch } from '../src/agents/t3-connection.js';
 import { credentialPath, readCredential, writeCredential } from '../src/agents/t3-credential.js';
-import { findT3Environment } from '../src/agents/t3-environment.js';
+import { findT3Environment, t3EnvironmentAt, type T3Environment } from '../src/agents/t3-environment.js';
 import { startDaemon, type DaemonHandle } from '../src/index.js';
 
 const fakes: FakeT3[] = [];
@@ -35,14 +39,19 @@ async function temporary(): Promise<string> {
   return directory;
 }
 
-async function setup(options: { pageSize?: number } = {}): Promise<{ fake: FakeT3; access: T3Access; stateDir: string }> {
+/** The fake runs in this process, so the real ownership check passes for it. */
+function localT3(origin: string): T3Environment {
+  return t3EnvironmentAt(origin, { pid: process.pid, startedAt: Date.now() });
+}
+
+async function setup(options: Parameters<typeof startFakeT3>[0] = {}): Promise<{ fake: FakeT3; access: T3Access; stateDir: string }> {
   const fake = await startFakeT3(options);
   fakes.push(fake);
   const stateDir = await temporary();
   const access = new T3Access({
     env: {},
     stateDir,
-    findEnvironment: async () => ({ origin: fake.origin, resource: `${fake.origin}/mcp` }),
+    findEnvironment: async () => localT3(fake.origin),
   });
   accesses.push(access);
   return { fake, access, stateDir };
@@ -182,7 +191,7 @@ describe('T3 sign-in', () => {
     const moved = await startFakeT3();
     fakes.push(moved);
     let current = fake.origin;
-    const access = new T3Access({ env: {}, stateDir, findEnvironment: async () => ({ origin: current, resource: `${current}/mcp` }) });
+    const access = new T3Access({ env: {}, stateDir, findEnvironment: async () => localT3(current) });
     accesses.push(access);
     await approveInBrowser((await access.signIn()).url, 'read-only');
     current = moved.origin;
@@ -221,12 +230,12 @@ describe('finding the local T3 environment', () => {
   async function runtime(state: Record<string, unknown>): Promise<NodeJS.ProcessEnv> {
     const home = await temporary();
     await mkdir(join(home, 'userdata'), { recursive: true });
-    await writeFile(join(home, 'userdata', 'server-runtime.json'), JSON.stringify({ version: 1, port: 3773, startedAt: 'x', ...state }));
+    await writeFile(join(home, 'userdata', 'server-runtime.json'), JSON.stringify({ version: 1, port: 3773, startedAt: new Date().toISOString(), ...state }));
     return { T3CODE_HOME: home };
   }
 
   it('reads the origin of a running server', async () => {
-    expect(await findT3Environment(await runtime({ pid: process.pid, origin: 'http://127.0.0.1:3773' }))).toEqual({
+    expect(await findT3Environment(await runtime({ pid: process.pid, origin: 'http://127.0.0.1:3773' }))).toMatchObject({
       origin: 'http://127.0.0.1:3773',
       resource: 'http://127.0.0.1:3773/mcp',
     });
@@ -236,7 +245,13 @@ describe('finding the local T3 environment', () => {
     expect(await findT3Environment(await runtime({ pid: 2 ** 22 + 7, origin: 'http://127.0.0.1:3773' }))).toEqual({ problem: 'T3 Code is not running.' });
     expect(await findT3Environment({ T3CODE_HOME: await temporary() })).toEqual({ problem: 'T3 Code is not running.' });
     expect(await findT3Environment(await runtime({ pid: process.pid, origin: 'http://192.168.1.5:3773' }))).toEqual({
-      problem: 'T3 Code listens on http://192.168.1.5:3773; T3-Tab signs in only over localhost or https.',
+      problem: "T3 Code listens on http://192.168.1.5:3773; T3-Tab signs in only to a T3 Code on this computer's loopback address.",
+    });
+    expect(await findT3Environment(await runtime({ pid: process.pid, origin: 'https://t3.example.test' }))).toEqual({
+      problem: "T3 Code listens on https://t3.example.test; T3-Tab signs in only to a T3 Code on this computer's loopback address.",
+    });
+    expect(await findT3Environment(await runtime({ pid: process.pid, origin: 'http://127.0.0.1:3773', startedAt: 'not a time' }))).toEqual({
+      problem: 'T3 Code is not running.',
     });
   });
 });
@@ -246,7 +261,7 @@ describe('the daemon and the T3 credential', () => {
     const fake = await startFakeT3();
     fakes.push(fake);
     const stateDir = await temporary();
-    const t3Access = new T3Access({ env: {}, stateDir, findEnvironment: async () => ({ origin: fake.origin, resource: `${fake.origin}/mcp` }) });
+    const t3Access = new T3Access({ env: {}, stateDir, findEnvironment: async () => localT3(fake.origin) });
     const output: string[] = [];
     const capture = (stream: NodeJS.WriteStream) =>
       vi.spyOn(stream, 'write').mockImplementation((chunk: string | Uint8Array) => {
@@ -260,7 +275,7 @@ describe('the daemon and the T3 credential', () => {
     }
     const agents = new Agents({ env: { PATH: '' }, server: { command: 'node', args: [] } });
     daemon = await startDaemon({ port: 0, stateDir, agents, t3Access });
-    const socket = new WebSocket(`ws://127.0.0.1:${daemon.port}/`, { headers: { authorization: `Bearer ${daemon.token}`, origin: EXTENSION_ORIGIN } });
+    const socket = new WebSocket(`ws://127.0.0.1:${daemon.port}/`, { headers: { authorization: `Bearer ${daemon.extensionToken}`, origin: EXTENSION_ORIGIN } });
     sockets.push(socket);
     await new Promise<void>((resolve, reject) => {
       socket.once('open', () => resolve());
@@ -299,7 +314,285 @@ describe('the daemon and the T3 credential', () => {
     expect(replies.join('\n')).not.toContain(token);
     expect(output.join('\n')).not.toContain(token);
     // Only `t3-credential.json` ever held it; `daemon.json` never does.
-    const { readFile } = await import('node:fs/promises');
     expect(await readFile(join(stateDir, 'daemon.json'), 'utf8')).not.toContain(token);
+  });
+});
+
+/** A server in another process, standing where T3 was recorded. It answers 401 and lists what it was sent at /__seen. */
+const impostors: ChildProcess[] = [];
+afterEach(() => {
+  for (const child of impostors.splice(0)) child.kill('SIGKILL');
+});
+
+async function startImpostor(): Promise<{ port: number; seen(): Promise<Array<{ path: string; authorization: string | null }>> }> {
+  const script = `
+    const seen = [];
+    const server = require('node:http').createServer((request, response) => {
+      if (request.url === '/__seen') { response.end(JSON.stringify(seen)); return; }
+      seen.push({ path: request.url, authorization: request.headers.authorization ?? null });
+      request.resume();
+      response.writeHead(401, { 'content-type': 'application/json' });
+      response.end('{}');
+    });
+    server.listen(0, '127.0.0.1', () => process.stdout.write(String(server.address().port) + '\\n'));
+  `;
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] });
+  impostors.push(child);
+  const port = await new Promise<number>((resolve, reject) => {
+    child.stdout?.once('data', (chunk: Buffer) => resolve(Number(chunk.toString().trim())));
+    child.once('error', reject);
+  });
+  return {
+    port,
+    seen: async () => (await (await fetch(`http://127.0.0.1:${port}/__seen`)).json()) as Array<{ path: string; authorization: string | null }>,
+  };
+}
+
+async function recordedT3(origin: string, pid: number, startedAt: string): Promise<NodeJS.ProcessEnv> {
+  const home = await temporary();
+  await mkdir(join(home, 'userdata'), { recursive: true });
+  await writeFile(join(home, 'userdata', 'server-runtime.json'), JSON.stringify({ version: 1, pid, port: Number(new URL(origin).port), origin, startedAt }));
+  return { T3CODE_HOME: home };
+}
+
+async function storedCredential(stateDir: string, origin: string): Promise<string> {
+  const accessToken = randomBytes(32).toString('base64url');
+  await writeCredential(stateDir, {
+    version: 1,
+    environment: origin,
+    resource: `${origin}/mcp`,
+    clientId: 'client',
+    accessToken,
+    scope: 'orchestration:read',
+    expiresAt: Date.now() + 60_000,
+  });
+  return accessToken;
+}
+
+describe('sending the credential only to the process T3 recorded', () => {
+  it('sends nothing when the recorded pid is alive but another process owns the port', async () => {
+    const impostor = await startImpostor();
+    const origin = `http://127.0.0.1:${impostor.port}`;
+    const stateDir = await temporary();
+    await storedCredential(stateDir, origin);
+    const access = new T3Access({ env: await recordedT3(origin, process.pid, new Date().toISOString()), stateDir });
+    accesses.push(access);
+
+    const view = await access.view(true);
+
+    expect(await impostor.seen()).toEqual([]);
+    expect(view.state).toBe('signed-in');
+    expect(view.detail).toContain('could not confirm');
+    expect(await readCredential(stateDir)).toBeDefined();
+  });
+
+  it('starts no sign-in with a server the recorded pid does not own', async () => {
+    const impostor = await startImpostor();
+    const origin = `http://127.0.0.1:${impostor.port}`;
+    const access = new T3Access({ env: await recordedT3(origin, process.pid, new Date().toISOString()), stateDir: await temporary() });
+    accesses.push(access);
+
+    await expect(access.signIn()).rejects.toThrow('could not confirm');
+    expect(await impostor.seen()).toEqual([]);
+  });
+
+  it('sends nothing when the recorded pid belongs to a process started after T3 recorded it', async () => {
+    const fake = await startFakeT3();
+    fakes.push(fake);
+    const stateDir = await temporary();
+    const token = await storedCredential(stateDir, fake.origin);
+    const beforeThisProcess = new Date(Date.now() - process.uptime() * 1_000 - 3_600_000).toISOString();
+    const access = new T3Access({ env: await recordedT3(fake.origin, process.pid, beforeThisProcess), stateDir });
+    accesses.push(access);
+
+    const view = await access.view(true);
+
+    expect(fake.log().filter((entry) => entry.bearer === token)).toEqual([]);
+    expect(view.detail).toContain('could not confirm');
+  });
+
+  it('sends the token when the recorded process owns the port', async () => {
+    const fake = await startFakeT3();
+    fakes.push(fake);
+    const stateDir = await temporary();
+    const token = await storedCredential(stateDir, fake.origin);
+    fake.acceptToken(token);
+    const access = new T3Access({ env: await recordedT3(fake.origin, process.pid, new Date().toISOString()), stateDir });
+    accesses.push(access);
+
+    const view = await access.view(true);
+
+    expect(view.catalog?.projects.map((project) => project.id)).toEqual(['proj-demo', 'proj-docs', 'proj-api']);
+    expect(fake.log().some((entry) => entry.path === '/mcp' && entry.bearer === token)).toBe(true);
+  });
+});
+
+describe('the checked connection to T3', () => {
+  async function listening(host: string, handler: Parameters<typeof createServer>[1]): Promise<{ port: number; close(): Promise<void> }> {
+    const server = createServer(handler);
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, host, () => resolve());
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('The test server has no TCP address');
+    return {
+      port: address.port,
+      close: async () => {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      },
+    };
+  }
+
+  // T3 with no host set listens on every address and records 127.0.0.1, so its side of the connection is IPv4-mapped.
+  it.each([
+    ['every address, reached over 127.0.0.1', '::', 'http://127.0.0.1'],
+    ['the IPv6 loopback address', '::1', 'http://[::1]'],
+    ['127.0.0.1, reached as localhost', '127.0.0.1', 'http://localhost'],
+  ])('accepts this process listening on %s', async (_name, host, base) => {
+    const server = await listening(host, (_request, response) => response.end('answered'));
+    try {
+      const origin = `${base}:${server.port}`;
+      const response = await confirmedFetch(origin, { pid: process.pid, startedAt: Date.now() })(`${origin}/check`);
+      expect(await response.text()).toBe('answered');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('refuses a redirect and another origin', async () => {
+    let requests = 0;
+    const elsewhere = await listening('127.0.0.1', (_request, response) => {
+      requests += 1;
+      response.end('followed');
+    });
+    const server = await listening('127.0.0.1', (_request, response) => {
+      response.writeHead(302, { location: `http://127.0.0.1:${elsewhere.port}/stolen` });
+      response.end();
+    });
+    try {
+      const origin = `http://127.0.0.1:${server.port}`;
+      const send = confirmedFetch(origin, { pid: process.pid, startedAt: Date.now() });
+      await expect(send(`${origin}/mcp`, { headers: { authorization: 'Bearer generated-at-runtime' } })).rejects.toThrow('redirect');
+      await expect(send(`http://127.0.0.1:${elsewhere.port}/mcp`)).rejects.toThrow('could not confirm');
+      expect(requests).toBe(0);
+    } finally {
+      await server.close();
+      await elsewhere.close();
+    }
+  });
+});
+
+describe('leftover temporary credential files', () => {
+  const leftover = 't3-credential.json.0123456789abcdef.tmp';
+
+  async function seeded(): Promise<{ stateDir: string; outside: string }> {
+    const stateDir = await temporary();
+    const outside = join(await temporary(), 'outside');
+    await writeFile(outside, 'keep me');
+    await writeFile(join(stateDir, leftover), '{"accessToken":"left-behind"}', { mode: 0o600 });
+    await writeFile(join(stateDir, 't3-credential.json.notes.tmp'), 'not ours');
+    await writeFile(join(stateDir, `${leftover}.bak`), 'not ours');
+    await mkdir(join(stateDir, 't3-credential.json.1111111111111111.tmp'));
+    await symlink(outside, join(stateDir, 't3-credential.json.2222222222222222.tmp'));
+    return { stateDir, outside };
+  }
+
+  async function expectOnlyLeftoverGone(stateDir: string, outside: string): Promise<void> {
+    await expect(lstat(join(stateDir, leftover))).rejects.toThrow();
+    expect(await readFile(join(stateDir, 't3-credential.json.notes.tmp'), 'utf8')).toBe('not ours');
+    expect(await readFile(join(stateDir, `${leftover}.bak`), 'utf8')).toBe('not ours');
+    expect((await lstat(join(stateDir, 't3-credential.json.1111111111111111.tmp'))).isDirectory()).toBe(true);
+    expect((await lstat(join(stateDir, 't3-credential.json.2222222222222222.tmp'))).isSymbolicLink()).toBe(true);
+    expect(await readFile(outside, 'utf8')).toBe('keep me');
+  }
+
+  it('removes them on sign-out, and nothing else', async () => {
+    const { stateDir, outside } = await seeded();
+    const access = new T3Access({ env: {}, stateDir, findEnvironment: async () => ({ problem: 'T3 Code is not running.' }) });
+    accesses.push(access);
+    await access.signOut();
+    await expectOnlyLeftoverGone(stateDir, outside);
+  });
+
+  it('removes them when the daemon starts, and nothing else', async () => {
+    const { stateDir, outside } = await seeded();
+    const agents = new Agents({ env: { PATH: '' }, server: { command: 'node', args: [] } });
+    daemon = await startDaemon({ port: 0, stateDir, agents });
+    await expectOnlyLeftoverGone(stateDir, outside);
+  });
+});
+
+describe('the issuer on the sign-in answer', () => {
+  it('refuses an answer without iss and keeps nothing', async () => {
+    const { fake, access, stateDir } = await setup({ callbackIss: 'missing' });
+    const landed = await approveInBrowser((await access.signIn()).url, 'read-only');
+    expect(landed.status).toBe(400);
+    expect(fake.issued()).toEqual([]);
+    await expect(stat(credentialPath(stateDir))).rejects.toThrow();
+  });
+
+  it('refuses an answer with another issuer and keeps nothing', async () => {
+    const { fake, access, stateDir } = await setup({ callbackIss: 'wrong' });
+    const landed = await approveInBrowser((await access.signIn()).url, 'read-only');
+    expect(landed.status).toBe(400);
+    expect(fake.issued()).toEqual([]);
+    await expect(stat(credentialPath(stateDir))).rejects.toThrow();
+  });
+
+  it('starts no sign-in with a server that does not promise iss', async () => {
+    const { access } = await setup({ advertiseIss: false });
+    await expect(access.signIn()).rejects.toThrow('described a sign-in T3-Tab does not use');
+  });
+});
+
+describe('the extension role', () => {
+  it('is refused to the daemon token, even with the extension Origin', async () => {
+    const stateDir = await temporary();
+    const t3Access = new T3Access({ env: {}, stateDir, findEnvironment: async () => ({ problem: 'T3 Code is not running.' }) });
+    accesses.push(t3Access);
+    const calls = [vi.spyOn(t3Access, 'view'), vi.spyOn(t3Access, 'signIn'), vi.spyOn(t3Access, 'signOut')];
+    const agents = new Agents({ env: { PATH: '' }, server: { command: 'node', args: [] } });
+    daemon = await startDaemon({ port: 0, stateDir, agents, t3Access });
+
+    const socket = new WebSocket(`ws://127.0.0.1:${daemon.port}/`, { headers: { authorization: `Bearer ${daemon.token}`, origin: EXTENSION_ORIGIN } });
+    sockets.push(socket);
+    const opened = await new Promise<boolean>((resolve) => {
+      socket.once('open', () => resolve(true));
+      socket.once('error', () => resolve(false));
+    });
+    if (opened) {
+      for (const method of ['t3.access', 't3.signIn', 't3.signOut']) {
+        const reply = new Promise((resolve) => socket.once('message', resolve));
+        socket.send(JSON.stringify({ type: 'browser.daemonRequest', protocolVersion: PROTOCOL_VERSION, requestId: method, method, params: {} }));
+        await reply;
+      }
+    }
+
+    expect(opened).toBe(false);
+    for (const call of calls) expect(call).not.toHaveBeenCalled();
+  });
+
+  it('needs the extension secret and the extension Origin together, and keeps the secret out of daemon.json', async () => {
+    const stateDir = await temporary();
+    const agents = new Agents({ env: { PATH: '' }, server: { command: 'node', args: [] } });
+    daemon = await startDaemon({ port: 0, stateDir, agents });
+    const opens = async (token: string, origin?: string): Promise<boolean> => {
+      const socket = new WebSocket(`ws://127.0.0.1:${daemon?.port}/`, { headers: { authorization: `Bearer ${token}`, ...(origin === undefined ? {} : { origin }) } });
+      sockets.push(socket);
+      return await new Promise<boolean>((resolve) => {
+        socket.once('open', () => resolve(true));
+        socket.once('error', () => resolve(false));
+      });
+    };
+
+    expect(await opens(daemon.extensionToken, EXTENSION_ORIGIN)).toBe(true);
+    expect(await opens(daemon.extensionToken)).toBe(false);
+    expect(await opens(daemon.extensionToken, 'https://example.com')).toBe(false);
+    expect(await opens(daemon.token)).toBe(true);
+    expect(await readFile(join(stateDir, 'daemon.json'), 'utf8')).not.toContain(daemon.extensionToken);
+    expect((await stat(join(stateDir, 'extension.json'))).mode & 0o777).toBe(0o600);
+    expect(await readFile(join(stateDir, 'extension.json'), 'utf8')).toContain(daemon.extensionToken);
   });
 });
