@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { BrowserStatus, ToolContent, ToolMethod } from '@t3-tab/protocol';
 
+import { claimFileNotice, takeClaimFile } from './agents/claim-file.js';
 import { DaemonSession, getStatus } from './client.js';
 import { actShape, readShape, runJsShape, screenshotShape, tabsShape } from './tool-schemas.js';
 
@@ -14,10 +15,23 @@ function withoutExecution<T extends { execution?: unknown }>(tool: T): T {
   return tool;
 }
 
-export async function runMcpServer(): Promise<void> {
+export async function runMcpServer(options: { claimFile?: string } = {}): Promise<void> {
   const server = new McpServer({ name: 't3-tab', version: '0.1.0' });
+  // A direct run from the side panel names a private file with its claim code; it is read once and deleted.
+  const taken = options.claimFile === undefined ? undefined : await takeClaimFile(options.claimFile);
+  const claim = taken !== undefined && 'code' in taken ? taken.code : undefined;
+  const problem =
+    options.claimFile !== undefined && taken !== undefined && 'problem' in taken ? { file: options.claimFile, problem: taken.problem } : undefined;
   // This process is one agent's session and owns its tabs and read baselines.
-  const control = new DaemonSession();
+  const control = new DaemonSession(process.env, claim, problem);
+  // The agent was meant to have the owner's tabs and does not: its first browser tool reply says so.
+  let notice = problem === undefined ? undefined : claimFileNotice(problem.problem);
+  const takeNotice = (): ToolContent[] => {
+    if (notice === undefined) return [];
+    const content: ToolContent[] = [{ type: 'text', text: notice }];
+    notice = undefined;
+    return content;
+  };
 
   withoutExecution(
     server.registerTool('status', { description: 'Show connected browsers and their tab counts.' }, async () => {
@@ -30,10 +44,12 @@ export async function runMcpServer(): Promise<void> {
   );
 
   const browserTool = (method: ToolMethod) => async (params: Record<string, unknown>) => {
+    const before = takeNotice();
     try {
-      return { content: await control.callTool(method, params) satisfies ToolContent[] };
+      return { content: [...before, ...(await control.callTool(method, params))] satisfies ToolContent[] };
     } catch (error) {
-      return failure(error);
+      const failed = failure(error);
+      return { ...failed, content: [...before, ...failed.content] };
     }
   };
 

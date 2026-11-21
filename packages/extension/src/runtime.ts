@@ -1,8 +1,10 @@
+import { ClaimStore } from './claims';
 import { ChromeSitePermissionStore, PermissionPrompts, type PermissionPrompt } from './permissions';
 import { SessionStore } from './sessions';
 
 export const sessionStore = new SessionStore();
 export const siteStore = new ChromeSitePermissionStore();
+export const claimStore = new ClaimStore();
 
 const DEFAULT_PERMISSION_TIMEOUT_MS = 60_000;
 

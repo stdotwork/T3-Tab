@@ -1,18 +1,25 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_DAEMON_PORT,
+  PROTOCOL_MISMATCH,
   PROTOCOL_VERSION,
+  type BrowserDaemonRequestMessage,
   type BrowserMessage,
   type BrowserPongMessage,
+  type ClaimFileProblem,
   type ControlResponse,
+  type DaemonReplyMessage,
   type ToolMethod,
   type ToolSession,
 } from '@t3-tab/protocol';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
+import { CLAIM_CODE, CLAIM_FILE_PROBLEMS } from './agents/claim-file.js';
+import { Agents } from './agents/conversations.js';
 import { BrowserConnection } from './browser-link.js';
 import { connectionRole, tokensMatch, isLoopbackHostHeader, type ConnectionRole } from './security.js';
 import { clearDaemonState, writeDaemonState, type DaemonState } from './state.js';
@@ -22,6 +29,8 @@ export interface DaemonOptions {
   /** A port the caller asked for. When omitted, the default port is tried first, then any free loopback port. */
   port?: number | undefined;
   stateDir?: string;
+  /** The side panel's agent runs; tests pass their own. */
+  agents?: Agents;
 }
 
 export interface DaemonHandle {
@@ -35,6 +44,17 @@ const MAX_CONTROL_MESSAGE_BYTES = 1_024_000;
 // A page's accessibility tree and a screenshot come back from the browser in one message.
 const MAX_BROWSER_MESSAGE_BYTES = 16 * 1_024 * 1_024;
 const TOOL_METHODS: ReadonlySet<string> = new Set<ToolMethod>(['tabs', 'read', 'screenshot', 'act', 'run_js']);
+// The browser's answer for a code it will never honour, as opposed to a moment it could not answer.
+const CLAIM_REFUSED = /^Unknown claim code/;
+const MAX_CLAIM_FILE_PATH = 4_096;
+
+/** What the daemon holds for one control connection: its session, and a claim code it registered with. */
+interface ControlState {
+  sessions: Map<WebSocket, ToolSession>;
+  claims: Map<WebSocket, string>;
+  /** The redemption running for a connection, so simultaneous first tool calls share it. */
+  redeeming: Map<WebSocket, Promise<void>>;
+}
 
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   if (options.stateDir === undefined) throw new Error('A state directory is required');
@@ -43,6 +63,14 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const roles = new WeakMap<IncomingMessage, ConnectionRole>();
   const browsers = new Map<WebSocket, BrowserConnection>();
   const sessions = new Map<WebSocket, ToolSession>();
+  const control: ControlState = { sessions, claims: new Map(), redeeming: new Map() };
+  const agents =
+    options.agents ??
+    new Agents({
+      env: process.env,
+      stateDir,
+      server: { command: process.execPath, args: [fileURLToPath(new URL('./cli.js', import.meta.url)), 'mcp'] },
+    });
   const httpServer = createServer((request, response) => handleHttpRequest(request, response, token));
   const sockets = {
     extension: new WebSocketServer({ noServer: true, maxPayload: MAX_BROWSER_MESSAGE_BYTES }),
@@ -84,14 +112,15 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     }
 
     webSocket.on('message', (data) => {
-      if (role === 'extension') handleBrowserMessage(webSocket, browsers, data);
-      else if (role === 'control') handleControlMessage(webSocket, browsers, sessions, data);
+      if (role === 'extension') handleBrowserMessage(webSocket, browsers, agents, data);
+      else if (role === 'control') handleControlMessage(webSocket, browsers, control, agents, data);
     });
     const forget = (): void => {
       browsers.delete(webSocket);
       connection?.close();
       const session = sessions.get(webSocket);
       sessions.delete(webSocket);
+      control.claims.delete(webSocket);
       if (session !== undefined) {
         const live = [...browsers.values()].at(-1);
         if (live !== undefined) void live.request(session, 'session.unregister', {}).catch(() => undefined);
@@ -131,6 +160,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     close: async () => {
       if (closed) return;
       closed = true;
+      await agents.close();
       await clearDaemonState(stateDir, token);
       await closeServer(httpServer, sockets);
     },
@@ -157,11 +187,12 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse, t
 function handleBrowserMessage(
   webSocket: WebSocket,
   browsers: Map<WebSocket, BrowserConnection>,
+  agents: Agents,
   data: RawData,
 ): void {
   const value = parseJson(data);
   if (!isBrowserMessage(value)) {
-    webSocket.close(1008, 'Invalid protocol message');
+    webSocket.close(1008, isOtherProtocolVersion(value) ? PROTOCOL_MISMATCH : 'Invalid protocol message');
     return;
   }
 
@@ -171,6 +202,8 @@ function handleBrowserMessage(
   const browser = connection.status;
   if (message.type === 'browser.response') {
     connection.handleResponse(message);
+  } else if (message.type === 'browser.daemonRequest') {
+    void answerDaemonRequest(webSocket, agents, message);
   } else if (message.type === 'browser.ping') {
     const pong: BrowserPongMessage = { type: 'browser.pong', protocolVersion: PROTOCOL_VERSION };
     webSocket.send(JSON.stringify(pong));
@@ -194,12 +227,38 @@ function handleBrowserMessage(
   }
 }
 
+/** A side-panel request the extension passed on: start, continue or list the panel's agent conversations. */
+async function answerDaemonRequest(webSocket: WebSocket, agents: Agents, message: BrowserDaemonRequestMessage): Promise<void> {
+  let reply: DaemonReplyMessage;
+  try {
+    const params = (typeof message.params === 'object' && message.params !== null ? message.params : {}) as Record<string, unknown>;
+    let result: unknown;
+    if (message.method === 'agents.status') result = await agents.status(params.refresh === true);
+    else if (message.method === 'agents.list') result = { conversations: agents.list() };
+    else if (message.method === 'agents.start') result = { conversation: await agents.start(params) };
+    else if (message.method === 'agents.send') result = { conversation: await agents.send(params.id, params.message, params.claim) };
+    else throw new Error(`Unknown method: ${String((message as { method?: unknown }).method)}`);
+    reply = { type: 'daemon.reply', protocolVersion: PROTOCOL_VERSION, requestId: message.requestId, ok: true, result };
+  } catch (error) {
+    reply = {
+      type: 'daemon.reply',
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: message.requestId,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify(reply));
+}
+
 function handleControlMessage(
   webSocket: WebSocket,
   browsers: Map<WebSocket, BrowserConnection>,
-  sessions: Map<WebSocket, ToolSession>,
+  control: ControlState,
+  agents: Agents,
   data: RawData,
 ): void {
+  const { sessions } = control;
   const value = parseJson(data);
   if (!isControlRequest(value)) {
     sendControlError(webSocket, null, 'Invalid control request');
@@ -216,9 +275,21 @@ function handleControlMessage(
       sendControlError(webSocket, request.requestId, 'Invalid client name');
       return;
     }
+    if (request.claim !== undefined && (typeof request.claim !== 'string' || !CLAIM_CODE.test(request.claim))) {
+      sendControlError(webSocket, request.requestId, 'Invalid claim code');
+      return;
+    }
+    const claimFileProblem = parseClaimFileProblem(request.claimFileProblem);
+    if (request.claimFileProblem !== undefined && claimFileProblem === undefined) {
+      sendControlError(webSocket, request.requestId, 'Invalid claim file report');
+      return;
+    }
     const id = randomUUID();
     const session: ToolSession = { id, name: makeSessionName(request.clientName, id) };
     sessions.set(webSocket, session);
+    if (claimFileProblem !== undefined) agents.claimFileFailed(claimFileProblem.file, claimFileProblem.problem);
+    // Applied with the session's first tool call, once a browser is sure to have registered it.
+    if (typeof request.claim === 'string') control.claims.set(webSocket, request.claim);
     const connection = [...browsers.values()].at(-1);
     if (connection !== undefined) void connection.request(session, 'session.register', {}).catch(() => undefined);
     webSocket.send(
@@ -247,17 +318,18 @@ function handleControlMessage(
     sendControlError(webSocket, request.requestId, `Unknown method: ${String(request.method)}`);
     return;
   }
-  void answerTool(webSocket, browsers, sessions, request);
+  void answerTool(webSocket, browsers, control, agents, request);
 }
 
 async function answerTool(
   webSocket: WebSocket,
   browsers: Map<WebSocket, BrowserConnection>,
-  sessions: Map<WebSocket, ToolSession>,
+  control: ControlState,
+  agents: Agents,
   request: { requestId: string; method: string; session?: unknown; params?: unknown },
 ): Promise<void> {
   try {
-    const registered = sessions.get(webSocket);
+    const registered = control.sessions.get(webSocket);
     if (registered === undefined) throw new Error('Session is not registered on this control connection');
     const claimed = validSession(request.session);
     if (claimed === undefined || claimed.id !== registered.id) {
@@ -271,6 +343,7 @@ async function answerTool(
     if (connection === undefined) throw new Error('No browser is connected. Open the browser with the T3-Tab extension.');
     // Register only the session making this request. A new extension connection never learns other sessions.
     await connection.request(registered, 'session.register', {});
+    await redeemClaim(webSocket, connection, registered, control, agents);
     const content = await runTool(connection, registered, request.method as ToolMethod, request.params as Record<string, unknown>);
     if (webSocket.readyState !== WebSocket.OPEN) return;
     const response: ControlResponse = {
@@ -288,6 +361,49 @@ async function answerTool(
   }
 }
 
+/**
+ * Redeems the code a direct run's MCP server carries. The tool still runs when the claim fails: the owner sees why
+ * in the conversation, and a failure the browser may recover from is tried on the next call. Calls that arrive
+ * during a redemption wait for it, so one session never redeems its code twice.
+ */
+async function redeemClaim(
+  webSocket: WebSocket,
+  connection: BrowserConnection,
+  session: ToolSession,
+  control: ControlState,
+  agents: Agents,
+): Promise<void> {
+  const running = control.redeeming.get(webSocket);
+  if (running !== undefined) {
+    await running;
+    return;
+  }
+  const claim = control.claims.get(webSocket);
+  if (claim === undefined) return;
+  const redemption = (async () => {
+    try {
+      await connection.request(session, 'session.claim', { code: claim, route: 'launch' });
+      control.claims.delete(webSocket);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (CLAIM_REFUSED.test(reason)) control.claims.delete(webSocket);
+      agents.claimFailed(claim, reason);
+    } finally {
+      control.redeeming.delete(webSocket);
+    }
+  })();
+  control.redeeming.set(webSocket, redemption);
+  await redemption;
+}
+
+function parseClaimFileProblem(value: unknown): { file: string; problem: ClaimFileProblem } | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { file, problem } = value as Record<string, unknown>;
+  if (typeof file !== 'string' || file === '' || file.length > MAX_CLAIM_FILE_PATH) return undefined;
+  if (typeof problem !== 'string' || !CLAIM_FILE_PROBLEMS.has(problem)) return undefined;
+  return { file, problem: problem as ClaimFileProblem };
+}
+
 function isBrowserMessage(value: unknown): value is BrowserMessage {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
@@ -298,8 +414,15 @@ function isBrowserMessage(value: unknown): value is BrowserMessage {
       candidate.type === 'browser.pong' ||
       candidate.type === 'browser.tabCount' ||
       candidate.type === 'browser.tabClosed' ||
+      (candidate.type === 'browser.daemonRequest' && typeof candidate.requestId === 'string' && typeof candidate.method === 'string') ||
       (candidate.type === 'browser.response' && typeof candidate.requestId === 'string' && typeof candidate.ok === 'boolean'))
   );
+}
+
+function isOtherProtocolVersion(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const version = (value as Record<string, unknown>).protocolVersion;
+  return typeof version === 'number' && version !== PROTOCOL_VERSION;
 }
 
 function isControlRequest(value: unknown): value is {
@@ -308,6 +431,8 @@ function isControlRequest(value: unknown): value is {
   requestId: string;
   method: string;
   clientName?: unknown;
+  claim?: unknown;
+  claimFileProblem?: unknown;
   session?: unknown;
   params?: unknown;
 } {

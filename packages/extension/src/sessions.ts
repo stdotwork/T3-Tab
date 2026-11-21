@@ -11,6 +11,14 @@ export interface StoredSession extends ToolSession {
   currentOrigins: Record<string, string>;
 }
 
+/** What one `shareAll` added for a tab, so a failed redemption can take back exactly that. */
+export interface ShareUndo {
+  tabId: number;
+  addedShare: boolean;
+  addedOrigin: string | undefined;
+  previousOrigin: string | undefined;
+}
+
 export type SessionColor = 'grey' | 'blue' | 'red' | 'yellow' | 'green' | 'pink' | 'purple' | 'cyan' | 'orange';
 const COLORS: SessionColor[] = ['blue', 'green', 'purple', 'orange', 'pink', 'cyan', 'yellow', 'red'];
 
@@ -121,6 +129,60 @@ export class SessionStore {
       if (!session.sharedTabIds.includes(tabId)) session.sharedTabIds.push(tabId);
       if (origin !== undefined) approve(session, tabId, origin);
       return session;
+    });
+  }
+
+  /** Shares several tabs in one storage write, so a failure leaves none of them shared. */
+  async shareAll(id: string, tabs: Array<{ tabId: number; origin?: string }>): Promise<ShareUndo[]> {
+    return await this.mutate((sessions) => {
+      const session = sessions[id];
+      if (session === undefined) throw new Error('Session is not registered');
+      return tabs.map(({ tabId, origin }) => {
+        const key = String(tabId);
+        const undo: ShareUndo = {
+          tabId,
+          addedShare: !session.sharedTabIds.includes(tabId),
+          addedOrigin: origin !== undefined && session.approvedOrigins[key]?.includes(origin) !== true ? origin : undefined,
+          previousOrigin: session.currentOrigins[key],
+        };
+        if (undo.addedShare) session.sharedTabIds.push(tabId);
+        if (origin !== undefined) approve(session, tabId, origin);
+        return undo;
+      });
+    });
+  }
+
+  /** Takes back what `shareAll` added. It never adds a share, so a tab the owner removed since stays removed. */
+  async undoShares(id: string, undos: ShareUndo[]): Promise<void> {
+    if (undos.length === 0) return;
+    await this.mutate((sessions) => {
+      const session = sessions[id];
+      if (session === undefined) return;
+      for (const undo of undos) {
+        const key = String(undo.tabId);
+        if (undo.addedShare) session.sharedTabIds = session.sharedTabIds.filter((value) => value !== undo.tabId);
+        if (undo.addedOrigin === undefined) continue;
+        const left = (session.approvedOrigins[key] ?? []).filter((origin) => origin !== undo.addedOrigin);
+        if (left.length === 0) delete session.approvedOrigins[key];
+        else session.approvedOrigins[key] = left;
+        if (session.currentOrigins[key] === undo.addedOrigin) {
+          if (undo.previousOrigin === undefined) delete session.currentOrigins[key];
+          else session.currentOrigins[key] = undo.previousOrigin;
+        }
+      }
+    });
+  }
+
+  /** The owner took a tab back: these sessions, those still registered, lose it and its approvals. */
+  async dropShare(ids: string[], tabId: number): Promise<void> {
+    await this.mutate((sessions) => {
+      for (const id of ids) {
+        const session = sessions[id];
+        if (session === undefined) continue;
+        session.sharedTabIds = session.sharedTabIds.filter((value) => value !== tabId);
+        delete session.approvedOrigins[String(tabId)];
+        delete session.currentOrigins[String(tabId)];
+      }
     });
   }
 
