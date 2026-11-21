@@ -3,8 +3,9 @@ import { lstat, mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/p
 import { join } from 'node:path';
 
 /**
- * T3-Tab's read-only sign-in to T3 Code. Only the daemon reads or writes it, in one file in T3-Tab's state folder,
- * next to `daemon.json` but separate from it, so nothing that reads the daemon's port and token ever sees it.
+ * T3-Tab's read-only sign-in to T3 Code. Of T3-Tab's parts only the daemon uses it. It is one 0600 file in T3-Tab's
+ * state folder, next to `daemon.json` but separate from it, so reading the daemon's port and token does not load it.
+ * Any program running as the owner can still read it; T3-Tab does not protect against those programs.
  */
 export interface T3Credential {
   version: 1;

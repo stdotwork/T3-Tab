@@ -11,7 +11,10 @@ export interface DaemonState {
   token: string;
 }
 
-/** The extension's secret and the daemon it belongs to. Only the native host reads this file, to hand it to the extension. */
+/**
+ * The extension's token and the daemon it belongs to. The native host passes it to the extension. It keeps an MCP
+ * client holding the `daemon.json` token from connecting as the extension; any program running as the owner can read it.
+ */
 export interface ExtensionState {
   pid: number;
   port: number;

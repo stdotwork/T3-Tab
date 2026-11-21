@@ -105,9 +105,10 @@ agents.
 `daemon` listens on `127.0.0.1:8765` by default. Set `T3_TAB_PORT` or pass `--port <number>` to change the
 port. Its random token is stored in `$XDG_STATE_HOME/t3-tab/daemon.json` with mode `0600`, falling back to
 `$HOME/.local/state/t3-tab/daemon.json`. The extension has its own random token in `extension.json` in the same
-folder, also `0600`, which only the native host reads and hands to the extension. The daemon gives the extension
-role only to that token together with the extension's `Origin`, so the `daemon.json` token every MCP server reads
-cannot take it. `native-host` is normally started by Chromium, not by hand. `mcp`
+folder, also `0600`, which the native host passes to the extension. The daemon gives the extension role only to that
+token together with the extension's `Origin`, so an MCP client using the `daemon.json` token cannot connect as the
+extension. Any program running as the owner can read either file or run `t3-tab native-host` to get the extension
+token. `native-host` is normally started by Chromium, not by hand. `mcp`
 serves the `status`, `tabs`, `read`, `screenshot`, `act` and `run_js` tools over stdio and starts the daemon
 when needed.
 
@@ -145,6 +146,9 @@ is inspected in bounded batches; password values are removed before the accessib
 extension and render as `value=<redacted>`.
 
 ## Sessions and permissions
+
+T3-Tab protects the browser from websites and from other users or machines. It does not protect it from programs
+running as the owner, which can already read the owner's home folder, browser profile and T3's own data.
 
 The daemon issues each session id and binds it to the control connection that registered it; tool requests
 on another socket, or with another id, are refused. Tabs a session opens go into its own Chromium tab
@@ -214,9 +218,12 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
   (`t3-catalog.ts`). T3-Tab never hands it to the extension, the panel, logs, error messages, agents, or a
   command's arguments or environment. Like every file in the owner's home, the 0600 file is still readable by any
   program running as the owner, coding agents included; the sign-in is read-only and ends after 30 days.
-  Writing the file and signing out run one at a time, so a sign-out during a sign-in leaves no credential. Every request to T3 opens its own connection and is sent on it only after
+  A sign-out cancels a sign-in at any stage, and writing the file and signing out run one at a time, so a sign-out
+  during a sign-in leaves no credential. Every request to T3 opens its own connection and is sent on it only after
   `/proc/net/tcp{,6}` and `/proc/<pid>/fd` show that the recorded pid accepted that connection and that the process
-  did not start after T3's `startedAt` (`t3-connection.ts`). Where there is no `/proc` (any platform but Linux),
+  did not start after T3's `startedAt` (`t3-connection.ts`). That comparison has no tolerance: the start time read
+  from `/proc` is rounded down by at most 1.01 s, so a process started less than that after the record can still
+  pass, and a forward wall-clock step after T3 started can refuse T3 until it restarts. Where there is no `/proc` (any platform but Linux),
   T3-Tab sends nothing, so the sign-in and the lists are unavailable and the project and model are typed instead.
   T3 issues no refresh tokens and offers a client no way to revoke itself: a
   sign-in lasts 30 days, a refused token is deleted, and "Sign out" deletes the file and any temporary copy a crash left (the

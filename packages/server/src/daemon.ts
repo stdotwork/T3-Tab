@@ -40,7 +40,7 @@ export interface DaemonHandle {
   readonly port: number;
   /** The control token in `daemon.json`, which every MCP server reads. */
   readonly token: string;
-  /** The extension's own secret, in `extension.json`. Only the native host reads it. */
+  /** The extension's own token, in `extension.json`, which the native host passes to the extension. */
   readonly extensionToken: string;
   readonly state: DaemonState;
   close(): Promise<void>;
