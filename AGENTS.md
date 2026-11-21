@@ -216,8 +216,10 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
     0.166.0 keeps `unified_exec` on whatever the flag says, and registers no shell tool while `shell_tool` is off,
     so `shell_tool` is the setting that removes the shell. The
     `t3-tab` entry sets its command, arguments, enabled state, tool list, approval and a 330-second tool
-    timeout (T3-Tab itself waits up to 310). System-level Codex config (`/etc/codex`) still applies. Settings
-    in the owner's `config.toml`, such as a default model or a custom provider, do not apply to these runs.
+    timeout (T3-Tab itself waits up to 310). System-level Codex config (`/etc/codex`) still applies. Nothing
+    else in the owner's `config.toml` applies to these runs except the active custom provider, its model and
+    that one `[model_providers.<name>]` table (`codex-provider.ts`), passed as `-c` settings with any bearer token
+    or static header moved to environment variables of the Codex process only, never onto its command line.
 - **Stopping a run.** Direct runs and `t3` commands run in their own process group. A timeout or daemon
   shutdown sends SIGTERM to the group and, 5 seconds later, SIGKILL to whatever is left of it, even if the
   group's first process has already exited. It then waits for the process to close. The conversation shows as

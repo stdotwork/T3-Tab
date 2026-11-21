@@ -293,6 +293,8 @@ describe('direct run isolation', () => {
       '-c',
       'mcp_servers.t3-tab.env={ XDG_STATE_HOME = "/state" }',
       '-c',
+      'mcp_servers.t3-tab.env_vars=[]',
+      '-c',
       'mcp_servers.t3-tab.enabled=true',
       '-c',
       'mcp_servers.t3-tab.enabled_tools=["status", "tabs", "read", "screenshot", "act", "run_js"]',

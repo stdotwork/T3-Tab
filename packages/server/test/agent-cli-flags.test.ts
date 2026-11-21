@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it, type TestContext } from 'vitest';
 
+import { readCodexProvider } from '../src/agents/codex-provider.js';
 import { claudeArgs, codexArgs } from '../src/agents/commands.js';
 import { readHelp, resolveForHelp, type HelpTarget } from './cli-help.js';
 
@@ -77,6 +78,25 @@ describe('the flags direct runs depend on', () => {
       if (!FORCED_ON.has(feature)) expect(states.get(feature), feature).toBe('false');
     }
     expect(states.get('shell_tool')).toBe('false');
+  }, 30_000);
+});
+
+describe('a custom Codex provider', () => {
+  it('is accepted by the installed Codex when passed as `-c` settings', async (context) => {
+    const source = join(home, 'provider-source');
+    await mkdir(source, { recursive: true });
+    await writeFile(
+      join(source, 'config.toml'),
+      'model_provider = "corp"\nmodel = "corp-model"\n[model_providers.corp]\nname = "Corp"\nbase_url = "https://llm.corp.test/v1"\nwire_api = "responses"\nexperimental_bearer_token = "not-a-real-token"\nsupports_websockets = false\nsupports_standalone_web_search = false\n[model_providers.corp.http_headers]\nX-Team = "platform"\n',
+    );
+    const codexProvider = await readCodexProvider({ CODEX_HOME: source });
+    const args = codexArgs({ server, env: {}, codexProvider });
+    const overrides = args.flatMap((value, index) => (args[index - 1] === '-c' ? ['-c', value] : []));
+    expect(overrides).toContain('model_provider="corp"');
+    expect(overrides.join(' ')).not.toContain('not-a-real-token');
+    // `features list` loads the whole config, and fails on a selected provider that did not arrive or does not parse.
+    await output(context, codex, [...overrides, 'features', 'list']);
+    await expect(output(context, codex, ['-c', 'model_provider="corp"', 'features', 'list'])).rejects.toThrow();
   }, 30_000);
 });
 

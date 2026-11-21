@@ -16,6 +16,7 @@ import type {
 
 import { stateDirectory } from '../state.js';
 import { CLAIM_CODE, claimFileWarning, writeClaimFile, type ClaimFile } from './claim-file.js';
+import { readCodexProvider } from './codex-provider.js';
 import {
   claimNote,
   claudeArgs,
@@ -79,6 +80,8 @@ interface Conversation {
   child?: ChildProcess;
   /** True while a direct turn is being set up, before it has a process. */
   starting?: boolean;
+  /** True once the owner was told which Codex provider settings were left out. */
+  providerWarned?: boolean;
   /** Why T3-Tab stopped the current direct turn. */
   stopReason?: string;
   poll?: ReturnType<typeof setTimeout>;
@@ -421,6 +424,11 @@ export class Agents {
     try {
       const executable = await findExecutable(via, this.options.env);
       if (executable === undefined) throw new Error(`${via === 'claude' ? 'Claude Code' : 'Codex'} was not found on this machine.`);
+      const codexProvider = via === 'codex' ? await readCodexProvider(this.options.env) : undefined;
+      if (codexProvider !== undefined && codexProvider.ignored.length > 0 && conversation.providerWarned !== true) {
+        conversation.providerWarned = true;
+        this.push(conversation, { role: 'error', text: `T3-Tab left out Codex provider settings it does not know: ${codexProvider.ignored.join(', ')}.` });
+      }
       delete conversation.launchCode;
       delete conversation.claimFile;
       if (claim !== undefined) {
@@ -435,13 +443,15 @@ export class Agents {
         env: this.options.env,
         model: conversation.view.model,
         resume,
+        codexProvider,
       };
       const args = via === 'claude' ? claudeArgs(runOptions) : codexArgs(runOptions);
       if (this.closed) throw new Error(SHUTTING_DOWN);
       // Its own process group, so stopping it also stops whatever it started.
       child = this.spawn(executable, args, {
         cwd: conversation.cwd ?? homedir(),
-        env: this.options.env,
+        // A provider's credentials go to this process only; Codex starts MCP servers with a short list of variables.
+        env: codexProvider === undefined ? this.options.env : { ...this.options.env, ...codexProvider.env },
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: true,
       });
