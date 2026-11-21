@@ -20,7 +20,8 @@ import {
 } from './install.js';
 import { runMcpServer } from './mcp.js';
 import { runNativeHost } from './native-host.js';
-import { stateDirectory } from './state.js';
+import { readDaemonState, stateDirectory } from './state.js';
+import { daemonIsHealthy } from './client.js';
 
 const cliPath = fileURLToPath(import.meta.url);
 
@@ -56,7 +57,12 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 
 async function runDaemon(args: string[]): Promise<void> {
   const port = daemonPort(args);
-  const handle = await startDaemon({ port, stateDir: stateDirectory() });
+  const stateDir = stateDirectory();
+  const running = await readDaemonState(stateDir);
+  if (running !== null && (await daemonIsHealthy(running))) {
+    throw new UsageError(`A T3-Tab daemon is already running on 127.0.0.1:${running.port} for ${stateDir}.`);
+  }
+  const handle = await startDaemon({ port, stateDir });
   process.stderr.write(`T3-Tab daemon listening on 127.0.0.1:${handle.port}\n`);
 
   let stopping = false;

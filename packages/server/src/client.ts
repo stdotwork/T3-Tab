@@ -150,7 +150,7 @@ export async function callTool(
   return response.result.content;
 }
 
-async function daemonIsHealthy(state: DaemonState): Promise<boolean> {
+export async function daemonIsHealthy(state: DaemonState): Promise<boolean> {
   try {
     const response = await fetch(`http://127.0.0.1:${state.port}/health`, {
       headers: { authorization: `Bearer ${state.token}` },
