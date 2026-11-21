@@ -61,7 +61,7 @@ export class FakeBrowser {
     tab.url = url;
     tab.text = text;
     tab.context = this.newContext();
-    this.emit(tabId, 'Page.frameNavigated', { frame: { id: tab.frameId } });
+    this.emit(tabId, 'Page.frameNavigated', { frame: { id: tab.frameId, url } });
     this.emitContext(tab);
   }
 

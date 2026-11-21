@@ -34,19 +34,16 @@ export function hasApprovedOrigin(session: StoredSession, tabId: number, origin:
 }
 
 /**
- * The one session a tab opened from `opener` belongs to, or undefined. The opener's tab group names its
- * session; an ungrouped opener counts only when exactly one session, which has a group, was shared it.
+ * The one session a tab opened from `opener` belongs to, or undefined. Only the opener's tab group names a
+ * session. A tab shared with a session is still the owner's, and so are the tabs the owner opens from it
+ * (a middle-click, a `target=_blank` link), so a shared opener gives a new tab to nobody.
  */
 export function sessionForPopup(
   sessions: StoredSession[],
   opener: { id?: number | undefined; groupId?: number | undefined },
 ): StoredSession | undefined {
   const grouped = sessions.filter((session) => session.groupId !== undefined && session.groupId === opener.groupId);
-  if (grouped.length > 0) return grouped.length === 1 ? grouped[0] : undefined;
-  const sharing = sessions.filter(
-    (session) => session.groupId !== undefined && opener.id !== undefined && session.sharedTabIds.includes(opener.id),
-  );
-  return sharing.length === 1 ? sharing[0] : undefined;
+  return grouped.length === 1 ? grouped[0] : undefined;
 }
 
 export function usableSessionTabs(session: StoredSession, tabs: chrome.tabs.Tab[]): chrome.tabs.Tab[] {
