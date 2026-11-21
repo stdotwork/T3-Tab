@@ -67,6 +67,12 @@ export async function actOnPage(
         await runElementStep(tabId, step, backendId, ref);
       } else {
         await runPageStep(tabId, step);
+        // Input without a ref goes to whatever document is current, so a replaced document is an error.
+        if (action !== 'wait' && documentEpoch(tabId) !== epoch) {
+          throw new Error(
+            `The page was replaced while the ${action} step ran, so the input may not have reached the approved page. Read the page again.`,
+          );
+        }
       }
     } catch (error) {
       failure = {

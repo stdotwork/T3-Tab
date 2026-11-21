@@ -46,7 +46,14 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
       const access = await authorizeRead(session, request.params.tab);
       const tab = await resolveSessionTab(access.session, access.tab.id);
       assertSameOrigin(tab, access.origin);
-      return await captureViewport(tab.id ?? -1, request.params.maxEdge);
+      const tabId = tab.id ?? -1;
+      return await captureViewport(tabId, request.params.maxEdge, {
+        origin: access.origin,
+        currentUrl: async () => {
+          const latest = await resolveSessionTab(await registeredSession(session), tabId);
+          return latest.url ?? latest.pendingUrl ?? '';
+        },
+      });
     }
     case 'page.act': {
       let tab = await resolveSessionTab(session, request.params.tab);
