@@ -20,7 +20,7 @@ const START_TIMEOUT_MS = 10_000;
 const LOCK_STALE_MS = 30_000;
 const CONTROL_TIMEOUT_MS = 5_000;
 // Longer than the daemon waits on the browser, so the daemon's own error arrives first.
-const TOOL_TIMEOUT_MS = 40_000;
+const TOOL_TIMEOUT_MS = 310_000;
 
 export async function ensureDaemon(env: NodeJS.ProcessEnv = process.env): Promise<DaemonState> {
   const directory = stateDirectory(env);

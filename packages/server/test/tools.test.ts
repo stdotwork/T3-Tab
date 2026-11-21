@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { BrowserLink } from '../src/browser-link.js';
 import { TabState } from '../src/reader/page.js';
 import { runTool } from '../src/tools.js';
-import { buttonPage, page } from './ax-fixtures.js';
+import { buttonPage, page, signInPage } from './ax-fixtures.js';
 
 type Handlers = { [M in BrowserMethod]?: (params: BrowserMethods[M]['params']) => BrowserMethods[M]['result'] };
 
@@ -115,5 +115,99 @@ describe('screenshot tool', () => {
       'page.screenshot {"tab":4,"maxEdge":640}',
     ]);
     await expect(runTool(link, 's', 'screenshot', { maxEdge: 10 })).rejects.toThrow(/Invalid arguments: maxEdge/);
+  });
+});
+
+describe('act tool', () => {
+  it('sends a batch with resolved backend ids and returns the page diff', async () => {
+    const initial = signInPage();
+    const changed = initial.map((node) => (node.id === '5' ? { ...node, value: 'grace@example.com' } : node));
+    let batch: Record<string, unknown> | undefined;
+    const link = fakeBrowser({
+      'page.read': () => page(initial),
+      'page.act': (params) => {
+        batch = params as unknown as Record<string, unknown>;
+        return page(changed);
+      },
+    });
+    await runTool(link, 's', 'read', {});
+    const reply = await runTool(link, 's', 'act', {
+      tab: 7,
+      steps: [
+        { fill: { ref: 'e2', value: 'grace@example.com' } },
+        { click: { ref: 'e3' } },
+      ],
+    });
+    expect(reply[0]).toMatchObject({ type: 'text' });
+    expect((reply[0] as { text: string }).text).toContain('e2 textbox "Email" value="grace@example.com" [required]');
+    expect(batch).toMatchObject({
+      tab: 7,
+      epoch: 1,
+      backendIds: [5, 6],
+      steps: [
+        { fill: { ref: 'e2', value: 'grace@example.com' } },
+        { click: { ref: 'e3' } },
+      ],
+    });
+  });
+
+  it('uses the front tab when no tab is given', async () => {
+    const link = fakeBrowser({
+      'tabs.list': () => ({ tabs: [second] }),
+      'page.read': () => page(signInPage()),
+      'page.act': () => page(signInPage()),
+    });
+    await runTool(link, 's', 'read', {});
+    await runTool(link, 's', 'act', { steps: [{ press: { key: 'Enter' } }] });
+    expect(link.calls).toContain('tabs.list {}');
+    expect(link.calls.at(-1)).toContain('page.act {"tab":9');
+  });
+
+  it('refuses an unknown ref before sending the batch', async () => {
+    const link = fakeBrowser({ 'page.read': () => page(signInPage()) });
+    await runTool(link, 's', 'read', {});
+    await expect(runTool(link, 's', 'act', { tab: 7, steps: [{ click: { ref: 'e99' } }] })).rejects.toThrow(
+      'Unknown ref e99: read the page again',
+    );
+    expect(link.calls).toHaveLength(1);
+  });
+
+  it('names the failed step and includes the page diff after navigation', async () => {
+    const link = fakeBrowser({
+      'page.read': () => page(signInPage()),
+      'page.act': () => ({
+        ...page(buttonPage(1), { title: 'Next', url: 'http://localhost/next', epoch: 2 }),
+        failure: { step: 2, action: 'click', error: 'e1 is no longer on the page; read again' },
+      }),
+    });
+    await runTool(link, 's', 'read', {});
+    await expect(
+      runTool(link, 's', 'act', {
+        tab: 7,
+        steps: [{ press: { key: 'Enter' } }, { click: { ref: 'e1' } }],
+      }),
+    ).rejects.toThrow(/Step 2 \(click\) failed: e1 is no longer on the page; read again\n[\s\S]*# Buttons/);
+  });
+});
+
+describe('run_js tool', () => {
+  it('returns a JSON result from the requested tab', async () => {
+    const link = fakeBrowser({ 'page.eval': () => ({ value: { title: 'Test page', count: 2 } }) });
+    const reply = await runTool(link, 's', 'run_js', { tab: 7, expression: '({title: document.title})' });
+    expect(reply).toEqual([{ type: 'text', text: '{"title":"Test page","count":2}' }]);
+    expect(link.calls).toEqual(['page.eval {"tab":7,"expression":"({title: document.title})"}']);
+  });
+
+  it('caps a large JSON result', async () => {
+    const link = fakeBrowser({ 'page.eval': () => ({ value: 'x'.repeat(20_000) }) });
+    const reply = await runTool(link, 's', 'run_js', { expression: 'document.body.innerText' });
+    const output = (reply[0] as { text: string }).text;
+    expect(output.length).toBeLessThan(12_200);
+    expect(output).toMatch(/… truncated at 12000 characters/);
+  });
+
+  it('rejects an empty expression', async () => {
+    const link = fakeBrowser({});
+    await expect(runTool(link, 's', 'run_js', { expression: '' })).rejects.toThrow(/Invalid arguments: expression/);
   });
 });

@@ -39,6 +39,10 @@ export class TabState {
     return this.refs;
   }
 
+  get currentEpoch(): number {
+    return this.epoch;
+  }
+
   baseline(session: string, key: string): string | undefined {
     return this.baselines.get(session)?.get(key);
   }

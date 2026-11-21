@@ -5,15 +5,25 @@ const attached = new Set<number>();
 const attaching = new Map<number, Promise<void>>();
 /** Per tab: bumped whenever the document may have been replaced, including when the debugger attaches. */
 const epochs = new Map<number, number>();
+/** Per tab: bumped by any network event, so action settling can see when traffic goes quiet. */
+const networkEvents = new Map<number, number>();
 
 export function documentEpoch(tabId: number): number {
   return epochs.get(tabId) ?? 0;
 }
 
+export function networkRevision(tabId: number): number {
+  return networkEvents.get(tabId) ?? 0;
+}
+
 /** Starts tracking navigations and detaches. Call once, when the service worker starts. */
 export function initCdp(): void {
   chrome.debugger.onEvent.addListener((source, method, params) => {
-    if (source.tabId === undefined || method !== 'Page.frameNavigated') return;
+    if (source.tabId === undefined) return;
+    if (method.startsWith('Network.')) {
+      networkEvents.set(source.tabId, networkRevision(source.tabId) + 1);
+    }
+    if (method !== 'Page.frameNavigated') return;
     const frame = (params as { frame?: { parentId?: unknown } } | undefined)?.frame;
     // Only the top frame replaces the document the held refs point into.
     if (frame !== undefined && frame.parentId === undefined) bumpEpoch(source.tabId);
@@ -26,6 +36,7 @@ export function initCdp(): void {
   chrome.tabs.onRemoved.addListener((tabId) => {
     attached.delete(tabId);
     epochs.delete(tabId);
+    networkEvents.delete(tabId);
   });
 }
 
@@ -66,6 +77,7 @@ async function attach(tabId: number): Promise<void> {
   await chrome.debugger.attach({ tabId }, PROTOCOL);
   try {
     await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
+    await chrome.debugger.sendCommand({ tabId }, 'Network.enable');
   } catch (error) {
     await chrome.debugger.detach({ tabId }).catch(() => undefined);
     throw error;
