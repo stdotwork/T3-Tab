@@ -1,9 +1,9 @@
 import type { BrowserMethods } from '@t3-tab/protocol';
 
-import { ensureAttached, sendCommand } from './cdp';
+import { ensureAttached, mainWorldContext, sendCommand } from './cdp';
 import { originOf, restrictedPageError } from './permissions';
 import type { StoredSession } from './sessions';
-import { beginPopupCapture, resolveSessionTab } from './tabs';
+import { resolveSessionTab } from './tabs';
 
 interface RuntimeResult {
   result?: { value?: unknown; description?: string; type?: string };
@@ -12,7 +12,12 @@ interface RuntimeResult {
 
 const BODY_START = /^\s*(?:await\b|const\b|let\b|var\b|return\b|if\b|for\b|while\b|try\b|throw\b|\{)/;
 
-/** Evaluates an expression or an async function body in the page and returns a JSON value. */
+/**
+ * Evaluates an expression or an async function body in the page and returns a JSON value. The call is
+ * pinned to the main frame's JavaScript context after the browser reports that context's origin as the
+ * approved one: a navigation that replaces the context makes the evaluation fail instead of running in the
+ * new document. The agent's text is never part of a check.
+ */
 export async function evaluatePage(
   session: StoredSession,
   tab: number | undefined,
@@ -28,27 +33,30 @@ export async function evaluatePage(
   const latest = await reloadSession();
   const current = await resolveSessionTab(latest, tabId);
   assertCurrentOrigin(current, expectedOrigin);
-  const permissionCheck = `if (location.origin !== ${JSON.stringify(expectedOrigin)}) { throw new Error('The page origin changed before run_js; read it and approve the new origin.'); }`;
+  const context = await mainWorldContext(tabId);
+  if (context.origin !== expectedOrigin) {
+    throw new Error(
+      `The page's JavaScript context belongs to ${context.origin}, not the approved ${expectedOrigin}; read the page and approve it first.`,
+    );
+  }
   const wrapped = BODY_START.test(expression)
-    ? `(async () => {\n${permissionCheck}\n${expression}\n})()`
-    : `(async () => {\n${permissionCheck}\nreturn await (${expression});\n})()`;
-  const releasePopupCapture = /\bwindow\s*\.\s*open\s*\(/.test(expression)
-    ? beginPopupCapture(session)
-    : undefined;
+    ? `(async () => {\n${expression}\n})()`
+    : `(async () => {\nreturn await (${expression});\n})()`;
   let evaluated: RuntimeResult;
   try {
     evaluated = await sendCommand<RuntimeResult>(tabId, 'Runtime.evaluate', {
       expression: wrapped,
+      uniqueContextId: context.uniqueId,
       awaitPromise: true,
       returnByValue: true,
       userGesture: true,
       includeCommandLineAPI: true,
     });
-  } finally {
-    if (releasePopupCapture !== undefined) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      releasePopupCapture();
+  } catch (error) {
+    if (error instanceof Error && /uniqueContextId not found|Cannot find context/i.test(error.message)) {
+      throw new Error('The page changed before run_js could start; read the new page and approve it before continuing.');
     }
+    throw error;
   }
   if (evaluated.exceptionDetails !== undefined) {
     const message = evaluated.exceptionDetails.exception?.description ?? evaluated.exceptionDetails.text ?? 'JavaScript failed';
