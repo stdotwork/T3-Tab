@@ -11,8 +11,9 @@ import type { AgentConversation } from '@t3-tab/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { claimNote, claudeArgs, t3SendArgs, t3ShowArgs, t3StartArgs } from '../src/agents/commands.js';
-import { Agents, parseStartParams, run, type Spawn } from '../src/agents/conversations.js';
+import { Agents, parseStartParams, run, stopProcess, type Spawn } from '../src/agents/conversations.js';
 import { findExecutable } from '../src/agents/locate.js';
+import { t3ShowJson } from './t3-show-fixture.js';
 
 const CLAIM = 'abcdefghijklmnop1234';
 const realClaude = (await findExecutable('claude', { PATH: '', HOME: '/nonexistent' })) !== undefined;
@@ -121,7 +122,7 @@ function view(id: string): AgentConversation {
 }
 
 const showJson = (status: string, latestRunId: string, messages: unknown[] = []): string =>
-  JSON.stringify({ thread: { status, latestRunId, title: 'Thread title' }, messages });
+  t3ShowJson({ status, latestRunId, title: 'Thread title' }, messages);
 
 describe('parseStartParams', () => {
   const base = { via: 'claude', message: 'hi', claim: CLAIM };
@@ -406,16 +407,16 @@ describe('T3 polling', () => {
     expect(view(started.id).messages.at(-1)).toEqual({ role: 'assistant', text: 'Finished' });
   });
 
-  it('shows a run that ended without completing as failed, with its error', async () => {
+  it('shows a run that ended without completing as failed, with what happened to it', async () => {
     await install('t3');
     handler = (call) =>
       call.args[1] === 'start'
         ? { stdout: launch }
-        : { stdout: JSON.stringify({ thread: { status: 'interrupted', latestRunId: 'r1' }, messages: [{ role: 'user', text: 'Do it' }], error: 'Stopped by the owner' }) };
+        : { stdout: t3ShowJson({ status: 'interrupted', latestRunId: 'r1' }, [{ role: 'user', runId: 'r1', text: 'Do it' }]) };
     const started = await make().start({ via: 't3', message: 'Do it', claim: CLAIM, project: '/proj' });
     await waitFor(() => view(started.id).status === 'failed', 'failed');
-    expect(view(started.id).error).toBe('Stopped by the owner');
-    expect(view(started.id).messages.at(-1)).toEqual({ role: 'error', text: 'Stopped by the owner' });
+    expect(view(started.id).error).toBe('The run was interrupted.');
+    expect(view(started.id).messages.at(-1)).toEqual({ role: 'error', text: 'The run was interrupted.' });
   });
 
   it('ends failed, with a message, when polling reaches its time limit', async () => {
@@ -434,11 +435,9 @@ describe('T3 polling', () => {
       call.args[1] === 'start'
         ? { stdout: launch }
         : {
-            stdout: JSON.stringify({
-              thread: { status: 'failed', latestRunId: 'r1', title: `Claim ${CLAIM}` },
-              messages: [{ role: 'assistant', text: `I used ${CLAIM} to claim the tab` }],
-              error: `Bad code ${CLAIM}`,
-            }),
+            stdout: t3ShowJson({ status: 'failed', latestRunId: 'r1', title: `Claim ${CLAIM}` }, [
+              { role: 'assistant', runId: 'r1', text: `I used ${CLAIM} to claim the tab` },
+            ]),
           };
     const started = await make().start({ via: 't3', message: 'Do it', claim: CLAIM, project: '/proj' });
     await waitFor(() => view(started.id).status === 'failed', 'failed');
@@ -551,6 +550,83 @@ describe('direct turn claims', () => {
   });
 });
 
+describe('a claim file the MCP server could not read', () => {
+  const claudeDone = '{"type":"system","session_id":"s"}\n{"type":"result","subtype":"success","session_id":"s","result":"ok"}\n';
+  const fileOf = (args: string[]): string => {
+    const config = JSON.parse(args[args.indexOf('--mcp-config') + 1] as string) as { mcpServers: Record<string, { args: string[] }> };
+    return config.mcpServers['t3-tab']?.args.at(-1) as string;
+  };
+
+  it.each([
+    ['missing', 'was missing'],
+    ['not-private', 'other users could read it'],
+    ['wrong-owner', 'belongs to another user'],
+    ['not-a-file', 'not a regular file'],
+    ['invalid', 'held no valid code'],
+    ['unreadable', 'could not be opened'],
+  ] as const)('warns in the conversation it belongs to: %s', async (problem, words) => {
+    await install('claude');
+    let release: () => void = () => undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    handler = () => ({ stdout: claudeDone, hold });
+    const other = await make().start({ via: 'claude', message: 'Other', claim: 'qrstuvwxyz0123456789' });
+    const started = await make2(agents).start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    await waitFor(() => calls.length === 2, 'both runs');
+    const file = fileOf(calls[1]?.args ?? []);
+    make2(agents).claimFileFailed(file, problem);
+    make2(agents).claimFileFailed(file, problem);
+    const warnings = view(started.id).messages.filter((message) => message.role === 'error');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.text).toContain(words);
+    expect(warnings[0]?.text).toContain('no tabs');
+    expect(view(other.id).messages.filter((message) => message.role === 'error')).toEqual([]);
+    release();
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+  });
+
+  it('ignores a path no conversation wrote', async () => {
+    await install('claude');
+    handler = () => ({ stdout: claudeDone });
+    const started = await make().start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    make2(agents).claimFileFailed('/not/a/claim/file', 'missing');
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+    expect(view(started.id).messages.filter((message) => message.role === 'error')).toEqual([]);
+  });
+});
+
+describe('shutting down', () => {
+  it('does not start a status probe that was on its way when shutdown began', async () => {
+    await install('t3');
+    handler = () => ({ code: 1, stderr: "No T3 Code project matches '/'" });
+    make();
+    const probing = make2(agents).status(true);
+    await make2(agents).close();
+    await probing;
+    expect(calls).toEqual([]);
+  });
+
+  it('does not start a direct turn that was being set up when shutdown began', async () => {
+    await install('claude');
+    make();
+    const starting = make2(agents).start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    await make2(agents).close();
+    await expect(starting).rejects.toThrow('shutting down');
+    expect(calls).toEqual([]);
+    expect(agents?.list()).toEqual([]);
+  });
+
+  it('refuses new work once closed', async () => {
+    await install('t3', 'claude');
+    make();
+    await make2(agents).close();
+    await expect(make2(agents).start({ via: 't3', message: 'x', claim: CLAIM, project: '/p' })).rejects.toThrow('shutting down');
+    await expect(make2(agents).start({ via: 'claude', message: 'x', claim: CLAIM })).rejects.toThrow('shutting down');
+    expect(calls).toEqual([]);
+  });
+});
+
 describe('stopping processes', () => {
   // Ignores SIGTERM, and so does a child it starts in the same process group.
   const STUBBORN = `
@@ -615,6 +691,35 @@ describe('stopping processes', () => {
     expect(alive(pids[0] as number)).toBe(false);
     expect(view(started.id).status).toBe('failed');
     await waitFor(() => pids.every((pid) => !alive(pid)), 'the child to die with its group');
+  });
+
+  it('kills a group member that ignores SIGTERM after its leader exits on SIGTERM', async () => {
+    const script = join(root, 'leader.mjs');
+    const pidsFile = join(root, 'pids.json');
+    await writeFile(script, `
+      import { spawn } from 'node:child_process';
+      import { writeFileSync } from 'node:fs';
+      const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], { stdio: 'ignore' });
+      setTimeout(() => writeFileSync(process.env.PIDS_FILE, JSON.stringify([process.pid, child.pid])), 150);
+      process.on('SIGTERM', () => process.exit(0));
+      setInterval(() => undefined, 1000);
+    `);
+    const child = realSpawn(process.execPath, [script], { env: { PIDS_FILE: pidsFile }, stdio: 'ignore', detached: true });
+    const pids = await pidsFrom(pidsFile);
+    try {
+      await stopProcess(child, 200);
+      await waitFor(() => !alive(pids[1] as number), 'the group member to die');
+    } finally {
+      for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  });
+
+  it('returns promptly once the whole group has gone', async () => {
+    const child = realSpawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', detached: true });
+    await new Promise((resolve) => child.once('spawn', resolve));
+    const started = Date.now();
+    await stopProcess(child, 5_000);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   it('kills a short command that ignores SIGTERM when it times out', async () => {

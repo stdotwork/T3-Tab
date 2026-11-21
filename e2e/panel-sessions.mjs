@@ -171,6 +171,50 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   assert(!afterUnshare.messages[3].text.includes(`\n${tabId} `) && !afterUnshare.messages[3].text.includes(`read: ${readLine}`), `The next turn got the unshared tab back:\n${afterUnshare.messages[3].text}`);
   console.log('Panel direct Claude Code: a tab unshared during a turn was not shared with the next turn');
 
+  // Between two turns the first turn's session is gone, so only the conversation's own list can take a tab back.
+  const between = await panelRequest(serviceWorker, { type: 'panel.agentStart', via: 'claude', message: 'Between turns', tabId });
+  await waitForConversation(serviceWorker, between.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 2);
+  const connected = (await panelRequest(serviceWorker, { type: 'panel.state', tabId })).sessions.filter((session) => session.name.startsWith('claude-code ·'));
+  assert(connected.every((session) => !session.sharedTabIds.includes(tabId)), `A finished turn's session still holds the tab: ${JSON.stringify(connected)}`);
+  state = await panelRequest(serviceWorker, { type: 'panel.agents', tabId });
+  assert(state.conversationTabs[between.conversation.id]?.some((tab) => tab.id === tabId), `The conversation does not list its tab: ${JSON.stringify(state.conversationTabs)}`);
+  await renderAgents(panelPage, state);
+  await panelPage.locator('#agent-conversations button').filter({ hasText: 'Between turns' }).click();
+  await panelPage.locator('#agent-next-turn').getByText(`Your next message shares tab ${tabId} "T3-Tab E2E".`).waitFor();
+  // The harness's panel is an ordinary tab, which the worker refuses as a sender, so this one click is passed on to
+  // the same handler. The button, its request and the refresh after it are the real ones.
+  await panelPage.exposeFunction('__t3tabForwardPanel', async (message) => await panelRequest(serviceWorker, message));
+  await panelPage.evaluate(() => {
+    globalThis.__t3tabSendMessage = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = async (message) => await globalThis.__t3tabForwardPanel(message);
+  });
+  await panelPage.getByRole('button', { name: `Remove tab ${tabId} from this conversation` }).click();
+  await panelPage.locator('#agent-next-turn').getByText('Your next message shares no tabs.').waitFor();
+  await panelPage.evaluate(() => {
+    chrome.runtime.sendMessage = globalThis.__t3tabSendMessage;
+  });
+  state = await panelRequest(serviceWorker, { type: 'panel.agents', tabId });
+  assert(state.conversationTabs[between.conversation.id]?.length === 0, `The tab is still listed: ${JSON.stringify(state.conversationTabs)}`);
+  const beforeSend = (await calls(fakes)).filter((call) => call.name === 'claude').length;
+  await panelRequest(serviceWorker, { type: 'panel.agentSend', id: between.conversation.id, message: 'After taking it back' });
+  const afterRemoval = await waitForConversation(serviceWorker, between.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 4);
+  assert(!afterRemoval.messages[3].text.includes(`\n${tabId} `) && !afterRemoval.messages[3].text.includes(`read: ${readLine}`), `The next turn still saw the tab:\n${afterRemoval.messages[3].text}`);
+  const removalCall = (await calls(fakes)).filter((call) => call.name === 'claude')[beforeSend];
+  assert(claimFileOf(removalCall.args) === undefined, `The next turn was given a claim file: ${JSON.stringify(removalCall.args)}`);
+  console.log(`Panel direct Claude Code: tab ${tabId} removed between turns in the conversation view; the next turn could not see it:\n${afterRemoval.messages[3].text}`);
+
+  // A claim file the MCP server cannot use: the owner and the agent are both told, and the agent gets no tabs.
+  for (const [how, words] of [['missing', 'it was missing'], ['mode', 'other users could read it'], ['replaced', 'it is not a regular file']]) {
+    const spoiled = await panelRequest(serviceWorker, { type: 'panel.agentStart', via: 'claude', message: `[claim-file:${how}] Read the tab`, tabId });
+    const shown = await waitForConversation(serviceWorker, spoiled.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.some((message) => message.role === 'assistant'));
+    const warning = shown.messages.find((message) => message.role === 'error');
+    assert(warning?.text.includes(words) && warning.text.includes('no tabs from you'), `No warning for a ${how} claim file: ${JSON.stringify(shown.messages)}`);
+    const reply = shown.messages.find((message) => message.role === 'assistant').text;
+    assert(reply.includes('T3-Tab: the tabs the owner shared for this turn are not available') && reply.includes(words), `The first tool reply did not say so for ${how}:\n${reply}`);
+    assert(!reply.includes(`\n${tabId} `) && !reply.includes(`read: ${readLine}`), `A ${how} claim file still shared the tab:\n${reply}`);
+    console.log(`Claim file ${how}: panel warned "${warning.text}"`);
+  }
+
   // Direct Codex: `codex exec --json` in a read-only sandbox, then `codex exec resume`.
   const codex = await panelRequest(serviceWorker, { type: 'panel.agentStart', via: 'codex', message: 'Read it with Codex', tabId });
   run = await waitForConversation(serviceWorker, codex.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 2);

@@ -83,7 +83,7 @@ export interface T3Show {
   active: boolean;
   latestRunId?: string;
   messages: AgentMessage[];
-  /** Why a run ended without completing. */
+  /** What happened to a run that ended without completing. `t3 thread show --json` prints no failure text. */
   error?: string;
 }
 
@@ -118,7 +118,7 @@ export function parseT3Show(stdout: string): T3Show {
   const show: T3Show = { status, active, messages };
   if (typeof detail.title === 'string') show.title = detail.title;
   if (typeof detail.latestRunId === 'string') show.latestRunId = detail.latestRunId;
-  if (status === 'failed') show.error = typeof value?.error === 'string' && value.error !== '' ? value.error : (failure as string);
+  if (failure !== undefined && status === 'failed') show.error = failure;
   return show;
 }
 
@@ -182,7 +182,8 @@ export function claudeArgs(options: DirectRunOptions): string[] {
 
 /**
  * Codex features that run commands, reach other services or load the owner's extensions. `--disable` refuses a
- * name Codex no longer knows, so a renamed feature stops the run instead of quietly staying on.
+ * name Codex no longer knows, so a renamed feature stops the run instead of quietly staying on. Codex 0.166.0 keeps
+ * `unified_exec` on whatever this says; `shell_tool` is what removes its shell tools.
  */
 const CODEX_DISABLED_FEATURES = [
   'shell_tool',

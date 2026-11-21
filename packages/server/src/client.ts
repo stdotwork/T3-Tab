@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   PROTOCOL_VERSION,
   type BrowserStatus,
+  type ClaimFileProblem,
   type ControlRequest,
   type ControlResponse,
   type ToolContent,
@@ -75,10 +76,14 @@ export class DaemonSession {
   private readonly pending = new Map<string, PendingControl>();
   private clientName = 'MCP client';
 
-  /** `claim` is the side-panel code a direct run's MCP server read from its private file. */
+  /**
+   * `claim` is the side-panel code a direct run's MCP server read from its private file; `claimFileProblem` says
+   * why it could not, so the daemon can warn in that conversation.
+   */
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
     private readonly claim?: string,
+    private readonly claimFileProblem?: { file: string; problem: ClaimFileProblem },
   ) {}
 
   setClientName(name: string | undefined): void {
@@ -137,6 +142,7 @@ export class DaemonSession {
           method: 'session.register',
           clientName: this.clientName,
           ...(this.claim === undefined ? {} : { claim: this.claim }),
+          ...(this.claimFileProblem === undefined ? {} : { claimFileProblem: this.claimFileProblem }),
         },
         CONTROL_TIMEOUT_MS,
       );

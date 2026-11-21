@@ -44,8 +44,8 @@
     "form.screenshot": {
       "chars": 49,
       "tokens": 23,
-      "imageBytes": 38883,
-      "imageTokens": 1232
+      "imageBytes": 39771,
+      "imageTokens": 1311
     },
     "hidden.open": {
       "chars": 73,
@@ -110,8 +110,8 @@
     "long.screenshot": {
       "chars": 49,
       "tokens": 23,
-      "imageBytes": 127174,
-      "imageTokens": 1232
+      "imageBytes": 141286,
+      "imageTokens": 1311
     }
   }
 }

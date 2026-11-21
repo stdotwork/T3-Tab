@@ -98,6 +98,10 @@ export function initAgentPanel(root: HTMLElement, send: Send): { render(state: A
   messages.className = 'messages';
   const threadHeading = element('h2', '', '');
   const threadStatus = element('p', 'muted', '');
+  const grants = document.createElement('ul');
+  grants.id = 'agent-grants';
+  const nextTurn = element('p', 'muted', '');
+  nextTurn.id = 'agent-next-turn';
   const reply = document.createElement('textarea');
   reply.id = 'agent-reply';
   reply.rows = 2;
@@ -108,7 +112,7 @@ export function initAgentPanel(root: HTMLElement, send: Send): { render(state: A
   replyButton.type = 'submit';
   const replyError = element('p', 'error', '');
   replyForm.append(reply, replyButton, replyError);
-  thread.append(threadHeading, threadStatus, messages, replyForm);
+  thread.append(threadHeading, threadStatus, messages, grants, nextTurn, replyForm);
   thread.hidden = true;
   root.append(element('h1', '', 'Agent'), status, form, list, thread);
 
@@ -117,6 +121,7 @@ export function initAgentPanel(root: HTMLElement, send: Send): { render(state: A
   let chosenVia = false;
   let shownMessages = '';
   let catalog: T3Catalog | undefined;
+  let shownGrants = '';
   const saved = restoreFields();
 
   const showFields = (): void => {
@@ -280,7 +285,37 @@ export function initAgentPanel(root: HTMLElement, send: Send): { render(state: A
         }),
       );
     }
+    const held = next.conversationTabs[conversation.id] ?? [];
+    nextTurn.textContent = nextTurnLine(conversation.via, held);
+    const grantsKey = JSON.stringify([conversation.id, held]);
+    if (grantsKey !== shownGrants) {
+      shownGrants = grantsKey;
+      grants.replaceChildren(...held.map((tab) => grantRow(conversation.id, tab)));
+    }
     replyButton.disabled = conversation.via !== 't3' && conversation.status === 'running';
+  }
+
+  function grantRow(id: string, tab: PanelTab): HTMLElement {
+    const item = document.createElement('li');
+    item.className = 'row';
+    const remove = element('button', '', 'Remove') as HTMLButtonElement;
+    remove.type = 'button';
+    remove.setAttribute('aria-label', `Remove tab ${tab.id} from this conversation`);
+    remove.addEventListener('click', () => {
+      void (async () => {
+        replyError.textContent = '';
+        remove.disabled = true;
+        try {
+          await send({ type: 'panel.agentRemoveTab', id, tabId: tab.id });
+          await refresh();
+        } catch (failure) {
+          replyError.textContent = failure instanceof Error ? failure.message : String(failure);
+          remove.disabled = false;
+        }
+      })();
+    });
+    item.append(element('div', 'muted', `${tabName(tab)} ${tab.url}`), remove);
+    return item;
   }
 
   async function refresh(force = false): Promise<void> {
@@ -425,6 +460,18 @@ function t3Line(status: AgentsStatus): string {
   if (status.t3.state === 'missing') return `T3 Code was not found.${fallback}`;
   if (status.t3.state === 'stopped') return `T3 Code is not running.${fallback}`;
   return `T3 Code did not answer: ${status.t3.detail ?? 'unknown error'}.${fallback}`;
+}
+
+function tabName(tab: Pick<PanelTab, 'id' | 'title'>): string {
+  return `tab ${tab.id} "${tab.title || '(untitled)'}"`;
+}
+
+/** What the owner's next message hands over. A direct turn is a new session; a T3 thread's session keeps its tabs. */
+export function nextTurnLine(via: AgentVia, tabs: PanelTab[]): string {
+  const names = tabs.map(tabName).join(', ');
+  if (via === 't3') return tabs.length === 0 ? 'This thread has no tabs from you.' : `This thread can use ${names}.`;
+  if (tabs.length === 0) return 'Your next message shares no tabs.';
+  return tabs.length === 1 ? `Your next message shares ${names}.` : `Your next message shares ${tabs.length} tabs: ${names}.`;
 }
 
 export function shareLine(tabs: PanelTab[]): string {

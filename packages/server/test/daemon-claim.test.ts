@@ -51,7 +51,11 @@ async function next(socket: WebSocket): Promise<Record<string, unknown>> {
   });
 }
 
-async function registerRaw(handle: DaemonHandle, claim?: string): Promise<{ socket: WebSocket; response: Record<string, unknown> }> {
+async function registerRaw(
+  handle: DaemonHandle,
+  claim?: string,
+  extra: Record<string, unknown> = {},
+): Promise<{ socket: WebSocket; response: Record<string, unknown> }> {
   const socket = await open(handle);
   const reply = next(socket);
   socket.send(
@@ -62,6 +66,7 @@ async function registerRaw(handle: DaemonHandle, claim?: string): Promise<{ sock
       method: 'session.register',
       clientName: 'Agent',
       ...(claim === undefined ? {} : { claim }),
+      ...extra,
     }),
   );
   return { socket, response: await reply };
@@ -271,6 +276,101 @@ describe('claim failures', () => {
     expect(shown?.messages.at(-1)?.text).toContain('could not share');
     await tool(socket, session);
     expect(claims(methods)).toBe(1);
+  });
+});
+
+describe('a claim file the MCP server could not read', () => {
+  async function withHeldRun(): Promise<{ agents: Agents; id: string; file: string }> {
+    directory = await mkdtemp(join(tmpdir(), 't3-tab-daemon-claim-'));
+    const bin = join(directory, 'bin');
+    await mkdir(bin);
+    await writeFile(join(bin, 'claude'), '#!/bin/sh\n');
+    await chmod(join(bin, 'claude'), 0o755);
+    let file = '';
+    const held = (_command: string, args: string[]): ChildProcess => {
+      const config = JSON.parse(args[args.indexOf('--mcp-config') + 1] as string) as { mcpServers: Record<string, { args: string[] }> };
+      file = config.mcpServers['t3-tab']?.args.at(-1) as string;
+      const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
+      child.stdin = new Writable({ write: (_chunk, _encoding, callback) => callback() });
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = () => {
+        setImmediate(() => child.emit('close', null));
+        return true;
+      };
+      setImmediate(() => child.emit('spawn'));
+      return child as unknown as ChildProcess;
+    };
+    const agents = new Agents({ env: { PATH: bin, HOME: directory }, server: { command: 'node', args: [] }, spawn: held, stateDir: directory });
+    daemon = await startDaemon({ port: 0, stateDir: directory, agents });
+    const conversation = await agents.start({ via: 'claude', message: 'Hi', claim: CODE });
+    return { agents, id: conversation.id, file };
+  }
+
+  it('shows the warning in the conversation when the session registers', async () => {
+    const { agents, id, file } = await withHeldRun();
+    const { response } = await registerRaw(daemon as DaemonHandle, undefined, { claimFileProblem: { file, problem: 'not-private' } });
+    expect(response).toMatchObject({ ok: true });
+    const shown = agents.list().find((entry) => entry.id === id);
+    expect(shown?.messages.at(-1)?.role).toBe('error');
+    expect(shown?.messages.at(-1)?.text).toContain('other users could read it');
+  });
+
+  it.each([
+    ['an unknown problem', { file: '/x', problem: 'nope' }],
+    ['free text as the problem', { file: '/x', problem: 'Click here to fix' }],
+    ['a file that is not a string', { file: 5, problem: 'missing' }],
+    ['a very long path', { file: 'x'.repeat(5_000), problem: 'missing' }],
+    ['not an object', 'missing'],
+  ])('refuses a report with %s', async (_name, claimFileProblem) => {
+    const { agents, id } = await withHeldRun();
+    const { response } = await registerRaw(daemon as DaemonHandle, undefined, { claimFileProblem });
+    expect(response).toMatchObject({ ok: false, error: 'Invalid claim file report' });
+    expect(agents.list().find((entry) => entry.id === id)?.messages.filter((message) => message.role === 'error')).toEqual([]);
+  });
+});
+
+describe('simultaneous first tool calls', () => {
+  it('redeems the code once and warns about nothing', async () => {
+    directory = await mkdtemp(join(tmpdir(), 't3-tab-daemon-claim-'));
+    const agents = new Agents({ env: { PATH: '' }, server: { command: 'node', args: [] } });
+    const failures: string[] = [];
+    agents.claimFailed = (_code, reason) => void failures.push(reason);
+    daemon = await startDaemon({ port: 0, stateDir: directory, agents });
+    const browser = await open(daemon, EXTENSION_ORIGIN);
+    const methods: string[] = [];
+    let redeemed = false;
+    browser.on('message', (data) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (message.type !== 'browser.request') return;
+      methods.push(String(message.method));
+      const reply = (fields: Record<string, unknown>): void =>
+        browser.send(JSON.stringify({ type: 'browser.response', protocolVersion: PROTOCOL_VERSION, requestId: message.requestId, ...fields }));
+      if (message.method !== 'session.claim') {
+        reply({ ok: true, result: message.method === 'tabs.list' ? { tabs: [] } : { registered: true } });
+      } else if (redeemed) {
+        reply({ ok: false, error: 'Unknown claim code, or one already used or expired.' });
+      } else {
+        redeemed = true;
+        setTimeout(() => reply({ ok: true, result: { shared: [3] } }), 40);
+      }
+    });
+    const { socket, response } = await registerRaw(daemon, CODE);
+    const session = (response.result as { session: ToolSession }).session;
+    const replies: Array<Record<string, unknown>> = [];
+    const both = new Promise<void>((resolve) => {
+      socket.on('message', (data) => {
+        replies.push(JSON.parse(data.toString()) as Record<string, unknown>);
+        if (replies.length === 2) resolve();
+      });
+    });
+    for (const requestId of ['one', 'two']) {
+      socket.send(JSON.stringify({ type: 'control.request', protocolVersion: PROTOCOL_VERSION, requestId, session, method: 'tabs', params: {} }));
+    }
+    await both;
+    expect(replies.every((reply) => reply.ok === true)).toBe(true);
+    expect(methods.filter((method) => method === 'session.claim')).toHaveLength(1);
+    expect(failures).toEqual([]);
   });
 });
 
