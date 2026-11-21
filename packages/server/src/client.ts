@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   PROTOCOL_VERSION,
   type BrowserStatus,
+  type ClaimFileProblem,
   type ControlRequest,
   type ControlResponse,
   type ToolContent,
@@ -21,7 +22,7 @@ const START_TIMEOUT_MS = 10_000;
 const LOCK_STALE_MS = 30_000;
 const CONTROL_TIMEOUT_MS = 5_000;
 // Longer than the daemon waits on the browser, so the daemon's own error arrives first.
-const TOOL_TIMEOUT_MS = 310_000;
+export const TOOL_TIMEOUT_MS = 310_000;
 
 export async function ensureDaemon(env: NodeJS.ProcessEnv = process.env): Promise<DaemonState> {
   const directory = stateDirectory(env);
@@ -75,7 +76,15 @@ export class DaemonSession {
   private readonly pending = new Map<string, PendingControl>();
   private clientName = 'MCP client';
 
-  constructor(private readonly env: NodeJS.ProcessEnv = process.env) {}
+  /**
+   * `claim` is the side-panel code a direct run's MCP server read from its private file; `claimFileProblem` says
+   * why it could not, so the daemon can warn in that conversation.
+   */
+  constructor(
+    private readonly env: NodeJS.ProcessEnv = process.env,
+    private readonly claim?: string,
+    private readonly claimFileProblem?: { file: string; problem: ClaimFileProblem },
+  ) {}
 
   setClientName(name: string | undefined): void {
     if (name !== undefined && name !== '') this.clientName = name;
@@ -132,6 +141,8 @@ export class DaemonSession {
           requestId: randomUUID(),
           method: 'session.register',
           clientName: this.clientName,
+          ...(this.claim === undefined ? {} : { claim: this.claim }),
+          ...(this.claimFileProblem === undefined ? {} : { claimFileProblem: this.claimFileProblem }),
         },
         CONTROL_TIMEOUT_MS,
       );

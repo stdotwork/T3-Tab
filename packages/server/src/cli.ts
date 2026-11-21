@@ -47,12 +47,20 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       }
       return;
     case 'mcp':
-      if (rest.length !== 0) throw new UsageError('Usage: t3-tab mcp');
-      await runMcpServer();
+      await runMcpServer(mcpOptions(rest));
       return;
     default:
       throw new UsageError('Usage: t3-tab <install|uninstall|daemon|native-host|mcp>');
   }
+}
+
+function mcpOptions(args: string[]): { claimFile?: string } {
+  if (args.length === 0) return {};
+  const [flag, path] = args;
+  if (args.length !== 2 || flag !== '--claim-file' || path === undefined || path === '') {
+    throw new UsageError('Usage: t3-tab mcp [--claim-file <path>]');
+  }
+  return { claimFile: path };
 }
 
 async function runDaemon(args: string[]): Promise<void> {

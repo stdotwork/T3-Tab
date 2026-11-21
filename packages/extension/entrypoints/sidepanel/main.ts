@@ -1,4 +1,5 @@
 import type { PanelRequest, PanelState } from '../../src/panel';
+import { initAgentPanel } from './agent';
 import { promptChoices, rowsShifted, siteChoices, siteStatus } from '../../src/panel-prompts';
 import type { PermissionDecision, PermissionPrompt, SitePermission } from '../../src/permissions';
 
@@ -11,6 +12,7 @@ interface PromptNode {
 
 const BUTTON_DELAY_MS = 500;
 const app = document.querySelector<HTMLElement>('#app');
+const agentRoot = document.querySelector<HTMLElement>('#agent');
 const tabIdParam = new URL(location.href).searchParams.get('tabId');
 const fixedTabId = tabIdParam === null ? undefined : Number(tabIdParam);
 const stateRequest: PanelRequest =
@@ -25,7 +27,7 @@ let shownOrder: string[] = [];
 async function refresh(): Promise<void> {
   if (app === null) return;
   try {
-    const state = await send(stateRequest);
+    const state = (await send(stateRequest)) as PanelState | { ok: true };
     if (!('sessions' in state)) throw new Error('Unexpected panel state');
     render(state);
   } catch (error) {
@@ -36,12 +38,12 @@ async function refresh(): Promise<void> {
   }
 }
 
-async function send(request: PanelRequest): Promise<PanelState | { ok: true }> {
+async function send(request: PanelRequest): Promise<unknown> {
   const result: unknown = await chrome.runtime.sendMessage(request);
   if (typeof result === 'object' && result !== null && (result as { ok?: unknown }).ok === false) {
     throw new Error(String((result as { error?: unknown }).error ?? 'The request failed'));
   }
-  return result as PanelState | { ok: true };
+  return result;
 }
 
 function render(state: PanelState): void {
@@ -186,9 +188,18 @@ function buttons(items: Array<[string, () => Promise<void>, (string | null)?]>):
   return row;
 }
 
+const agentPanel = agentRoot === null ? undefined : initAgentPanel(agentRoot, send);
+
 if (headless) {
-  (globalThis as typeof globalThis & { __t3tabRenderPanelState?: typeof render }).__t3tabRenderPanelState = render;
+  const hooks = globalThis as typeof globalThis & {
+    __t3tabRenderPanelState?: typeof render;
+    __t3tabRenderAgentState?: (state: Parameters<NonNullable<typeof agentPanel>['render']>[0]) => void;
+  };
+  hooks.__t3tabRenderPanelState = render;
+  hooks.__t3tabRenderAgentState = (state) => agentPanel?.render(state);
 } else {
   void refresh();
   setInterval(() => void refresh(), 1_000);
+  void agentPanel?.refresh(true);
+  setInterval(() => void agentPanel?.refresh(), 2_000);
 }

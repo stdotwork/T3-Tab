@@ -12,6 +12,8 @@ export const tabsShape = {
   action: z.enum(['list', 'open', 'switch', 'close']).optional().describe('Default list.'),
   url: z.string().optional().describe('URL to open.'),
   tab: tab.describe('Tab id, for switch and close.'),
+  // No description: only a thread started from the side panel uses it, and its message says what to pass.
+  claim: z.string().optional(),
 };
 
 export const readShape = {
