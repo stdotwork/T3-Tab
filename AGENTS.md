@@ -22,6 +22,8 @@ plugin are proprietary: study their behaviour and tool design, never copy their 
   the real tools).
 - When the tools or page reading change: the token benchmark, with its results in the PR.
 
+Browser checks run headless or on another machine, never on the owner's desktop display.
+
 Tests that touch agent configuration (`~/.claude`, `~/.codex`, T3's settings) or start agents run with a
 temporary `HOME` and XDG folders, never against the machine's live configuration.
 
