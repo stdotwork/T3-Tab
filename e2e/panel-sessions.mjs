@@ -2,6 +2,7 @@
 // owner's current tab, follows its replies and continues it. `t3`, `claude` and `codex` are fakes from
 // e2e/fakes on the daemon's PATH, inside the temporary HOME; they drive the real `t3-tab mcp` server.
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
@@ -117,6 +118,11 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   assert(bogus.isError === true && text(bogus).includes('Unknown claim code'), `A made-up claim code was accepted: ${text(bogus)}`);
   console.log(`Claim guard: a made-up code was refused: ${text(bogus)}`);
 
+  // The code in the thread's first message is used up: another session presenting it gets nothing.
+  const reused = await mcpClient.callTool({ name: 'tabs', arguments: { claim } });
+  assert(reused.isError === true && text(reused).includes('Unknown claim code'), `A used claim code was accepted again: ${text(reused)}`);
+  console.log(`Claim guard: the thread's used code was refused for another session: ${text(reused)}`);
+
   // T3 stopped: the panel says so and offers the direct runs; a T3 start fails with T3's own message.
   await setT3Mode(fakes, 'stopped');
   state = await panelRequest(serviceWorker, { type: 'panel.agents', refresh: true, tabId });
@@ -125,31 +131,55 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   assert(stoppedStart instanceof Error && stoppedStart.message.includes('No running T3 Code server'), `A start with T3 stopped: ${stoppedStart}`);
   console.log(`Panel with T3 stopped: ${state.status.t3.detail}`);
 
-  // Direct Claude Code: `claude -p` with only the T3-Tab server, which claims the tab through its environment.
+  // Direct Claude Code: `claude -p` limited to the T3-Tab server, which claims the tab from a private file.
   const claude = await panelRequest(serviceWorker, { type: 'panel.agentStart', via: 'claude', model: 'haiku', message: 'Read the tab', tabId });
   let run = await waitForConversation(serviceWorker, claude.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 2);
   const claudeCalls = (await calls(fakes)).filter((call) => call.name === 'claude');
   const claudeArgs = claudeCalls[0].args;
-  for (const expected of ['-p', '--strict-mcp-config', '--allowedTools', 'mcp__t3-tab', '--model', 'haiku']) {
+  for (const expected of ['-p', '--restricted', '--setting-sources', '--strict-mcp-config', '--tools', '--allowedTools', 'mcp__t3-tab', '--permission-mode', 'dontAsk', '--disable-slash-commands', '--model', 'haiku']) {
     assert(claudeArgs.includes(expected), `claude was not called with ${expected}: ${JSON.stringify(claudeArgs)}`);
   }
   assert(!claudeArgs.includes('--resume') && claudeCalls[0].input === 'Read the tab', `First claude call: ${JSON.stringify(claudeCalls[0])}`);
-  const mcpConfig = JSON.parse(claudeArgs[claudeArgs.indexOf('--mcp-config') + 1]);
-  assert(/^[A-Za-z0-9_-]{16,64}$/.test(mcpConfig.mcpServers['t3-tab'].env.T3_TAB_CLAIM ?? ''), `No claim in --mcp-config: ${JSON.stringify(mcpConfig)}`);
+  assert(claudeArgs[claudeArgs.indexOf('--tools') + 1] === '' && claudeArgs[claudeArgs.indexOf('--setting-sources') + 1] === '', `claude keeps tools or settings: ${JSON.stringify(claudeArgs)}`);
+  const firstClaimFile = claimFileOf(claudeArgs);
+  assert(firstClaimFile !== undefined && !JSON.stringify(claudeArgs).includes('T3_TAB_CLAIM'), `The claim is not in a private file: ${JSON.stringify(claudeArgs)}`);
+  assert(!existsSync(firstClaimFile), `The claim file was left behind: ${firstClaimFile}`);
   assert(run.messages[1].text.includes(`read: ${readLine}`), `Claude Code did not read the tab:\n${run.messages[1].text}`);
   await panelRequest(serviceWorker, { type: 'panel.agentSend', id: claude.conversation.id, message: 'Once more' });
   run = await waitForConversation(serviceWorker, claude.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 4);
   const resumeArgs = (await calls(fakes)).filter((call) => call.name === 'claude')[1]?.args ?? [];
   assert(resumeArgs[resumeArgs.indexOf('--resume') + 1] === run.threadId, `claude was not resumed with ${run.threadId}: ${JSON.stringify(resumeArgs)}`);
   assert(run.messages[3].text.includes(`read: ${readLine}`), `The resumed run did not get the tab again:\n${run.messages[3].text}`);
-  console.log(`Panel direct Claude Code: session ${run.threadId}, resumed with --resume; both turns read tab ${tabId}`);
+  const secondClaimFile = claimFileOf(resumeArgs);
+  assert(secondClaimFile !== undefined && secondClaimFile !== firstClaimFile, `The resumed turn reused its claim file: ${secondClaimFile}`);
+  console.log(`Panel direct Claude Code: session ${run.threadId}, resumed with --resume and a new claim code; both turns read tab ${tabId}`);
+
+  // A tab the owner unshares during a turn is not shared again with the next turn of that conversation.
+  const held = await panelRequest(serviceWorker, { type: 'panel.agentStart', via: 'claude', message: '[hold] Keep the tab', tabId });
+  let holder;
+  for (let attempt = 0; attempt < 100 && holder === undefined; attempt += 1) {
+    const { sessions: current } = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
+    holder = current.find((session) => session.name.startsWith('claude-code ·') && session.sharedTabIds.includes(tabId));
+    if (holder === undefined) await sleep(100);
+  }
+  assert(holder !== undefined, 'The held Claude Code turn never got the tab');
+  await panelRequest(serviceWorker, { type: 'panel.unshareTab', sessionId: holder.id, tabId });
+  await writeFile(join(fakes.fakeDir, 'release'), '');
+  await waitForConversation(serviceWorker, held.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 2);
+  await panelRequest(serviceWorker, { type: 'panel.agentSend', id: held.conversation.id, message: 'After the unshare' });
+  const afterUnshare = await waitForConversation(serviceWorker, held.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 4);
+  assert(!afterUnshare.messages[3].text.includes(`\n${tabId} `) && !afterUnshare.messages[3].text.includes(`read: ${readLine}`), `The next turn got the unshared tab back:\n${afterUnshare.messages[3].text}`);
+  console.log('Panel direct Claude Code: a tab unshared during a turn was not shared with the next turn');
 
   // Direct Codex: `codex exec --json` in a read-only sandbox, then `codex exec resume`.
   const codex = await panelRequest(serviceWorker, { type: 'panel.agentStart', via: 'codex', message: 'Read it with Codex', tabId });
   run = await waitForConversation(serviceWorker, codex.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 2);
   const codexArgs = (await calls(fakes)).filter((call) => call.name === 'codex')[0].args;
   assert(codexArgs[0] === 'exec' && codexArgs.includes('--json') && codexArgs.includes('sandbox_mode="read-only"') && codexArgs.at(-1) === '-', `codex exec: ${JSON.stringify(codexArgs)}`);
-  assert(codexArgs.some((value) => value.startsWith('mcp_servers.t3-tab.env={ T3_TAB_CLAIM = "')), `No claim in codex -c: ${JSON.stringify(codexArgs)}`);
+  for (const expected of ['--ignore-user-config', '--ignore-rules', 'shell_tool', 'apps', 'plugins', 'hooks', 'web_search="disabled"', 'mcp_servers.t3-tab.tool_timeout_sec=330']) {
+    assert(codexArgs.includes(expected), `codex was not called with ${expected}: ${JSON.stringify(codexArgs)}`);
+  }
+  assert(!JSON.stringify(codexArgs).includes('T3_TAB_CLAIM') && codexArgs.some((value) => value.startsWith('mcp_servers.t3-tab.args=') && value.includes('--claim-file')), `The claim is not in a private file: ${JSON.stringify(codexArgs)}`);
   assert(run.messages[1].text.includes(`read: ${readLine}`), `Codex did not read the tab:\n${run.messages[1].text}`);
   await panelRequest(serviceWorker, { type: 'panel.agentSend', id: codex.conversation.id, message: 'Codex again' });
   run = await waitForConversation(serviceWorker, codex.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 4);
@@ -345,6 +375,12 @@ async function filesContaining(root, tokens) {
   };
   await walk(root);
   return found;
+}
+
+function claimFileOf(args) {
+  const serverArgs = JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers['t3-tab'].args;
+  const index = serverArgs.indexOf('--claim-file');
+  return index === -1 ? undefined : serverArgs[index + 1];
 }
 
 async function renderAgents(panelPage, state) {

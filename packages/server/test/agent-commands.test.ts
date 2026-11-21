@@ -87,12 +87,12 @@ describe('parseT3Show', () => {
   });
 
   it('maps waiting, or pending requests, to waiting', () => {
-    expect(parseT3Show(show({ status: 'waiting' }))).toMatchObject({ status: 'waiting', active: false });
+    expect(parseT3Show(show({ status: 'waiting' }))).toMatchObject({ status: 'waiting', active: true });
     expect(parseT3Show(show({ status: 'idle', pendingRequestCount: 1 }))).toMatchObject({ status: 'waiting' });
     expect(parseT3Show(show({ status: 'running', pendingRequestCount: 2 }))).toMatchObject({ status: 'waiting', active: true });
   });
 
-  it('maps failed to failed and anything else to idle', () => {
+  it('maps failed to failed, and completed or no status to idle', () => {
     expect(parseT3Show(show({ status: 'failed' }))).toMatchObject({ status: 'failed', active: false });
     expect(parseT3Show(show({ status: 'completed' }))).toMatchObject({ status: 'idle', active: false });
     expect(parseT3Show(show({}))).toMatchObject({ status: 'idle' });
@@ -124,8 +124,8 @@ describe('parseT3Show', () => {
 });
 
 describe('claudeArgs', () => {
-  it('starts only the t3-tab server with the claim and state folder', () => {
-    const args = claudeArgs({ server, claim: CODE, env: { XDG_STATE_HOME: '/state' } });
+  it('starts only the t3-tab server with the claim file and state folder', () => {
+    const args = claudeArgs({ server, claimFile: '/run/claim', env: { XDG_STATE_HOME: '/state' } });
     expect(args).toEqual(expect.arrayContaining(['-p', '--strict-mcp-config', '--allowedTools', 'mcp__t3-tab']));
     expect(args).not.toContain('--model');
     expect(args).not.toContain('--resume');
@@ -135,23 +135,23 @@ describe('claudeArgs', () => {
     expect(Object.keys(config.mcpServers)).toEqual(['t3-tab']);
     expect(config.mcpServers['t3-tab']).toMatchObject({
       command: server.command,
-      args: server.args,
-      env: { T3_TAB_CLAIM: CODE, XDG_STATE_HOME: '/state' },
+      args: [...server.args, '--claim-file', '/run/claim'],
+      env: { XDG_STATE_HOME: '/state' },
     });
   });
 
   it('leaves out XDG_STATE_HOME when unset or empty', () => {
     for (const env of [{}, { XDG_STATE_HOME: '' }]) {
-      const args = claudeArgs({ server, claim: CODE, env });
+      const args = claudeArgs({ server, env });
       const config = JSON.parse(args[args.indexOf('--mcp-config') + 1] as string) as {
         mcpServers: Record<string, { env: Record<string, string> }>;
       };
-      expect(config.mcpServers['t3-tab']?.env).toEqual({ T3_TAB_CLAIM: CODE });
+      expect(config.mcpServers['t3-tab']?.env).toEqual({});
     }
   });
 
   it('adds model and resume', () => {
-    const args = claudeArgs({ server, claim: CODE, env: {}, model: 'opus', resume: 'sess-1' });
+    const args = claudeArgs({ server, env: {}, model: 'opus', resume: 'sess-1' });
     expect(args[args.indexOf('--model') + 1]).toBe('opus');
     expect(args[args.indexOf('--resume') + 1]).toBe('sess-1');
   });
@@ -159,20 +159,20 @@ describe('claudeArgs', () => {
 
 describe('codexArgs', () => {
   it('runs exec read-only with the server set inline', () => {
-    const args = codexArgs({ server, claim: CODE, env: { XDG_STATE_HOME: '/state' } });
+    const args = codexArgs({ server, claimFile: '/run/claim', env: { XDG_STATE_HOME: '/state' } });
     expect(args.slice(0, 3)).toEqual(['exec', '--json', '--skip-git-repo-check']);
     expect(args.at(-1)).toBe('-');
     expect(args).toContain('sandbox_mode="read-only"');
     expect(args).toContain('mcp_servers.t3-tab.command="/usr/bin/node"');
-    expect(args).toContain('mcp_servers.t3-tab.args=["/x/cli.js", "mcp"]');
-    expect(args).toContain(`mcp_servers.t3-tab.env={ T3_TAB_CLAIM = "${CODE}", XDG_STATE_HOME = "/state" }`);
+    expect(args).toContain('mcp_servers.t3-tab.args=["/x/cli.js", "mcp", "--claim-file", "/run/claim"]');
+    expect(args).toContain('mcp_servers.t3-tab.env={ XDG_STATE_HOME = "/state" }');
     expect(args).not.toContain('-m');
     expect(args).not.toContain('resume');
     for (const [index, value] of args.entries()) if (value.includes('=')) expect(args[index - 1]).toBe('-c');
   });
 
   it('puts the resume id just before the final dash, and the model after the settings', () => {
-    const args = codexArgs({ server, claim: CODE, env: {}, model: 'gpt-x', resume: 'th-7' });
+    const args = codexArgs({ server, env: {}, model: 'gpt-x', resume: 'th-7' });
     expect(args.slice(0, 2)).toEqual(['exec', 'resume']);
     expect(args.slice(-2)).toEqual(['th-7', '-']);
     expect(args[args.indexOf('-m') + 1]).toBe('gpt-x');
@@ -215,5 +215,157 @@ describe('parseCodexLine', () => {
     expect(parseCodexLine('{"type":"turn.failed"}')).toEqual({ done: { ok: false, error: 'The turn failed' } });
     expect(parseCodexLine('{"type":"error","message":"e"}')).toEqual({ error: 'e' });
     expect(parseCodexLine('nope')).toEqual({});
+  });
+});
+
+describe('direct run isolation', () => {
+  const claimFile = '/state/claims/run-x/claim';
+
+  it('limits Claude Code to the T3-Tab server, with no settings, hooks or built-in tools', () => {
+    const args = claudeArgs({ server, claimFile, env: {} });
+    const config = args[args.indexOf('--mcp-config') + 1] as string;
+    expect(args).toEqual([
+      '-p',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--restricted',
+      '--setting-sources',
+      '',
+      '--strict-mcp-config',
+      '--mcp-config',
+      config,
+      '--tools',
+      '',
+      '--allowedTools',
+      'mcp__t3-tab',
+      '--permission-mode',
+      'dontAsk',
+      '--disable-slash-commands',
+    ]);
+    const parsed = JSON.parse(config) as { mcpServers: Record<string, { args: string[]; env: Record<string, string> }> };
+    expect(Object.keys(parsed.mcpServers)).toEqual(['t3-tab']);
+    expect(parsed.mcpServers['t3-tab']?.args).toEqual(['/x/cli.js', 'mcp', '--claim-file', claimFile]);
+    expect(parsed.mcpServers['t3-tab']?.env).toEqual({});
+  });
+
+  it('limits Codex to the T3-Tab server, ignoring user config and turning off shell, apps, plugins and hooks', () => {
+    const args = codexArgs({ server, claimFile, env: { XDG_STATE_HOME: '/state' } });
+    const disabled = [
+      'shell_tool',
+      'unified_exec',
+      'view_image',
+      'apps',
+      'plugins',
+      'remote_plugin',
+      'hooks',
+      'plugin_hooks',
+      'multi_agent',
+      'tool_suggest',
+      'in_app_browser',
+      'browser_use',
+      'browser_use_external',
+      'computer_use',
+      'image_generation',
+      'skill_mcp_dependency_install',
+      'goals',
+      'memories',
+      'standalone_web_search',
+    ];
+    expect(args).toEqual([
+      'exec',
+      '--json',
+      '--skip-git-repo-check',
+      '--ignore-user-config',
+      '--ignore-rules',
+      ...disabled.flatMap((feature) => ['--disable', feature]),
+      '-c',
+      'approval_policy="never"',
+      '-c',
+      'sandbox_mode="read-only"',
+      '-c',
+      'web_search="disabled"',
+      '-c',
+      'mcp_servers.t3-tab.command="/usr/bin/node"',
+      '-c',
+      `mcp_servers.t3-tab.args=["/x/cli.js", "mcp", "--claim-file", "${claimFile}"]`,
+      '-c',
+      'mcp_servers.t3-tab.env={ XDG_STATE_HOME = "/state" }',
+      '-c',
+      'mcp_servers.t3-tab.enabled=true',
+      '-c',
+      'mcp_servers.t3-tab.enabled_tools=["status", "tabs", "read", "screenshot", "act", "run_js"]',
+      '-c',
+      'mcp_servers.t3-tab.disabled_tools=[]',
+      '-c',
+      'mcp_servers.t3-tab.default_tools_approval_mode="approve"',
+      '-c',
+      'mcp_servers.t3-tab.tool_timeout_sec=330',
+      '-',
+    ]);
+  });
+
+  it('gives a Codex tool call longer than the 310 seconds T3-Tab itself waits', () => {
+    const args = codexArgs({ server, env: {} });
+    const setting = args.find((value) => value.startsWith('mcp_servers.t3-tab.tool_timeout_sec='));
+    expect(Number(setting?.split('=')[1])).toBeGreaterThan(310);
+  });
+
+  it('keeps the same isolation on a resumed turn', () => {
+    const fresh = codexArgs({ server, env: {} });
+    const resumed = codexArgs({ server, env: {}, resume: 'th-7' });
+    expect(resumed.slice(0, 2)).toEqual(['exec', 'resume']);
+    expect(resumed.slice(2, -2)).toEqual(fresh.slice(1, -1));
+    expect(resumed.slice(-2)).toEqual(['th-7', '-']);
+  });
+
+  it('puts no claim code on the command line', () => {
+    for (const args of [claudeArgs({ server, claimFile, env: {} }), codexArgs({ server, claimFile, env: {} })]) {
+      expect(args.join(' ')).not.toContain(CODE);
+      expect(args.join(' ')).not.toContain('T3_TAB_CLAIM');
+    }
+  });
+});
+
+describe('T3 run status', () => {
+  const show = (status: string, error?: string | null): string =>
+    JSON.stringify({ thread: { status }, messages: [], ...(error === undefined ? {} : { error }) });
+
+  // Every status in T3 Code's OrchestratorMcpThreadStatus (idle plus OrchestrationV2RunStatus).
+  it.each([
+    ['idle', 'idle', false],
+    ['preparing', 'running', true],
+    ['queued', 'running', true],
+    ['starting', 'running', true],
+    ['running', 'running', true],
+    ['waiting', 'waiting', true],
+    ['completed', 'idle', false],
+    ['interrupted', 'failed', false],
+    ['failed', 'failed', false],
+    ['cancelled', 'failed', false],
+    ['rolled_back', 'failed', false],
+  ])('maps %s to %s (still following: %s)', (status, expected, active) => {
+    expect(parseT3Show(show(status))).toMatchObject({ status: expected, active });
+  });
+
+  it('keeps following a status it does not know', () => {
+    expect(parseT3Show(show('paused'))).toMatchObject({ status: 'running', active: true });
+  });
+
+  it('keeps the error text of a run that ended badly', () => {
+    expect(parseT3Show(show('failed', 'The provider crashed'))).toMatchObject({ status: 'failed', error: 'The provider crashed' });
+  });
+
+  it.each([
+    ['interrupted', 'The run was interrupted.'],
+    ['cancelled', 'The run was cancelled.'],
+    ['rolled_back', 'The run was rolled back.'],
+    ['failed', 'The run failed.'],
+  ])('says what happened to a %s run that has no error text', (status, text) => {
+    expect(parseT3Show(show(status, null))).toMatchObject({ status: 'failed', error: text });
+  });
+
+  it('carries no error for a run that completed', () => {
+    expect(parseT3Show(show('completed', null)).error).toBeUndefined();
   });
 });

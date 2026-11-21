@@ -67,7 +67,7 @@ export async function handlePanelRequest(
   if (request.type === 'panel.state') return await panelState(request.tabId);
   if (request.type === 'panel.agents') return await agentPanelState(request.refresh === true, request.tabId);
   if (request.type === 'panel.agentStart') return await startAgent(request);
-  if (request.type === 'panel.agentSend') return await askDaemon('agents.send', { id: request.id, message: request.message });
+  if (request.type === 'panel.agentSend') return await sendToAgent(request.id, request.message);
   if (request.type === 'panel.t3SignIn') return await signInToT3();
   if (request.type === 'panel.t3SignOut') return await askDaemon('t3.signOut', {});
   if (request.type === 'panel.shareTab') {
@@ -78,6 +78,7 @@ export async function handlePanelRequest(
   if (request.type === 'panel.unshareTab') {
     const tab = await panelTab(request.tabId);
     await sessionStore.unshare(request.sessionId, tab.id);
+    await claimStore.forgetTab(request.sessionId, tab.id);
     return { ok: true };
   }
   if (request.type === 'panel.decide') {
@@ -142,12 +143,27 @@ async function startAgent(request: AgentStartRequest): Promise<{ conversation: A
     return origin === undefined ? { tabId: tab.id } : { tabId: tab.id, origin };
   });
   const claim = newClaimCode();
-  await claimStore.issue(claim, claimTabs);
+  // A direct run gets its code through a private file; a T3 thread's agent can only read it in its first message.
+  const grant = await claimStore.issue(claim, claimTabs, { route: request.via === 't3' ? 'message' : 'launch' });
   const params = { via: request.via, message: request.message, claim, ...optionalFields(request) };
   try {
-    return await askDaemon('agents.start', params);
+    const started = await askDaemon('agents.start', params);
+    if (request.via !== 't3') await claimStore.bindConversation(grant, started.conversation.id);
+    return started;
   } catch (error) {
     await claimStore.revoke(claim);
+    throw error;
+  }
+}
+
+/** Each turn of a direct run is a new process and session, so it gets a new code for the tabs still shared. */
+async function sendToAgent(id: string, message: string): Promise<{ conversation: AgentConversation }> {
+  const claim = newClaimCode();
+  const renewed = await claimStore.renew(id, claim);
+  try {
+    return await askDaemon('agents.send', { id, message, ...(renewed ? { claim } : {}) });
+  } catch (error) {
+    if (renewed) await claimStore.revoke(claim);
     throw error;
   }
 }

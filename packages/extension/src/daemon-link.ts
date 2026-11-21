@@ -1,4 +1,5 @@
 import {
+  PROTOCOL_MISMATCH,
   PROTOCOL_VERSION,
   type BrowserDaemonRequestMessage,
   type DaemonMethod,
@@ -18,12 +19,25 @@ const CONNECT_WAIT_MS = 5_000;
 
 let socket: WebSocket | undefined;
 let connect: (() => void) | undefined;
+/** Set when the background program closed the link because it speaks another protocol version. */
+let versionProblem = false;
 const pending = new Map<string, Pending>();
 
 /** The service worker's current link to the background program, set when it opens and cleared when it closes. */
 export function setDaemonSocket(current: WebSocket | undefined): void {
-  if (socket !== undefined && socket !== current) failAll(new Error('The connection to the T3-Tab background program closed'));
+  if (current !== undefined) versionProblem = false;
+  if (socket !== undefined && socket !== current) {
+    failAll(new Error(versionProblem ? PROTOCOL_MISMATCH : 'The connection to the T3-Tab background program closed'));
+  }
   socket = current;
+}
+
+/**
+ * Records why the link closed. A daemon of another version closes it with 1008: an older one says "Invalid protocol
+ * message", because it does not know this version's messages.
+ */
+export function noteDaemonClose(code: number, reason: string): void {
+  versionProblem = code === 1008 && (reason === 'Invalid protocol message' || reason === PROTOCOL_MISMATCH);
 }
 
 /** Called when a request finds no open link, so the worker tries to connect again. */
@@ -67,6 +81,7 @@ async function openSocket(): Promise<WebSocket> {
   const deadline = Date.now() + CONNECT_WAIT_MS;
   if (socket?.readyState !== WebSocket.OPEN) connect?.();
   while (socket?.readyState !== WebSocket.OPEN) {
+    if (versionProblem) throw new Error(PROTOCOL_MISMATCH);
     if (Date.now() >= deadline) {
       throw new Error('T3-Tab is not connected to its background program. Run `t3-tab install`, then reopen the browser.');
     }

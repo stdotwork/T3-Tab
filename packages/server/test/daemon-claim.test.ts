@@ -1,6 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import type { ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
 
 import { EXTENSION_ORIGIN, PROTOCOL_VERSION, type ToolSession } from '@t3-tab/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -196,5 +199,92 @@ describe('side-panel requests through the daemon', () => {
     const reply = next(browser);
     browser.send(JSON.stringify({ type: 'browser.daemonRequest', protocolVersion: PROTOCOL_VERSION, requestId: 'q3', method: 'agents.nope', params: {} }));
     expect(await reply).toMatchObject({ requestId: 'q3', ok: false, error: 'Unknown method: agents.nope' });
+  });
+});
+
+describe('claim failures', () => {
+  /** A browser that answers session.claim with the given errors in turn, then succeeds. */
+  async function refusingBrowser(handle: DaemonHandle, errors: string[]): Promise<string[]> {
+    const browser = await open(handle, EXTENSION_ORIGIN);
+    const methods: string[] = [];
+    browser.on('message', (data) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (message.type !== 'browser.request') return;
+      methods.push(String(message.method));
+      const error = message.method === 'session.claim' ? errors.shift() : undefined;
+      browser.send(
+        JSON.stringify({
+          type: 'browser.response',
+          protocolVersion: PROTOCOL_VERSION,
+          requestId: message.requestId,
+          ...(error === undefined
+            ? { ok: true, result: message.method === 'tabs.list' ? { tabs: [] } : message.method === 'session.claim' ? { shared: [3] } : { registered: true } }
+            : { ok: false, error }),
+        }),
+      );
+    });
+    return methods;
+  }
+
+  const claims = (methods: string[]): number => methods.filter((method) => method === 'session.claim').length;
+
+  it('keeps the code after a failure the browser may recover from, and retries it', async () => {
+    const handle = await start();
+    const methods = await refusingBrowser(handle, ['The browser did not answer session.claim within 30 seconds']);
+    const { socket, response } = await registerRaw(handle, CODE);
+    const session = (response.result as { session: ToolSession }).session;
+    await tool(socket, session);
+    expect(claims(methods)).toBe(1);
+    await tool(socket, session);
+    expect(claims(methods)).toBe(2);
+    await tool(socket, session);
+    expect(claims(methods)).toBe(2);
+  });
+
+  it('drops a code the browser refused, and warns in the conversation it belongs to', async () => {
+    directory = await mkdtemp(join(tmpdir(), 't3-tab-daemon-claim-'));
+    const bin = join(directory, 'bin');
+    await mkdir(bin);
+    await writeFile(join(bin, 'claude'), '#!/bin/sh\n');
+    await chmod(join(bin, 'claude'), 0o755);
+    const held = (): ChildProcess => {
+      const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
+      child.stdin = new Writable({ write: (_chunk, _encoding, callback) => callback() });
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = () => {
+        setImmediate(() => child.emit('close', null));
+        return true;
+      };
+      setImmediate(() => child.emit('spawn'));
+      return child as unknown as ChildProcess;
+    };
+    const agents = new Agents({ env: { PATH: bin, HOME: directory }, server: { command: 'node', args: [] }, spawn: held, stateDir: directory });
+    daemon = await startDaemon({ port: 0, stateDir: directory, agents });
+    const conversation = await agents.start({ via: 'claude', message: 'Hi', claim: CODE });
+    const methods = await refusingBrowser(daemon, ['Unknown claim code, or one already used or expired.']);
+    const { socket, response } = await registerRaw(daemon, CODE);
+    const session = (response.result as { session: ToolSession }).session;
+    expect(await tool(socket, session)).toMatchObject({ ok: true });
+    const shown = agents.list().find((entry) => entry.id === conversation.id);
+    expect(shown?.messages.at(-1)?.role).toBe('error');
+    expect(shown?.messages.at(-1)?.text).toContain('could not share');
+    await tool(socket, session);
+    expect(claims(methods)).toBe(1);
+  });
+});
+
+describe('protocol version mismatch', () => {
+  it('closes an extension of another version with a reason that says to update', async () => {
+    const handle = await start();
+    const browser = await open(handle, EXTENSION_ORIGIN);
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      browser.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    browser.send(JSON.stringify({ type: 'browser.hello', protocolVersion: PROTOCOL_VERSION + 1, browserId: 'b', browserName: 'Chromium' }));
+    const { code, reason } = await closed;
+    expect(code).toBe(1008);
+    expect(reason).toContain('different versions');
+    expect(Buffer.byteLength(reason)).toBeLessThanOrEqual(123);
   });
 });

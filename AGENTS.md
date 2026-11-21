@@ -52,9 +52,10 @@ reads it, is continued with `t3 thread send` and polled with `t3 thread show`; t
 environment (`e2e/fakes/t3-server.mjs`, T3's OAuth and `/mcp` answers, recorded in the temporary T3 home's
 `server-runtime.json`) refuses a forged answer and a full-access grant, keeps a read-only one in a 0600 file,
 lists T3's projects and models in the panel, starts a thread with listed values and signs out, and no file,
-panel reply, command argument or environment but the credential file holds a token; a made-up claim code is
-refused; T3 stopped and T3 missing are reported; direct Claude Code and Codex runs read the tab, and are
-resumed with the session id they printed. It renders the panel from that state and, when
+panel reply, command argument or environment but the credential file holds a token; a made-up claim code and a
+used one are refused; T3 stopped and T3 missing are reported; direct Claude Code and Codex runs start with
+their isolating flags, read the tab, and are resumed with the session id they printed and a new claim code;
+a tab the owner unshares during a direct turn is not shared with the next turn. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
 variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless.
@@ -189,7 +190,11 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
 
 - **T3 Code threads.** The daemon runs `t3 thread start --json [--provider <instance> --model <slug>]
   <project> -`, `t3 thread send --json <thread> -` and `t3 thread show --json --messages 20 <thread>`, with
-  the message on stdin, and polls `show` every 3 seconds until the run it started has finished. Each `t3 thread` command signs in to T3
+  the message on stdin, and polls `show` every 3 seconds until the run it started reaches a terminal status.
+  A run waiting on an answer stays followed, polled less often up to every 30 seconds. `idle` and `completed`
+  show as done; `failed`, `interrupted`, `cancelled` and `rolled_back` show as failed with T3's error text; a
+  status T3-Tab does not know stays followed. After 6 hours T3-Tab stops following and shows that as a failure,
+  though the thread may still be running in T3. Each `t3 thread` command signs in to T3
   for a moment, so the panel checks T3's state at most once a minute unless the owner reopens the panel. The project is
   a T3 project id or a folder inside one; provider and model are optional (both or neither). The `t3` CLI has
   no command that lists projects, providers or models; the panel picks them from lists once T3-Tab is signed
@@ -222,21 +227,49 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
   `<T3 home>/runtime/versions/<version>/t3`; the T3 home is `T3CODE_HOME` or `~/.t3`. Whether T3 is running
   comes from `t3 thread list --json --project /`: a running server answers that no project matches, a stopped
   one that it is not running. The panel shows "not found" or "not running" and then offers the direct runs.
-- **Direct runs.** Claude Code: `claude -p --output-format stream-json --verbose --strict-mcp-config
-  --mcp-config <T3-Tab only> --allowedTools mcp__t3-tab [--model <m>] [--resume <session>]`. Codex: `codex
-  exec [resume] --json --skip-git-repo-check -c sandbox_mode="read-only" -c mcp_servers.t3-tab.*=… [-m <m>]
-  [<session>] -`. The message goes on stdin, the folder defaults to the home folder, and each turn is one
-  process, continued with the session id the CLI printed. Only T3-Tab's MCP server is loaded, and the agent
-  gets T3-Tab's tools plus the CLI's read-only ones.
+- **Direct runs.** The message goes on stdin, the folder defaults to the home folder, and each turn is one
+  process, continued with the session id the CLI printed. The agent gets T3-Tab's tools and no others:
+  - Claude Code: `claude -p --output-format stream-json --verbose --restricted --setting-sources ""
+    --strict-mcp-config --mcp-config <T3-Tab only> --tools "" --allowedTools mcp__t3-tab --permission-mode
+    dontAsk --disable-slash-commands [--model <m>] [--resume <session>]`. User, project and local settings and
+    their hooks are not loaded, there are no built-in tools, and anything not allowed is denied without a
+    prompt. The login is untouched. Organization-managed settings still apply, and a `CLAUDE.md` in the folder
+    is still read as text.
+  - Codex: `codex exec [resume] --json --skip-git-repo-check --ignore-user-config --ignore-rules --disable
+    <feature>… -c approval_policy="never" -c sandbox_mode="read-only" -c web_search="disabled" -c
+    mcp_servers.t3-tab.*=… [-m <m>] [<session>] -`. `$CODEX_HOME/config.toml` is ignored while the login there
+    still works, which also leaves a project's `.codex/config.toml` untrusted and unapplied. The disabled
+    features are the shell, image viewing, apps, plugins, hooks, sub-agents, browser and computer use, image
+    generation, goals, memories and web search; `--disable` stops the run if Codex no longer knows a name. The
+    `t3-tab` entry sets its command, arguments, enabled state, tool list, approval and a 330-second tool
+    timeout (T3-Tab itself waits up to 310). System-level Codex config (`/etc/codex`) still applies. Settings
+    in the owner's `config.toml`, such as a default model or a custom provider, do not apply to these runs.
+- **Stopping a run.** Direct runs and `t3` commands run in their own process group. A timeout or daemon
+  shutdown sends SIGTERM to the group, SIGKILL 5 seconds later, and waits for the process to close. The
+  conversation then shows as failed with the reason.
 - **The owner's tabs.** Start shares the current tab, or every tab of its group when the owner made that
   group (not a session's). The extension issues a random claim code for those tabs (`claims.ts`, kept in
-  `chrome.storage.session`) and the daemon only passes it on. A direct run's MCP server is started with
-  `T3_TAB_CLAIM` and claims at its first tool call. A T3 thread's agent starts its MCP servers from its own
-  config, so its first message ends with a line asking it to call `tabs` with `{"claim": "<code>"}`; the panel
-  hides that line. The session that claims gets the tabs shared as the panel's "Share current tab" does: a
-  tab still on the origin it showed at start is shared with that origin approved, and a tab that moved is
-  shared unapproved. Every prompt, site setting and check above still applies, and the owner can unshare
-  from the session list. A code the extension did not issue is refused.
+  `chrome.storage.session`) and the daemon only passes it on. A code works once: the expiry check and the
+  delete are one serialized step. It works only by the route it was issued for, so a direct run's code is
+  refused through the `tabs` tool.
+  - A direct run's code lasts up to an hour. Each turn gets a new one, for the tabs still shared with that
+    conversation: a tab the owner unshared is left out. The daemon writes it to a `0600` file in a private
+    folder under its state folder and passes only the path (`t3-tab mcp --claim-file <path>`). The MCP server
+    reads and deletes the file, and the daemon removes the folder when the turn ends. The code is never in a
+    command line, an environment variable or the agent's context. If a claim fails, the conversation shows a
+    warning and the tool call still runs without the tabs.
+  - A T3 thread's agent starts its MCP servers from its own config, so the code has to be in its first message,
+    in a line asking it to call `tabs` with `{"claim": "<code>"}`. That message stays in T3's stored transcript.
+    The code there is harmless once used, and it expires after 10 minutes if it is not. If the provider restarts,
+    the new session has no tabs until the owner shares one from the session list.
+  - The panel hides the claim line and replaces any code of the conversation in replies, titles and errors.
+
+  The session that claims gets the tabs shared as the panel's "Share current tab" does: a tab still on the
+  origin it showed at start is shared with that origin approved, and a tab that moved is shared unapproved.
+  Every prompt, site setting and check above still applies, and the owner can unshare from the session list. A
+  code the extension did not issue is refused.
+- **Versions.** The extension, native host and daemon must speak the same `PROTOCOL_VERSION`. On a mismatch
+  the link closes and the panel says to rebuild, run `t3-tab install` and reload the extension.
 
 ## CI
 

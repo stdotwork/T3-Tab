@@ -1,7 +1,9 @@
 import { EventEmitter } from 'node:events';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import { spawn as realSpawn } from 'node:child_process';
 import { PassThrough, Writable } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 
@@ -9,7 +11,7 @@ import type { AgentConversation } from '@t3-tab/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { claimNote, claudeArgs, t3SendArgs, t3ShowArgs, t3StartArgs } from '../src/agents/commands.js';
-import { Agents, parseStartParams } from '../src/agents/conversations.js';
+import { Agents, parseStartParams, run, type Spawn } from '../src/agents/conversations.js';
 import { findExecutable } from '../src/agents/locate.js';
 
 const CLAIM = 'abcdefghijklmnop1234';
@@ -48,7 +50,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  agents?.close();
+  await agents?.close();
   agents = undefined;
   await rm(root, { recursive: true, force: true });
 });
@@ -309,7 +311,9 @@ describe('direct runs', () => {
     expect(calls[0]?.cwd).toBe(home);
     await waitFor(() => view(started.id).status === 'idle', 'idle');
     expect(calls[0]?.stdin).toBe('Hi');
-    expect(calls[0]?.args).toEqual(claudeArgs({ server: { command: 'node', args: ['/x/cli.js', 'mcp'] }, claim: CLAIM, env: { PATH: bin, HOME: home }, model: 'opus' }));
+    const sent = calls[0]?.args ?? [];
+    const claimFile = (JSON.parse(sent[sent.indexOf('--mcp-config') + 1] as string) as { mcpServers: Record<string, { args: string[] }> }).mcpServers['t3-tab']?.args.at(-1);
+    expect(sent).toEqual(claudeArgs({ server: { command: 'node', args: ['/x/cli.js', 'mcp'] }, claimFile, env: { PATH: bin, HOME: home }, model: 'opus' }));
     expect(view(started.id)).toMatchObject({ threadId: 'sess-1', project: home });
     expect(view(started.id).messages).toEqual([
       { role: 'user', text: 'Hi' },
@@ -379,5 +383,245 @@ describe('direct runs', () => {
   it('refuses a send to an unknown conversation', async () => {
     await expect(make().send('nope', 'x')).rejects.toThrow('No such conversation');
     await expect(make2(agents).send(5, 'x')).rejects.toThrow('Invalid conversation id');
+  });
+});
+
+describe('T3 polling', () => {
+  const launch = '{"threadId":"th1","runId":"r1"}';
+
+  it('keeps following a waiting run through running to idle', async () => {
+    await install('t3');
+    const states = ['waiting', 'waiting', 'running', 'idle'];
+    let shows = 0;
+    handler = (call) => {
+      if (call.args[1] === 'start') return { stdout: launch };
+      const status = states[Math.min(shows, states.length - 1)] as string;
+      shows += 1;
+      return { stdout: showJson(status, 'r1', status === 'idle' ? [{ role: 'assistant', text: 'Finished' }] : []) };
+    };
+    const started = await make().start({ via: 't3', message: 'Do it', claim: CLAIM, project: '/proj' });
+    await waitFor(() => view(started.id).status === 'waiting', 'waiting');
+    await waitFor(() => view(started.id).status === 'idle', 'idle after waiting');
+    expect(shows).toBe(4);
+    expect(view(started.id).messages.at(-1)).toEqual({ role: 'assistant', text: 'Finished' });
+  });
+
+  it('shows a run that ended without completing as failed, with its error', async () => {
+    await install('t3');
+    handler = (call) =>
+      call.args[1] === 'start'
+        ? { stdout: launch }
+        : { stdout: JSON.stringify({ thread: { status: 'interrupted', latestRunId: 'r1' }, messages: [{ role: 'user', text: 'Do it' }], error: 'Stopped by the owner' }) };
+    const started = await make().start({ via: 't3', message: 'Do it', claim: CLAIM, project: '/proj' });
+    await waitFor(() => view(started.id).status === 'failed', 'failed');
+    expect(view(started.id).error).toBe('Stopped by the owner');
+    expect(view(started.id).messages.at(-1)).toEqual({ role: 'error', text: 'Stopped by the owner' });
+  });
+
+  it('ends failed, with a message, when polling reaches its time limit', async () => {
+    await install('t3');
+    handler = (call) => (call.args[1] === 'start' ? { stdout: launch } : { stdout: showJson('running', 'r1') });
+    agents = new Agents({ env: { PATH: bin, HOME: home }, server: { command: 'node', args: [] }, spawn: fakeSpawn, pollMs: 5, pollGiveUpMs: 40 });
+    const started = await agents.start({ via: 't3', message: 'Do it', claim: CLAIM, project: '/proj' });
+    await waitFor(() => view(started.id).status === 'failed', 'failed at the time limit');
+    expect(view(started.id).error).toContain('stopped following');
+    expect(view(started.id).messages.at(-1)?.role).toBe('error');
+  });
+
+  it('hides the claim code when the agent repeats it in a reply or the title', async () => {
+    await install('t3');
+    handler = (call) =>
+      call.args[1] === 'start'
+        ? { stdout: launch }
+        : {
+            stdout: JSON.stringify({
+              thread: { status: 'failed', latestRunId: 'r1', title: `Claim ${CLAIM}` },
+              messages: [{ role: 'assistant', text: `I used ${CLAIM} to claim the tab` }],
+              error: `Bad code ${CLAIM}`,
+            }),
+          };
+    const started = await make().start({ via: 't3', message: 'Do it', claim: CLAIM, project: '/proj' });
+    await waitFor(() => view(started.id).status === 'failed', 'failed');
+    expect(JSON.stringify(view(started.id))).not.toContain(CLAIM);
+    expect(view(started.id).messages[0]?.text).toContain('I used');
+  });
+});
+
+describe('status probe', () => {
+  it('shares one t3 probe between overlapping refreshes', async () => {
+    await install('t3');
+    let release: () => void = () => undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    handler = () => ({ code: 1, stderr: "No T3 Code project matches '/'", hold });
+    make();
+    const first = make2(agents).status(true);
+    const second = make2(agents).status(true);
+    await waitFor(() => calls.length >= 1, 'the probe');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    release();
+    const [one, two] = await Promise.all([first, second]);
+    expect(calls).toHaveLength(1);
+    expect(one.t3.state).toBe('running');
+    expect(two.t3.state).toBe('running');
+  });
+});
+
+describe('direct turn claims', () => {
+  const FRESH = 'zyxwvutsrqponmlk9876';
+  const claudeReply = (text: string): string =>
+    [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-1' }),
+      JSON.stringify({ type: 'assistant', session_id: 'sess-1', message: { content: [{ type: 'text', text }] } }),
+      JSON.stringify({ type: 'result', subtype: 'success', session_id: 'sess-1', result: text }),
+    ].join('\n') + '\n';
+
+  function claimFileOf(args: string[]): string | undefined {
+    const config = JSON.parse(args[args.indexOf('--mcp-config') + 1] as string) as { mcpServers: Record<string, { args: string[] }> };
+    const serverArgs = config.mcpServers['t3-tab']?.args ?? [];
+    const index = serverArgs.indexOf('--claim-file');
+    return index === -1 ? undefined : serverArgs[index + 1];
+  }
+
+  it('hands each turn its own code in a private file, never on the command line, and removes the file', async () => {
+    await install('claude');
+    const seen: Array<{ path: string; code: string; mode: number }> = [];
+    handler = async (call) => {
+      expect(call.args.join(' ')).not.toContain(CLAIM);
+      expect(call.args.join(' ')).not.toContain(FRESH);
+      const path = claimFileOf(call.args) as string;
+      seen.push({ path, code: await readFile(path, 'utf8'), mode: (await stat(path)).mode & 0o777 });
+      return { stdout: claudeReply('ok') };
+    };
+    const started = await make().start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    await waitFor(() => view(started.id).status === 'idle', 'first turn');
+    await make2(agents).send(started.id, 'More', FRESH);
+    await waitFor(() => view(started.id).status === 'idle' && view(started.id).messages.length === 4, 'second turn');
+    expect(seen.map((entry) => entry.code)).toEqual([CLAIM, FRESH]);
+    expect(seen.map((entry) => entry.mode)).toEqual([0o600, 0o600]);
+    expect(seen[0]?.path).not.toBe(seen[1]?.path);
+    await waitFor(() => seen.every((entry) => !existsSync(entry.path)), 'the claim files to go');
+  });
+
+  it('starts a turn with no claim file when the owner has no tabs left to share', async () => {
+    await install('claude');
+    const files: Array<string | undefined> = [];
+    handler = (call) => {
+      files.push(claimFileOf(call.args));
+      return { stdout: claudeReply('ok') };
+    };
+    const started = await make().start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    await waitFor(() => view(started.id).status === 'idle', 'first turn');
+    await make2(agents).send(started.id, 'More');
+    await waitFor(() => view(started.id).messages.length === 4, 'second turn');
+    expect(files[0]).toBeDefined();
+    expect(files[1]).toBeUndefined();
+  });
+
+  it('refuses an invalid code on a send', async () => {
+    await install('claude');
+    handler = () => ({ stdout: claudeReply('ok') });
+    const started = await make().start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    await waitFor(() => view(started.id).status === 'idle', 'first turn');
+    await expect(make2(agents).send(started.id, 'More', 'short')).rejects.toThrow('Invalid claim code');
+  });
+
+  it('hides the code if a direct run prints it', async () => {
+    await install('claude');
+    handler = () => ({ stdout: claudeReply(`Your code is ${CLAIM}`) });
+    const started = await make().start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+    expect(JSON.stringify(view(started.id))).not.toContain(CLAIM);
+  });
+
+  it('shows a warning in the conversation when its claim fails', async () => {
+    await install('claude');
+    let release: () => void = () => undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    handler = () => ({ stdout: claudeReply('ok'), hold });
+    const started = await make().start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    make2(agents).claimFailed(CLAIM, 'Unknown claim code');
+    expect(view(started.id).messages.at(-1)?.role).toBe('error');
+    expect(view(started.id).messages.at(-1)?.text).toContain('could not share');
+    release();
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+  });
+});
+
+describe('stopping processes', () => {
+  // Ignores SIGTERM, and so does a child it starts in the same process group.
+  const STUBBORN = `
+    import { spawn } from 'node:child_process';
+    import { writeFileSync } from 'node:fs';
+    process.on('SIGTERM', () => undefined);
+    const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], { stdio: 'ignore' });
+    writeFileSync(process.env.PIDS_FILE, JSON.stringify([process.pid, child.pid]));
+    setInterval(() => undefined, 1000);
+  `;
+
+  async function stubborn(name: string): Promise<{ command: string; pidsFile: string }> {
+    const script = join(root, 'stubborn.mjs');
+    const pidsFile = join(root, 'pids.json');
+    await writeFile(script, STUBBORN);
+    const command = join(bin, name);
+    await writeFile(command, `#!/bin/sh\nexec "${process.execPath}" "${script}"\n`);
+    await chmod(command, 0o755);
+    return { command, pidsFile };
+  }
+
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  async function pidsFrom(file: string): Promise<number[]> {
+    await waitFor(() => existsSync(file), 'the child to report its pids');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return JSON.parse(await readFile(file, 'utf8')) as number[];
+  }
+
+  const spawnReal: Spawn = (command, args, options) => realSpawn(command, args, options);
+
+  it('kills a direct run and its children that ignore SIGTERM, and marks it timed out', async () => {
+    const { pidsFile } = await stubborn('claude');
+    agents = new Agents({
+      env: { PATH: bin, HOME: home, PIDS_FILE: pidsFile },
+      server: { command: 'node', args: [] },
+      spawn: spawnReal,
+      directTimeoutMs: 400,
+      graceMs: 150,
+    });
+    const started = await agents.start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    const pids = await pidsFrom(pidsFile);
+    await waitFor(() => view(started.id).status === 'failed', 'the run to be stopped');
+    expect(view(started.id).error).toContain('timed out');
+    await waitFor(() => pids.every((pid) => !alive(pid)), 'both processes to die');
+  });
+
+  it('kills a running direct run on shutdown and waits for it', async () => {
+    const { pidsFile } = await stubborn('claude');
+    agents = new Agents({ env: { PATH: bin, HOME: home, PIDS_FILE: pidsFile }, server: { command: 'node', args: [] }, spawn: spawnReal, graceMs: 150 });
+    const started = await agents.start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    const pids = await pidsFrom(pidsFile);
+    await agents.close();
+    // `close` waited for the run itself; its child, killed with the group, is reaped by init a moment later.
+    expect(alive(pids[0] as number)).toBe(false);
+    expect(view(started.id).status).toBe('failed');
+    await waitFor(() => pids.every((pid) => !alive(pid)), 'the child to die with its group');
+  });
+
+  it('kills a short command that ignores SIGTERM when it times out', async () => {
+    const { command, pidsFile } = await stubborn('t3');
+    const pending = run(spawnReal, command, [], { env: { PATH: bin, HOME: home, PIDS_FILE: pidsFile }, timeoutMs: 300, graceMs: 100 });
+    const pids = await pidsFrom(pidsFile);
+    await expect(pending).rejects.toThrow('did not finish');
+    await waitFor(() => pids.every((pid) => !alive(pid)), 'both processes to die');
   });
 });
