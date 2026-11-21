@@ -4,6 +4,7 @@ import {
   type TabInfo,
   type ToolContent,
   type ToolMethod,
+  type ToolSession,
 } from '@t3-tab/protocol';
 import type { z } from 'zod';
 
@@ -17,56 +18,64 @@ const MAX_TAB_URL = 150;
 /** Runs one browser tool call and returns what the agent sees. Throws a readable message on a bad call or a failure. */
 export async function runTool(
   link: BrowserLink,
-  session: string,
+  session: ToolSession,
   method: ToolMethod,
   params: Record<string, unknown>,
 ): Promise<ToolContent[]> {
   switch (method) {
     case 'tabs':
-      return [{ type: 'text', text: await runTabs(link, parse(tabsParams, params)) }];
+      return [{ type: 'text', text: await runTabs(link, session, parse(tabsParams, params)) }];
     case 'read':
       return [{ type: 'text', text: await runRead(link, session, parse(readParams, params)) }];
     case 'screenshot':
-      return await runScreenshot(link, parse(screenshotParams, params));
+      return await runScreenshot(link, session, parse(screenshotParams, params));
     case 'act':
       return [{ type: 'text', text: await runAct(link, session, parse(actParams, params)) }];
     case 'run_js':
-      return [{ type: 'text', text: await runJs(link, parse(runJsParams, params)) }];
+      return [{ type: 'text', text: await runJs(link, session, parse(runJsParams, params)) }];
   }
 }
 
-async function runTabs(link: BrowserLink, params: z.infer<typeof tabsParams>): Promise<string> {
+async function runTabs(
+  link: BrowserLink,
+  session: ToolSession,
+  params: z.infer<typeof tabsParams>,
+): Promise<string> {
   switch (params.action ?? 'list') {
     case 'list': {
-      const { tabs } = await link.request('tabs.list', {});
+      const { tabs } = await link.request(session, 'tabs.list', {});
       return tabs.length === 0 ? 'No tabs.' : tabs.map(tabLine).join('\n');
     }
     case 'open': {
       if (params.url === undefined) throw new Error('open needs a url');
-      const { tab } = await link.request('tabs.open', { url: params.url });
+      const { tab } = await link.request(session, 'tabs.open', { url: params.url });
       return `Opened tab ${tabLine(tab)}`;
     }
     case 'switch': {
       if (params.tab === undefined) throw new Error('switch needs a tab id');
-      const { tab } = await link.request('tabs.switch', { tab: params.tab });
+      const { tab } = await link.request(session, 'tabs.switch', { tab: params.tab });
       return `Switched to tab ${tabLine(tab)}`;
     }
     case 'close': {
       if (params.tab === undefined) throw new Error('close needs a tab id');
-      const { closed } = await link.request('tabs.close', { tab: params.tab });
+      const { closed } = await link.request(session, 'tabs.close', { tab: params.tab });
       link.forgetTab(closed);
       return `Closed tab ${closed}.`;
     }
   }
 }
 
-async function runRead(link: BrowserLink, session: string, params: z.infer<typeof readParams>): Promise<string> {
-  const page = await link.request('page.read', params.tab === undefined ? {} : { tab: params.tab });
-  return formatRead(link.tabState(page.tab), session, page, params);
+async function runRead(link: BrowserLink, session: ToolSession, params: z.infer<typeof readParams>): Promise<string> {
+  const page = await link.request(session, 'page.read', params.tab === undefined ? {} : { tab: params.tab });
+  return await formatRead(link.tabState(page.tab), session.id, page, params);
 }
 
-async function runScreenshot(link: BrowserLink, params: z.infer<typeof screenshotParams>): Promise<ToolContent[]> {
-  const shot = await link.request('page.screenshot', {
+async function runScreenshot(
+  link: BrowserLink,
+  session: ToolSession,
+  params: z.infer<typeof screenshotParams>,
+): Promise<ToolContent[]> {
+  const shot = await link.request(session, 'page.screenshot', {
     ...(params.tab === undefined ? {} : { tab: params.tab }),
     maxEdge: Math.round(params.maxEdge ?? DEFAULT_SCREENSHOT_MAX_EDGE),
   });
@@ -80,10 +89,10 @@ async function runScreenshot(link: BrowserLink, params: z.infer<typeof screensho
 
 async function runAct(
   link: BrowserLink,
-  session: string,
+  session: ToolSession,
   params: z.infer<typeof actParams>,
 ): Promise<string> {
-  const tabId = params.tab ?? (await currentTabId(link));
+  const tabId = params.tab ?? (await currentTabId(link, session));
   const state = link.tabState(tabId);
   const backendIds = params.steps.map((step) => {
     const ref = refOf(step);
@@ -92,30 +101,30 @@ async function runAct(
     if (backendId === undefined) throw new Error(`Unknown ref ${ref}: read the page again`);
     return backendId;
   });
-  const page = await link.request('page.act', {
+  const page = await link.request(session, 'page.act', {
     tab: tabId,
     steps: params.steps,
     backendIds,
     epoch: state.currentEpoch,
   });
-  const reply = formatRead(state, session, page, {});
+  const reply = await formatRead(state, session.id, page, {});
   if (page.failure !== undefined) {
     throw new Error(`Step ${page.failure.step} (${page.failure.action}) failed: ${page.failure.error}\n${reply}`);
   }
   return reply;
 }
 
-async function runJs(link: BrowserLink, params: z.infer<typeof runJsParams>): Promise<string> {
+async function runJs(link: BrowserLink, session: ToolSession, params: z.infer<typeof runJsParams>): Promise<string> {
   const result =
     params.tab === undefined
-      ? await link.request('page.eval', { expression: params.expression })
-      : await link.request('page.eval', { tab: params.tab, expression: params.expression });
+      ? await link.request(session, 'page.eval', { expression: params.expression })
+      : await link.request(session, 'page.eval', { tab: params.tab, expression: params.expression });
   const json = JSON.stringify(result.value);
   return limitJson(json === undefined ? 'null' : json);
 }
 
-async function currentTabId(link: BrowserLink): Promise<number> {
-  const { tabs } = await link.request('tabs.list', {});
+async function currentTabId(link: BrowserLink, session: ToolSession): Promise<number> {
+  const { tabs } = await link.request(session, 'tabs.list', {});
   const front = tabs.find((tab) => tab.active) ?? tabs[0];
   if (front === undefined) throw new Error('No tab is open');
   return front.id;

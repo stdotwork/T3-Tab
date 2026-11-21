@@ -13,7 +13,9 @@ import {
 import { defineBackground } from 'wxt/utils/define-background';
 
 import { initCdp } from '../src/cdp';
+import { handlePanelRequest } from '../src/panel';
 import { handleRequest } from '../src/requests';
+import { sessionStore } from '../src/runtime';
 
 const browserId = crypto.randomUUID();
 const browserName = navigator.userAgent.includes('Brave') ? 'Brave' : 'Chromium';
@@ -120,9 +122,22 @@ export default defineBackground(() => {
   };
 
   initCdp();
+  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
+  chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+    void handlePanelRequest(message)
+      .then((result) => sendResponse(result))
+      .catch((error: unknown) =>
+        sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }),
+      );
+    return true;
+  });
+  chrome.runtime.onInstalled.addListener(() => {
+    void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
+  });
   chrome.tabs.onCreated.addListener(reportTabCount);
   chrome.tabs.onRemoved.addListener(reportTabCount);
   chrome.tabs.onRemoved.addListener(reportTabClosed);
+  chrome.tabs.onRemoved.addListener((tabId) => void sessionStore.forgetTab(tabId));
   chrome.tabs.onReplaced.addListener(reportTabCount);
   chrome.tabs.onAttached.addListener(reportTabCount);
   chrome.tabs.onDetached.addListener(reportTabCount);

@@ -11,6 +11,7 @@ import {
   type ControlResponse,
   type ToolContent,
   type ToolMethod,
+  type ToolSession,
 } from '@t3-tab/protocol';
 import WebSocket from 'ws';
 
@@ -21,6 +22,7 @@ const LOCK_STALE_MS = 30_000;
 const CONTROL_TIMEOUT_MS = 5_000;
 // Longer than the daemon waits on the browser, so the daemon's own error arrives first.
 const TOOL_TIMEOUT_MS = 310_000;
+const registrations = new Map<string, Promise<WebSocket>>();
 
 export async function ensureDaemon(env: NodeJS.ProcessEnv = process.env): Promise<DaemonState> {
   const directory = stateDirectory(env);
@@ -59,14 +61,81 @@ export async function getStatus(env: NodeJS.ProcessEnv = process.env): Promise<B
   return response.result.browsers;
 }
 
-/** Runs a browser tool through the daemon. `session` identifies the calling MCP server, so read diffs stay its own. */
+/** Registers one MCP server process with the daemon and keeps its control connection alive while it runs. */
+export async function registerSession(session: ToolSession, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const previous = registrations.get(session.id);
+  if (previous !== undefined) {
+    const socket = await previous.catch(() => undefined);
+    if (socket?.readyState === WebSocket.OPEN) return;
+  }
+  const registration = openSessionRegistration(session, env);
+  registrations.set(session.id, registration);
+  try {
+    const socket = await registration;
+    const forget = (): void => {
+      if (registrations.get(session.id) === registration) registrations.delete(session.id);
+    };
+    socket.once('close', forget);
+    socket.once('error', forget);
+  } catch (error) {
+    if (registrations.get(session.id) === registration) registrations.delete(session.id);
+    throw error;
+  }
+}
+
+async function openSessionRegistration(session: ToolSession, env: NodeJS.ProcessEnv): Promise<WebSocket> {
+  const state = await ensureDaemon(env);
+  const socket = new WebSocket(`ws://127.0.0.1:${state.port}/`, {
+    headers: { authorization: `Bearer ${state.token}` },
+  });
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error === undefined) resolve();
+      else {
+        socket.terminate();
+        reject(error);
+      }
+    };
+    const timer = setTimeout(() => finish(new Error('T3-Tab daemon did not register the session')), CONTROL_TIMEOUT_MS);
+    socket.once('open', () => {
+      socket.send(
+        JSON.stringify({
+          type: 'control.request',
+          protocolVersion: PROTOCOL_VERSION,
+          requestId: randomUUID(),
+          method: 'session.register',
+          session,
+        } satisfies ControlRequest),
+      );
+    });
+    socket.once('message', (data) => {
+      try {
+        const response = JSON.parse(data.toString()) as ControlResponse;
+        if (response.ok) finish();
+        else finish(new Error(response.error));
+      } catch {
+        finish(new Error('T3-Tab daemon returned invalid JSON'));
+      }
+    });
+    socket.once('error', (error) => finish(error));
+    socket.once('close', () => finish(new Error('T3-Tab daemon closed the session registration')));
+  });
+  return socket;
+}
+
+/** Runs a browser tool through the daemon. `session` identifies the calling MCP server and owns its tabs. */
 export async function callTool(
   method: ToolMethod,
   params: Record<string, unknown>,
-  session: string,
+  session: ToolSession,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ToolContent[]> {
   const state = await ensureDaemon(env);
+  await registerSession(session, env);
   const request: ControlRequest = {
     type: 'control.request',
     protocolVersion: PROTOCOL_VERSION,

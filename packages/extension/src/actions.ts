@@ -2,6 +2,8 @@ import type { ActAction, ActFailure, ActStep, PageActionResult } from '@t3-tab/p
 
 import { documentEpoch, ensureAttached, sendCommand } from './cdp';
 import { readPage } from './page';
+import type { StoredSession } from './sessions';
+import { assertTabOrigin } from './tabs';
 import { settlePage } from './settle';
 
 const MAX_WAIT_MS = 10_000;
@@ -35,10 +37,12 @@ interface KeyStroke {
 
 /** Runs one ordered batch through CDP, settles after every step, and returns the resulting page read. */
 export async function actOnPage(
+  session: StoredSession,
   tabId: number,
   steps: ActStep[],
   backendIds: Array<number | null>,
   expectedEpoch: number,
+  expectedOrigin: string,
 ): Promise<PageActionResult> {
   await ensureAttached(tabId);
   await sendCommand(tabId, 'DOM.enable');
@@ -50,6 +54,7 @@ export async function actOnPage(
     if (step === undefined) continue;
     const action = actionOf(step);
     try {
+      await assertTabOrigin(tabId, expectedOrigin);
       const ref = refOf(step);
       if (ref !== undefined) {
         if (epoch !== expectedEpoch) throw staleRef(ref, `document epoch ${expectedEpoch} -> ${epoch}`);
@@ -72,7 +77,7 @@ export async function actOnPage(
     if (failure !== undefined) break;
   }
 
-  const page = await readPage(tabId);
+  const page = await readPage(session, tabId);
   return failure === undefined ? page : { ...page, failure };
 }
 

@@ -1,60 +1,87 @@
 import type { TabInfo } from '@t3-tab/protocol';
 
+import { originOf, restrictedPageError } from './permissions';
+import {
+  assertSessionTab,
+  groupTitle,
+  sessionColor,
+  tabInfo,
+  usableSessionTabs,
+  type SessionStore,
+  type StoredSession,
+} from './sessions';
+
 const OPEN_TIMEOUT_MS = 15_000;
 const OPENABLE_PROTOCOLS = new Set(['http:', 'https:']);
+const grouping = new Map<string, Promise<unknown>>();
 
-export async function listTabs(): Promise<TabInfo[]> {
+export async function listTabs(session: StoredSession): Promise<TabInfo[]> {
   const [tabs, front] = await Promise.all([
     chrome.tabs.query({}),
     chrome.tabs.query({ active: true, lastFocusedWindow: true }),
   ]);
   const frontId = front[0]?.id;
-  const infos: TabInfo[] = [];
-  for (const tab of tabs) {
-    if (tab.id !== undefined) infos.push(tabInfo(tab, tab.id === frontId));
-  }
-  return infos;
+  return usableSessionTabs(session, tabs).map((tab) => tabInfo(tab, tab.id === frontId));
 }
 
-export async function resolveTabId(tab: number | undefined): Promise<number> {
+export async function resolveSessionTab(session: StoredSession, tab: number | undefined): Promise<chrome.tabs.Tab> {
   if (tab !== undefined) {
-    await getTab(tab);
-    return tab;
+    const found = await getTab(tab);
+    assertSessionTab(session, found);
+    assertAllowedTab(found);
+    return found;
   }
-  const [front] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  const id = front?.id ?? (await chrome.tabs.query({ active: true }))[0]?.id;
-  if (id === undefined) throw new Error('No tab is open');
-  return id;
+  const [all, front] = await Promise.all([
+    chrome.tabs.query({}),
+    chrome.tabs.query({ active: true, lastFocusedWindow: true }),
+  ]);
+  const usable = usableSessionTabs(session, all);
+  const frontId = front[0]?.id;
+  const selected = usable.find((candidate) => candidate.id === frontId) ?? usable[0];
+  if (selected === undefined) throw new Error('No tab is available in this session. Open a tab or ask the owner to share one.');
+  assertAllowedTab(selected);
+  return selected;
 }
 
-export async function getTabInfo(tabId: number): Promise<{ title: string; url: string }> {
-  const tab = await getTab(tabId);
-  return { title: tab.title ?? '', url: tab.url ?? '' };
-}
-
-export async function openTab(url: string): Promise<TabInfo> {
+export async function openSessionTab(
+  session: StoredSession,
+  url: string,
+  store: SessionStore,
+): Promise<{ tab: TabInfo; origin: string }> {
+  const restricted = restrictedPageError(url);
+  if (restricted !== undefined) throw new Error(restricted);
   if (!isOpenableUrl(url)) throw new Error('Only http and https URLs can be opened');
+  const origin = originOf(url);
+  if (origin === undefined) throw new Error('Only http and https URLs can be opened');
   const created = await chrome.tabs.create({ url, active: true });
   if (created.id === undefined) throw new Error('The browser did not create a tab');
-  await waitForLoad(created.id, OPEN_TIMEOUT_MS);
-  return tabInfo(await getTab(created.id), true);
+  try {
+    await attachToSessionGroup(session, created.id, store);
+    await waitForLoad(created.id, OPEN_TIMEOUT_MS);
+    await assertTabOrigin(created.id, origin);
+    return { tab: tabInfo(await getTab(created.id), true), origin };
+  } catch (error) {
+    await chrome.tabs.remove(created.id).catch(() => undefined);
+    throw error;
+  }
 }
 
-export async function switchTab(tabId: number): Promise<TabInfo> {
-  await getTab(tabId);
+export async function switchSessionTab(session: StoredSession, tabId: number): Promise<TabInfo> {
+  await resolveSessionTab(session, tabId);
   await chrome.tabs.update(tabId, { active: true });
   return tabInfo(await getTab(tabId), true);
 }
 
-export async function closeTab(tabId: number): Promise<number> {
-  await getTab(tabId);
+export async function closeSessionTab(session: StoredSession, tabId: number): Promise<number> {
+  await resolveSessionTab(session, tabId);
   await chrome.tabs.remove(tabId);
   return tabId;
 }
 
 export function isOpenableUrl(value: string): boolean {
   try {
-    return OPENABLE_PROTOCOLS.has(new URL(value).protocol);
+    const url = new URL(value);
+    return OPENABLE_PROTOCOLS.has(url.protocol) && restrictedPageError(value) === undefined;
   } catch {
     return false;
   }
@@ -68,8 +95,57 @@ async function getTab(tabId: number): Promise<chrome.tabs.Tab> {
   }
 }
 
-function tabInfo(tab: chrome.tabs.Tab, active: boolean): TabInfo {
-  return { id: tab.id ?? -1, title: tab.title ?? '', url: tab.url ?? tab.pendingUrl ?? '', active };
+export async function assertTabOrigin(tabId: number, expectedOrigin: string): Promise<void> {
+  const tab = await getTab(tabId);
+  assertAllowedTab(tab);
+  const url = tab.url ?? tab.pendingUrl ?? '';
+  const actual = originOf(url);
+  if (actual !== expectedOrigin) {
+    throw new Error(
+      `The page moved from ${expectedOrigin} to ${actual ?? 'an unknown origin'}. Read the new page and approve it before acting there.`,
+    );
+  }
+}
+
+function assertAllowedTab(tab: chrome.tabs.Tab): void {
+  const error = restrictedPageError(tab.url ?? tab.pendingUrl ?? '');
+  if (error !== undefined) throw new Error(error);
+}
+
+async function attachToSessionGroup(session: StoredSession, tabId: number, store: SessionStore): Promise<void> {
+  await serialize(session.id, async () => {
+    const stored = await store.get(session.id);
+    if (stored === undefined) throw new Error('Session is not registered');
+    let groupId = stored.groupId;
+    if (groupId === undefined) {
+      groupId = await chrome.tabs.group({ tabIds: [tabId] });
+      await store.rememberGroup(session.id, groupId);
+    } else {
+      try {
+        groupId = await chrome.tabs.group({ tabIds: [tabId], groupId });
+      } catch {
+        groupId = await chrome.tabs.group({ tabIds: [tabId] });
+        await store.rememberGroup(session.id, groupId);
+      }
+    }
+    await chrome.tabGroups.update(groupId, {
+      title: groupTitle(session.name),
+      color: sessionColor(session.id),
+      collapsed: false,
+    });
+  });
+}
+
+async function serialize<T>(key: string, work: () => Promise<T>): Promise<T> {
+  const previous = grouping.get(key) ?? Promise.resolve();
+  const next = previous.then(work, work);
+  const tracked = next.catch(() => undefined);
+  grouping.set(key, tracked);
+  try {
+    return await next;
+  } finally {
+    if (grouping.get(key) === tracked) grouping.delete(key);
+  }
 }
 
 /** Resolves when the tab finishes loading, or after the timeout: a slow page is still returned. */

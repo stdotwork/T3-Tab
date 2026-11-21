@@ -11,6 +11,7 @@ import { startDaemon, type DaemonHandle } from '../src/index.js';
 let daemon: DaemonHandle | undefined;
 let directory: string | undefined;
 const sockets: WebSocket[] = [];
+const SESSION = { id: 'agent-1', name: 'Agent 1' };
 
 afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.terminate();
@@ -67,13 +68,13 @@ describe('browser tools through the daemon', () => {
       );
     });
 
-    const reply = await control(handle, { method: 'tabs', session: 'agent-1', params: {} });
+    const reply = await control(handle, { method: 'tabs', session: SESSION, params: {} });
     expect(reply).toMatchObject({
       ok: true,
       result: { content: [{ type: 'text', text: '3 [front] Home — http://localhost/' }] },
     });
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toMatchObject({ type: 'browser.request', method: 'tabs.list', params: {} });
+    expect(seen[0]).toMatchObject({ type: 'browser.request', method: 'tabs.list', session: SESSION, params: {} });
   });
 
   it('passes a browser error on to the caller', async () => {
@@ -91,19 +92,19 @@ describe('browser tools through the daemon', () => {
         }),
       );
     });
-    const reply = await control(handle, { method: 'read', session: 'agent-1', params: {} });
+    const reply = await control(handle, { method: 'read', session: SESSION, params: {} });
     expect(reply).toMatchObject({ ok: false, error: 'Cannot access a chrome:// URL' });
   });
 
   it('says so when no browser is connected, and rejects a malformed call', async () => {
     const handle = await start();
-    expect(await control(handle, { method: 'tabs', session: 'agent-1', params: {} })).toMatchObject({
+    expect(await control(handle, { method: 'tabs', session: SESSION, params: {} })).toMatchObject({
       ok: false,
       error: expect.stringContaining('No browser is connected'),
     });
     expect(await control(handle, { method: 'tabs', params: {} })).toMatchObject({ ok: false, error: 'Invalid session' });
-    expect(await control(handle, { method: 'tabs', session: 'a', params: [] })).toMatchObject({ ok: false, error: 'Invalid params' });
-    expect(await control(handle, { method: 'nope', session: 'a', params: {} })).toMatchObject({
+    expect(await control(handle, { method: 'tabs', session: { id: 'a', name: 'Agent a' }, params: [] })).toMatchObject({ ok: false, error: 'Invalid params' });
+    expect(await control(handle, { method: 'nope', session: { id: 'a', name: 'Agent a' }, params: {} })).toMatchObject({
       ok: false,
       error: 'Unknown method: nope',
     });
@@ -113,7 +114,7 @@ describe('browser tools through the daemon', () => {
     const handle = await start();
     const browser = await open(handle, EXTENSION_ORIGIN);
     browser.on('message', () => browser.terminate());
-    const reply = await control(handle, { method: 'tabs', session: 'agent-1', params: {} });
+    const reply = await control(handle, { method: 'tabs', session: SESSION, params: {} });
     expect(reply).toMatchObject({ ok: false, error: 'The browser disconnected' });
   });
 

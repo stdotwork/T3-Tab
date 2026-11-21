@@ -86,6 +86,12 @@ const SITE = {
     </script>
   </body>
 </html>`,
+  '/perm-a': `<!doctype html>
+<html lang="en"><head><title>Permission A</title></head><body><h1>Permission A</h1><button id="act-a">Action A</button><p id="result-a">Ready</p><script>document.getElementById('act-a').addEventListener('click', () => { document.getElementById('act-a').textContent = 'Action A completed'; document.getElementById('result-a').textContent = 'Done'; });</script></body></html>`,
+  '/perm-b': `<!doctype html>
+<html lang="en"><head><title>Permission B</title></head><body><h1>Permission B</h1><p>Session B private tab.</p></body></html>`,
+  '/regex': `<!doctype html>
+<html lang="en"><head><title>Regex timeout</title></head><body><h1>Regex timeout</h1><p>${'a'.repeat(350)}!</p></body></html>`,
   '/about': `<!doctype html>
 <html lang="en">
   <head><meta charset="UTF-8" /><title>About</title></head>
@@ -100,6 +106,9 @@ const SITE = {
 let browserContext;
 let mcpClient;
 let mcpTransport;
+let mcpClientB;
+let mcpTransportB;
+let panelPage;
 let pageServer;
 
 try {
@@ -169,7 +178,7 @@ try {
     stderr: 'pipe',
   });
   mcpTransport.stderr?.on('data', (chunk) => process.stderr.write(chunk));
-  mcpClient = new Client({ name: 't3-tab-e2e', version: '1.0.0' });
+  mcpClient = new Client({ name: 't3-tab-e2e-a', version: '1.0.0' });
   await mcpClient.connect(mcpTransport);
 
   let statusText = '';
@@ -200,6 +209,25 @@ try {
   }
   console.log('Wrong-token control connection: refused');
 
+  mcpTransportB = new StdioClientTransport({
+    command: process.execPath,
+    args: [cliPath, 'mcp'],
+    env: childEnv,
+    stderr: 'pipe',
+  });
+  mcpTransportB.stderr?.on('data', (chunk) => process.stderr.write(chunk));
+  mcpClientB = new Client({ name: 't3-tab-e2e-b', version: '1.0.0' });
+  await mcpClientB.connect(mcpTransportB);
+
+  panelPage = await browserContext.newPage();
+  await panelPage.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+
+  await checkPermissions({ mcpClient, mcpClientB, page, panelPage, serviceWorker, siteUrl });
+  await panelRequest(panelPage, { type: 'panel.setSite', origin: siteUrl, setting: 'allow' });
+  await page.goto(siteUrl);
+  await page.getByRole('heading', { name: 'T3-Tab E2E' }).waitFor();
+  await page.bringToFront();
+
   await checkBrowserTools({ mcpClient, page, siteUrl });
   const newCheckFailures = [];
   try {
@@ -219,6 +247,9 @@ try {
   if (mcpClient !== undefined) {
     await mcpClient.close().catch(() => undefined);
   }
+  if (mcpClientB !== undefined) {
+    await mcpClientB.close().catch(() => undefined);
+  }
   if (browserContext !== undefined) {
     await browserContext.close();
   }
@@ -232,6 +263,162 @@ try {
   }
   await stopDaemon();
   await rm(tempHome, { recursive: true, force: true });
+}
+
+
+async function checkPermissions({ mcpClient, mcpClientB, page, panelPage, serviceWorker, siteUrl }) {
+  const sessions = await waitForSessions(panelPage, 2);
+  const sessionA = sessions.find((session) => session.name.startsWith('t3-tab-e2e-a ·'));
+  const sessionB = sessions.find((session) => session.name.startsWith('t3-tab-e2e-b ·'));
+  assert(sessionA && sessionB, `Both MCP sessions are not listed:\n${JSON.stringify(sessions, null, 2)}`);
+  assert(sessionA.name.endsWith(sessionA.id.slice(0, 8)), `Session A name lacks its short id: ${sessionA.name}`);
+  await panelPage.getByRole('heading', { name: 'Connected sessions' }).waitFor();
+  await panelPage.getByText(sessionA.name).first().waitFor();
+  console.log(`Permission sessions: ${sessionA.name}; ${sessionB.name}`);
+
+  const openA = call(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/perm-a` });
+  const openPromptA = await waitForPrompt(panelPage, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'open');
+  await panelPage.getByRole('button', { name: 'Allow once' }).waitFor();
+  await panelPage.getByRole('button', { name: 'Always allow on this site' }).waitFor();
+  await panelPage.getByRole('button', { name: 'Decline' }).waitFor();
+  const badgeWhilePending = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
+  assert(badgeWhilePending === '1', `The action badge does not show the pending prompt: ${badgeWhilePending}`);
+  console.log(`Permission badge while waiting: ${badgeWhilePending}`);
+  await panelRequest(panelPage, { type: 'panel.decide', promptId: openPromptA.id, decision: 'allow-once' });
+  const badgeAfterDecision = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
+  assert(badgeAfterDecision === '', `The action badge was not cleared: ${badgeAfterDecision}`);
+  const openedA = await openA;
+  assert(openedA.isError !== true, `Session A could not open its tab: ${text(openedA)}`);
+  const tabA = Number(/^Opened tab (\d+)/.exec(text(openedA))?.[1]);
+  assert(Number.isInteger(tabA), `Session A open reply has no tab id: ${text(openedA)}`);
+
+  const openB = call(mcpClientB, 'tabs', { action: 'open', url: `${siteUrl}/perm-b` });
+  const openPromptB = await waitForPrompt(panelPage, (prompt) => prompt.session.id === sessionB.id && prompt.tool === 'open');
+  await panelRequest(panelPage, { type: 'panel.decide', promptId: openPromptB.id, decision: 'allow-once' });
+  const openedB = await openB;
+  assert(openedB.isError !== true, `Session B could not open its tab: ${text(openedB)}`);
+  const tabB = Number(/^Opened tab (\d+)/.exec(text(openedB))?.[1]);
+  assert(Number.isInteger(tabB), `Session B open reply has no tab id: ${text(openedB)}`);
+
+  const groupA = await tabGroup(serviceWorker, tabA);
+  const groupB = await tabGroup(serviceWorker, tabB);
+  assert(groupA.groupId >= 0 && groupB.groupId >= 0, `Opened tabs are not grouped: A ${JSON.stringify(groupA)}, B ${JSON.stringify(groupB)}`);
+  assert(groupA.groupId !== groupB.groupId, `Both sessions use group ${groupA.groupId}`);
+  assert(groupA.title === sessionA.name && groupB.title === sessionB.name, `Group titles do not name their sessions: ${JSON.stringify({ groupA, groupB })}`);
+  console.log(`Tab groups: A ${groupA.groupId} "${groupA.title}", B ${groupB.groupId} "${groupB.title}"`);
+
+  const listA = await call(mcpClient, 'tabs', {});
+  assert(!new RegExp(`^${tabB}\\b`, 'm').test(text(listA)), `Session A can list session B's tab:\n${text(listA)}`);
+
+  const refusedB = await call(mcpClient, 'read', { tab: tabB });
+  assert(refusedB.isError === true && /not available to this session/.test(text(refusedB)), `Session A was not refused B's tab: ${text(refusedB)}`);
+  console.log(`Refused session B's tab: ${text(refusedB)}`);
+
+  const ownerTabs = await serviceWorker.evaluate(async () => (await chrome.tabs.query({})).map((tab) => ({ id: tab.id, url: tab.url })));
+  const ownerTab = ownerTabs.find((tab) => tab.url === `${siteUrl}/`);
+  assert(ownerTab?.id !== undefined, `The owner's ungrouped tab is missing: ${JSON.stringify(ownerTabs)}`);
+  assert(!listsTab(listA, ownerTab.id), `Session A can list the unshared owner tab:\n${text(listA)}`);
+  const refusedOwner = await call(mcpClient, 'read', { tab: ownerTab.id });
+  assert(refusedOwner.isError === true && /not available to this session/.test(text(refusedOwner)), `Session A was not refused the unshared owner tab: ${text(refusedOwner)}`);
+  console.log(`Refused unshared owner tab ${ownerTab.id}: ${text(refusedOwner)}`);
+
+  await panelRequest(panelPage, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: ownerTab.id });
+  const sharedRead = await call(mcpClient, 'read', { tab: ownerTab.id });
+  const sharedList = await call(mcpClient, 'tabs', {});
+  assert(listsTab(sharedList, ownerTab.id), `The shared owner tab is not listed:\n${text(sharedList)}`);
+  assert(sharedRead.isError !== true && text(sharedRead).includes('# T3-Tab E2E'), `Session A cannot read the shared owner tab: ${text(sharedRead)}`);
+  console.log(`Shared owner tab ${ownerTab.id}: readable by session A`);
+  await panelRequest(panelPage, { type: 'panel.unshareTab', sessionId: sessionA.id, tabId: ownerTab.id });
+  const unsharedRead = await call(mcpClient, 'read', { tab: ownerTab.id });
+  assert(unsharedRead.isError === true && /not available to this session/.test(text(unsharedRead)), `Session A can still read the unshared owner tab: ${text(unsharedRead)}`);
+  console.log(`Unshared owner tab ${ownerTab.id}: refused again`);
+  await panelRequest(panelPage, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: ownerTab.id });
+
+  const pageA = await call(mcpClient, 'read', { tab: tabA, full: true });
+  const actionRef = refFor(text(pageA), 'button "Action A"');
+  assert(actionRef, `Session A's action page has no button ref:\n${text(pageA)}`);
+  const firstAct = call(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const actPrompt = await waitForPrompt(panelPage, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
+  await panelRequest(panelPage, { type: 'panel.decide', promptId: actPrompt.id, decision: 'allow-once' });
+  const allowedAct = await firstAct;
+  assert(allowedAct.isError !== true, `Allow once did not let the action through: ${text(allowedAct)}`);
+  assert(text(allowedAct).includes('Action A completed'), `The allowed action did not run:\n${text(allowedAct)}`);
+  console.log(`Ask origin, Allow once: act succeeded (${actPrompt.origin})`);
+
+  const secondAct = call(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const declinePrompt = await waitForPrompt(panelPage, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
+  await panelRequest(panelPage, { type: 'panel.decide', promptId: declinePrompt.id, decision: 'decline' });
+  const declinedAct = await secondAct;
+  assert(declinedAct.isError === true && /Permission declined/.test(text(declinedAct)), `Decline did not refuse the action: ${text(declinedAct)}`);
+  console.log(`Ask origin, Decline: refused (${text(declinedAct)})`);
+
+  const promptAfterAct = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
+  assert(promptAfterAct === '', `The badge stayed set after the prompt was answered: ${promptAfterAct}`);
+  const stateBeforeAllow = await panelRequest(panelPage, { type: 'panel.state', tabId: tabA });
+  const siteBefore = stateBeforeAllow.sites.find((site) => site.origin === siteUrl);
+  assert(siteBefore?.setting === 'ask', `The panel does not list the site as ask: ${JSON.stringify(stateBeforeAllow.sites)}`);
+  await panelRequest(panelPage, { type: 'panel.setSite', origin: siteUrl, setting: 'allow' });
+  const stateAfterAllow = await panelRequest(panelPage, { type: 'panel.state', tabId: tabA });
+  const siteAfter = stateAfterAllow.sites.find((site) => site.origin === siteUrl);
+  assert(siteAfter?.setting === 'allow', `The panel did not change the site to allow: ${JSON.stringify(stateAfterAllow.sites)}`);
+  console.log(`Site setting: ${siteUrl} ask -> allow in the panel`);
+
+  const restricted = await browserContext.newPage();
+  await restricted.goto('chrome://version');
+  const restrictedId = await serviceWorker.evaluate(async () => (await chrome.tabs.query({})).find((tab) => tab.url?.startsWith('chrome://version'))?.id);
+  assert(Number.isInteger(restrictedId), 'The harness could not find its chrome://version tab');
+  await panelRequest(panelPage, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: restrictedId });
+  const restrictedRead = await call(mcpClient, 'read', { tab: restrictedId });
+  assert(restrictedRead.isError === true && /restricted/.test(text(restrictedRead)), `chrome://version was not refused: ${text(restrictedRead)}`);
+  console.log(`Restricted page refused: ${text(restrictedRead)}`);
+  await restricted.close();
+
+  await page.goto(`${siteUrl}/regex`);
+  await page.getByRole('heading', { name: 'Regex timeout' }).waitFor();
+  await page.bringToFront();
+  const started = Date.now();
+  const heavy = await call(mcpClient, 'read', { tab: ownerTab.id, find: '(a+)+$', regex: true });
+  const elapsed = Date.now() - started;
+  assert(heavy.isError === true && /Find regex timed out/.test(text(heavy)), `Regex-heavy find did not time out: ${text(heavy)}`);
+  assert(elapsed < 3_000, `Regex-heavy find took ${elapsed} ms`);
+  console.log(`Regex-heavy find declined promptly: ${elapsed} ms (${text(heavy)})`);
+
+  console.log('Permissions: all checks passed');
+}
+
+async function waitForSessions(panelPage, minimum) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const state = await panelRequest(panelPage, { type: 'panel.state' });
+    if (state.sessions?.length >= minimum) return state.sessions;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`The panel did not list ${minimum} MCP sessions`);
+}
+
+async function waitForPrompt(panelPage, match) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const state = await panelRequest(panelPage, { type: 'panel.state' });
+    const prompt = state.pending?.find(match);
+    if (prompt !== undefined) return prompt;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('The side panel did not show the expected permission request');
+}
+
+async function panelRequest(panelPage, request) {
+  const response = await panelPage.evaluate(async (message) => await chrome.runtime.sendMessage(message), request);
+  if (response === undefined) throw new Error(`The extension did not answer ${request.type}`);
+  if (response?.ok === false) throw new Error(`${request.type}: ${response.error}`);
+  return response;
+}
+
+async function tabGroup(serviceWorker, tabId) {
+  return await serviceWorker.evaluate(async (id) => {
+    const tab = await chrome.tabs.get(id);
+    if (tab.groupId < 0) return { groupId: tab.groupId, title: '' };
+    const group = await chrome.tabGroups.get(tab.groupId);
+    return { groupId: tab.groupId, title: group.title ?? '' };
+  }, tabId);
 }
 
 async function checkBrowserTools({ mcpClient, page, siteUrl }) {
@@ -255,7 +442,7 @@ async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   assert(/^Opened tab \d+ \[front\] About — /.test(text(opened)), `tabs open: ${text(opened)}`);
   const aboutId = Number(/^Opened tab (\d+)/.exec(text(opened))?.[1]);
   const refusedOpen = await call(mcpClient, 'tabs', { action: 'open', url: 'chrome://settings' });
-  assert(refusedOpen.isError === true && /Only http and https/.test(text(refusedOpen)), `tabs open chrome://: ${text(refusedOpen)}`);
+  assert(refusedOpen.isError === true && /restricted/.test(text(refusedOpen)), `tabs open chrome://: ${text(refusedOpen)}`);
   const switched = await call(mcpClient, 'tabs', { action: 'switch', tab: frontId });
   show('tabs switch', switched);
   assert(text(switched).startsWith(`Switched to tab ${frontId} [front] T3-Tab E2E`), `tabs switch: ${text(switched)}`);
@@ -316,8 +503,11 @@ async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   show('read (after typing)', typed);
   assert(text(typed).includes('value="Ada Lovelace"'), `The typed name is shown:\n${text(typed)}`);
   assert(!text(typed).includes('hunter2'), `The password came back in clear:\n${text(typed)}`);
+  assert(!text(typed).includes('•'), `The password length is visible as bullets:\n${text(typed)}`);
+  assert(firstText.includes('textbox "Password" value=<redacted>'), 'The password field is not marked redacted');
   const everything = await call(mcpClient, 'read', { all: true });
   assert(!text(everything).includes('hunter2'), 'The password came back in clear in all mode');
+  assert(text(everything).includes('textbox "Password" value=<redacted>'), 'The password is not masked in all mode');
   assert(text(everything).includes('Release 1.2 notes are here.'), 'all mode includes the page text');
 
   // find: only the matching lines.
@@ -326,7 +516,7 @@ async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   assert(/textbox "Password"/.test(text(found)), 'find shows the password field');
   assert(!text(found).includes('link "Contact"'), 'find leaves out the rest of the page');
   assert(text(found).length < firstText.length / 3, `find (${text(found).length}) is not much shorter than the page (${firstText.length})`);
-  const foundRegex = await call(mcpClient, 'read', { find: 'link "(about|home)"' });
+  const foundRegex = await call(mcpClient, 'read', { find: 'link "(about|home)"', regex: true });
   assert(text(foundRegex).includes('link "About"') && text(foundRegex).includes('link "Home"') && !text(foundRegex).includes('link "Contact"'), `find with a regex:\n${text(foundRegex)}`);
   const notFound = await call(mcpClient, 'read', { find: 'no such thing' });
   assert(text(notFound).includes('No matches for "no such thing"'), 'find reports no match');
@@ -433,6 +623,12 @@ async function checkKeepalive(mcpClient) {
   assert(/^Browsers: 1$/m.test(text(result)), `The extension did not stay connected: ${text(result)}`);
   assert(parseStatusTabCount(text(result)) >= 1, `The kept-alive browser reported no tabs: ${text(result)}`);
   console.log('Keepalive after 36s: passed');
+}
+
+function listsTab(result, tabId) {
+  return text(result)
+    .split('\n')
+    .some((line) => line.startsWith(`${tabId} `));
 }
 
 function refFor(readText, label) {

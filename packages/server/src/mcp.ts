@@ -2,15 +2,16 @@ import { randomUUID } from 'node:crypto';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { BrowserStatus, ToolContent, ToolMethod } from '@t3-tab/protocol';
+import type { BrowserStatus, ToolContent, ToolMethod, ToolSession } from '@t3-tab/protocol';
 
-import { callTool, getStatus } from './client.js';
+import { callTool, getStatus, registerSession } from './client.js';
 import { actShape, readShape, runJsShape, screenshotShape, tabsShape } from './tool-schemas.js';
 
 export async function runMcpServer(): Promise<void> {
   const server = new McpServer({ name: 't3-tab', version: '0.1.0' });
-  // This process is one agent's session: the daemon keeps its read baselines apart from other agents'.
-  const session = randomUUID();
+  // This process is one agent's session and owns its tabs and read baselines.
+  const sessionId = randomUUID();
+  let session = makeSession(sessionId);
 
   server.registerTool(
     'status',
@@ -64,7 +65,23 @@ export async function runMcpServer(): Promise<void> {
     },
     browserTool('run_js'),
   );
+  server.server.oninitialized = () => {
+    session = makeSession(sessionId, server.server.getClientVersion()?.name);
+    void registerSession(session).catch(() => undefined);
+  };
   await server.connect(new StdioServerTransport());
+}
+
+/** A readable MCP-client name plus a short id, as shown on the tab group and in the side panel. */
+export function makeSession(id: string, clientName?: string): ToolSession {
+  const visible = [...(clientName ?? 'MCP client')]
+    .map((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code < 32 || code === 127 ? ' ' : character;
+    })
+    .join('');
+  const base = visible.replace(/\s+/g, ' ').trim().slice(0, 80) || 'MCP client';
+  return { id, name: `${base} · ${id.replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'session'}` };
 }
 
 function failure(error: unknown): { content: ToolContent[]; isError: true } {

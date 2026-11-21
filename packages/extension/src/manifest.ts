@@ -7,5 +7,6 @@ export const EXTENSION_MANIFEST = {
   description: 'Browser tools and a side panel for coding agents.',
   version: '0.1.0',
   key: EXTENSION_KEY,
-  permissions: ['debugger', 'nativeMessaging', 'sidePanel', 'tabs'],
+  permissions: ['debugger', 'nativeMessaging', 'sidePanel', 'storage', 'tabGroups', 'tabs'],
+  action: { default_title: 'T3-Tab' },
 };

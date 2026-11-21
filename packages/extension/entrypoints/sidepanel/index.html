@@ -4,8 +4,27 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>T3-Tab</title>
+    <style>
+      :root { color-scheme: light dark; font: 13px/1.4 system-ui, sans-serif; }
+      body { margin: 0; padding: 12px; }
+      h1 { font-size: 18px; margin: 0 0 12px; }
+      h2 { font-size: 14px; margin: 16px 0 6px; }
+      section { border-top: 1px solid color-mix(in srgb, currentColor 20%, transparent); padding-top: 8px; }
+      ul { list-style: none; margin: 0; padding: 0; }
+      li { margin: 8px 0; padding: 8px; border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 6px; }
+      .muted { opacity: .7; overflow-wrap: anywhere; }
+      .row { display: flex; gap: 6px; align-items: center; justify-content: space-between; }
+      .buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+      button { font: inherit; padding: 4px 8px; }
+      button.danger { color: #b3261e; }
+      code { overflow-wrap: anywhere; }
+    </style>
   </head>
   <body>
-    <main id="app"></main>
+    <main id="app" aria-live="polite">
+      <h1>Permissions</h1>
+      <p class="muted">Loading…</p>
+    </main>
+    <script type="module" src="./main.ts"></script>
   </body>
 </html>

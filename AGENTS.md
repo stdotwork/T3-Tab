@@ -30,12 +30,13 @@ pnpm e2e
 `pnpm build` writes the Chromium extension to `packages/extension/.output/chrome-mv3`.
 The built server is `packages/server/dist/cli.js`; `node_modules/.bin/t3-tab` runs it after installation.
 `pnpm e2e` launches headless Playwright Chromium with that built extension, starts the real native host and
-an MCP client, and checks the loopback link and the browser tools against a local test site (a form, links
-and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
-`screenshot`, `act` and `run_js`. The action run fills and submits the test form, checks a stale ref after
-navigation, evaluates page JavaScript and waits past the extension worker's idle timeout before another
-`status` call. It prints each reply and its size. Every process it starts uses a temporary HOME and XDG
-directories.
+two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
+links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
+`screenshot`, `act` and `run_js`. It also checks session tab groups, tab sharing, per-site allow/decline
+prompts, restricted pages, password redaction and a regex timeout. The action run fills and submits the
+test form, checks a stale ref after navigation, evaluates page JavaScript and waits past the extension
+worker's idle timeout before another `status` call. It prints each reply and its size. Every process it
+starts uses a temporary HOME and XDG directories.
 
 ## CLI
 
@@ -70,6 +71,28 @@ commands, and settles after every step by waiting for network, DOM and layout ac
 navigation invalidates refs held from before it. `run_js` evaluates an expression or async function body in
 the page for cases the structured tools do not cover. The extension sends a WebSocket ping every 20 seconds
 while the daemon is connected so Chrome does not stop its service worker.
+
+`find` matches case-insensitive literal text by default. Passing `regex: true` opts into a regular
+expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. Password inputs
+are identified through the DOM and sent as `value=<redacted>`, without their value or length.
+
+## Sessions and permissions
+
+Each MCP server process is a session named from the MCP client's name plus a short id. Tabs it opens go
+into its own Chromium tab group. A session can list and use only tabs in that group or tabs the owner
+shares from the side panel; every other tab id is refused.
+
+Site permissions are stored per HTTP(S) origin: `ask` by default, or `allow`. On `ask`, `act`, `run_js` and
+opening a tab wait for the owner to choose Allow once, Always allow on this site, or Decline in the side
+panel. A prompt that times out is declined. The action icon shows how many prompts are waiting. Reads and
+screenshots do not prompt, but they still require a usable tab. An action batch, `run_js` and a newly opened
+tab are checked again against the approved origin, so a page that moves during approval or between steps
+is refused until its new origin is approved.
+
+Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
+`view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel's plain permissions view
+is in `packages/extension/entrypoints/sidepanel`; its sharing and prompt calls live in
+`packages/extension/src/panel.ts`, and the policy is in `permissions.ts`, `sessions.ts` and `tabs.ts`.
 
 ## CI
 

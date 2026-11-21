@@ -13,6 +13,8 @@ describe('extension manifest', () => {
     expect(EXTENSION_MANIFEST.permissions).toContain('sidePanel');
     expect(EXTENSION_MANIFEST.permissions).toContain('nativeMessaging');
     expect(EXTENSION_MANIFEST.permissions).toContain('tabs');
+    expect(EXTENSION_MANIFEST.permissions).toContain('tabGroups');
+    expect(EXTENSION_MANIFEST.permissions).toContain('storage');
   });
 
   it('asks for the debugger permission the page reader needs', () => {
