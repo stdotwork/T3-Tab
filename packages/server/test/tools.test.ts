@@ -48,6 +48,20 @@ describe('tabs tool', () => {
     ]);
   });
 
+  it('shows only the origin and that approval is needed for a tab the session has not approved', async () => {
+    const hidden: TabInfo = { id: 7, title: '', url: 'http://mail.test', active: true, needsApproval: true };
+    const link = fakeBrowser({
+      'tabs.list': () => ({ tabs: [hidden, second] }),
+      'tabs.switch': () => ({ tab: hidden }),
+    });
+    expect(await runTool(link, SESSION, 'tabs', {})).toEqual([
+      { type: 'text', text: '7 [front] [needs approval] http://mail.test\n9 Second — http://localhost/b' },
+    ]);
+    expect(await runTool(link, SESSION, 'tabs', { action: 'switch', tab: 7 })).toEqual([
+      { type: 'text', text: 'Switched to tab 7 [front] [needs approval] http://mail.test' },
+    ]);
+  });
+
   it('opens, switches and closes', async () => {
     const link = fakeBrowser({
       'tabs.open': () => ({ tab: second }),

@@ -14,8 +14,100 @@ const KEPT_PROPS = new Set([
   'readonly',
   'invalid',
   'level',
-  'protected',
 ]);
+
+/** What the browser says about one frame of the page. */
+export interface FrameInfo {
+  origin: string | undefined;
+}
+
+export interface FramePolicy {
+  /** The approved origin of the main frame's document; only frames of this origin are kept. */
+  origin: string;
+  mainFrameId: string;
+  frames: ReadonlyMap<string, FrameInfo>;
+  /** The origin of the frame an `<iframe>` element holds, when its tree is not part of the page's. */
+  ownerOrigin(backendId: number): Promise<string | undefined>;
+}
+
+const MAX_FRAME_LOOKUPS = 50;
+
+/**
+ * Restricts a raw accessibility tree to the main frame's document and the same-origin child frames below
+ * it. A child frame of another origin, or one the browser cannot name, is dropped with everything in it,
+ * and one line `frame omitted: <origin>` takes its place. Nodes the root does not reach are dropped.
+ */
+export async function restrictToOriginFrames(raw: unknown, policy: FramePolicy): Promise<unknown[]> {
+  if (!Array.isArray(raw)) return [];
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const item of raw.slice(0, MAX_NODES)) {
+    if (typeof item !== 'object' || item === null) continue;
+    const node = item as Record<string, unknown>;
+    if (typeof node.nodeId === 'string') byId.set(node.nodeId, node);
+  }
+  const first = raw.find((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && typeof (item as Record<string, unknown>).nodeId === 'string');
+  if (first === undefined) return [];
+
+  const kept: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  const stack: Record<string, unknown>[] = [first];
+  let omitted = 0;
+  let lookups = 0;
+  let overflow = 0;
+  let overflowParent: Record<string, unknown> | undefined;
+  const marker = (text: string): Record<string, unknown> => ({
+    nodeId: `frame-omitted-${(omitted += 1)}`,
+    ignored: false,
+    role: { type: 'role', value: 'group' },
+    name: { type: 'computedString', value: text },
+    childIds: [],
+  });
+
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node === undefined || typeof node.nodeId !== 'string' || seen.has(node.nodeId)) continue;
+    seen.add(node.nodeId);
+    const childIds = Array.isArray(node.childIds) ? node.childIds.filter((id): id is string => typeof id === 'string') : [];
+    const keptIds: string[] = [];
+    const toVisit: Record<string, unknown>[] = [];
+    const extra: Record<string, unknown>[] = [];
+    for (const id of childIds) {
+      const child = byId.get(id);
+      if (child === undefined) continue;
+      const frameId = typeof child.frameId === 'string' ? child.frameId : undefined;
+      if (frameId !== undefined && frameId !== policy.mainFrameId && policy.frames.get(frameId)?.origin !== policy.origin) {
+        extra.push(marker(`frame omitted: ${originLabel(policy.frames.get(frameId)?.origin)}`));
+        continue;
+      }
+      keptIds.push(id);
+      toVisit.push(child);
+    }
+    if (childIds.length === 0 && axString(node.role) === 'Iframe' && typeof node.backendDOMNodeId === 'number') {
+      if (lookups < MAX_FRAME_LOOKUPS) {
+        lookups += 1;
+        const origin = await policy.ownerOrigin(node.backendDOMNodeId);
+        if (origin !== policy.origin) extra.push(marker(`frame omitted: ${originLabel(origin)}`));
+      } else {
+        overflow += 1;
+        overflowParent = node;
+      }
+    }
+    node.childIds = [...keptIds, ...extra.map((mark) => mark.nodeId as string)];
+    kept.push(node, ...extra);
+    // The stack pops last in first out; push in reverse so the nodes are visited in document order.
+    stack.push(...toVisit.reverse());
+  }
+  if (overflow > 0 && overflowParent !== undefined) {
+    const more = marker(`${overflow} more frames omitted`);
+    overflowParent.childIds = [more.nodeId as string];
+    kept.push(more);
+  }
+  return kept;
+}
+
+function originLabel(origin: string | undefined): string {
+  return origin === undefined || origin === '' || origin === 'null' || origin === '://' ? 'unknown origin' : origin;
+}
 
 /**
  * Trims the nodes of `Accessibility.getFullAXTree` to what the page reader uses, so a large page

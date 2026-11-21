@@ -38,7 +38,7 @@ export interface BrowserTabClosedMessage {
 }
 
 export interface ToolSession {
-  /** Stable for one MCP server process. */
+  /** Issued by the daemon and bound to the control connection that registered it. */
   id: string;
   /** The MCP client's name plus a short id, shown in the tab group and side panel. */
   name: string;
@@ -52,6 +52,11 @@ export interface TabInfo {
   active: boolean;
   /** Chromium's tab group id, when the tab is grouped. */
   groupId?: number;
+  /**
+   * Set when the session has not approved the origin the tab now shows: `title` is empty and `url` is
+   * only that origin, until a read, an action or the owner approves it.
+   */
+  needsApproval?: true;
 }
 
 /** One accessibility node, trimmed in the extension to what the page reader needs. */
@@ -213,7 +218,7 @@ export interface ControlSessionRegisterRequest {
   protocolVersion: typeof PROTOCOL_VERSION;
   requestId: string;
   method: 'session.register';
-  session: ToolSession;
+  clientName: string;
 }
 
 export interface ControlStatusRequest {
@@ -273,7 +278,7 @@ export interface ControlSessionRegisterResponse {
   requestId: string;
   ok: true;
   result: {
-    registered: true;
+    session: ToolSession;
   };
 }
 
