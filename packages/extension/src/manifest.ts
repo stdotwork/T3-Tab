@@ -1,7 +1,11 @@
 export const EXTENSION_MANIFEST_VERSION = 3;
+export const EXTENSION_KEY =
+  'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAupWDfC6cIQKfe0nJcN3X+66rH48nV9/aj5Z2NHM5z5tK2dTGh812c23hQ+p6zkPltJiodV5+mh+iUivMxBZxrlVFdiF/uY7SpB1AMmXVE5q3gQ5P25IxD33eVWWqns9NcOqhHIZrgdaaoB/BD8DsJ98qv1QGD8xU318ClKL7b+n6v6DuxojRVRGK9PU3Ho+CFbKA8HPEybI7BFrJ9vKWunNX7pOQF1Oi9MR16H/EVpVAAiu3wKtmLjIn5tBTZ2Fv6dyEPYkuoEvc9OLmrh+ut+CBZQF7j1B3jzaNUyFdB7qdlJgyxZdRhWgnwGwgEVz9Ke450h8Ol10PraO9ve6iLQIDAQAB';
+
 export const EXTENSION_MANIFEST = {
   name: 'T3-Tab',
   description: 'Browser tools and a side panel for coding agents.',
   version: '0.1.0',
-  permissions: ['sidePanel'],
+  key: EXTENSION_KEY,
+  permissions: ['nativeMessaging', 'sidePanel', 'tabs'],
 };

@@ -1,5 +1,99 @@
+import {
+  NATIVE_HOST_NAME,
+  PROTOCOL_VERSION,
+  type BrowserHelloMessage,
+  type BrowserTabCountMessage,
+  type NativeDaemonRequest,
+  type NativeResponse,
+} from '@t3-tab/protocol';
 import { defineBackground } from 'wxt/utils/define-background';
 
+const browserId = crypto.randomUUID();
+const browserName = navigator.userAgent.includes('Brave') ? 'Brave' : 'Chromium';
+
 export default defineBackground(() => {
-  // Empty for now; the background worker starts with the extension.
+  let socket: WebSocket | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let reconnectAttempt = 0;
+  let connecting = false;
+
+  const reportTabCount = (): void => {
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    chrome.tabs.query({}, (tabs: unknown[]) => {
+      if (chrome.runtime.lastError !== undefined || socket?.readyState !== WebSocket.OPEN) return;
+      const message: BrowserTabCountMessage = {
+        type: 'browser.tabCount',
+        protocolVersion: PROTOCOL_VERSION,
+        tabCount: tabs.length,
+      };
+      socket.send(JSON.stringify(message));
+    });
+  };
+
+  const scheduleReconnect = (): void => {
+    socket = undefined;
+    if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
+    const delay = Math.min(30_000, 500 * 2 ** Math.min(reconnectAttempt, 6)) + Math.random() * 250;
+    reconnectAttempt += 1;
+    reconnectTimer = setTimeout(() => void connect(), delay);
+  };
+
+  const connect = async (): Promise<void> => {
+    if (connecting || (socket !== undefined && socket.readyState <= WebSocket.OPEN)) return;
+    connecting = true;
+    try {
+      const configuration = await nativeConfiguration();
+      const url = new URL(`ws://127.0.0.1:${configuration.port}/`);
+      url.searchParams.set('token', configuration.token);
+      const current = new WebSocket(url);
+      socket = current;
+      current.addEventListener('open', () => {
+        reconnectAttempt = 0;
+        const hello: BrowserHelloMessage = {
+          type: 'browser.hello',
+          protocolVersion: PROTOCOL_VERSION,
+          browserId,
+          browserName,
+        };
+        current.send(JSON.stringify(hello));
+        reportTabCount();
+      });
+      current.addEventListener('close', () => {
+        if (socket === current) scheduleReconnect();
+      });
+      current.addEventListener('error', () => {
+        if (socket === current) current.close();
+      });
+    } catch {
+      scheduleReconnect();
+    } finally {
+      connecting = false;
+    }
+  };
+
+  chrome.tabs.onCreated.addListener(reportTabCount);
+  chrome.tabs.onRemoved.addListener(reportTabCount);
+  chrome.tabs.onReplaced.addListener(reportTabCount);
+  chrome.tabs.onAttached.addListener(reportTabCount);
+  chrome.tabs.onDetached.addListener(reportTabCount);
+  chrome.runtime.onStartup.addListener(() => void connect());
+  chrome.runtime.onInstalled.addListener(() => void connect());
+  void connect();
 });
+
+async function nativeConfiguration(): Promise<{ port: number; token: string }> {
+  const request: NativeDaemonRequest = {
+    type: 'native.daemon',
+    protocolVersion: PROTOCOL_VERSION,
+  };
+  const response = await new Promise<NativeResponse>((resolve, reject) => {
+    chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, request, (message: NativeResponse) => {
+      const error = chrome.runtime.lastError;
+      if (error !== undefined) reject(new Error(error.message));
+      else resolve(message);
+    });
+  });
+  if (response.type === 'native.error') throw new Error(response.error);
+  if (response.protocolVersion !== PROTOCOL_VERSION) throw new Error('Native host protocol mismatch');
+  return { port: response.port, token: response.token };
+}
