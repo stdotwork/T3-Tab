@@ -114,8 +114,10 @@ context's origin as the approved one, pinned by `uniqueContextId` (`mainWorldCon
 `packages/extension/src/cdp.ts`), so a navigation that replaced the page makes the call fail; the
 agent's text is never part of a check. A screenshot records the document epoch and address before the
 capture and discards the image if either changed. An `act` batch stops if a document from another origin
-replaces the page during a `type`, `press` or `scroll` step that has no ref; a new document on the approved
-origin, such as the page a `press Enter` submits to, is fine. A tab that moves while approval is pending or between
+replaced the page during a step other than `wait`, checked after the step's input and again after it
+settles, so a page that came and went is caught too; a new document on the approved origin, such as the
+page a `press Enter` submits to, is fine. CDP input cannot be aimed at one document, so input that reached
+such a page is reported, not prevented. A tab that moves while approval is pending or between
 steps is refused until its new origin is approved. Site setting writes are serialised.
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
