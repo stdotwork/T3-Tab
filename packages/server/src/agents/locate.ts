@@ -26,8 +26,7 @@ export async function findT3(env: NodeJS.ProcessEnv): Promise<string | undefined
   if (override !== undefined && override !== '') return (await isExecutable(override)) ? override : undefined;
   const onPath = await findExecutable('t3', env);
   if (onPath !== undefined) return onPath;
-  const t3Home = env.T3CODE_HOME?.trim() || join(homeOf(env), '.t3');
-  const runtime = join(t3Home, 'runtime');
+  const runtime = join(t3Home(env), 'runtime');
   const launchers = await readFile(join(runtime, 'launchers'), 'utf8').catch(() => '');
   for (const launcher of launchers.split(/\r?\n/)) {
     if (isAbsolute(launcher) && (await isExecutable(launcher))) return launcher;
@@ -35,6 +34,11 @@ export async function findT3(env: NodeJS.ProcessEnv): Promise<string | undefined
   const bin = join(runtime, 'bin', 't3');
   if (await isExecutable(bin)) return bin;
   return await newestVersion(join(runtime, 'versions'));
+}
+
+/** T3 Code's home folder: `T3CODE_HOME`, or `~/.t3`. */
+export function t3Home(env: NodeJS.ProcessEnv): string {
+  return env.T3CODE_HOME?.trim() || join(homeOf(env), '.t3');
 }
 
 async function newestVersion(versionsDir: string): Promise<string | undefined> {

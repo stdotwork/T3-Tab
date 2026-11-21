@@ -17,6 +17,7 @@ import {
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
 import { Agents } from './agents/conversations.js';
+import { T3Access } from './agents/t3-access.js';
 import { BrowserConnection } from './browser-link.js';
 import { connectionRole, tokensMatch, isLoopbackHostHeader, type ConnectionRole } from './security.js';
 import { clearDaemonState, writeDaemonState, type DaemonState } from './state.js';
@@ -28,6 +29,8 @@ export interface DaemonOptions {
   stateDir?: string;
   /** The side panel's agent runs; tests pass their own. */
   agents?: Agents;
+  /** The side panel's read-only T3 sign-in; tests pass their own. */
+  t3Access?: T3Access;
 }
 
 export interface DaemonHandle {
@@ -63,6 +66,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
       env: process.env,
       server: { command: process.execPath, args: [fileURLToPath(new URL('./cli.js', import.meta.url)), 'mcp'] },
     });
+  const t3Access = options.t3Access ?? new T3Access({ env: process.env, stateDir });
+  const panel: PanelServices = { agents, t3Access };
   const httpServer = createServer((request, response) => handleHttpRequest(request, response, token));
   const sockets = {
     extension: new WebSocketServer({ noServer: true, maxPayload: MAX_BROWSER_MESSAGE_BYTES }),
@@ -104,7 +109,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     }
 
     webSocket.on('message', (data) => {
-      if (role === 'extension') handleBrowserMessage(webSocket, browsers, agents, data);
+      if (role === 'extension') handleBrowserMessage(webSocket, browsers, panel, data);
       else if (role === 'control') handleControlMessage(webSocket, browsers, control, data);
     });
     const forget = (): void => {
@@ -153,6 +158,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
       if (closed) return;
       closed = true;
       agents.close();
+      t3Access.close();
       await clearDaemonState(stateDir, token);
       await closeServer(httpServer, sockets);
     },
@@ -176,10 +182,15 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse, t
   sendJson(response, 404, { error: 'Not found' });
 }
 
+interface PanelServices {
+  agents: Agents;
+  t3Access: T3Access;
+}
+
 function handleBrowserMessage(
   webSocket: WebSocket,
   browsers: Map<WebSocket, BrowserConnection>,
-  agents: Agents,
+  panel: PanelServices,
   data: RawData,
 ): void {
   const value = parseJson(data);
@@ -195,7 +206,7 @@ function handleBrowserMessage(
   if (message.type === 'browser.response') {
     connection.handleResponse(message);
   } else if (message.type === 'browser.daemonRequest') {
-    void answerDaemonRequest(webSocket, agents, message);
+    void answerDaemonRequest(webSocket, panel, message);
   } else if (message.type === 'browser.ping') {
     const pong: BrowserPongMessage = { type: 'browser.pong', protocolVersion: PROTOCOL_VERSION };
     webSocket.send(JSON.stringify(pong));
@@ -219,8 +230,11 @@ function handleBrowserMessage(
   }
 }
 
-/** A side-panel request the extension passed on: start, continue or list the panel's agent conversations. */
-async function answerDaemonRequest(webSocket: WebSocket, agents: Agents, message: BrowserDaemonRequestMessage): Promise<void> {
+/**
+ * A side-panel request the extension passed on: start, continue or list the panel's agent conversations, or sign in
+ * to T3 for its lists. Replies never carry the T3 credential; T3Access errors name what failed, not what was sent.
+ */
+async function answerDaemonRequest(webSocket: WebSocket, { agents, t3Access }: PanelServices, message: BrowserDaemonRequestMessage): Promise<void> {
   let reply: DaemonReplyMessage;
   try {
     const params = (typeof message.params === 'object' && message.params !== null ? message.params : {}) as Record<string, unknown>;
@@ -229,6 +243,9 @@ async function answerDaemonRequest(webSocket: WebSocket, agents: Agents, message
     else if (message.method === 'agents.list') result = { conversations: agents.list() };
     else if (message.method === 'agents.start') result = { conversation: await agents.start(params) };
     else if (message.method === 'agents.send') result = { conversation: await agents.send(params.id, params.message) };
+    else if (message.method === 't3.access') result = await t3Access.view(params.refresh === true);
+    else if (message.method === 't3.signIn') result = await t3Access.signIn();
+    else if (message.method === 't3.signOut') result = await t3Access.signOut();
     else throw new Error(`Unknown method: ${String((message as { method?: unknown }).method)}`);
     reply = { type: 'daemon.reply', protocolVersion: PROTOCOL_VERSION, requestId: message.requestId, ok: true, result };
   } catch (error) {

@@ -250,12 +250,59 @@ export interface AgentStartParams {
   claim: string;
 }
 
+/** A T3 project the panel can start a thread in, as T3's `t3_project_list` reports it. */
+export interface T3Project {
+  id: string;
+  title: string;
+  workspaceRoot: string;
+  /** The project's default provider instance and model, when it has one. */
+  defaultProvider?: string;
+  defaultModel?: string;
+}
+
+/** A T3 provider instance and the models `orchestrator_capabilities` lists for it. */
+export interface T3Provider {
+  instanceId: string;
+  name: string;
+  models: Array<{ id: string; label?: string }>;
+  /** Models T3 left out of its short list. */
+  omittedModels?: number;
+  /** Why T3 says the provider cannot run now, when it says so. */
+  unavailable?: string;
+}
+
+export interface T3Catalog {
+  projects: T3Project[];
+  providers: T3Provider[];
+  fetchedAt: number;
+}
+
+/**
+ * T3-Tab's own read-only sign-in to T3 Code, used only to list projects, providers and models. The credential stays
+ * in the background program; this view never carries it.
+ */
+export interface T3Access {
+  state: 'signed-out' | 'signing-in' | 'signed-in';
+  /** The T3 environment address, such as `http://127.0.0.1:3773`. */
+  environment?: string;
+  /** When T3 ends the sign-in, in milliseconds since the epoch. */
+  expiresAt?: number;
+  /** One line: why the lists are unavailable, or what the last sign-in attempt did. */
+  detail?: string;
+  catalog?: T3Catalog;
+}
+
 /** Requests the extension sends to the background program for the side panel, with their params and results. */
 export interface DaemonMethods {
   'agents.status': { params: { refresh?: boolean }; result: AgentsStatus };
   'agents.list': { params: Record<string, never>; result: { conversations: AgentConversation[] } };
   'agents.start': { params: AgentStartParams; result: { conversation: AgentConversation } };
   'agents.send': { params: { id: string; message: string }; result: { conversation: AgentConversation } };
+  /** The sign-in state and, when signed in, T3's lists; `refresh` fetches the lists again. */
+  't3.access': { params: { refresh?: boolean }; result: T3Access };
+  /** Starts a sign-in and returns the T3 page the owner approves it on. */
+  't3.signIn': { params: Record<string, never>; result: { url: string } };
+  't3.signOut': { params: Record<string, never>; result: T3Access };
 }
 
 export type DaemonMethod = keyof DaemonMethods;

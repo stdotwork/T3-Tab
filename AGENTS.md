@@ -48,7 +48,11 @@ edits, `--print`, a second install, uninstall and, when both agent CLIs are avai
 `mcp list` output. It then checks side-panel sessions (`e2e/panel-sessions.mjs`) with fake `t3`, `claude`
 and `codex` commands (`e2e/fakes/`) first on the daemon's PATH, which record their arguments and drive the
 real `t3-tab mcp` server: a T3 thread started with project, provider and model claims the owner's tab and
-reads it, is continued with `t3 thread send` and polled with `t3 thread show`; a made-up claim code is
+reads it, is continued with `t3 thread send` and polled with `t3 thread show`; the sign-in to a fake T3
+environment (`e2e/fakes/t3-server.mjs`, T3's OAuth and `/mcp` answers, recorded in the temporary T3 home's
+`server-runtime.json`) refuses a forged answer and a full-access grant, keeps a read-only one in a 0600 file,
+lists T3's projects and models in the panel, starts a thread with listed values and signs out, and no file,
+panel reply, command argument or environment but the credential file holds a token; a made-up claim code is
 refused; T3 stopped and T3 missing are reported; direct Claude Code and Codex runs read the tab, and are
 resumed with the session id they printed. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
@@ -185,7 +189,25 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
   the message on stdin, and polls `show` every 3 seconds until the run it started has finished. Each `t3 thread` command signs in to T3
   for a moment, so the panel checks T3's state at most once a minute unless the owner reopens the panel. The project is
   a T3 project id or a folder inside one; provider and model are optional (both or neither). The `t3` CLI has
-  no command that lists projects, providers or models, so the panel takes them as text.
+  no command that lists projects, providers or models; the panel picks them from lists once T3-Tab is signed
+  in to T3 (below), and otherwise takes them as text. Choosing "Type…" in a list brings the text fields back.
+- **Signing in to T3 for the lists.** A one-time "Sign in to T3 Code" in the panel signs the daemon in to the
+  local T3 environment's `/mcp` endpoint the way T3's outside agents do (`packages/server/src/agents/t3-access.ts`):
+  OAuth metadata, dynamic client registration as "T3-Tab", and the authorization code flow with PKCE (S256).
+  The address comes from `<T3 home>/userdata/server-runtime.json` (only `origin` and `pid`; its server must be
+  alive, and the address loopback or https). The extension opens T3's approval page in a normal tab; the owner
+  approves there and picks the access level. T3 sends the answer to a one-use listener on `127.0.0.1` that
+  checks `state` and `iss` and closes after one answer. T3-Tab keeps the sign-in only when T3 granted exactly
+  `orchestration:read` (T3's "Read only"); anything broader is not stored, and the panel asks the owner to
+  revoke it in T3 and sign in again. The token is stored only in `t3-credential.json` in T3-Tab's state folder
+  (next to `daemon.json`, written as a new 0600 file and renamed into place), sent only to that environment's
+  `/mcp` with redirects refused, and used only for `t3_project_list` and `orchestrator_capabilities`
+  (`t3-catalog.ts`). It never reaches the extension, the panel, logs, error messages, agents, or a command's
+  arguments or environment. T3 issues no refresh tokens and offers a client no way to revoke itself: a
+  sign-in lasts 30 days, a refused token is deleted, and "Sign out" deletes the file and tells the owner to
+  revoke T3-Tab in T3's Settings → Sharing & access to end it there at once. The lists are fetched on sign-in,
+  when the panel opens, and on "Reload lists"; after a failure, at most once a minute. Threads still start and
+  continue through `t3 thread`.
 - **Finding `t3`.** `T3_TAB_T3` when set (and then only it), else `t3` on PATH or in the usual install
   folders, else the launchers listed in `<T3 home>/runtime/launchers`, else the newest fully installed
   `<T3 home>/runtime/versions/<version>/t3`; the T3 home is `T3CODE_HOME` or `~/.t3`. Whether T3 is running
