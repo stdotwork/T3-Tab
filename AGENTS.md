@@ -34,8 +34,11 @@ two MCP clients, and checks the loopback link and the browser tools against a lo
 links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
 `screenshot`, `act` and `run_js`. It also checks session tab groups, socket-bound session ids, tab sharing,
 read and action prompts, cross-origin navigation and `window.open`, restricted pages, password redaction
-and a regex timeout. Existing tool checks run with the site still set to ask and the harness answering
-prompts with Allow once. The action run fills and submits the
+and a regex timeout. It also checks the review fixes: a read-only site grant that act, run_js and open
+still prompt past, a `run_js` escape expression, a screenshot and a key press that land on a page that
+changed, popups opened by the owner and by a session tab, member tabs shown only by origin until approved,
+a cross-origin iframe left out of `read`, and prompt buttons locked when rows shift. Existing tool checks
+run with the site still set to ask and the harness answering prompts with Allow once. The action run fills and submits the
 test form, checks a stale ref after navigation, evaluates page JavaScript and waits past the extension
 worker's idle timeout before another `status` call. It prints each reply and its size. Every process it
 starts uses a temporary HOME and XDG directories.
@@ -74,6 +77,12 @@ navigation invalidates refs held from before it. `run_js` evaluates an expressio
 the page for cases the structured tools do not cover. The extension sends a WebSocket ping every 20 seconds
 while the daemon is connected so Chrome does not stop its service worker.
 
+`read` returns the main frame's document and same-origin child frames only. A child frame of another
+origin, or one the browser cannot name, is left out with one line `frame omitted: <origin>` in its place
+(`restrictToOriginFrames` in `packages/extension/src/ax.ts`). In Chromium 159 (checked headless) `Accessibility.getFullAXTree`
+does not return child-frame content at all, so for now the filter only adds those lines. Screenshots are
+not filtered for iframes.
+
 `find` matches case-insensitive literal text by default. Passing `regex: true` opts into a regular
 expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. Every text box
 is inspected in bounded batches; password values are removed before the accessibility tree leaves the
@@ -85,18 +94,28 @@ The daemon issues each session id and binds it to the control connection that re
 on another socket, or with another id, are refused. Tabs a session opens go into its own Chromium tab
 group. It can list and use only tabs in that group or tabs the owner shares from the side panel.
 
-Site permissions are stored per HTTP(S) origin: `ask` by default, or `allow`. Each session also records the
-origins approved for each tab by opening it, reading it, acting on it, or sharing it. A tab commit to a
-different origin clears those approvals; `read` and `screenshot` then show a `read` prompt, while `act` and
-`run_js` keep prompting for action. `window.open` tabs from a session are kept in that session group without
-inheriting origin approval. A prompt names its tab id and title; it can time out or be declined, and one
-session may have at most three waiting prompts. The side panel keeps prompt rows stable and enables new
-buttons after 500 ms.
+Site permissions are stored per HTTP(S) origin: `ask` by default, `read` or `allow`. `read` lets sessions
+read the site without a prompt and never covers opening, acting or `run_js`; `allow` covers all four. A read
+prompt's lasting choice sets `read`; the lasting choice of an open, act or `run_js` prompt sets `allow`.
+Every prompt and site button says what it grants. Each session also records the origins approved for each
+tab by opening it, reading it, acting on it, or sharing it. A tab commit to a different origin clears those
+approvals; `read` and `screenshot` then show a `read` prompt, while `act` and `run_js` keep prompting for
+action. `tabs list`, `switch` and `open` show only the origin and `[needs approval]` for a member tab whose
+current origin the session has not approved (and the site is not set to `read` or `allow`). A tab opened
+from a tab of a session, through `chrome.webNavigation.onCreatedNavigationTarget`, joins that session's
+group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own,
+is left alone. A prompt names its tab id and title; it can time out or be declined, and one session may
+have at most three waiting prompts. The side panel keeps prompt rows stable and disables a prompt's buttons
+for 500 ms when it appears and again whenever a row is removed or inserted above another.
 
 Membership, restricted-page and approved-origin checks run again after every permission wait and before
-every `act` step. `run_js` checks the origin both before evaluation and inside the evaluated context. A tab
-that moves while approval is pending or between steps is refused until its new origin is approved. Site
-setting writes are serialised.
+every `act` step. `run_js` runs only in the main frame's JavaScript context after the browser reports that
+context's origin as the approved one, pinned by `uniqueContextId` (`mainWorldContext` in
+`packages/extension/src/cdp.ts`), so a navigation that replaced the page makes the call fail; the
+agent's text is never part of a check. A screenshot records the document epoch and address before the
+capture and discards the image if either changed. An `act` batch stops if the document is replaced during a
+`type`, `press` or `scroll` step that has no ref. A tab that moves while approval is pending or between
+steps is refused until its new origin is approved. Site setting writes are serialised.
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
 `view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel's plain permissions view

@@ -90,6 +90,8 @@ const SITE = {
 <html lang="en"><head><title>Permission A</title></head><body><h1>Permission A</h1><button id="act-a">Action A</button><p id="result-a">Ready</p><script>document.getElementById('act-a').addEventListener('click', () => { document.getElementById('act-a').textContent = 'Action A completed'; document.getElementById('result-a').textContent = 'Done'; });</script></body></html>`,
   '/perm-b': `<!doctype html>
 <html lang="en"><head><title>Permission B</title></head><body><h1>Permission B</h1><p>Session B private tab.</p></body></html>`,
+  '/secret': `<!doctype html>
+<html lang="en"><head><title>Secret</title></head><body><h1>Secret</h1><p>SECRET-OF-SITE-A-INBOX</p></body></html>`,
   '/regex': `<!doctype html>
 <html lang="en"><head><title>Regex timeout</title></head><body><h1>Regex timeout</h1><p>${'a'.repeat(350)}!</p></body></html>`,
   '/about': `<!doctype html>
@@ -113,6 +115,7 @@ let pageServerB;
 let autoPromptSessionId;
 let permissionServiceWorker;
 let panelPage;
+let framesPage = () => '';
 
 try {
   await stat(join(extensionDir, 'manifest.json'));
@@ -120,7 +123,7 @@ try {
 
   const siteHandler = (request, response) => {
     const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
-    const body = SITE[path];
+    const body = path === '/frames' ? framesPage() : SITE[path];
     response.writeHead(body === undefined ? 404 : 200, { 'content-type': 'text/html; charset=utf-8' });
     response.end(body ?? SITE_NOT_FOUND);
   };
@@ -133,6 +136,11 @@ try {
   if (address === null || typeof address === 'string' || addressB === null || typeof addressB === 'string') {
     throw new Error('Test page servers did not bind to TCP addresses');
   }
+
+  framesPage = () => `<!doctype html>
+<html lang="en"><head><title>Frames</title></head><body><h1>Frames page</h1>
+<iframe title="other origin" src="http://127.0.0.1:${addressB.port}/perm-b"></iframe>
+<iframe title="same origin" src="/perm-a"></iframe></body></html>`;
 
   await execFileAsync(
     process.execPath,
@@ -249,6 +257,7 @@ try {
 
   console.log('Existing tool checks: site setting remains ask; the harness auto-answers each prompt with Allow once');
   await checkBrowserTools({ mcpClient, page, siteUrl });
+  await checkFrames({ mcpClient, siteUrl, otherSiteUrl });
   const newCheckFailures = [];
   try {
     await checkActionTools({ mcpClient, page });
@@ -308,6 +317,7 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
   const badgeAfterDecision = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
   assert(badgeAfterDecision === '', `The action badge was not cleared: ${badgeAfterDecision}`);
   console.log(`Open approval named tab ${openPromptA.tab.id} "${openPromptA.tab.title}" at ${openPromptA.origin}`);
+  await assertPromptRows(panelPage, serviceWorker);
 
   const openB = rawCall(mcpClientB, 'tabs', { action: 'open', url: `${otherSiteUrl}/perm-b` });
   const openPromptB = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionB.id && prompt.tool === 'open');
@@ -461,6 +471,28 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
   assert(screenshotResult.isError !== true && screenshotResult.content.some((item) => item.type === 'image'), `Screenshot did not get read approval: ${text(screenshotResult)}`);
   console.log('Screenshot used a read prompt, then returned an image after Allow once');
 
+  // A tab the owner opens from their own tab during a long run_js is not pulled into the session's group,
+  // even when the run_js text mentions window.open( without calling it.
+  const beforeOwnerPopup = new Set(await serviceWorker.evaluate(async () => (await chrome.tabs.query({})).map((tab) => tab.id)));
+  const longRun = rawCall(mcpClient, 'run_js', {
+    tab: tabA,
+    expression: "await new Promise((resolve) => setTimeout(resolve, 3000)); // window.open( is only named in this comment\nreturn 'long run done';",
+  });
+  const longRunPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'run_js');
+  await decidePrompt(serviceWorker, longRunPrompt.id, 'allow-once');
+  await sleep(600);
+  await page.evaluate((url) => {
+    window.open(url, '_blank');
+  }, `${siteUrl}/about`);
+  const ownerPopup = await waitForNewTab(serviceWorker, beforeOwnerPopup, `${siteUrl}/about`);
+  const longRunResult = await longRun;
+  assert(longRunResult.isError !== true && text(longRunResult) === '"long run done"', `The long run_js failed: ${text(longRunResult)}`);
+  await sleep(500);
+  const ownerPopupGroup = await tabGroup(serviceWorker, ownerPopup.id);
+  assert(ownerPopupGroup.groupId === -1, `The owner's popup tab ${ownerPopup.id} was pulled into group ${ownerPopupGroup.groupId} during a run_js`);
+  await serviceWorker.evaluate((id) => chrome.tabs.remove(id), ownerPopup.id);
+  console.log(`Owner popup opened during a long run_js stayed out of group ${groupA.groupId} (tab ${ownerPopup.id} ungrouped)`);
+
   const beforePopup = new Set(await serviceWorker.evaluate(async () => (await chrome.tabs.query({})).map((tab) => tab.id)));
   const popupCall = rawCall(mcpClient, 'run_js', {
     tab: tabA,
@@ -471,14 +503,27 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
   const popupResult = await popupCall;
   assert(popupResult.isError !== true, `window.open run_js failed: ${text(popupResult)}`);
   const popupTab = await waitForNewTab(serviceWorker, beforePopup, `${siteUrl}/perm-a`);
-  const popupGroup = await tabGroup(serviceWorker, popupTab.id);
-  assert(popupGroup.groupId === groupA.groupId, `window.open tab ${popupTab.id} is in group ${popupGroup.groupId}, expected ${groupA.groupId}`);
+  await waitForTabGroup(serviceWorker, popupTab.id, groupA.groupId, 'window.open tab');
   const popupRead = rawCall(mcpClient, 'read', { tab: popupTab.id });
   const popupReadPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'read' && prompt.tab.id === popupTab.id);
   await decidePrompt(serviceWorker, popupReadPrompt.id, 'decline');
   const popupReadResult = await popupRead;
   assert(popupReadResult.isError === true && /Permission declined/.test(text(popupReadResult)), `window.open tab was readable without approval: ${text(popupReadResult)}`);
   console.log(`window.open created grouped tab ${popupTab.id} "${popupTab.title}"; read prompt (kind ${popupReadPrompt.tool}) was declined`);
+
+  // tabs list shows only the origin of a member tab the session has not approved, and the title of one it has.
+  const listWithPopup = text(await rawCall(mcpClient, 'tabs', {}));
+  const popupLine = listWithPopup.split('\n').find((line) => line.startsWith(`${popupTab.id} `));
+  assert(
+    new RegExp(`^${popupTab.id}( \\[front\\])? \\[needs approval\\] ${escapeRegExp(siteUrl)}$`).test(popupLine ?? ''),
+    `An unapproved member tab shows more than its origin: ${popupLine}\n${listWithPopup}`,
+  );
+  const approvedLine = listWithPopup.split('\n').find((line) => line.startsWith(`${tabA} `));
+  assert(approvedLine?.includes('Permission B'), `An approved member tab lost its title: ${approvedLine}`);
+  console.log(`tabs list: unapproved tab ${popupTab.id} shows "${popupLine}"; approved tab ${tabA} shows "${approvedLine}"`);
+
+  await checkReadGrant({ mcpClient, serviceWorker, sessionA, siteUrl, popupTab, tabA });
+  await checkRaces({ mcpClient, serviceWorker, sessionA, siteUrl, otherSiteUrl, tabA });
 
   const restricted = await browserContext.newPage();
   await restricted.goto('chrome://version');
@@ -507,6 +552,265 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
   return { sessionA, sessionB, tabA, tabB, ownerTabId: ownerTab.id };
 }
 
+/** A read prompt's lasting choice grants reading only; the other prompts' lasting choice grants everything. */
+async function checkReadGrant({ mcpClient, serviceWorker, sessionA, siteUrl, popupTab, tabA }) {
+  const siteSetting = async () =>
+    (await panelRequest(serviceWorker, { type: 'panel.state' })).sites.find((site) => site.origin === siteUrl)?.setting;
+  const noPrompts = async (label) => assert((await pendingPrompts(serviceWorker)).length === 0, `${label} left a prompt waiting`);
+  await setSite(serviceWorker, siteUrl, 'ask');
+
+  const firstRead = rawCall(mcpClient, 'read', { tab: popupTab.id });
+  const readPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'read' && prompt.tab.id === popupTab.id);
+  await assertDecisionRefused(serviceWorker, readPrompt.id, 'always-allow', /only for reading/);
+  await decidePrompt(serviceWorker, readPrompt.id, 'always-allow-read');
+  const firstReadResult = await firstRead;
+  assert(firstReadResult.isError !== true && text(firstReadResult).includes('# Permission A'), `Always allow reading did not let the read through: ${text(firstReadResult)}`);
+  assert((await siteSetting()) === 'read', `Always allow reading stored ${await siteSetting()} for ${siteUrl}, expected read`);
+  console.log(`Read prompt, "Always allow reading on this site": site ${siteUrl} is now "read"; always-allow (full) is refused on a read prompt`);
+
+  // A second tab the session has no approval for: reading it needs no prompt, everything else still asks.
+  const before = new Set(await serviceWorker.evaluate(async () => (await chrome.tabs.query({})).map((tab) => tab.id)));
+  const opener = rawCall(mcpClient, 'run_js', {
+    tab: tabA,
+    expression: `const opened = window.open(${JSON.stringify(`${siteUrl}/perm-a`)}, '_blank'); return 'opened';`,
+  });
+  const openerPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'run_js');
+  await decidePrompt(serviceWorker, openerPrompt.id, 'allow-once');
+  assert((await opener).isError !== true, 'The run_js that opens the second popup failed');
+  const second = await waitForNewTab(serviceWorker, before, `${siteUrl}/perm-a`);
+  await waitForTabGroup(serviceWorker, second.id, (await tabGroup(serviceWorker, tabA)).groupId, 'second popup');
+
+  const listed = text(await rawCall(mcpClient, 'tabs', {}));
+  assert(
+    listed.split('\n').some((line) => line.startsWith(`${second.id} `) && line.includes('Permission A') && !line.includes('needs approval')),
+    `A tab on a site with a read grant is still hidden:\n${listed}`,
+  );
+  const silentRead = await withDeadline(rawCall(mcpClient, 'read', { tab: second.id, full: true }), 3_000, 'read on a site with a read grant');
+  assert(silentRead.isError !== true && text(silentRead).includes('# Permission A'), `Read on a read-granted site failed: ${text(silentRead)}`);
+  await noPrompts('A read on a read-granted site');
+  const buttonRef = refFor(text(silentRead), 'button "Action A"');
+  assert(buttonRef, `The second popup has no button ref:\n${text(silentRead)}`);
+
+  const declineNext = async (call, tool, label) => {
+    const pending = call();
+    const prompt = await waitForPrompt(serviceWorker, (candidate) => candidate.session.id === sessionA.id && candidate.tool === tool);
+    assert(prompt.origin === siteUrl, `${label} prompted for ${prompt.origin}`);
+    await decidePrompt(serviceWorker, prompt.id, 'decline');
+    const result = await pending;
+    assert(result.isError === true && /Permission declined/.test(text(result)), `${label} was not declined: ${text(result)}`);
+  };
+  await declineNext(() => rawCall(mcpClient, 'act', { tab: second.id, steps: [{ click: { ref: buttonRef } }] }), 'act', 'act on a read-granted site');
+  await declineNext(() => rawCall(mcpClient, 'run_js', { tab: second.id, expression: 'document.title' }), 'run_js', 'run_js on a read-granted site');
+  await declineNext(() => rawCall(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/about` }), 'open', 'opening on a read-granted site');
+  assert((await siteSetting()) === 'read', 'A declined prompt changed the read grant');
+  console.log('Read grant: read needs no prompt; act, run_js and open each still prompt (kinds act, run_js, open) and were declined');
+
+  // The full grant, from an act prompt, covers reading, run_js and opening as well.
+  const acting = rawCall(mcpClient, 'act', { tab: second.id, steps: [{ click: { ref: buttonRef } }] });
+  const actPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
+  await assertDecisionRefused(serviceWorker, actPrompt.id, 'always-allow-read', /only from a read request/);
+  await decidePrompt(serviceWorker, actPrompt.id, 'always-allow');
+  const actingResult = await acting;
+  assert(actingResult.isError !== true, `Always allow on an act prompt did not run the act: ${text(actingResult)}`);
+  assert((await siteSetting()) === 'allow', `Always allow stored ${await siteSetting()} for ${siteUrl}, expected allow`);
+  const quick = async (label, request) => {
+    const result = await withDeadline(request, 3_000, label);
+    assert(result.isError !== true, `${label} failed: ${text(result)}`);
+    await noPrompts(label);
+    return result;
+  };
+  await quick('read on a fully allowed site', rawCall(mcpClient, 'read', { tab: second.id }));
+  await quick('run_js on a fully allowed site', rawCall(mcpClient, 'run_js', { tab: second.id, expression: 'document.title' }));
+  const openedAbout = await quick('open on a fully allowed site', rawCall(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/about` }));
+  await rawCall(mcpClient, 'tabs', { action: 'close', tab: Number(/^Opened tab (\d+)/.exec(text(openedAbout))?.[1]) });
+  console.log('Full grant: after Always allow on an act prompt, read, act, run_js and open all ran without a prompt');
+
+  await rawCall(mcpClient, 'tabs', { action: 'close', tab: second.id });
+  await setSite(serviceWorker, siteUrl, 'ask');
+}
+
+/** Each check changes the page between the approval and the browser command that uses it. */
+async function checkRaces({ mcpClient, serviceWorker, sessionA, siteUrl, otherSiteUrl, tabA }) {
+  const decideNext = async (tool) => {
+    const prompt = await waitForPrompt(serviceWorker, (candidate) => candidate.session.id === sessionA.id && candidate.tool === tool);
+    await decidePrompt(serviceWorker, prompt.id, 'allow-once');
+  };
+  await waitForTabUrl(serviceWorker, tabA, `${otherSiteUrl}/perm-b`);
+
+  // run_js: an expression that closes the wrapper and reads the page, on a page that replaced the approved one.
+  const escapeExpression = '0); })(); ((v)=>(f)=>()=>v)(document.body.innerText)(function(){ return (0';
+  await installDebuggerHook(serviceWorker, { method: 'Runtime.evaluate', tabId: tabA, action: 'navigate', url: `${siteUrl}/secret` });
+  const escaping = rawCall(mcpClient, 'run_js', { tab: tabA, expression: escapeExpression });
+  await decideNext('run_js');
+  const escaped = await escaping;
+  assert(await hookFired(serviceWorker), 'The run_js race was not exercised: the page never changed before the evaluation');
+  assert(!text(escaped).includes('SECRET-OF-SITE-A-INBOX'), `run_js read a page of an unapproved origin: ${text(escaped)}`);
+  assert(escaped.isError === true && /page changed before run_js could start/.test(text(escaped)), `The escaping run_js was not refused: ${text(escaped)}`);
+  console.log(`run_js escape expression on a tab that moved from ${otherSiteUrl} to ${siteUrl} before it ran: ${text(escaped)}`);
+
+  // screenshot: the page changes while the image is taken, so the image is discarded.
+  await waitForTabUrl(serviceWorker, tabA, `${siteUrl}/secret`);
+  await installDebuggerHook(serviceWorker, { method: 'Page.captureScreenshot', tabId: tabA, action: 'navigate', url: `${otherSiteUrl}/perm-b` });
+  const shooting = rawCall(mcpClient, 'screenshot', { tab: tabA, maxEdge: 320 });
+  await decideNext('read');
+  const shot = await shooting;
+  assert(await hookFired(serviceWorker), 'The screenshot race was not exercised: the page never changed during the capture');
+  assert(
+    shot.isError === true && /changed while the screenshot was being taken/.test(text(shot)) && !shot.content.some((item) => item.type === 'image'),
+    `A screenshot of a page that changed was returned: ${text(shot)}`,
+  );
+  console.log(`Screenshot on a tab that moved during the capture: ${text(shot)}`);
+
+  // act: input without a ref while the document is replaced (same origin) stops the batch.
+  await waitForTabUrl(serviceWorker, tabA, `${otherSiteUrl}/perm-b`);
+  await installDebuggerHook(serviceWorker, { method: 'Input.dispatchKeyEvent', tabId: tabA, action: 'reload' });
+  const pressing = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ press: { key: 'Tab' } }, { press: { key: 'Tab' } }] });
+  await decideNext('act');
+  const pressed = await pressing;
+  assert(await hookFired(serviceWorker), 'The act race was not exercised: the document was never replaced during the key press');
+  assert(pressed.isError === true && /Step 1 \(press\) failed: The page was replaced while the press step ran/.test(text(pressed)), `A key press into a replaced document was not stopped: ${text(pressed)}`);
+  assert(!/Step 2/.test(text(pressed)), `The batch went on after the page was replaced: ${text(pressed)}`);
+  console.log(`act press while the document was replaced: ${text(pressed).split('\n')[0]}`);
+  assert((await pendingPrompts(serviceWorker)).length === 0, 'The race checks left a prompt waiting');
+}
+
+/** One-shot: the next command `method` for `tabId` first changes the page, then goes on. */
+async function installDebuggerHook(serviceWorker, hook) {
+  await serviceWorker.evaluate(({ method, tabId, action, url }) => {
+    const original = chrome.debugger.sendCommand.bind(chrome.debugger);
+    globalThis.__t3tabHookFired = false;
+    chrome.debugger.sendCommand = async (target, name, params) => {
+      if (name === method && target.tabId === tabId && globalThis.__t3tabHookFired === false) {
+        globalThis.__t3tabHookFired = true;
+        chrome.debugger.sendCommand = original;
+        await new Promise((resolve) => {
+          const done = (id, info) => {
+            if (id !== tabId || info.status !== 'complete') return;
+            chrome.tabs.onUpdated.removeListener(done);
+            resolve(undefined);
+          };
+          chrome.tabs.onUpdated.addListener(done);
+          if (action === 'reload') void chrome.tabs.reload(tabId);
+          else void chrome.tabs.update(tabId, { url });
+        });
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      return await original(target, name, params);
+    };
+  }, hook);
+}
+
+async function hookFired(serviceWorker) {
+  return await serviceWorker.evaluate(() => globalThis.__t3tabHookFired === true);
+}
+
+async function assertDecisionRefused(serviceWorker, promptId, decision, pattern) {
+  let refusal;
+  try {
+    await decidePrompt(serviceWorker, promptId, decision);
+  } catch (error) {
+    refusal = error.message;
+  }
+  assert(refusal !== undefined && pattern.test(refusal), `Decision ${decision} was not refused as expected: ${refusal}`);
+}
+
+async function waitForTabGroup(serviceWorker, tabId, groupId, label) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if ((await tabGroup(serviceWorker, tabId)).groupId === groupId) return;
+    await sleep(100);
+  }
+  throw new Error(`${label} ${tabId} is in group ${(await tabGroup(serviceWorker, tabId)).groupId}, expected ${groupId}`);
+}
+
+/** A page with a cross-origin iframe: read names the origin it left out and does not return its text. */
+async function checkFrames({ mcpClient, siteUrl, otherSiteUrl }) {
+  const frontId = Number(/^(\d+) \[front\]/m.exec(text(await call(mcpClient, 'tabs', {})))?.[1]);
+  assert(Number.isInteger(frontId), 'The session has no front tab before the frames check');
+  const opened = await call(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/frames` });
+  const tabId = Number(/^Opened tab (\d+)/.exec(text(opened))?.[1]);
+  assert(Number.isInteger(tabId), `tabs open: ${text(opened)}`);
+  await sleep(500);
+  const framed = await call(mcpClient, 'read', { tab: tabId, full: true });
+  show('read (page with a cross-origin iframe)', framed);
+  assert(framed.isError !== true && text(framed).includes('# Frames page'), `The frames page was not read: ${text(framed)}`);
+  assert(!text(framed).includes('Session B private tab'), `The cross-origin iframe's text was returned:\n${text(framed)}`);
+  const marks = text(framed).split('\n').filter((line) => line.includes('frame omitted'));
+  assert(
+    marks.length === 1 && marks[0].includes(`frame omitted: ${otherSiteUrl}`),
+    `Expected one line naming ${otherSiteUrl} as an omitted frame, got: ${JSON.stringify(marks)}`,
+  );
+  const everything = await call(mcpClient, 'read', { tab: tabId, all: true });
+  assert(!text(everything).includes('Session B private tab'), 'The cross-origin iframe text came back in all mode');
+  console.log(`Cross-origin iframe: read shows "${marks[0].trim()}" and none of its text`);
+  await call(mcpClient, 'tabs', { action: 'close', tab: tabId });
+  await call(mcpClient, 'tabs', { action: 'switch', tab: frontId });
+}
+
+/** The panel shows prompt buttons that say what they grant, locks them again when rows shift, and lists read grants. */
+async function assertPromptRows(panelPage, serviceWorker) {
+  const base = await panelRequest(serviceWorker, { type: 'panel.state' });
+  const session = { id: 'synthetic', name: 'Synthetic session' };
+  const prompt = (number, tool, title) => ({ id: `row-${number}`, origin: 'http://synthetic.test', tool, session, tab: { id: 900 + number, title } });
+  const show = async (pending, sites = base.sites) => await renderPanelState(panelPage, { ...base, pending, sites });
+  const row = (title) => panelPage.locator('li').filter({ hasText: title });
+  const disabledStates = async (title) => {
+    const states = await row(title).locator('button').evaluateAll((buttons) => buttons.map((button) => button.disabled));
+    assert(states.length === 3, `Row "${title}" shows ${states.length} buttons, expected 3`);
+    return states;
+  };
+  const labels = async (title) => await row(title).locator('button').allTextContents();
+  const allDisabled = async (title) => (await disabledStates(title)).every(Boolean);
+  const allEnabled = async (title) => (await disabledStates(title)).every((disabled) => !disabled);
+  const settle = async () => await sleep(650);
+
+  const one = prompt(1, 'read', 'Row one');
+  const two = prompt(2, 'act', 'Row two');
+  await show([one, two]);
+  const readLabels = await labels('Row one');
+  const actLabels = await labels('Row two');
+  assert(JSON.stringify(readLabels) === JSON.stringify(['Allow reading once', 'Always allow reading on this site', 'Decline']), `Read prompt buttons: ${JSON.stringify(readLabels)}`);
+  assert(
+    JSON.stringify(actLabels) === JSON.stringify(['Allow acting once', 'Always allow everything on this site (reading, opening, acting, JavaScript)', 'Decline']),
+    `Act prompt buttons: ${JSON.stringify(actLabels)}`,
+  );
+  await settle();
+  assert((await allEnabled('Row one')) && (await allEnabled('Row two')), 'Prompt buttons did not enable after the delay');
+
+  await show([two]);
+  assert(await allDisabled('Row two'), 'A row that moved up after the row above it went away kept live buttons');
+  await settle();
+  assert(await allEnabled('Row two'), 'Buttons did not come back after a row went away');
+
+  const zero = prompt(0, 'run_js', 'Row zero');
+  await show([zero, two]);
+  assert((await allDisabled('Row two')) && (await allDisabled('Row zero')), 'A row pushed down by a new row above it kept live buttons');
+  await settle();
+  assert((await allEnabled('Row two')) && (await allEnabled('Row zero')), 'Buttons did not come back after a row was inserted');
+
+  const three = prompt(3, 'open', 'Row three');
+  await show([zero, two, three]);
+  assert(await allEnabled('Row two'), 'A row added below locked the rows above it');
+  assert(await allDisabled('Row three'), 'A new row started with live buttons');
+  await settle();
+  await show([zero, two]);
+  assert(await allEnabled('Row two'), 'A row removed below locked the rows above it');
+  console.log('Prompt rows: buttons say what they grant; removing or inserting a row above another disabled all buttons for 500 ms; rows added or removed below did not');
+
+  const sites = [
+    { origin: 'http://ask.test', setting: 'ask' },
+    { origin: 'http://all.test', setting: 'allow' },
+    { origin: 'http://read.test', setting: 'read' },
+  ];
+  await show([], sites);
+  const readSite = panelPage.locator('li').filter({ hasText: 'http://read.test' });
+  await readSite.getByText('Reading allowed; opening, acting and JavaScript ask').waitFor();
+  const readSiteButtons = await readSite.locator('button').allTextContents();
+  assert(JSON.stringify(readSiteButtons) === JSON.stringify(['Ask every time', 'Always allow everything']), `Read-only site buttons: ${JSON.stringify(readSiteButtons)}`);
+  await panelPage.locator('li').filter({ hasText: 'http://all.test' }).getByText('Everything allowed: reading, opening, acting, JavaScript').waitFor();
+  console.log('Site list: a read-only grant is shown as "Reading allowed; opening, acting and JavaScript ask"');
+  await show([]);
+}
+
 async function assertPromptMetadata(serviceWorker, prompt) {
   const pending = await pendingPrompts(serviceWorker);
   assert(pending[0]?.id === prompt.id, 'The newest prompt is not first in arrival order');
@@ -518,7 +822,7 @@ async function assertPromptUi(panelPage, serviceWorker, prompt) {
   await renderPanelState(panelPage, state);
   const description = `tab ${prompt.tab.id} "${prompt.tab.title}"`;
   await panelPage.getByText(new RegExp(description.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).waitFor();
-  const allow = panelPage.getByRole('button', { name: 'Allow once' });
+  const allow = panelPage.getByRole('button', { name: 'Allow opening once' });
   await allow.waitFor();
   assert(await allow.isDisabled(), 'New prompt buttons were enabled immediately');
   const handle = await allow.elementHandle();
@@ -838,6 +1142,10 @@ async function checkKeepalive(mcpClient) {
   assert(/^Browsers: 1$/m.test(text(result)), `The extension did not stay connected: ${text(result)}`);
   assert(parseStatusTabCount(text(result)) >= 1, `The kept-alive browser reported no tabs: ${text(result)}`);
   console.log('Keepalive after 36s: passed');
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function listsTab(result, tabId) {
