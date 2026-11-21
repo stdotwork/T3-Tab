@@ -1,0 +1,10 @@
+# Keep this top-level comment.
+model = "gpt-5"
+
+[mcp_servers.other]
+# Keep this server.
+command = "other-mcp"
+args = ["--stdio"]
+
+[ui]
+show_tooltips = true
