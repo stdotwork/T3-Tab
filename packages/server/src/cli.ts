@@ -2,8 +2,6 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { DEFAULT_DAEMON_PORT } from '@t3-tab/protocol';
-
 import { startDaemon } from './daemon.js';
 import {
   agentConfigPath,
@@ -201,7 +199,8 @@ async function runInstall(args: string[]): Promise<void> {
   process.stdout.write(`${manifestPath}\n`);
 }
 
-function daemonPort(args: string[]): number {
+/** The port the user asked for with --port or T3_TAB_PORT, or undefined when neither was given. */
+function daemonPort(args: string[]): number | undefined {
   let value = process.env.T3_TAB_PORT?.trim();
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -216,7 +215,7 @@ function daemonPort(args: string[]): number {
       throw new UsageError('Usage: t3-tab daemon [--port 1-65535]');
     }
   }
-  if (value === undefined || value === '') return DEFAULT_DAEMON_PORT;
+  if (value === undefined || value === '') return undefined;
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new UsageError('Port must be 1-65535');
   return port;

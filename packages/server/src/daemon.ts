@@ -19,7 +19,8 @@ import { clearDaemonState, writeDaemonState, type DaemonState } from './state.js
 import { runTool } from './tools.js';
 
 export interface DaemonOptions {
-  port?: number;
+  /** A port the caller asked for. When omitted, the default port is tried first, then any free loopback port. */
+  port?: number | undefined;
   stateDir?: string;
 }
 
@@ -102,7 +103,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   sockets.extension.on('connection', onConnection);
   sockets.control.on('connection', onConnection);
 
-  await listen(httpServer, options.port ?? DEFAULT_DAEMON_PORT);
+  await listenOnLoopback(httpServer, options.port);
   const address = httpServer.address();
   if (address === null || typeof address === 'string') {
     await closeHttpServer(httpServer);
@@ -360,6 +361,35 @@ function rejectUpgrade(socket: Duplex, status: number, text: string): void {
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'content-type': 'application/json' });
   response.end(JSON.stringify(body));
+}
+
+/**
+ * Binds the daemon to 127.0.0.1. A requested port must be free. Without a requested port, the default port is
+ * tried first and port 0 (any free port) is used when the default is taken; clients read the real port from daemon.json.
+ */
+async function listenOnLoopback(server: ReturnType<typeof createServer>, requestedPort: number | undefined): Promise<void> {
+  if (requestedPort !== undefined) {
+    try {
+      await listen(server, requestedPort);
+    } catch (error) {
+      if (isAddressInUse(error)) {
+        throw new Error(`Port ${requestedPort} on 127.0.0.1 is already in use. Choose another port with --port or T3_TAB_PORT.`);
+      }
+      throw error;
+    }
+    return;
+  }
+
+  try {
+    await listen(server, DEFAULT_DAEMON_PORT);
+  } catch (error) {
+    if (!isAddressInUse(error)) throw error;
+    await listen(server, 0);
+  }
+}
+
+function isAddressInUse(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as NodeJS.ErrnoException).code === 'EADDRINUSE';
 }
 
 async function listen(server: ReturnType<typeof createServer>, port: number): Promise<void> {
