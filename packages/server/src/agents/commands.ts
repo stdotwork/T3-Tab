@@ -1,6 +1,7 @@
 import type { AgentMessage, AgentStatus, AgentVia, T3State } from '@t3-tab/protocol';
 
 import { TOOL_TIMEOUT_MS } from '../client.js';
+import { tomlValue, type CodexProvider } from './codex-provider.js';
 
 export const MCP_SERVER_NAME = 't3-tab';
 const CLAIM_NOTE_MARK = '\n\n[T3-Tab] ';
@@ -139,6 +140,8 @@ export interface DirectRunOptions {
   model?: string | undefined;
   /** The CLI's session id to continue. */
   resume?: string | undefined;
+  /** Codex only: the owner's active custom provider, the one thing carried over from their config. */
+  codexProvider?: CodexProvider | undefined;
 }
 
 /**
@@ -215,7 +218,8 @@ const CODEX_TOOL_TIMEOUT_SEC = Math.ceil(TOOL_TIMEOUT_MS / 1_000) + 20;
  * `--ignore-user-config` drops `$CODEX_HOME/config.toml` but keeps the login there, and leaves a project's
  * `.codex/config.toml` untrusted, so it is not applied either. Every field of the server entry that could
  * change what it does is set here, so an entry in a system-level config cannot redirect or narrow it.
- * T3-Tab's tools are pre-approved: with approval `never`, Codex would otherwise refuse them.
+ * T3-Tab's tools are pre-approved: with approval `never`, Codex would otherwise refuse them. An owner's custom
+ * model provider is added back on its own (`codex-provider.ts`), with its credentials kept off this command line.
  */
 export function codexArgs(options: DirectRunOptions): string[] {
   const env = Object.entries(serverEnv(options.env))
@@ -229,11 +233,14 @@ export function codexArgs(options: DirectRunOptions): string[] {
     `${server}.command=${tomlString(options.server.command)}`,
     `${server}.args=[${serverArgs(options).map(tomlString).join(', ')}]`,
     `${server}.env={ ${env} }`,
+    `${server}.env_vars=[]`,
     `${server}.enabled=true`,
     `${server}.enabled_tools=[${T3_TAB_TOOLS.map(tomlString).join(', ')}]`,
     `${server}.disabled_tools=[]`,
     `${server}.default_tools_approval_mode="approve"`,
     `${server}.tool_timeout_sec=${CODEX_TOOL_TIMEOUT_SEC}`,
+    ...(options.codexProvider?.settings ?? []),
+    ...(options.model === undefined && options.codexProvider?.model !== undefined ? [`model=${tomlValue(options.codexProvider.model) as string}`] : []),
   ].flatMap((setting) => ['-c', setting]);
   return [
     'exec',

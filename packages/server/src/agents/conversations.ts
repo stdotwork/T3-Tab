@@ -16,6 +16,7 @@ import type {
 
 import { stateDirectory } from '../state.js';
 import { CLAIM_CODE, claimFileWarning, writeClaimFile, type ClaimFile } from './claim-file.js';
+import { readCodexProvider } from './codex-provider.js';
 import {
   claimNote,
   claudeArgs,
@@ -79,6 +80,8 @@ interface Conversation {
   child?: ChildProcess;
   /** True while a direct turn is being set up, before it has a process. */
   starting?: boolean;
+  /** True once the owner was told which Codex provider settings were left out. */
+  providerWarned?: boolean;
   /** Why T3-Tab stopped the current direct turn. */
   stopReason?: string;
   poll?: ReturnType<typeof setTimeout>;
@@ -153,6 +156,7 @@ export class Agents {
       const threadId = conversation.view.threadId ?? '';
       const t3 = await this.requireT3();
       const result = await this.runT3(t3, t3SendArgs(threadId), text);
+      if (this.closed) throw new Error(SHUTTING_DOWN);
       const sent = parseT3Launch(result.stdout);
       this.push(conversation, { role: 'user', text });
       conversation.view.status = 'running';
@@ -177,7 +181,10 @@ export class Agents {
     await Promise.allSettled(this.setups);
     const stopping: Array<Promise<void>> = [...this.commands].map(async (child) => await stopProcess(child, this.graceMs));
     for (const conversation of this.conversations.values()) {
-      if (conversation.poll !== undefined) clearTimeout(conversation.poll);
+      if (conversation.poll !== undefined) {
+        clearTimeout(conversation.poll);
+        delete conversation.poll;
+      }
       if (conversation.child === undefined) continue;
       conversation.stopReason = 'T3-Tab stopped while this run was working.';
       stopping.push(stopProcess(conversation.child, this.graceMs));
@@ -216,6 +223,7 @@ export class Agents {
       t3StartArgs({ project: params.project, provider: params.provider, model: params.model }),
       `${params.message}${claimNote(params.claim)}`,
     );
+    if (this.closed) throw new Error(SHUTTING_DOWN);
     const launch = parseT3Launch(result.stdout);
     const conversation = this.add(params, { threadId: launch.threadId });
     this.push(conversation, { role: 'user', text: params.message });
@@ -339,7 +347,11 @@ export class Agents {
   }
 
   private watchT3(conversation: Conversation, runId: string | undefined): void {
-    if (conversation.poll !== undefined) clearTimeout(conversation.poll);
+    if (conversation.poll !== undefined) {
+      clearTimeout(conversation.poll);
+      delete conversation.poll;
+    }
+    if (this.closed) return;
     if (runId === undefined) delete conversation.expectedRun;
     else conversation.expectedRun = runId;
     conversation.pollFailures = 0;
@@ -421,6 +433,11 @@ export class Agents {
     try {
       const executable = await findExecutable(via, this.options.env);
       if (executable === undefined) throw new Error(`${via === 'claude' ? 'Claude Code' : 'Codex'} was not found on this machine.`);
+      const codexProvider = via === 'codex' ? await readCodexProvider(this.options.env) : undefined;
+      if (codexProvider !== undefined && codexProvider.ignored.length > 0 && conversation.providerWarned !== true) {
+        conversation.providerWarned = true;
+        this.push(conversation, { role: 'error', text: `T3-Tab left out Codex provider settings it does not know: ${codexProvider.ignored.join(', ')}.` });
+      }
       delete conversation.launchCode;
       delete conversation.claimFile;
       if (claim !== undefined) {
@@ -435,13 +452,15 @@ export class Agents {
         env: this.options.env,
         model: conversation.view.model,
         resume,
+        codexProvider,
       };
       const args = via === 'claude' ? claudeArgs(runOptions) : codexArgs(runOptions);
       if (this.closed) throw new Error(SHUTTING_DOWN);
       // Its own process group, so stopping it also stops whatever it started.
       child = this.spawn(executable, args, {
         cwd: conversation.cwd ?? homedir(),
-        env: this.options.env,
+        // A provider's credentials go to this process only; Codex starts MCP servers with a short list of variables.
+        env: codexProvider === undefined ? this.options.env : { ...this.options.env, ...codexProvider.env },
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: true,
       });
