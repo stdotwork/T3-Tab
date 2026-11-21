@@ -10,6 +10,8 @@ let tabCounter = 0;
 beforeAll(() => {
   browser.install();
   initCdp();
+  // Node has no image decoder; a 10 x 10 bitmap lets a capture that is not discarded run to its end.
+  (globalThis as unknown as { createImageBitmap: unknown }).createImageBitmap = async () => ({ width: 10, height: 10, close: () => undefined });
 });
 
 beforeEach(() => {
@@ -47,5 +49,11 @@ describe('a screenshot of a page that changes while it is taken', () => {
       captureViewport(tab.id, 640, { origin: 'http://a.test', currentUrl: async () => 'http://b.test/private' }),
     ).rejects.toThrow(/moved from http:\/\/a\.test to http:\/\/b\.test/);
     expect(browser.commands.some((command) => command.method === 'Page.captureScreenshot')).toBe(false);
+  });
+
+  it('returns the image when nothing changed', async () => {
+    const tab = browser.addTab({ id: tabCounter, url: 'http://a.test/page' });
+    const shot = await captureViewport(tab.id, 640, { origin: 'http://a.test', currentUrl: async () => 'http://a.test/page' });
+    expect(shot).toMatchObject({ tab: tab.id, data: 'AAAA', width: 10, height: 10, viewportWidth: 800, viewportHeight: 600 });
   });
 });

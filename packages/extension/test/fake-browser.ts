@@ -107,6 +107,10 @@ export class FakeBrowser {
         return { frameTree: { frame: { id: tab.frameId, securityOrigin: new URL(tab.url).origin } } };
       case 'Runtime.evaluate':
         return await this.evaluate(tab, params ?? {});
+      case 'Page.getLayoutMetrics':
+        return { cssVisualViewport: { clientWidth: 800, clientHeight: 600 } };
+      case 'Page.captureScreenshot':
+        return { data: 'AAAA' };
       default:
         return {};
     }
