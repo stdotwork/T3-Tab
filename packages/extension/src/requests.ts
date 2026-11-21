@@ -9,12 +9,15 @@ import { captureViewport } from './screenshot';
 import type { StoredSession } from './sessions';
 import {
   closeSessionTab,
+  describeSessionTab,
   isOpenableUrl,
   listTabs,
   openSessionTab,
   resolveSessionTab,
   switchSessionTab,
 } from './tabs';
+
+const siteSetting = async (origin: string) => await siteStore.get(origin);
 
 /** Runs one request from the background program and returns its result. Throws a readable message on failure. */
 export async function handleRequest(request: BrowserRequestMessage): Promise<unknown> {
@@ -31,11 +34,11 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
   const session = await registeredSession(request.session);
   switch (request.method) {
     case 'tabs.list':
-      return { tabs: await listTabs(session) } satisfies BrowserMethods['tabs.list']['result'];
+      return { tabs: await listTabs(session, siteSetting) } satisfies BrowserMethods['tabs.list']['result'];
     case 'tabs.open':
       return await openTabForSession(session, request.params.url);
     case 'tabs.switch':
-      return { tab: await switchSessionTab(session, request.params.tab) } satisfies BrowserMethods['tabs.switch']['result'];
+      return { tab: await switchSessionTab(session, request.params.tab, siteSetting) } satisfies BrowserMethods['tabs.switch']['result'];
     case 'tabs.close':
       return { closed: await closeSessionTab(session, request.params.tab) } satisfies BrowserMethods['tabs.close']['result'];
     case 'page.read': {
@@ -112,7 +115,7 @@ async function openTabForSession(
     await sessionStore.observeTabOrigin(opened.tab.id, opened.origin);
     await permissionPrompts.authorize(opened.origin, 'open', session, promptTabOf(opened.tab.id, opened.tab.title));
     await sessionStore.approveOrigin(session.id, opened.tab.id, opened.origin);
-    return { tab: opened.tab };
+    return { tab: await describeSessionTab(await registeredSession(session), opened.tab.id, siteSetting) };
   } catch (failure) {
     await chrome.tabs.remove(opened.tab.id).catch(() => undefined);
     throw failure;
@@ -127,10 +130,8 @@ async function authorizeRead(
   const tabId = tab.id ?? -1;
   const origin = tabOrigin(tab);
   await sessionStore.observeTabOrigin(tabId, origin);
-  const site = await siteStore.get(origin);
-  const approved =
-    site === 'allow' || (await sessionStore.hasApprovedOrigin(session.id, tabId, origin));
-  if (!approved) {
+  // A site the owner allows, even for reading only, passes `authorize` without a prompt.
+  if (!(await sessionStore.hasApprovedOrigin(session.id, tabId, origin))) {
     await permissionPrompts.authorize(origin, 'read', session, promptTab(tab));
   }
   await sessionStore.approveOrigin(session.id, tabId, origin);

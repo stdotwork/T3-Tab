@@ -94,7 +94,10 @@ function parsePanelRequest(value: unknown): PanelRequest {
   if (
     candidate.type === 'panel.decide' &&
     typeof candidate.promptId === 'string' &&
-    (candidate.decision === 'allow-once' || candidate.decision === 'always-allow' || candidate.decision === 'decline')
+    (candidate.decision === 'allow-once' ||
+      candidate.decision === 'always-allow-read' ||
+      candidate.decision === 'always-allow' ||
+      candidate.decision === 'decline')
   ) {
     return { type: 'panel.decide', promptId: candidate.promptId, decision: candidate.decision };
   }
@@ -102,7 +105,7 @@ function parsePanelRequest(value: unknown): PanelRequest {
     candidate.type === 'panel.setSite' &&
     typeof candidate.origin === 'string' &&
     isOriginKey(candidate.origin) &&
-    (candidate.setting === 'ask' || candidate.setting === 'allow')
+    (candidate.setting === 'ask' || candidate.setting === 'read' || candidate.setting === 'allow')
   ) {
     return { type: 'panel.setSite', origin: candidate.origin, setting: candidate.setting };
   }

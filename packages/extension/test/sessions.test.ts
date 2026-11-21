@@ -4,6 +4,8 @@ import {
   assertSessionTab,
   canSessionUseTab,
   groupTitle,
+  hasApprovedOrigin,
+  sessionForPopup,
   usableSessionTabs,
   type StoredSession,
 } from '../src/sessions';
@@ -44,5 +46,41 @@ describe('session tab ownership', () => {
   it('keeps group titles within the Chromium limit', () => {
     expect(groupTitle('short')).toBe('short');
     expect(groupTitle('x'.repeat(100))).toHaveLength(48);
+  });
+});
+
+describe('which session a popup belongs to', () => {
+  const other: StoredSession = { ...session, id: 'session-b', name: 'Session B', groupId: 13, sharedTabIds: [] };
+
+  it('is the session whose tab group the opener is in', () => {
+    expect(sessionForPopup([session, other], { id: 1, groupId: 12 })?.id).toBe('session-a');
+    expect(sessionForPopup([session, other], { id: 2, groupId: 13 })?.id).toBe('session-b');
+  });
+
+  it('is nobody\'s when the opener is an ungrouped tab the owner has not shared', () => {
+    expect(sessionForPopup([session, other], { id: 77, groupId: -1 })).toBeUndefined();
+    expect(sessionForPopup([session, other], { id: 78 })).toBeUndefined();
+  });
+
+  it('follows a shared opener only when exactly one session with a group has it', () => {
+    expect(sessionForPopup([session, other], { id: 22, groupId: -1 })?.id).toBe('session-a');
+    const alsoShared: StoredSession = { ...other, sharedTabIds: [22] };
+    expect(sessionForPopup([session, alsoShared], { id: 22, groupId: -1 })).toBeUndefined();
+    const noGroup: StoredSession = { id: 'session-c', name: 'Session C', sharedTabIds: [22], approvedOrigins: {}, currentOrigins: {} };
+    expect(sessionForPopup([noGroup], { id: 22, groupId: -1 })).toBeUndefined();
+  });
+
+  it('prefers the group of an opener that is also shared with another session', () => {
+    const sharedWithOther: StoredSession = { ...other, sharedTabIds: [1] };
+    expect(sessionForPopup([session, sharedWithOther], { id: 1, groupId: 12 })?.id).toBe('session-a');
+  });
+});
+
+describe('approved origins per tab', () => {
+  it('counts only the origin approved for that tab', () => {
+    const approved: StoredSession = { ...session, approvedOrigins: { '1': ['https://one.test'] } };
+    expect(hasApprovedOrigin(approved, 1, 'https://one.test')).toBe(true);
+    expect(hasApprovedOrigin(approved, 1, 'https://two.test')).toBe(false);
+    expect(hasApprovedOrigin(approved, 2, 'https://one.test')).toBe(false);
   });
 });

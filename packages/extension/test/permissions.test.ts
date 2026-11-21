@@ -91,6 +91,67 @@ describe('per-site permission prompts', () => {
     expect(await store.get('https://asked.test')).toBe('allow');
   });
 
+  it('turns a read prompt\'s lasting choice into a read-only grant that never covers opening, acting or JavaScript', async () => {
+    const store = new MemorySites();
+    const prompts = new PermissionPrompts(store, { makeId: () => 'p1' });
+    const origin = 'https://readonly.test';
+    const waiting = prompts.authorize(origin, 'read', session, tab);
+    await until(() => prompts.list().length === 1);
+    await prompts.decide('p1', 'always-allow-read');
+    await expect(waiting).resolves.toBeUndefined();
+    expect(await store.get(origin)).toBe('read');
+
+    // Reading is now allowed without a prompt.
+    await expect(prompts.authorize(origin, 'read', session, tab)).resolves.toBeUndefined();
+    expect(prompts.list()).toEqual([]);
+
+    // Everything else still asks, one prompt each.
+    let next = 1;
+    const asking = new PermissionPrompts(store, { makeId: () => `q${++next}` });
+    const outcomes = (['act', 'run_js', 'open'] as const).map((tool) => asking.authorize(origin, tool, session, tab));
+    await until(() => asking.list().length === 3);
+    expect(asking.list().map((prompt) => prompt.tool)).toEqual(['act', 'run_js', 'open']);
+    asking.cancelSession(session.id);
+    await Promise.allSettled(outcomes);
+    expect(await store.get(origin)).toBe('read');
+  });
+
+  it('lets a fully allowed site through for every tool, and a read prompt cannot grant more than reading', async () => {
+    const store = new MemorySites();
+    store.sites.set('https://full.test', 'allow');
+    const prompts = new PermissionPrompts(store, { makeId: () => 'p1' });
+    for (const tool of ['read', 'open', 'act', 'run_js'] as const) {
+      await expect(prompts.authorize('https://full.test', tool, session, tab)).resolves.toBeUndefined();
+    }
+    expect(prompts.list()).toEqual([]);
+
+    const waiting = prompts.authorize('https://asked.test', 'read', session, tab);
+    await until(() => prompts.list().length === 1);
+    await expect(prompts.decide('p1', 'always-allow')).rejects.toThrow('only for reading');
+    expect(prompts.list()).toHaveLength(1);
+    expect(await store.get('https://asked.test')).toBe('ask');
+    await prompts.decide('p1', 'decline');
+    await expect(waiting).rejects.toThrow('Permission declined');
+  });
+
+  it('accepts the read-only grant only on a read prompt and never lowers a fully allowed site', async () => {
+    const store = new MemorySites();
+    const prompts = new PermissionPrompts(store, { makeId: () => 'p1' });
+    const acting = prompts.authorize('https://act.test', 'act', session, tab);
+    await until(() => prompts.list().length === 1);
+    await expect(prompts.decide('p1', 'always-allow-read')).rejects.toThrow('only from a read request');
+    expect(await store.get('https://act.test')).toBe('ask');
+    await prompts.decide('p1', 'decline');
+    await expect(acting).rejects.toThrow('Permission declined');
+
+    const reading = prompts.authorize('https://raised.test', 'read', session, tab);
+    await until(() => prompts.list().length === 1);
+    store.sites.set('https://raised.test', 'allow');
+    await prompts.decide('p1', 'always-allow-read');
+    await expect(reading).resolves.toBeUndefined();
+    expect(await store.get('https://raised.test')).toBe('allow');
+  });
+
   it('keeps prompts in arrival order and includes the tab in each prompt', async () => {
     let next = 0;
     const prompts = new PermissionPrompts(new MemorySites(), { makeId: () => `p${++next}` });
@@ -151,9 +212,14 @@ describe('per-site permission prompts', () => {
       },
     };
     const store = new ChromeSitePermissionStore(storage);
-    await Promise.all([store.set('https://one.test', 'allow'), store.set('https://two.test', 'ask')]);
+    await Promise.all([
+      store.set('https://one.test', 'allow'),
+      store.set('https://two.test', 'ask'),
+      store.set('https://three.test', 'read'),
+    ]);
     expect(await store.list()).toEqual([
       { origin: 'https://one.test', setting: 'allow' },
+      { origin: 'https://three.test', setting: 'read' },
       { origin: 'https://two.test', setting: 'ask' },
     ]);
   });

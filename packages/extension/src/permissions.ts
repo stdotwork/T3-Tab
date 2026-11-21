@@ -1,7 +1,12 @@
 import type { ToolSession } from '@t3-tab/protocol';
 
-export type SitePermission = 'ask' | 'allow';
-export type PermissionDecision = 'allow-once' | 'always-allow' | 'decline';
+/**
+ * What the owner has granted a site: `ask` prompts for everything, `read` lets sessions read it without a
+ * prompt, `allow` also lets them open pages, act and run JavaScript there.
+ */
+export type SitePermission = 'ask' | 'read' | 'allow';
+/** `always-allow-read` is offered only on a read prompt and `always-allow` only on the others. */
+export type PermissionDecision = 'allow-once' | 'always-allow-read' | 'always-allow' | 'decline';
 export type PromptKind = 'read' | 'act' | 'run_js' | 'open';
 
 export interface StoredSitePermission {
@@ -42,9 +47,15 @@ export interface PermissionPromptsOptions {
 
 const MAX_PENDING_PER_SESSION = 3;
 
+/** Whether a site's setting lets a tool call through without a prompt. A read grant never covers more than reading. */
+export function settingCovers(setting: SitePermission | undefined, tool: PromptKind): boolean {
+  return setting === 'allow' || (setting === 'read' && tool === 'read');
+}
+
 /**
- * Enforces the per-origin action permission and read approval. "Allow once" covers one tool call;
- * "Always allow" writes the origin setting. A prompt that is declined or times out rejects the call.
+ * Enforces the per-origin permission and read approval. "Allow once" covers one tool call; the lasting
+ * choices write the origin setting, a read prompt's only the read grant. A prompt that is declined or
+ * times out rejects the call.
  */
 export class PermissionPrompts {
   private readonly pending = new Map<string, Pending>();
@@ -63,7 +74,7 @@ export class PermissionPrompts {
 
   async authorize(origin: string, tool: PromptKind, session: ToolSession, tab: PromptTab): Promise<void> {
     const setting = await this.store.get(origin);
-    if (setting === 'allow') return;
+    if (settingCovers(setting, tool)) return;
     if (this.pendingFor(session.id).length >= MAX_PENDING_PER_SESSION) {
       throw new Error(`Too many permission requests for this session (maximum ${MAX_PENDING_PER_SESSION}). Decide one first.`);
     }
@@ -85,10 +96,19 @@ export class PermissionPrompts {
   async decide(id: string, decision: PermissionDecision): Promise<void> {
     const prompt = this.pending.get(id);
     if (prompt === undefined) throw new Error('That permission request is no longer waiting');
-    if (decision === 'always-allow') {
+    if (decision === 'always-allow-read' && prompt.tool !== 'read') {
+      throw new Error('Reading on a site can be allowed for good only from a read request');
+    }
+    if (decision === 'always-allow' && prompt.tool === 'read') {
+      throw new Error('A read request can be allowed for good only for reading on the site');
+    }
+    if (decision === 'always-allow' || decision === 'always-allow-read') {
       this.remove(id);
       try {
-        await this.store.set(prompt.origin, 'allow');
+        // A read grant never lowers a site the owner has allowed fully in the meantime.
+        if (decision === 'always-allow' || (await this.store.get(prompt.origin)) !== 'allow') {
+          await this.store.set(prompt.origin, decision === 'always-allow' ? 'allow' : 'read');
+        }
         prompt.resolve();
       } catch (error) {
         const failure = error instanceof Error ? error : new Error(String(error));
@@ -183,7 +203,7 @@ export class ChromeSitePermissionStore implements SitePermissionStore {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
     const sites: Record<string, SitePermission> = {};
     for (const [origin, setting] of Object.entries(value)) {
-      if ((setting === 'ask' || setting === 'allow') && isOriginKey(origin)) sites[origin] = setting;
+      if ((setting === 'ask' || setting === 'read' || setting === 'allow') && isOriginKey(origin)) sites[origin] = setting;
     }
     return sites;
   }

@@ -52,6 +52,11 @@ export interface TabInfo {
   active: boolean;
   /** Chromium's tab group id, when the tab is grouped. */
   groupId?: number;
+  /**
+   * Set when the session has not approved the origin the tab now shows: `title` is empty and `url` is
+   * only that origin, until a read, an action or the owner approves it.
+   */
+  needsApproval?: true;
 }
 
 /** One accessibility node, trimmed in the extension to what the page reader needs. */

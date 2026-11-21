@@ -1,10 +1,12 @@
 import type { TabInfo } from '@t3-tab/protocol';
 
-import { originOf, restrictedPageError } from './permissions';
+import { originOf, restrictedPageError, type SitePermission } from './permissions';
 import {
   assertSessionTab,
   groupTitle,
+  hasApprovedOrigin,
   sessionColor,
+  sessionForPopup,
   tabInfo,
   usableSessionTabs,
   type SessionStore,
@@ -14,15 +16,37 @@ import {
 const OPEN_TIMEOUT_MS = 15_000;
 const OPENABLE_PROTOCOLS = new Set(['http:', 'https:']);
 const grouping = new Map<string, Promise<unknown>>();
-const popupClaims = new Map<string, number>();
 
-export async function listTabs(session: StoredSession): Promise<TabInfo[]> {
+/** What the browser tools may show for a tab: the site setting for an origin, from the owner's site list. */
+export type SiteSetting = (origin: string) => Promise<SitePermission | undefined>;
+
+export async function listTabs(session: StoredSession, siteSetting: SiteSetting): Promise<TabInfo[]> {
   const [tabs, front] = await Promise.all([
     chrome.tabs.query({}),
     chrome.tabs.query({ active: true, lastFocusedWindow: true }),
   ]);
   const frontId = front[0]?.id;
-  return usableSessionTabs(session, tabs).map((tab) => tabInfo(tab, tab.id === frontId));
+  return await Promise.all(
+    usableSessionTabs(session, tabs).map(async (tab) => await describeTab(session, tab, tab.id === frontId, siteSetting)),
+  );
+}
+
+/**
+ * A tab as the agent sees it. Its title and address are shown only for an origin the session approved for
+ * that tab, or one the owner allows reading on; otherwise only the origin and that approval is needed.
+ */
+export async function describeTab(
+  session: StoredSession,
+  tab: chrome.tabs.Tab,
+  active: boolean,
+  siteSetting: SiteSetting,
+): Promise<TabInfo> {
+  const origin = originOf(tab.url ?? tab.pendingUrl ?? '');
+  if (origin === undefined || tab.id === undefined) return tabInfo(tab, active);
+  if (hasApprovedOrigin(session, tab.id, origin)) return tabInfo(tab, active);
+  const setting = await siteSetting(origin);
+  if (setting === 'read' || setting === 'allow') return tabInfo(tab, active);
+  return { ...tabInfo(tab, active), title: '', url: origin, needsApproval: true };
 }
 
 export async function resolveSessionTab(session: StoredSession, tab: number | undefined): Promise<chrome.tabs.Tab> {
@@ -67,10 +91,16 @@ export async function openSessionTab(
   }
 }
 
-export async function switchSessionTab(session: StoredSession, tabId: number): Promise<TabInfo> {
+export async function switchSessionTab(session: StoredSession, tabId: number, siteSetting: SiteSetting): Promise<TabInfo> {
   await resolveSessionTab(session, tabId);
   await chrome.tabs.update(tabId, { active: true });
-  return tabInfo(await getTab(tabId), true);
+  return await describeTab(session, await getTab(tabId), true, siteSetting);
+}
+
+/** One session tab as the agent sees it now, in front. */
+export async function describeSessionTab(session: StoredSession, tabId: number, siteSetting: SiteSetting): Promise<TabInfo> {
+  const tab = await resolveSessionTab(session, tabId);
+  return await describeTab(session, tab, true, siteSetting);
 }
 
 export async function closeSessionTab(session: StoredSession, tabId: number): Promise<number> {
@@ -96,24 +126,19 @@ async function getTab(tabId: number): Promise<chrome.tabs.Tab> {
   }
 }
 
-export function beginPopupCapture(session: StoredSession): () => void {
-  if (session.groupId === undefined) return () => undefined;
-  const id = crypto.randomUUID();
-  popupClaims.set(id, session.groupId);
-  return () => popupClaims.delete(id);
-}
-
-/** A window.open from a tab can inherit the wrong session group when that tab is not active. */
-export async function adoptPopupTab(tab: chrome.tabs.Tab): Promise<void> {
-  if (tab.id === undefined || tab.openerTabId === undefined) return;
-  const claims = [...popupClaims.values()];
-  if (claims.length !== 1) return;
-  const groupId = claims[0];
-  if (groupId === undefined) return;
+/**
+ * A tab a page opened is kept in its opener's session group, so the session that works in the opener can
+ * use it. Only the opener decides: a tab opened from the owner's own tabs, or by a session other than the
+ * opener's, is left alone. The tab carries no origin approval, so its first read still prompts.
+ */
+export async function adoptPopupTab(tabId: number, sourceTabId: number, store: SessionStore): Promise<void> {
   try {
-    await chrome.tabs.group({ tabIds: [tab.id], groupId });
+    const opener = await chrome.tabs.get(sourceTabId);
+    const owner = sessionForPopup(await store.list(), opener);
+    if (owner?.groupId === undefined) return;
+    await chrome.tabs.group({ tabIds: [tabId], groupId: owner.groupId });
   } catch {
-    // The popup or group can close before adoption.
+    // The popup, its opener or the group can close before adoption.
   }
 }
 

@@ -28,6 +28,27 @@ export function assertSessionTab(session: StoredSession, tab: { groupId?: number
   );
 }
 
+/** True when the session has approved this origin for this tab, so its title and address may be shown. */
+export function hasApprovedOrigin(session: StoredSession, tabId: number, origin: string): boolean {
+  return session.approvedOrigins[String(tabId)]?.includes(origin) === true;
+}
+
+/**
+ * The one session a tab opened from `opener` belongs to, or undefined. The opener's tab group names its
+ * session; an ungrouped opener counts only when exactly one session, which has a group, was shared it.
+ */
+export function sessionForPopup(
+  sessions: StoredSession[],
+  opener: { id?: number | undefined; groupId?: number | undefined },
+): StoredSession | undefined {
+  const grouped = sessions.filter((session) => session.groupId !== undefined && session.groupId === opener.groupId);
+  if (grouped.length > 0) return grouped.length === 1 ? grouped[0] : undefined;
+  const sharing = sessions.filter(
+    (session) => session.groupId !== undefined && opener.id !== undefined && session.sharedTabIds.includes(opener.id),
+  );
+  return sharing.length === 1 ? sharing[0] : undefined;
+}
+
 export function usableSessionTabs(session: StoredSession, tabs: chrome.tabs.Tab[]): chrome.tabs.Tab[] {
   return tabs.filter(
     (tab) =>
@@ -131,11 +152,7 @@ export class SessionStore {
 
   async hasApprovedOrigin(id: string, tabId: number, origin: string): Promise<boolean> {
     const session = await this.get(id);
-    return session?.approvedOrigins[String(tabId)]?.includes(origin) === true;
-  }
-
-  async forGroup(groupId: number): Promise<StoredSession | undefined> {
-    return (await this.list()).find((session) => session.groupId === groupId);
+    return session !== undefined && hasApprovedOrigin(session, tabId, origin);
   }
 
   async forgetTab(tabId: number): Promise<void> {

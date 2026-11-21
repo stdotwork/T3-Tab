@@ -144,9 +144,10 @@ export default defineBackground(() => {
   chrome.runtime.onInstalled.addListener(() => {
     void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
   });
-  chrome.tabs.onCreated.addListener((tab) => {
-    reportTabCount();
-    void adoptPopupTab(tab);
+  chrome.tabs.onCreated.addListener(() => reportTabCount());
+  // The browser names the tab a new tab was opened from; only that tab's session may adopt it.
+  chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
+    void adoptPopupTab(details.tabId, details.sourceTabId, sessionStore);
   });
   chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
     if (change.url === undefined) return;

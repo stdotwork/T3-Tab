@@ -1,9 +1,12 @@
 import type { PanelRequest, PanelState } from '../../src/panel';
-import type { PermissionDecision, PermissionPrompt } from '../../src/permissions';
+import { promptChoices, rowsShifted, siteChoices, siteStatus } from '../../src/panel-prompts';
+import type { PermissionDecision, PermissionPrompt, SitePermission } from '../../src/permissions';
 
 interface PromptNode {
   item: HTMLLIElement;
   description: HTMLElement;
+  controls: HTMLElement;
+  timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 const BUTTON_DELAY_MS = 500;
@@ -16,6 +19,8 @@ const stateRequest: PanelRequest =
     : { type: 'panel.state' };
 const headless = new URL(location.href).searchParams.get('headless') === '1';
 const promptNodes = new Map<string, PromptNode>();
+/** The prompt ids in the order the list last showed them. */
+let shownOrder: string[] = [];
 
 async function refresh(): Promise<void> {
   if (app === null) return;
@@ -49,8 +54,8 @@ function render(state: PanelState): void {
   );
 
   children.push(heading('Waiting for you', 2));
-  if (state.pending.length === 0) children.push(text('p', 'No permission requests.', 'muted'));
-  else children.push(promptList(state.pending));
+  const prompts = promptList(state.pending);
+  children.push(state.pending.length === 0 ? text('p', 'No permission requests.', 'muted') : prompts);
 
   children.push(heading('Connected sessions', 2));
   if (state.sessions.length === 0) children.push(text('p', 'No MCP clients are connected.', 'muted'));
@@ -79,12 +84,8 @@ function render(state: PanelState): void {
       const item = document.createElement('li');
       item.append(
         text('div', site.origin),
-        buttons([
-          [
-            site.setting === 'allow' ? 'Ask before acting' : 'Always allow',
-            () => setSite(site.origin, site.setting === 'allow' ? 'ask' : 'allow'),
-          ],
-        ]),
+        text('div', siteStatus(site.setting), 'muted'),
+        buttons(siteChoices(site.setting).map((choice) => [choice.label, () => setSite(site.origin, choice.setting)])),
       );
       list.append(item);
     }
@@ -95,9 +96,11 @@ function render(state: PanelState): void {
 
 function promptList(pending: PermissionPrompt[]): HTMLElement {
   const list = document.createElement('ul');
-  const ids = new Set(pending.map((prompt) => prompt.id));
+  const order = pending.map((prompt) => prompt.id);
+  const ids = new Set(order);
   for (const [id, node] of promptNodes) {
     if (ids.has(id)) continue;
+    clearTimeout(node.timer);
     node.item.remove();
     promptNodes.delete(id);
   }
@@ -106,23 +109,34 @@ function promptList(pending: PermissionPrompt[]): HTMLElement {
     if (node === undefined) {
       const item = document.createElement('li');
       const description = text('div', '', 'prompt-text');
-      const controls = buttons([
-        ['Allow once', () => decide(prompt.id, 'allow-once'), null, true],
-        ['Always allow on this site', () => decide(prompt.id, 'always-allow'), null, true],
-        ['Decline', () => decide(prompt.id, 'decline'), 'danger', true],
-      ]);
+      const controls = buttons(
+        promptChoices(prompt.tool).map((choice): [string, () => Promise<void>, (string | null)?] => [
+          choice.label,
+          () => decide(prompt.id, choice.decision),
+          choice.danger === true ? 'danger' : null,
+        ]),
+      );
       item.append(description, controls);
-      node = { item, description };
+      node = { item, description, controls, timer: undefined };
       promptNodes.set(prompt.id, node);
-      const enable = (): void => {
-        for (const button of controls.querySelectorAll('button')) button.disabled = false;
-      };
-      setTimeout(enable, BUTTON_DELAY_MS);
+      lock(node);
     }
     node.description.textContent = promptDescription(prompt);
     list.append(node.item);
   }
+  // A row that went away or came in above another moves the buttons under the owner's pointer.
+  if (rowsShifted(shownOrder, order)) for (const node of promptNodes.values()) lock(node);
+  shownOrder = order;
   return list;
+}
+
+/** Disables a prompt's buttons and enables them again once the pointer has had time to settle. */
+function lock(node: PromptNode): void {
+  clearTimeout(node.timer);
+  for (const button of node.controls.querySelectorAll('button')) button.disabled = true;
+  node.timer = setTimeout(() => {
+    for (const button of node.controls.querySelectorAll('button')) button.disabled = false;
+  }, BUTTON_DELAY_MS);
 }
 
 function promptDescription(prompt: PermissionPrompt): string {
@@ -141,7 +155,7 @@ async function toggleShare(sessionId: string, shared: boolean): Promise<void> {
   await refresh();
 }
 
-async function setSite(origin: string, setting: 'ask' | 'allow'): Promise<void> {
+async function setSite(origin: string, setting: SitePermission): Promise<void> {
   await send({ type: 'panel.setSite', origin, setting });
   await refresh();
 }
@@ -157,14 +171,13 @@ function text(tag: string, value: string, className?: string): HTMLElement {
   return element;
 }
 
-function buttons(items: Array<[string, () => Promise<void>, (string | null)?, boolean?]>): HTMLElement {
+function buttons(items: Array<[string, () => Promise<void>, (string | null)?]>): HTMLElement {
   const row = document.createElement('div');
   row.className = 'buttons';
-  for (const [label, action, className, disabled] of items) {
+  for (const [label, action, className] of items) {
     const button = document.createElement('button');
     button.textContent = label;
     if (className !== undefined && className !== null) button.className = className;
-    if (disabled === true) button.disabled = true;
     button.addEventListener('click', () => void action());
     row.append(button);
   }
