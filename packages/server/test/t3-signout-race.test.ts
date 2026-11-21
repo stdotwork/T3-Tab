@@ -1,4 +1,5 @@
 import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -55,10 +56,38 @@ function signal(): { promise: Promise<void>; fire: () => void } {
   return { promise, fire };
 }
 
+async function holdUntilAborted(abortSignal: AbortSignal | null | undefined, release: Promise<void>): Promise<void> {
+  if (abortSignal?.aborted === true) throw abortSignal.reason;
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => reject(abortSignal?.reason ?? new Error('aborted'));
+    abortSignal?.addEventListener('abort', onAbort, { once: true });
+    void release.then(() => {
+      abortSignal?.removeEventListener('abort', onAbort);
+      resolve();
+    });
+  });
+}
+
+async function connectError(url: string): Promise<string | undefined> {
+  const { hostname, port } = new URL(url);
+  return await new Promise((resolve) => {
+    const socket = connect({ host: hostname, port: Number(port) });
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(undefined);
+    });
+    socket.once('error', (error: NodeJS.ErrnoException) => {
+      socket.destroy();
+      resolve(error.code ?? error.message);
+    });
+  });
+}
+
 /** A sign-in against the fake T3. `onRequest` runs after each answer from T3 and may hold it back. */
 async function start(
   onRequest: (url: string, init: RequestInit | undefined) => Promise<void> = async () => undefined,
   beforeFind: () => Promise<void> = async () => undefined,
+  beforeRequest: (url: string, init: RequestInit | undefined) => Promise<void> = async () => undefined,
 ): Promise<{ access: InstanceType<typeof T3Access>; stateDir: string }> {
   fake = await startFakeT3();
   directory = await mkdtemp(join(tmpdir(), 't3-tab-signout-race-'));
@@ -69,6 +98,7 @@ async function start(
     return {
       ...environment,
       fetch: async (url, init) => {
+        await beforeRequest(String(url), init);
         const response = await environment.fetch(url, init);
         await onRequest(String(url), init);
         return response;
@@ -194,4 +224,83 @@ describe('sign-out during a sign-in', () => {
     expect((await stat(credentialPath(stateDir))).isFile()).toBe(true);
     expect((await current.view()).state).toBe('signed-in');
   });
+
+  it('closes the redirect listener and aborts registration at once when signing out while registration is held', async () => {
+    const blocked = signal();
+    const release = signal();
+    let redirectUri: string | undefined;
+    let requestSignal: AbortSignal | null | undefined;
+    const { access: current, stateDir } = await start(undefined, undefined, async (url, init) => {
+      if (!url.endsWith('/oauth/mcp/register')) return;
+      redirectUri = (JSON.parse(init?.body as string) as { redirect_uris: string[] }).redirect_uris[0];
+      requestSignal = init?.signal;
+      blocked.fire();
+      await holdUntilAborted(init?.signal, release.promise);
+    });
+
+    const outcome = current.signIn().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    try {
+      await blocked.promise;
+      expect(redirectUri).toBeDefined();
+      await current.signOut();
+
+      // While registration is still held, both the listener and the in-flight request must already be stopped.
+      expect(requestSignal?.aborted).toBe(true);
+      expect(await connectError(redirectUri as string)).toBe('ECONNREFUSED');
+      const error = await outcome;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('This sign-in was replaced or cancelled.');
+      await expectNoCredential(current, stateDir);
+    } finally {
+      release.fire();
+      await outcome;
+    }
+  });
+
+  it.each(['discovery', 'registration'] as const)(
+    'stops the in-flight request and any bound listener at once when closing during %s',
+    async (step) => {
+      const blocked = signal();
+      const release = signal();
+      let redirectUri: string | undefined;
+      let requestSignal: AbortSignal | null | undefined;
+      const { access: current } = await start(undefined, undefined, async (url, init) => {
+        if (step === 'discovery' && url.endsWith('/.well-known/oauth-protected-resource/mcp')) {
+          requestSignal = init?.signal;
+          blocked.fire();
+          await holdUntilAborted(init?.signal, release.promise);
+        }
+        if (step === 'registration' && url.endsWith('/oauth/mcp/register')) {
+          redirectUri = (JSON.parse(init?.body as string) as { redirect_uris: string[] }).redirect_uris[0];
+          requestSignal = init?.signal;
+          blocked.fire();
+          await holdUntilAborted(init?.signal, release.promise);
+        }
+      });
+
+      const outcome = current.signIn().then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      try {
+        await blocked.promise;
+        current.close();
+
+        expect(requestSignal?.aborted).toBe(true);
+        if (step === 'registration') {
+          expect(redirectUri).toBeDefined();
+          expect(await connectError(redirectUri as string)).toBe('ECONNREFUSED');
+        }
+        const error = await outcome;
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe('This sign-in was replaced or cancelled.');
+      } finally {
+        release.fire();
+        await outcome;
+      }
+    },
+  );
 });

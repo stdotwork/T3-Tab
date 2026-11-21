@@ -31,6 +31,11 @@ interface Metadata {
   registrationEndpoint: string;
 }
 
+interface SignInSetup {
+  controller: AbortController;
+  server: Server | undefined;
+}
+
 interface PendingSignIn {
   environment: T3Environment;
   metadata: Metadata;
@@ -64,6 +69,7 @@ class SignInError extends Error {}
  */
 export class T3Access {
   private pending: PendingSignIn | undefined;
+  private setup: SignInSetup | undefined;
   private catalog: { resource: string; value: T3Catalog } | undefined;
   private detail: string | undefined;
   private failed: { resource: string; at: number; detail: string } | undefined;
@@ -137,58 +143,65 @@ export class T3Access {
     if (this.closed) throw new Error('T3-Tab is shutting down.');
     this.cancel();
     const generation = this.signInGeneration;
+    const setup: SignInSetup = { controller: new AbortController(), server: undefined };
+    this.setup = setup;
     this.detail = undefined;
-    const environment = await this.findEnvironment(this.options.env);
-    this.assertCurrent(generation);
-    if ('problem' in environment) throw new Error(`${environment.problem} Start T3 Code, then sign in.`);
     try {
-      const metadata = await discover(environment);
+      const environment = await this.findEnvironment(this.options.env);
       this.assertCurrent(generation);
-      const server = createServer();
-      await listenLoopback(server);
-      const address = server.address();
-      if (address === null || typeof address === 'string') {
-        server.close();
-        throw new SignInError('T3-Tab could not open its sign-in listener.');
-      }
-      const redirectUri = `http://127.0.0.1:${address.port}/callback`;
-      let clientId: string;
+      if ('problem' in environment) throw new Error(`${environment.problem} Start T3 Code, then sign in.`);
       try {
+        const metadata = await discover(environment, setup.controller.signal);
         this.assertCurrent(generation);
-        clientId = await register(environment, metadata, redirectUri);
+        const server = createServer();
+        await listenLoopback(server);
+        if (generation !== this.signInGeneration) {
+          server.close();
+          throw new SignInError('This sign-in was replaced or cancelled.');
+        }
+        setup.server = server;
+        const address = server.address();
+        if (address === null || typeof address === 'string') {
+          throw new SignInError('T3-Tab could not open its sign-in listener.');
+        }
+        const redirectUri = `http://127.0.0.1:${address.port}/callback`;
+        const clientId = await register(environment, metadata, redirectUri, setup.controller.signal);
         this.assertCurrent(generation);
+        const verifier = randomBytes(32).toString('base64url');
+        const state = randomBytes(32).toString('base64url');
+        const pending: PendingSignIn = {
+          environment,
+          metadata,
+          clientId,
+          redirectUri,
+          state,
+          verifier,
+          server,
+          generation,
+          timer: setTimeout(() => this.finish(pending, 'The sign-in was not approved within 10 minutes. Sign in again.'), SIGN_IN_TIMEOUT_MS),
+          answered: false,
+          finished: false,
+        };
+        server.on('request', (request, response) => void this.answer(pending, address.port, request, response));
+        setup.server = undefined;
+        if (this.setup === setup) this.setup = undefined;
+        this.pending = pending;
+        const url = new URL(metadata.authorizationEndpoint);
+        url.searchParams.set('response_type', 'code');
+        url.searchParams.set('client_id', clientId);
+        url.searchParams.set('redirect_uri', redirectUri);
+        url.searchParams.set('code_challenge', createHash('sha256').update(verifier).digest('base64url'));
+        url.searchParams.set('code_challenge_method', 'S256');
+        url.searchParams.set('state', state);
+        url.searchParams.set('resource', environment.resource);
+        return { url: url.toString() };
       } catch (error) {
-        server.close();
-        throw error;
+        this.closeSetup(setup);
+        if (generation !== this.signInGeneration) throw new Error('This sign-in was replaced or cancelled.');
+        throw new Error(isSafeError(error) ? error.message : `T3 Code at ${environment.origin} did not answer the sign-in.`);
       }
-      const verifier = randomBytes(32).toString('base64url');
-      const state = randomBytes(32).toString('base64url');
-      const pending: PendingSignIn = {
-        environment,
-        metadata,
-        clientId,
-        redirectUri,
-        state,
-        verifier,
-        server,
-        generation,
-        timer: setTimeout(() => this.finish(pending, 'The sign-in was not approved within 10 minutes. Sign in again.'), SIGN_IN_TIMEOUT_MS),
-        answered: false,
-        finished: false,
-      };
-      server.on('request', (request, response) => void this.answer(pending, address.port, request, response));
-      this.pending = pending;
-      const url = new URL(metadata.authorizationEndpoint);
-      url.searchParams.set('response_type', 'code');
-      url.searchParams.set('client_id', clientId);
-      url.searchParams.set('redirect_uri', redirectUri);
-      url.searchParams.set('code_challenge', createHash('sha256').update(verifier).digest('base64url'));
-      url.searchParams.set('code_challenge_method', 'S256');
-      url.searchParams.set('state', state);
-      url.searchParams.set('resource', environment.resource);
-      return { url: url.toString() };
-    } catch (error) {
-      throw new Error(isSafeError(error) ? error.message : `T3 Code at ${environment.origin} did not answer the sign-in.`);
+    } finally {
+      if (this.setup === setup) this.setup = undefined;
     }
   }
 
@@ -224,7 +237,19 @@ export class T3Access {
 
   private cancel(): void {
     this.signInGeneration += 1;
+    if (this.setup !== undefined) this.closeSetup(this.setup);
     if (this.pending !== undefined) this.finish(this.pending, undefined);
+  }
+
+  private closeSetup(setup: SignInSetup): void {
+    if (this.setup === setup) this.setup = undefined;
+    setup.controller.abort();
+    const server = setup.server;
+    setup.server = undefined;
+    if (server !== undefined) {
+      server.close();
+      server.closeIdleConnections();
+    }
   }
 
   private assertCurrent(generation: number): void {
@@ -296,13 +321,13 @@ export class T3Access {
 }
 
 /** Reads T3's OAuth metadata (RFC 9728, RFC 8414) and accepts only endpoints on the environment's own address. */
-async function discover(environment: T3Environment): Promise<Metadata> {
-  const resource = await getJson(environment, `${environment.origin}/.well-known/oauth-protected-resource/mcp`);
+async function discover(environment: T3Environment, signal: AbortSignal): Promise<Metadata> {
+  const resource = await getJson(environment, `${environment.origin}/.well-known/oauth-protected-resource/mcp`, signal);
   const servers = Array.isArray(resource.authorization_servers) ? resource.authorization_servers : [];
   if (resource.resource !== environment.resource || servers[0] !== environment.origin) {
     throw new SignInError(`T3 Code at ${environment.origin} described a sign-in T3-Tab does not use.`);
   }
-  const server = await getJson(environment, `${environment.origin}/.well-known/oauth-authorization-server`);
+  const server = await getJson(environment, `${environment.origin}/.well-known/oauth-authorization-server`, signal);
   const endpoints = [server.authorization_endpoint, server.token_endpoint, server.registration_endpoint];
   const methods = Array.isArray(server.code_challenge_methods_supported) ? server.code_challenge_methods_supported : [];
   const sameOrigin = (value: unknown): value is string => {
@@ -330,12 +355,12 @@ async function discover(environment: T3Environment): Promise<Metadata> {
 }
 
 /** Dynamic client registration (RFC 7591): T3 signs the client id; nothing secret comes back. */
-async function register(environment: T3Environment, metadata: Metadata, redirectUri: string): Promise<string> {
+async function register(environment: T3Environment, metadata: Metadata, redirectUri: string, signal: AbortSignal): Promise<string> {
   const response = await environment.fetch(metadata.registrationEndpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify({ client_name: CLIENT_NAME, redirect_uris: [redirectUri], token_endpoint_auth_method: 'none' }),
-    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+    signal: requestSignal(signal),
   });
   const body = await response.json().catch(() => undefined);
   const clientId = typeof body === 'object' && body !== null ? (body as Record<string, unknown>).client_id : undefined;
@@ -393,13 +418,17 @@ async function exchange(pending: PendingSignIn, code: string): Promise<T3Credent
   };
 }
 
-async function getJson(environment: T3Environment, url: string): Promise<Record<string, unknown>> {
-  const response = await environment.fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+async function getJson(environment: T3Environment, url: string, signal: AbortSignal): Promise<Record<string, unknown>> {
+  const response = await environment.fetch(url, { headers: { accept: 'application/json' }, signal: requestSignal(signal) });
   const body: unknown = response.ok ? await response.json().catch(() => undefined) : undefined;
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     throw new SignInError(`T3 Code at ${new URL(url).origin} does not offer a sign-in for outside agents. Update T3 Code.`);
   }
   return body as Record<string, unknown>;
+}
+
+function requestSignal(signal: AbortSignal): AbortSignal {
+  return AbortSignal.any([signal, AbortSignal.timeout(HTTP_TIMEOUT_MS)]);
 }
 
 /** Errors whose fixed messages may be shown to the owner. */
