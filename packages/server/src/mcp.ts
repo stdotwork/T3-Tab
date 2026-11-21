@@ -5,21 +5,28 @@ import type { BrowserStatus, ToolContent, ToolMethod } from '@t3-tab/protocol';
 import { DaemonSession, getStatus } from './client.js';
 import { actShape, readShape, runJsShape, screenshotShape, tabsShape } from './tool-schemas.js';
 
+/**
+ * The SDK stamps every tool with `execution: { taskSupport: 'forbidden' }`, which is what an absent value
+ * means, so the tool list does without it (about 40 characters a tool).
+ */
+function withoutExecution<T extends { execution?: unknown }>(tool: T): T {
+  delete tool.execution;
+  return tool;
+}
+
 export async function runMcpServer(): Promise<void> {
   const server = new McpServer({ name: 't3-tab', version: '0.1.0' });
   // This process is one agent's session and owns its tabs and read baselines.
   const control = new DaemonSession();
 
-  server.registerTool(
-    'status',
-    { description: 'Show connected browsers and their tab counts.' },
-    async () => {
+  withoutExecution(
+    server.registerTool('status', { description: 'Show connected browsers and their tab counts.' }, async () => {
       try {
         return { content: [{ type: 'text', text: formatStatus(await getStatus()) }] };
       } catch (error) {
         return failure(error);
       }
-    },
+    }),
   );
 
   const browserTool = (method: ToolMethod) => async (params: Record<string, unknown>) => {
@@ -30,37 +37,47 @@ export async function runMcpServer(): Promise<void> {
     }
   };
 
-  server.registerTool(
-    'tabs',
-    { description: 'List, open, switch to or close browser tabs.', inputSchema: tabsShape },
-    browserTool('tabs'),
+  withoutExecution(
+    server.registerTool(
+      'tabs',
+      { description: 'List, open, switch to or close browser tabs.', inputSchema: tabsShape },
+      browserTool('tabs'),
+    ),
   );
-  server.registerTool(
-    'read',
-    {
-      description:
-        'Read a page as text: interactive elements with refs (e12), plus headings. Later reads return only changes.',
-      inputSchema: readShape,
-    },
-    browserTool('read'),
+  withoutExecution(
+    server.registerTool(
+      'read',
+      {
+        description:
+          'Read a page as text: interactive elements with refs (e12), plus headings. Later reads return only changes.',
+        inputSchema: readShape,
+      },
+      browserTool('read'),
+    ),
   );
-  server.registerTool(
-    'screenshot',
-    { description: "JPEG of a tab's viewport, downscaled.", inputSchema: screenshotShape },
-    browserTool('screenshot'),
+  withoutExecution(
+    server.registerTool(
+      'screenshot',
+      { description: "JPEG of a tab's viewport, downscaled.", inputSchema: screenshotShape },
+      browserTool('screenshot'),
+    ),
   );
-  server.registerTool(
-    'act',
-    { description: 'Run ordered page steps; returns the page diff.', inputSchema: actShape },
-    browserTool('act'),
+  withoutExecution(
+    server.registerTool(
+      'act',
+      { description: 'Run ordered page steps; returns the page diff.', inputSchema: actShape },
+      browserTool('act'),
+    ),
   );
-  server.registerTool(
-    'run_js',
-    {
-      description: 'Evaluate an expression or async function body in the page. Escape hatch; prefer act.',
-      inputSchema: runJsShape,
-    },
-    browserTool('run_js'),
+  withoutExecution(
+    server.registerTool(
+      'run_js',
+      {
+        description: 'Evaluate JavaScript in the page. Escape hatch; prefer act.',
+        inputSchema: runJsShape,
+      },
+      browserTool('run_js'),
+    ),
   );
   server.server.oninitialized = () => {
     control.setClientName(server.server.getClientVersion()?.name);

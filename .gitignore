@@ -9,3 +9,4 @@ packages/extension/.output/
 packages/extension/.wxt/
 *.tsbuildinfo
 .DS_Store
+bench/results/

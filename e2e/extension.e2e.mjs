@@ -1,33 +1,35 @@
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { chromium } from 'playwright';
+import {
+  assert,
+  closeServer,
+  cleanEnv,
+  connectMcp,
+  createHome,
+  extensionWorker,
+  installNativeHost,
+  jpegSize,
+  launchBrowser,
+  listen,
+  panelRequest,
+  parseStatusTabCount,
+  refFor,
+  requireBuild,
+  setSite,
+  sleep,
+  stopDaemon,
+  text,
+  waitForBrowser,
+} from './harness.mjs';
 
 const execFileAsync = promisify(execFile);
-const rootDir = join(dirname(fileURLToPath(import.meta.url)), '..');
-const extensionDir =
-  process.env.T3_TAB_E2E_EXTENSION_DIR ?? join(rootDir, 'packages/extension/.output/chrome-mv3');
-const cliPath = join(rootDir, 'packages/server/dist/cli.js');
-const tempHome = await mkdtemp(join(tmpdir(), 't3-tab-e2e-'));
-const profileDir = join(tempHome, '.config', 'chromium');
-const stateDir = join(tempHome, '.local', 'state', 't3-tab');
-const statePath = join(stateDir, 'daemon.json');
-const childEnv = cleanEnv({
-  ...process.env,
-  HOME: tempHome,
-  XDG_STATE_HOME: join(tempHome, '.local', 'state'),
-  XDG_CONFIG_HOME: join(tempHome, '.config'),
-  XDG_CACHE_HOME: join(tempHome, '.cache'),
-  XDG_DATA_HOME: join(tempHome, '.local', 'share'),
-});
+const home = await createHome();
+const { cliPath, tempHome, statePath, childEnv } = home;
 
 const SITE_NOT_FOUND = '<!doctype html><html lang="en"><head><title>Not found</title></head><body><h1>Not found</h1></body></html>';
 
@@ -110,9 +112,7 @@ const SITE = {
 
 let browserContext;
 let mcpClient;
-let mcpTransport;
 let mcpClientB;
-let mcpTransportB;
 let pageServer;
 let pageServerB;
 let autoPromptSessionId;
@@ -121,8 +121,7 @@ let panelPage;
 let framesPage = () => '';
 
 try {
-  await stat(join(extensionDir, 'manifest.json'));
-  await mkdir(profileDir, { recursive: true });
+  await requireBuild(home);
   await checkInstallCommand();
 
   const siteHandler = (request, response) => {
@@ -146,24 +145,9 @@ try {
 <iframe title="other origin" src="http://127.0.0.1:${addressB.port}/perm-b"></iframe>
 <iframe title="same origin" src="/perm-a"></iframe></body></html>`;
 
-  await execFileAsync(
-    process.execPath,
-    [cliPath, 'native-host', 'install', '--browser', 'chromium'],
-    { env: childEnv },
-  );
+  await installNativeHost(home);
 
-  browserContext = await chromium.launchPersistentContext(profileDir, {
-    channel: 'chromium',
-    headless: true,
-    // No viewport emulation: the window is wider than 1280, so a screenshot has to be scaled down.
-    viewport: null,
-    env: childEnv,
-    args: [
-      '--window-size=1600,1000',
-      `--disable-extensions-except=${extensionDir}`,
-      `--load-extension=${extensionDir}`,
-    ],
-  });
+  browserContext = await launchBrowser(home);
 
   const page = browserContext.pages()[0] ?? (await browserContext.newPage());
   await page.goto(`http://127.0.0.1:${address.port}`);
@@ -171,48 +155,12 @@ try {
   const siteUrl = `http://127.0.0.1:${address.port}`;
   const otherSiteUrl = `http://127.0.0.1:${addressB.port}`;
 
-  const isExtensionWorker = (worker) => worker.url().startsWith('chrome-extension://');
-  let serviceWorker = browserContext.serviceWorkers().find(isExtensionWorker);
-  if (serviceWorker === undefined) {
-    serviceWorker = await browserContext.waitForEvent('serviceworker', {
-      predicate: isExtensionWorker,
-      timeout: 15_000,
-    });
-  }
-
+  const { serviceWorker, extensionId } = await extensionWorker(browserContext);
   permissionServiceWorker = serviceWorker;
-  const extensionId = await serviceWorker.evaluate(() => chrome.runtime.id);
-  if (!/^[a-p]{32}$/.test(extensionId)) {
-    throw new Error(`Unexpected extension id from service worker: ${extensionId}`);
-  }
   console.log(`Extension ID: ${extensionId}`);
 
-  mcpTransport = new StdioClientTransport({
-    command: process.execPath,
-    args: [cliPath, 'mcp'],
-    env: childEnv,
-    stderr: 'pipe',
-  });
-  mcpTransport.stderr?.on('data', (chunk) => process.stderr.write(chunk));
-  mcpClient = new Client({ name: 't3-tab-e2e-a', version: '1.0.0' });
-  await mcpClient.connect(mcpTransport);
-
-  let statusText = '';
-  let tabCount = 0;
-  for (let attempt = 0; attempt < 160; attempt += 1) {
-    const result = await mcpClient.callTool({ name: 'status', arguments: {} });
-    statusText = result.content
-      .filter((item) => item.type === 'text')
-      .map((item) => item.text)
-      .join('\n');
-    tabCount = parseStatusTabCount(statusText);
-    if (/^Browsers: 1$/m.test(statusText) && tabCount >= 1) break;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-
-  if (!/^Browsers: 1$/m.test(statusText) || tabCount < 1) {
-    throw new Error(`Expected one connected browser with at least one tab. Got:\n${statusText}`);
-  }
+  ({ client: mcpClient } = await connectMcp(home, 't3-tab-e2e-a'));
+  const statusText = await waitForBrowser(mcpClient);
   console.log(`MCP status result:\n${statusText}`);
 
   const state = JSON.parse(await readFile(statePath, 'utf8'));
@@ -225,15 +173,7 @@ try {
   }
   console.log('Wrong-token control connection: refused');
 
-  mcpTransportB = new StdioClientTransport({
-    command: process.execPath,
-    args: [cliPath, 'mcp'],
-    env: childEnv,
-    stderr: 'pipe',
-  });
-  mcpTransportB.stderr?.on('data', (chunk) => process.stderr.write(chunk));
-  mcpClientB = new Client({ name: 't3-tab-e2e-b', version: '1.0.0' });
-  await mcpClientB.connect(mcpTransportB);
+  ({ client: mcpClientB } = await connectMcp(home, 't3-tab-e2e-b'));
 
   await rawCall(mcpClient, 'tabs', {});
   await rawCall(mcpClientB, 'tabs', {});
@@ -288,7 +228,7 @@ try {
   }
   if (pageServer !== undefined) await closeServer(pageServer);
   if (pageServerB !== undefined) await closeServer(pageServerB);
-  await stopDaemon();
+  await stopDaemon(statePath);
   await rm(tempHome, { recursive: true, force: true });
 }
 
@@ -473,10 +413,10 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
 
   const crossSessionCalls = [
     ['read B', rawCall(mcpClient, 'read', { tab: tabB })],
-    ['act B', rawCall(mcpClient, 'act', { tab: tabB, steps: [{ scroll: { dy: 1 } }] })],
+    ['act B', rawCall(mcpClient, 'act', { tab: tabB, steps: [{ action: 'scroll', dy: 1 }] })],
     ['run_js B', rawCall(mcpClient, 'run_js', { tab: tabB, expression: '1' })],
     ['read owner', rawCall(mcpClient, 'read', { tab: ownerTab.id })],
-    ['act owner', rawCall(mcpClient, 'act', { tab: ownerTab.id, steps: [{ scroll: { dy: 1 } }] })],
+    ['act owner', rawCall(mcpClient, 'act', { tab: ownerTab.id, steps: [{ action: 'scroll', dy: 1 }] })],
     ['run_js owner', rawCall(mcpClient, 'run_js', { tab: ownerTab.id, expression: '1' })],
   ];
   for (const [label, pending] of crossSessionCalls) {
@@ -516,7 +456,7 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
   const actionRef = refFor(text(pageA), 'button "Action A"');
   assert(actionRef, `Session A's action page has no button ref:\n${text(pageA)}`);
 
-  const firstAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const firstAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const actPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   assertPromptTab(actPrompt, 'Permission A');
   await decidePrompt(serviceWorker, actPrompt.id, 'allow-once');
@@ -524,20 +464,20 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
   assert(allowedAct.isError !== true && text(allowedAct).includes('Action A completed'), `Allow once did not run the act: ${text(allowedAct)}`);
   console.log(`Ask origin, Allow once: act succeeded on tab ${actPrompt.tab.id} "${actPrompt.tab.title}"`);
 
-  const secondAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const secondAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const declinePrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   await decidePrompt(serviceWorker, declinePrompt.id, 'decline');
   const declinedAct = await secondAct;
   assert(declinedAct.isError === true && /Permission declined/.test(text(declinedAct)), `Decline did not refuse the act: ${text(declinedAct)}`);
   console.log('Ask origin, Decline: act refused');
 
-  const alwaysAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const alwaysAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const alwaysPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   await decidePrompt(serviceWorker, alwaysPrompt.id, 'always-allow');
   const alwaysResult = await alwaysAct;
   assert(alwaysResult.isError !== true, `Always allow did not run the first act: ${text(alwaysResult)}`);
   const noPromptAct = await withDeadline(
-    rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] }),
+    rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] }),
     2_000,
     'second act after Always allow',
   );
@@ -548,7 +488,7 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
 
   await serviceWorker.evaluate(() => chrome.storage.local.set({ permissionTimeoutMs: 1_200 }));
   const timeoutStarted = Date.now();
-  const timedOutAct = await rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const timedOutAct = await rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const timeoutElapsed = Date.now() - timeoutStarted;
   assert(timedOutAct.isError === true && /timed out and was declined/.test(text(timedOutAct)), `The prompt timeout did not decline: ${text(timedOutAct)}`);
   assert(timeoutElapsed >= 900 && timeoutElapsed < 4_000, `The configured timeout took ${timeoutElapsed} ms`);
@@ -556,7 +496,7 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
   console.log(`Prompt timeout: declined after ${timeoutElapsed} ms`);
 
   await panelRequest(serviceWorker, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: ownerTab.id });
-  const unsharedWhileWaiting = rawCall(mcpClient, 'act', { tab: ownerTab.id, steps: [{ scroll: { dy: 1 } }] });
+  const unsharedWhileWaiting = rawCall(mcpClient, 'act', { tab: ownerTab.id, steps: [{ action: 'scroll', dy: 1 }] });
   const unsharePrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   assertPromptTab(unsharePrompt, 'T3-Tab E2E');
   await panelRequest(serviceWorker, { type: 'panel.unshareTab', sessionId: sessionA.id, tabId: ownerTab.id });
@@ -727,14 +667,14 @@ async function checkReadGrant({ mcpClient, serviceWorker, sessionA, siteUrl, pop
     const result = await pending;
     assert(result.isError === true && /Permission declined/.test(text(result)), `${label} was not declined: ${text(result)}`);
   };
-  await declineNext(() => rawCall(mcpClient, 'act', { tab: second.id, steps: [{ click: { ref: buttonRef } }] }), 'act', 'act on a read-granted site');
+  await declineNext(() => rawCall(mcpClient, 'act', { tab: second.id, steps: [{ action: 'click', ref: buttonRef }] }), 'act', 'act on a read-granted site');
   await declineNext(() => rawCall(mcpClient, 'run_js', { tab: second.id, expression: 'document.title' }), 'run_js', 'run_js on a read-granted site');
   await declineNext(() => rawCall(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/about` }), 'open', 'opening on a read-granted site');
   assert((await siteSetting()) === 'read', 'A declined prompt changed the read grant');
   console.log('Read grant: read needs no prompt; act, run_js and open each still prompt (kinds act, run_js, open) and were declined');
 
   // The full grant, from an act prompt, covers reading, run_js and opening as well.
-  const acting = rawCall(mcpClient, 'act', { tab: second.id, steps: [{ click: { ref: buttonRef } }] });
+  const acting = rawCall(mcpClient, 'act', { tab: second.id, steps: [{ action: 'click', ref: buttonRef }] });
   const actPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   await assertDecisionRefused(serviceWorker, actPrompt.id, 'always-allow-read', /only from a read request/);
   await decidePrompt(serviceWorker, actPrompt.id, 'always-allow');
@@ -793,7 +733,7 @@ async function checkRaces({ mcpClient, serviceWorker, sessionA, siteUrl, otherSi
   // that submits a form does.
   await waitForTabUrl(serviceWorker, tabA, `${otherSiteUrl}/perm-b`);
   await installDebuggerHook(serviceWorker, { method: 'Input.dispatchKeyEvent', tabId: tabA, action: 'reload' });
-  const pressing = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ press: { key: 'Tab' } }, { press: { key: 'Tab' } }] });
+  const pressing = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'press', key: 'Tab' }, { action: 'press', key: 'Tab' }] });
   await decideNext('act');
   const pressed = await pressing;
   assert(await hookFired(serviceWorker), 'The act race was not exercised: the document was never replaced during the key press');
@@ -803,7 +743,7 @@ async function checkRaces({ mcpClient, serviceWorker, sessionA, siteUrl, otherSi
 
   // act: the same, but the new document is on another origin, so the batch stops before step 2.
   await installDebuggerHook(serviceWorker, { method: 'Input.dispatchKeyEvent', tabId: tabA, action: 'navigate', url: `${siteUrl}/secret` });
-  const crossing = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ press: { key: 'Tab' } }, { press: { key: 'Tab' } }] });
+  const crossing = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'press', key: 'Tab' }, { action: 'press', key: 'Tab' }] });
   await decideNext('act');
   const crossed = await crossing;
   assert(await hookFired(serviceWorker), 'The cross-origin act race was not exercised: the page never moved during the key press');
@@ -1021,21 +961,6 @@ async function decidePrompt(serviceWorker, promptId, decision) {
   await panelRequest(serviceWorker, { type: 'panel.decide', promptId, decision });
 }
 
-async function setSite(serviceWorker, origin, setting) {
-  await panelRequest(serviceWorker, { type: 'panel.setSite', origin, setting });
-}
-
-async function panelRequest(serviceWorker, request) {
-  const response = await serviceWorker.evaluate(async (message) => {
-    const handle = globalThis.__t3tabHandlePanelRequest;
-    if (typeof handle !== 'function') throw new Error('Panel handler is unavailable');
-    return await handle(message);
-  }, request);
-  if (response === undefined) throw new Error(`The extension did not answer ${request.type}`);
-  if (response?.ok === false) throw new Error(`${request.type}: ${response.error}`);
-  return response;
-}
-
 async function tabGroup(serviceWorker, tabId) {
   return await serviceWorker.evaluate(async (id) => {
     const tab = await chrome.tabs.get(id);
@@ -1074,10 +999,6 @@ async function withDeadline(promise, milliseconds, label) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function checkBrowserTools({ mcpClient, page, siteUrl }) {
@@ -1239,15 +1160,30 @@ async function checkActionTools({ mcpClient, page }) {
 
   const acted = await call(mcpClient, 'act', {
     steps: [
-      { fill: { ref: nameRef, value: 'Ada Lovelace' } },
-      { fill: { ref: emailRef, value: 'ada@example.com' } },
-      { click: { ref: submitRef } },
+      { action: 'fill', ref: nameRef, text: 'Ada Lovelace' },
+      { action: 'fill', ref: emailRef, text: 'ada@example.com' },
+      { action: 'click', ref: submitRef },
     ],
   });
   show('act (fill, fill, click)', acted);
   assert(acted.isError !== true, `act failed: ${text(acted)}`);
   assert(/Changed since the last read:/.test(text(acted)), `act did not return a diff:\n${text(acted)}`);
   assert(text(acted).includes('Welcome Ada Lovelace (ada@example.com)'), `act did not show the form result:\n${text(acted)}`);
+
+  // A step that is missing a field, carries one its action does not take, or is in the old nested form is
+  // refused with a message that says what is wrong, before anything reaches the page.
+  for (const [bad, expected] of [
+    [{ action: 'click' }, /click needs ref/],
+    [{ action: 'click', ref: submitRef, text: 'x' }, /click does not take text/],
+    [{ action: 'wait', ms: 99_999 }, /wait ms must be a whole number from 0 to 10000/],
+    [{ action: 'scroll' }, /scroll needs either ref or dx\/dy/],
+    [{ click: { ref: submitRef } }, /action/],
+  ]) {
+    const refusedStep = await rawCall(mcpClient, 'act', { steps: [bad] });
+    assert(refusedStep.isError === true && expected.test(text(refusedStep)), `act accepted or mis-described ${JSON.stringify(bad)}: ${text(refusedStep)}`);
+  }
+  const unchangedForm = await call(mcpClient, 'read', {});
+  assert(text(unchangedForm).endsWith('No changes since the last read.'), `A refused step changed the page: ${text(unchangedForm)}`);
 
   const title = await call(mcpClient, 'run_js', { expression: 'document.title' });
   show('run_js document.title', title);
@@ -1262,7 +1198,7 @@ async function checkActionTools({ mcpClient, page }) {
   const staleRef = refFor(freshText, 'textbox "Name"');
   assert(aboutRef && staleRef, `Navigation refs are missing:\n${freshText}`);
   const stale = await call(mcpClient, 'act', {
-    steps: [{ click: { ref: aboutRef } }, { click: { ref: staleRef } }],
+    steps: [{ action: 'click', ref: aboutRef }, { action: 'click', ref: staleRef }],
   });
   show('act (click navigation, then stale ref)', stale);
   assert(stale.isError === true, `A ref from before navigation was accepted: ${text(stale)}`);
@@ -1278,7 +1214,7 @@ async function checkActionTools({ mcpClient, page }) {
   await page.getByRole('heading', { name: 'Search' }).waitFor();
   const searchRef = refFor(text(await call(mcpClient, 'read', { full: true })), 'textbox "Query"');
   assert(searchRef, 'The search box ref is missing');
-  const submitted = await call(mcpClient, 'act', { steps: [{ fill: { ref: searchRef, value: 'refs' } }, { press: { key: 'Enter' } }] });
+  const submitted = await call(mcpClient, 'act', { steps: [{ action: 'fill', ref: searchRef, text: 'refs' }, { action: 'press', key: 'Enter' }] });
   show('act (fill, press Enter submits the form)', submitted);
   assert(submitted.isError !== true, `Enter that submits a form failed: ${text(submitted)}`);
   assert(text(submitted).includes('# About') && page.url().includes('/about?q=refs'), `Enter did not submit the form: ${text(submitted)} at ${page.url()}`);
@@ -1303,10 +1239,6 @@ function listsTab(result, tabId) {
   return text(result)
     .split('\n')
     .some((line) => line.startsWith(`${tabId} `));
-}
-
-function refFor(readText, label) {
-  return /^\s*(e\d+) /.exec(readText.split('\n').find((line) => line.includes(label)) ?? '')?.[1];
 }
 
 /** The page's viewport once it stops changing: attaching the debugger makes the browser show a banner, which resizes it. */
@@ -1348,13 +1280,6 @@ async function call(client, name, args) {
   return await result;
 }
 
-function text(result) {
-  return result.content
-    .filter((item) => item.type === 'text')
-    .map((item) => item.text)
-    .join('\n');
-}
-
 function replySize(result) {
   const characters = result.content.reduce((total, item) => total + (item.type === 'text' ? item.text.length : item.data.length), 0);
   return `${characters} characters${result.isError === true ? ', error' : ''}`;
@@ -1362,56 +1287,6 @@ function replySize(result) {
 
 function show(label, result) {
   console.log(`--- ${label} (${replySize(result)}) ---\n${text(result)}`);
-}
-
-function assert(condition, message) {
-  if (!condition) throw new Error(message);
-}
-
-/** Pixel size of a JPEG, from its start-of-frame marker. */
-function jpegSize(bytes) {
-  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return undefined;
-  let offset = 2;
-  while (offset + 9 < bytes.length) {
-    if (bytes[offset] !== 0xff) {
-      offset += 1;
-      continue;
-    }
-    const marker = bytes[offset + 1];
-    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-      return { height: (bytes[offset + 5] << 8) | bytes[offset + 6], width: (bytes[offset + 7] << 8) | bytes[offset + 8] };
-    }
-    offset += 2 + ((bytes[offset + 2] << 8) | bytes[offset + 3]);
-  }
-  return undefined;
-}
-
-async function listen(server) {
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', reject);
-      resolve();
-    });
-  });
-}
-
-async function closeServer(server) {
-  if (server.listening !== true) return;
-  await new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
-}
-
-function cleanEnv(env) {
-  return Object.fromEntries(
-    Object.entries(env).filter(
-      ([key, value]) => value !== undefined && key !== 'CLAUDE_CONFIG_DIR' && key !== 'CODEX_HOME',
-    ),
-  );
 }
 
 async function fileExists(path) {
@@ -1441,11 +1316,6 @@ function countMatches(value, expression) {
   return [...value.matchAll(expression)].length;
 }
 
-function parseStatusTabCount(text) {
-  const match = /^- .*: (\d+) tabs?$/m.exec(text);
-  return match === null ? 0 : Number(match[1]);
-}
-
 async function wrongTokenIsRefused(port) {
   return await new Promise((resolve) => {
     const socket = new WebSocket(`ws://127.0.0.1:${port}/?token=wrong-token`);
@@ -1463,28 +1333,4 @@ async function wrongTokenIsRefused(port) {
       resolve(true);
     });
   });
-}
-
-async function stopDaemon() {
-  try {
-    const state = JSON.parse(await readFile(statePath, 'utf8'));
-    if (typeof state.pid === 'number') {
-      process.kill(state.pid, 'SIGTERM');
-      for (let attempt = 0; attempt < 40; attempt += 1) {
-        if (!processIsAlive(state.pid)) break;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-  } catch {
-    // The daemon never started, or it exited before cleanup.
-  }
-}
-
-function processIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }

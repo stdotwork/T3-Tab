@@ -28,6 +28,7 @@ export class TabState {
   private epoch = -1;
   private refs = new RefTable();
   private readonly baselines = new Map<string, Map<string, string>>();
+  private readonly headers = new Map<string, string>();
 
   /** Drops refs and baselines when the document the tab shows is not the one they came from. */
   syncEpoch(epoch: number): void {
@@ -35,6 +36,21 @@ export class TabState {
     this.epoch = epoch;
     this.refs = new RefTable();
     this.baselines.clear();
+    this.headers.clear();
+  }
+
+  /**
+   * The header line to print for this session: the full one when the page's title or address is not what
+   * the session last saw for this tab, otherwise just the tab id.
+   */
+  headerFor(session: string, tab: number, full: string): string {
+    const unchanged = this.headers.get(session) === full;
+    if (!unchanged && !this.headers.has(session) && this.headers.size >= MAX_SESSIONS_PER_TAB) {
+      const oldest = this.headers.keys().next().value;
+      if (oldest !== undefined) this.headers.delete(oldest);
+    }
+    this.headers.set(session, full);
+    return unchanged ? `tab ${tab}` : full;
   }
 
   get refTable(): RefTable {
@@ -68,8 +84,9 @@ export class TabState {
 }
 
 /**
- * The reply to a `read`: a header line, then the page text on the first read of a view, a line diff
- * on later ones, or only the matching lines for a `find`.
+ * The reply to a `read`: a header line (the tab, title and address, or only the tab id when the session
+ * already has that title and address), then the page text on the first read of a view, a line diff on
+ * later ones, or only the matching lines for a `find`.
  */
 export async function formatRead(
   state: TabState,
@@ -78,7 +95,11 @@ export async function formatRead(
   options: ReadOptions,
 ): Promise<string> {
   state.syncEpoch(page.epoch);
-  const header = `tab ${page.tab}: ${truncate(page.title, MAX_TITLE)} — ${truncate(page.url, MAX_URL)}`;
+  const header = state.headerFor(
+    session,
+    page.tab,
+    `tab ${page.tab}: ${truncate(page.title, MAX_TITLE)} — ${truncate(page.url, MAX_URL)}`,
+  );
 
   let target: number | undefined;
   if (options.ref !== undefined) {

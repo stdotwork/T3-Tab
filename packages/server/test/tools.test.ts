@@ -94,7 +94,7 @@ describe('read tool', () => {
     expect(firstReply[0]).toMatchObject({ type: 'text' });
     const secondReply = await runTool(link, SESSION, 'read', {});
     expect(secondReply).toEqual([
-      { type: 'text', text: 'tab 7: Test page — http://localhost/test\nNo changes since the last read.' },
+      { type: 'text', text: 'tab 7\nNo changes since the last read.' },
     ]);
     expect(link.calls[0]).toBe('page.read {}');
   });
@@ -150,8 +150,8 @@ describe('act tool', () => {
     const reply = await runTool(link, SESSION, 'act', {
       tab: 7,
       steps: [
-        { fill: { ref: 'e2', value: 'grace@example.com' } },
-        { click: { ref: 'e3' } },
+        { action: 'fill', ref: 'e2', text: 'grace@example.com' },
+        { action: 'click', ref: 'e3' },
       ],
     });
     expect(reply[0]).toMatchObject({ type: 'text' });
@@ -174,7 +174,7 @@ describe('act tool', () => {
       'page.act': () => page(signInPage()),
     });
     await runTool(link, SESSION, 'read', {});
-    await runTool(link, SESSION, 'act', { steps: [{ press: { key: 'Enter' } }] });
+    await runTool(link, SESSION, 'act', { steps: [{ action: 'press', key: 'Enter' }] });
     expect(link.calls).toContain('tabs.list {}');
     expect(link.calls.at(-1)).toContain('page.act {"tab":9');
   });
@@ -182,7 +182,7 @@ describe('act tool', () => {
   it('refuses an unknown ref before sending the batch', async () => {
     const link = fakeBrowser({ 'page.read': () => page(signInPage()) });
     await runTool(link, SESSION, 'read', {});
-    await expect(runTool(link, SESSION, 'act', { tab: 7, steps: [{ click: { ref: 'e99' } }] })).rejects.toThrow(
+    await expect(runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'click', ref: 'e99' }] })).rejects.toThrow(
       'Unknown ref e99: read the page again',
     );
     expect(link.calls).toHaveLength(1);
@@ -200,7 +200,7 @@ describe('act tool', () => {
     await expect(
       runTool(link, SESSION, 'act', {
         tab: 7,
-        steps: [{ press: { key: 'Enter' } }, { click: { ref: 'e1' } }],
+        steps: [{ action: 'press', key: 'Enter' }, { action: 'click', ref: 'e1' }],
       }),
     ).rejects.toThrow(/Step 2 \(click\) failed: e1 is no longer on the page; read again\n[\s\S]*# Buttons/);
   });

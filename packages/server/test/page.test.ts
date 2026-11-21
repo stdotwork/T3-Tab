@@ -16,9 +16,23 @@ describe('reading a page', () => {
   it('says so when nothing changed', async () => {
     const state = new TabState();
     await formatRead(state, 's1', page(buttonPage(30)), {});
-    expect(await formatRead(state, 's1', page(buttonPage(30)), {})).toBe(
-      'tab 7: Test page — http://localhost/test\nNo changes since the last read.',
-    );
+    expect(await formatRead(state, 's1', page(buttonPage(30)), {})).toBe('tab 7\nNo changes since the last read.');
+  });
+
+  it('prints the title and address once, then only the tab id until they change', async () => {
+    const state = new TabState();
+    const header = 'tab 7: Test page — http://localhost/test';
+    expect((await formatRead(state, 's1', page(buttonPage(30)), {})).split('\n')[0]).toBe(header);
+    expect((await formatRead(state, 's1', page(buttonPage(30)), {})).split('\n')[0]).toBe('tab 7');
+    expect((await formatRead(state, 's1', page(buttonPage(30)), { find: 'Button 3' })).split('\n')[0]).toBe('tab 7');
+    // Another session has not seen this tab yet.
+    expect((await formatRead(state, 's2', page(buttonPage(30)), {})).split('\n')[0]).toBe(header);
+    // A new title or address, on the same document or a new one, is printed again.
+    const retitled = page(buttonPage(30), { title: 'Renamed' });
+    expect((await formatRead(state, 's1', retitled, {})).split('\n')[0]).toBe('tab 7: Renamed — http://localhost/test');
+    const moved = page(buttonPage(30), { url: 'http://localhost/next', epoch: 2 });
+    expect((await formatRead(state, 's1', moved, {})).split('\n')[0]).toBe('tab 7: Test page — http://localhost/next');
+    expect((await formatRead(state, 's1', moved, {})).split('\n')[0]).toBe('tab 7');
   });
 
   it('returns only the changed lines on a later read', async () => {
@@ -28,7 +42,7 @@ describe('reading a page', () => {
     const reply = await formatRead(state, 's1', page(changed), {});
     expect(reply).toBe(
       [
-        'tab 7: Test page — http://localhost/test',
+        'tab 7',
         'Changed since the last read:',
         '@@',
         ' e10 button "Button 10"',
