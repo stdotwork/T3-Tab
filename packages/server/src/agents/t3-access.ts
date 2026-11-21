@@ -67,6 +67,8 @@ export class T3Access {
   private failed: { resource: string; at: number; detail: string } | undefined;
   private readonly findEnvironment: NonNullable<T3AccessOptions['findEnvironment']>;
   private closed = false;
+  /** Writes and deletes of the credential file run one at a time, so a sign-out never races a sign-in's write. */
+  private fileQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: T3AccessOptions) {
     this.findEnvironment = options.findEnvironment ?? findT3Environment;
@@ -186,14 +188,23 @@ export class T3Access {
    */
   async signOut(): Promise<T3AccessView> {
     this.cancel();
-    const had = (await readCredential(this.options.stateDir)) !== undefined;
-    await deleteCredential(this.options.stateDir);
-    await removeTemporaryCredentials(this.options.stateDir);
+    const had = await this.onFile(async () => {
+      const existed = (await readCredential(this.options.stateDir)) !== undefined;
+      await deleteCredential(this.options.stateDir);
+      await removeTemporaryCredentials(this.options.stateDir);
+      return existed;
+    });
     this.catalog = undefined;
     this.detail = had
       ? 'Signed out: T3-Tab deleted its T3 sign-in. To end it in T3 Code now, revoke T3-Tab in Settings → Sharing & access; otherwise it ends on its own within 30 days.'
       : undefined;
     return await this.view();
+  }
+
+  private onFile<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.fileQueue.then(work, work);
+    this.fileQueue = run.catch(() => undefined);
+    return run;
   }
 
   close(): void {
@@ -252,12 +263,15 @@ export class T3Access {
     let detail: string | undefined;
     try {
       const credential = await exchange(pending, code);
-      // A sign-in replaced or cancelled meanwhile keeps nothing.
-      if (pending.finished || this.pending !== pending || this.closed) detail = 'This sign-in was replaced or cancelled.';
-      else {
+      // A sign-in replaced or cancelled meanwhile keeps nothing. Checked inside the file queue, so a sign-out that
+      // started first has already cancelled it, and one that starts later deletes the file after this write.
+      const kept = await this.onFile(async () => {
+        if (pending.finished || this.pending !== pending || this.closed) return false;
         await writeCredential(this.options.stateDir, credential);
-        this.catalog = undefined;
-      }
+        return true;
+      });
+      if (kept) this.catalog = undefined;
+      else detail = 'This sign-in was replaced or cancelled.';
     } catch (error) {
       detail = isSafeError(error) ? error.message : 'T3 Code did not complete the sign-in. Sign in again.';
     }

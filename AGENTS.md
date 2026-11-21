@@ -211,8 +211,10 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
   revoke it in T3 and sign in again. The token is stored only in `t3-credential.json` in T3-Tab's state folder
   (next to `daemon.json`, written as a new 0600 file and renamed into place), sent only to that environment's
   `/mcp` with redirects refused, and used only for `t3_project_list` and `orchestrator_capabilities`
-  (`t3-catalog.ts`). It never reaches the extension, the panel, logs, error messages, agents, or a command's
-  arguments or environment. Every request to T3 opens its own connection and is sent on it only after
+  (`t3-catalog.ts`). T3-Tab never hands it to the extension, the panel, logs, error messages, agents, or a
+  command's arguments or environment. Like every file in the owner's home, the 0600 file is still readable by any
+  program running as the owner, coding agents included; the sign-in is read-only and ends after 30 days.
+  Writing the file and signing out run one at a time, so a sign-out during a sign-in leaves no credential. Every request to T3 opens its own connection and is sent on it only after
   `/proc/net/tcp{,6}` and `/proc/<pid>/fd` show that the recorded pid accepted that connection and that the process
   did not start after T3's `startedAt` (`t3-connection.ts`). Where there is no `/proc` (any platform but Linux),
   T3-Tab sends nothing, so the sign-in and the lists are unavailable and the project and model are typed instead.
