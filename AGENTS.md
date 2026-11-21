@@ -113,8 +113,9 @@ every `act` step. `run_js` runs only in the main frame's JavaScript context afte
 context's origin as the approved one, pinned by `uniqueContextId` (`mainWorldContext` in
 `packages/extension/src/cdp.ts`), so a navigation that replaced the page makes the call fail; the
 agent's text is never part of a check. A screenshot records the document epoch and address before the
-capture and discards the image if either changed. An `act` batch stops if the document is replaced during a
-`type`, `press` or `scroll` step that has no ref. A tab that moves while approval is pending or between
+capture and discards the image if either changed. An `act` batch stops if a document from another origin
+replaces the page during a `type`, `press` or `scroll` step that has no ref; a new document on the approved
+origin, such as the page a `press Enter` submits to, is fine. A tab that moves while approval is pending or between
 steps is refused until its new origin is approved. Site setting writes are serialised.
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,

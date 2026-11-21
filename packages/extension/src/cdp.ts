@@ -5,6 +5,9 @@ const attached = new Set<number>();
 const attaching = new Map<number, Promise<void>>();
 /** Per tab: bumped whenever the document may have been replaced, including when the debugger attaches. */
 const epochs = new Map<number, number>();
+/** Per tab: the address each top-frame navigation committed, keyed by the epoch it started. */
+const navigations = new Map<number, Map<number, string>>();
+const NAVIGATION_LOG_SIZE = 32;
 /** Per tab: bumped by any network event, so action settling can see when traffic goes quiet. */
 const networkEvents = new Map<number, number>();
 
@@ -24,6 +27,32 @@ export function documentEpoch(tabId: number): number {
   return epochs.get(tabId) ?? 0;
 }
 
+/**
+ * The addresses of the top-frame documents that replaced the one at `since`, oldest first, or undefined when
+ * the document was replaced in a way that recorded no address (the debugger detached or reattached).
+ */
+export function navigationsSince(tabId: number, since: number): string[] | undefined {
+  const now = documentEpoch(tabId);
+  const log = navigations.get(tabId);
+  const urls: string[] = [];
+  for (let epoch = since + 1; epoch <= now; epoch += 1) {
+    const url = log?.get(epoch);
+    if (url === undefined) return undefined;
+    urls.push(url);
+  }
+  return urls;
+}
+
+function logNavigation(tabId: number, url: string): void {
+  const log = navigations.get(tabId) ?? new Map<number, string>();
+  log.set(documentEpoch(tabId), url);
+  for (const epoch of log.keys()) {
+    if (log.size <= NAVIGATION_LOG_SIZE) break;
+    log.delete(epoch);
+  }
+  navigations.set(tabId, log);
+}
+
 export function networkRevision(tabId: number): number {
   return networkEvents.get(tabId) ?? 0;
 }
@@ -40,9 +69,12 @@ export function initCdp(): void {
       return;
     }
     if (method !== 'Page.frameNavigated') return;
-    const frame = (params as { frame?: { parentId?: unknown } } | undefined)?.frame;
+    const frame = (params as { frame?: { parentId?: unknown; url?: unknown } } | undefined)?.frame;
     // Only the top frame replaces the document the held refs point into.
-    if (frame !== undefined && frame.parentId === undefined) bumpEpoch(source.tabId);
+    if (frame !== undefined && frame.parentId === undefined) {
+      bumpEpoch(source.tabId);
+      logNavigation(source.tabId, typeof frame.url === 'string' ? frame.url : '');
+    }
   });
   chrome.debugger.onDetach.addListener((source) => {
     if (source.tabId === undefined) return;
@@ -53,6 +85,7 @@ export function initCdp(): void {
   chrome.tabs.onRemoved.addListener((tabId) => {
     attached.delete(tabId);
     epochs.delete(tabId);
+    navigations.delete(tabId);
     networkEvents.delete(tabId);
     contexts.delete(tabId);
   });

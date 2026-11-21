@@ -94,6 +94,8 @@ const SITE = {
 <html lang="en"><head><title>Secret</title></head><body><h1>Secret</h1><p>SECRET-OF-SITE-A-INBOX</p></body></html>`,
   '/regex': `<!doctype html>
 <html lang="en"><head><title>Regex timeout</title></head><body><h1>Regex timeout</h1><p>${'a'.repeat(350)}!</p></body></html>`,
+  '/search': `<!doctype html>
+<html lang="en"><head><title>Search</title></head><body><h1>Search</h1><form action="/about" method="get"><label>Query <input name="q" type="text"></label></form></body></html>`,
   '/about': `<!doctype html>
 <html lang="en">
   <head><meta charset="UTF-8" /><title>About</title></head>
@@ -661,16 +663,28 @@ async function checkRaces({ mcpClient, serviceWorker, sessionA, siteUrl, otherSi
   );
   console.log(`Screenshot on a tab that moved during the capture: ${text(shot)}`);
 
-  // act: input without a ref while the document is replaced (same origin) stops the batch.
+  // act: input without a ref while the document is replaced on the same origin goes on, as a key press
+  // that submits a form does.
   await waitForTabUrl(serviceWorker, tabA, `${otherSiteUrl}/perm-b`);
   await installDebuggerHook(serviceWorker, { method: 'Input.dispatchKeyEvent', tabId: tabA, action: 'reload' });
   const pressing = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ press: { key: 'Tab' } }, { press: { key: 'Tab' } }] });
   await decideNext('act');
   const pressed = await pressing;
   assert(await hookFired(serviceWorker), 'The act race was not exercised: the document was never replaced during the key press');
-  assert(pressed.isError === true && /Step 1 \(press\) failed: The page was replaced while the press step ran/.test(text(pressed)), `A key press into a replaced document was not stopped: ${text(pressed)}`);
-  assert(!/Step 2/.test(text(pressed)), `The batch went on after the page was replaced: ${text(pressed)}`);
-  console.log(`act press while the document was replaced: ${text(pressed).split('\n')[0]}`);
+  assert(pressed.isError !== true && !/failed/.test(text(pressed)), `A key press into a same-origin replacement was stopped: ${text(pressed)}`);
+  assert(text(pressed).includes('Permission B'), `The act reply does not show the replaced page: ${text(pressed)}`);
+  console.log(`act press while the document was replaced on the same origin: ran both steps, reply starts "${text(pressed).split('\n')[0]}"`);
+
+  // act: the same, but the new document is on another origin, so the batch stops before step 2.
+  await installDebuggerHook(serviceWorker, { method: 'Input.dispatchKeyEvent', tabId: tabA, action: 'navigate', url: `${siteUrl}/secret` });
+  const crossing = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ press: { key: 'Tab' } }, { press: { key: 'Tab' } }] });
+  await decideNext('act');
+  const crossed = await crossing;
+  assert(await hookFired(serviceWorker), 'The cross-origin act race was not exercised: the page never moved during the key press');
+  assert(crossed.isError === true && /Step 1 \(press\)/.test(text(crossed)), `A key press into another origin was not stopped: ${text(crossed)}`);
+  assert(!/Step 2/.test(text(crossed)), `The batch went on after the page moved to another origin: ${text(crossed)}`);
+  assert(!text(crossed).includes('SECRET-OF-SITE-A-INBOX'), `act showed a page of an unapproved origin: ${text(crossed)}`);
+  console.log(`act press while the page moved to another origin: ${text(crossed).split('\n')[0]}`);
   assert((await pendingPrompts(serviceWorker)).length === 0, 'The race checks left a prompt waiting');
 }
 
@@ -1131,6 +1145,17 @@ async function checkActionTools({ mcpClient, page }) {
     `The stale-ref error is unclear: ${text(stale)}`,
   );
   assert(text(stale).includes('# About'), `The failed act has no page diff after navigation: ${text(stale)}`);
+
+  // A key press without a ref that submits a form replaces the document on the same origin: that is not
+  // an error, and the reply shows the new page.
+  await page.goto(new URL('/search', page.url()).href);
+  await page.getByRole('heading', { name: 'Search' }).waitFor();
+  const searchRef = refFor(text(await call(mcpClient, 'read', { full: true })), 'textbox "Query"');
+  assert(searchRef, 'The search box ref is missing');
+  const submitted = await call(mcpClient, 'act', { steps: [{ fill: { ref: searchRef, value: 'refs' } }, { press: { key: 'Enter' } }] });
+  show('act (fill, press Enter submits the form)', submitted);
+  assert(submitted.isError !== true, `Enter that submits a form failed: ${text(submitted)}`);
+  assert(text(submitted).includes('# About') && page.url().includes('/about?q=refs'), `Enter did not submit the form: ${text(submitted)} at ${page.url()}`);
   console.log('Act, stale ref and run_js: all checks passed');
 }
 

@@ -1,6 +1,6 @@
 import type { ActAction, ActFailure, ActStep, PageActionResult } from '@t3-tab/protocol';
 
-import { documentEpoch, ensureAttached, sendCommand } from './cdp';
+import { documentEpoch, ensureAttached, navigationsSince, sendCommand } from './cdp';
 import { readPage } from './page';
 import { originOf } from './permissions';
 import type { StoredSession } from './sessions';
@@ -67,12 +67,10 @@ export async function actOnPage(
         await runElementStep(tabId, step, backendId, ref);
       } else {
         await runPageStep(tabId, step);
-        // Input without a ref goes to whatever document is current, so a replaced document is an error.
-        if (action !== 'wait' && documentEpoch(tabId) !== epoch) {
-          throw new Error(
-            `The page was replaced while the ${action} step ran, so the input may not have reached the approved page. Read the page again.`,
-          );
-        }
+        // Input without a ref goes to whatever document is current. A new document on the approved origin
+        // is fine (a key press that submits a form replaces it); one from another origin may have taken
+        // the input, so the batch stops.
+        if (action !== 'wait') assertSameOriginSince(tabId, epoch, expectedOrigin, action);
       }
     } catch (error) {
       failure = {
@@ -98,6 +96,16 @@ export async function actOnPage(
   activeSession = await reloadSession();
   const page = await readPage(activeSession, tabId, expectedOrigin, reloadSession);
   return failure === undefined ? page : { ...page, failure };
+}
+
+function assertSameOriginSince(tabId: number, since: number, expectedOrigin: string, action: ActAction): void {
+  const urls = navigationsSince(tabId, since);
+  const foreign = urls === undefined ? 'an unknown page' : urls.find((url) => originOf(url) !== expectedOrigin);
+  if (foreign === undefined) return;
+  const where = urls === undefined ? foreign : (originOf(foreign) ?? foreign);
+  throw new Error(
+    `The page changed to ${where} while the ${action} step ran, so the input may not have reached the approved page. Read the page again.`,
+  );
 }
 
 async function assertActAccess(session: StoredSession, tabId: number, expectedOrigin: string): Promise<void> {
