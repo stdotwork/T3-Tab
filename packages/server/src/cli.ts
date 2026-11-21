@@ -1,10 +1,25 @@
 #!/usr/bin/env node
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DEFAULT_DAEMON_PORT } from '@t3-tab/protocol';
 
 import { startDaemon } from './daemon.js';
-import { installNativeHost, type SupportedBrowser } from './install.js';
+import {
+  agentConfigPath,
+  agentInstallMethod,
+  agentName,
+  findAgents,
+  findBrowsers,
+  installAgent,
+  installNativeHost,
+  nativeHostPaths,
+  uninstallAgent,
+  uninstallNativeHosts,
+  type Agent,
+  type McpCommand,
+  type SupportedBrowser,
+} from './install.js';
 import { runMcpServer } from './mcp.js';
 import { runNativeHost } from './native-host.js';
 import { stateDirectory } from './state.js';
@@ -16,6 +31,12 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   switch (command) {
     case 'daemon':
       await runDaemon(rest);
+      return;
+    case 'install':
+      await runAgentInstall(rest, cliPath);
+      return;
+    case 'uninstall':
+      await runAgentUninstall(rest);
       return;
     case 'native-host':
       if (rest[0] === 'install') {
@@ -31,7 +52,7 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       await runMcpServer();
       return;
     default:
-      throw new UsageError('Usage: t3-tab <daemon|native-host|mcp>');
+      throw new UsageError('Usage: t3-tab <install|uninstall|daemon|native-host|mcp>');
   }
 }
 
@@ -49,6 +70,111 @@ async function runDaemon(args: string[]): Promise<void> {
   };
   process.once('SIGINT', () => void stop());
   process.once('SIGTERM', () => void stop());
+}
+
+interface AgentInstallArguments {
+  agents: Agent[] | undefined;
+  browser: SupportedBrowser | undefined;
+  print: boolean;
+}
+
+async function runAgentInstall(args: string[], cliPath: string): Promise<void> {
+  const parsed = parseAgentInstallArguments(args);
+  const home = homeDirectory();
+  const server: McpCommand = { command: process.execPath, args: [resolve(cliPath), 'mcp'] };
+  const agents = parsed.agents ?? (await findAgents(home, process.env));
+  const browsers = parsed.browser === undefined ? await findBrowsers(home, process.env) : [parsed.browser];
+
+  if (parsed.print) {
+    if (agents.length === 0) process.stdout.write('No Claude Code or Codex installation found.\n');
+    for (const agent of agents) {
+      const method = await agentInstallMethod(agent, process.env);
+      const configPath = agentConfigPath(agent, home);
+      const action = method === 'cli' ? `${agent} mcp add` : 'file edit';
+      process.stdout.write(
+        `${agentName(agent)}: would register t3-tab in ${configPath} with ${action} (${server.command} ${server.args.join(' ')})\n`,
+      );
+    }
+    if (browsers.length === 0) process.stdout.write('No Chromium, Chrome or Brave installation found.\n');
+    for (const browser of browsers) {
+      process.stdout.write(
+        `Native host (${browser}): would install ${nativeHostPaths(browser, home).manifestPath}\n`,
+      );
+    }
+    return;
+  }
+
+  for (const agent of agents) {
+    const result = await installAgent({ agent, home, env: process.env, server });
+    const action = result.method === 'cli' ? `${agent} mcp add` : 'file edit';
+    process.stdout.write(`${agentName(agent)}: registered t3-tab in ${result.configPath} with ${action}\n`);
+  }
+  for (const browser of browsers) {
+    const manifestPath = await installNativeHost({ browser, home, cliPath });
+    process.stdout.write(`Native host (${browser}): installed ${manifestPath}\n`);
+  }
+  if (agents.length === 0 && browsers.length === 0) {
+    process.stdout.write('No Claude Code, Codex or supported browser installation found.\n');
+  }
+}
+
+async function runAgentUninstall(args: string[]): Promise<void> {
+  const selectedAgents = parseAgentUninstallArguments(args);
+  const home = homeDirectory();
+  const agents = selectedAgents ?? (await findAgents(home, process.env));
+
+  for (const agent of agents) {
+    const result = await uninstallAgent({ agent, home, env: process.env });
+    const detail = result.removed ? 'removed t3-tab from' : 'no t3-tab entry in';
+    const action = result.method === 'cli' ? `${agent} mcp remove` : 'file edit';
+    process.stdout.write(`${agentName(agent)}: ${detail} ${result.configPath} with ${action}\n`);
+  }
+  const removedHosts = await uninstallNativeHosts(home);
+  if (removedHosts.length === 0) process.stdout.write('Native host: no installed manifests found.\n');
+  else process.stdout.write(`Native host: removed ${removedHosts.join(', ')}\n`);
+}
+
+function parseAgentInstallArguments(args: string[]): AgentInstallArguments {
+  const agents = new Set<Agent>();
+  let browser: SupportedBrowser | undefined;
+  let print = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === '--claude') agents.add('claude');
+    else if (argument === '--codex') agents.add('codex');
+    else if (argument === '--print') print = true;
+    else if (argument === '--browser') {
+      const value = args[index + 1];
+      if (!isSupportedBrowser(value)) throw new UsageError('--browser must be chromium, chrome or brave');
+      browser = value;
+      index += 1;
+    } else if (argument?.startsWith('--browser=')) {
+      const value = argument.slice('--browser='.length);
+      if (!isSupportedBrowser(value)) throw new UsageError('--browser must be chromium, chrome or brave');
+      browser = value;
+    } else {
+      throw new UsageError(
+        'Usage: t3-tab install [--claude] [--codex] [--browser chromium|chrome|brave] [--print]',
+      );
+    }
+  }
+  return { agents: agents.size === 0 ? undefined : [...agents], browser, print };
+}
+
+function parseAgentUninstallArguments(args: string[]): Agent[] | undefined {
+  const agents = new Set<Agent>();
+  for (const argument of args) {
+    if (argument === '--claude') agents.add('claude');
+    else if (argument === '--codex') agents.add('codex');
+    else throw new UsageError('Usage: t3-tab uninstall [--claude] [--codex]');
+  }
+  return agents.size === 0 ? undefined : [...agents];
+}
+
+function homeDirectory(): string {
+  const home = process.env.HOME?.trim();
+  if (home === undefined || home === '') throw new Error('HOME is not set');
+  return home;
 }
 
 async function runInstall(args: string[]): Promise<void> {

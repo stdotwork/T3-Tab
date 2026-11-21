@@ -1,0 +1,16 @@
+{
+  "projects": {
+    "/work": {
+      "allowedTools": [
+        "Read"
+      ]
+    }
+  },
+  "mcpServers": {
+    "other": {
+      "type": "stdio",
+      "command": "other-mcp",
+      "args": []
+    }
+  }
+}

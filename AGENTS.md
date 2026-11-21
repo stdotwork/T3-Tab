@@ -35,20 +35,37 @@ links and a section that appears on a click): `tabs`, `read` with its diff, `fin
 `screenshot`, `act` and `run_js`. It also checks session tab groups, tab sharing, per-site allow/decline
 prompts, restricted pages, password redaction and a regex timeout. The action run fills and submits the
 test form, checks a stale ref after navigation, evaluates page JavaScript and waits past the extension
-worker's idle timeout before another `status` call. It prints each reply and its size. Every process it
-starts uses a temporary HOME and XDG directories.
+worker's idle timeout before another `status` call. It checks the install command through direct config
+edits, `--print`, a second install, uninstall and, when both agent CLIs are available, their CLI path and
+`mcp list` output. It prints each reply and its size. Every process it starts uses a temporary HOME and XDG
+directories, and every browser is headless.
 
 ## CLI
 
 Build before running the CLI:
 
 ```sh
+pnpm exec t3-tab install
+pnpm exec t3-tab install --claude --codex --browser chromium
+pnpm exec t3-tab install --print
+pnpm exec t3-tab uninstall
+pnpm exec t3-tab uninstall --claude --codex
 pnpm exec t3-tab daemon
 pnpm exec t3-tab native-host install --browser chromium
 pnpm exec t3-tab native-host install --browser chrome
 pnpm exec t3-tab native-host install --browser brave
 pnpm exec t3-tab mcp
 ```
+
+`install` registers `t3-tab mcp` as a user-level stdio MCP server for Claude Code in `~/.claude.json` and
+Codex in `~/.codex/config.toml`. When neither `--claude` nor `--codex` is given, it registers every agent
+whose CLI or config it finds. When `--browser` is omitted, it installs the native host for every Chromium,
+Chrome or Brave installation it finds. It uses `claude mcp add` or `codex mcp add` when that CLI is on PATH,
+and otherwise edits the config file directly. The registered command uses absolute paths to the running Node
+binary and built `dist/cli.js`, so it works from any working directory. Running `install` again leaves one
+entry. `install --print` describes the same changes without writing anything. `uninstall` removes the
+`t3-tab` entries, plus the native host manifests and launcher; `--claude` and `--codex` limit it to those
+agents.
 
 `daemon` listens on `127.0.0.1:8765` by default. Set `T3_TAB_PORT` or pass `--port <number>` to change the
 port. Its random token is stored in `$XDG_STATE_HOME/t3-tab/daemon.json` with mode `0600`, falling back to
