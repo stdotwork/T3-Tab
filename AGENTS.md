@@ -103,8 +103,8 @@ approvals; `read` and `screenshot` then show a `read` prompt, while `act` and `r
 action. `tabs list`, `switch` and `open` show only the origin and `[needs approval]` for a member tab whose
 current origin the session has not approved (and the site is not set to `read` or `allow`). A tab opened
 from a tab of a session, through `chrome.webNavigation.onCreatedNavigationTarget`, joins that session's
-group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own,
-is left alone. A prompt names its tab id and title; it can time out or be declined, and one session may
+group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own
+(shared or not), is left alone. A prompt names its tab id and title; it can time out or be declined, and one session may
 have at most three waiting prompts. The side panel keeps prompt rows stable and disables a prompt's buttons
 for 500 ms when it appears and again whenever a row is removed or inserted above another.
 

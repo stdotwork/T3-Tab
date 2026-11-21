@@ -128,8 +128,8 @@ async function getTab(tabId: number): Promise<chrome.tabs.Tab> {
 
 /**
  * A tab a page opened is kept in its opener's session group, so the session that works in the opener can
- * use it. Only the opener decides: a tab opened from the owner's own tabs, or by a session other than the
- * opener's, is left alone. The tab carries no origin approval, so its first read still prompts.
+ * use it. Only the opener's group decides: a tab opened from the owner's own tabs, shared ones included, is
+ * left alone. The tab carries no origin approval, so its first read still prompts.
  */
 export async function adoptPopupTab(tabId: number, sourceTabId: number, store: SessionStore): Promise<void> {
   try {
