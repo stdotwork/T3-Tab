@@ -5,8 +5,35 @@ Codex, T3 Code threads and any MCP client), and adds a side panel that starts an
 sessions, through T3 Code or directly. It never runs its own agent loop: the agent the user picks does the
 work, with the browser tools injected.
 
-The repo is at its start: no code yet. The first PR that adds code also adds its layout, build and test
-commands and CI to this file.
+## Layout
+
+- `packages/extension` — the WXT Manifest V3 Chromium extension, including its service worker and side panel.
+- `packages/server` — the Node.js/TypeScript background program.
+- `packages/protocol` — the versioned types shared by the extension and background program.
+- `e2e/` — the Playwright end-to-end harness.
+- `.github/workflows/ci.yml` — the pull request and `main` checks.
+
+## Commands
+
+Run these from the repository root:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm build
+pnpm e2e
+```
+
+`pnpm build` writes the Chromium extension to `packages/extension/.output/chrome-mv3`.
+`pnpm e2e` launches Playwright's Chromium with that built extension.
+
+## CI
+
+| Workflow | Runs on | What it does |
+| --- | --- | --- |
+| `.github/workflows/ci.yml` | Pull requests and pushes to `main` | Installs Node.js 26.13.1 and pnpm 12.21.0 with a frozen lockfile, then runs type check, lint, unit tests, build and the Chromium end-to-end harness. |
 
 ## Reference projects
 
