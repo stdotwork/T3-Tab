@@ -8,7 +8,7 @@ import { PassThrough, Writable } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 
 import type { AgentConversation } from '@t3-tab/protocol';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { claimNote, claudeArgs, t3SendArgs, t3ShowArgs, t3StartArgs } from '../src/agents/commands.js';
 import { Agents, parseStartParams, run, stopProcess, type Spawn } from '../src/agents/conversations.js';
@@ -624,6 +624,73 @@ describe('shutting down', () => {
     await expect(make2(agents).start({ via: 't3', message: 'x', claim: CLAIM, project: '/p' })).rejects.toThrow('shutting down');
     await expect(make2(agents).start({ via: 'claude', message: 'x', claim: CLAIM })).rejects.toThrow('shutting down');
     expect(calls).toEqual([]);
+  });
+
+  it('does not arm a poll timer when t3 thread start finishes during shutdown', async () => {
+    await install('t3');
+    let release: () => void = () => undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    handler = () => ({ stdout: '{"threadId":"th1","runId":"r1"}', code: 0, hold });
+    const pollMs = 12_345;
+    agents = new Agents({
+      env: { PATH: bin, HOME: home },
+      server: { command: 'node', args: ['/x/cli.js', 'mcp'] },
+      spawn: fakeSpawn,
+      pollMs,
+    });
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const starting = agents
+        .start({ via: 't3', message: 'Do it', claim: CLAIM, project: '/proj' })
+        .then(() => undefined, (error: unknown) => error);
+      await waitFor(() => calls.length === 1, 't3 thread start');
+      const closing = agents.close();
+      release();
+      await closing;
+      expect(await starting).toBeInstanceOf(Error);
+      expect(((await starting) as Error).message).toContain('shutting down');
+      expect(agents.list()).toEqual([]);
+      expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === pollMs)).toBe(false);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it('does not arm a poll timer when t3 thread send finishes during shutdown', async () => {
+    await install('t3');
+    let release: () => void = () => undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    handler = (call) => {
+      if (call.args[1] === 'start') return { stdout: '{"threadId":"th1","runId":"r1"}' };
+      if (call.args[1] === 'send') return { stdout: '{"threadId":"th1","runId":"r2"}', code: 0, hold };
+      return { stdout: showJson('idle', 'r1', [{ role: 'assistant', text: 'done' }]) };
+    };
+    const pollMs = 23;
+    agents = new Agents({
+      env: { PATH: bin, HOME: home },
+      server: { command: 'node', args: ['/x/cli.js', 'mcp'] },
+      spawn: fakeSpawn,
+      pollMs,
+    });
+    const started = await agents.start({ via: 't3', message: 'Do it', claim: CLAIM, project: '/proj' });
+    await waitFor(() => view(started.id).status === 'idle', 'first idle');
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const sending = agents.send(started.id, 'more').then(() => undefined, (error: unknown) => error);
+      await waitFor(() => calls.some((call) => call.args[1] === 'send'), 't3 thread send');
+      const closing = agents.close();
+      release();
+      await closing;
+      expect(await sending).toBeInstanceOf(Error);
+      expect(((await sending) as Error).message).toContain('shutting down');
+      expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === pollMs)).toBe(false);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
   });
 });
 

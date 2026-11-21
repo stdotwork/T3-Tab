@@ -156,6 +156,7 @@ export class Agents {
       const threadId = conversation.view.threadId ?? '';
       const t3 = await this.requireT3();
       const result = await this.runT3(t3, t3SendArgs(threadId), text);
+      if (this.closed) throw new Error(SHUTTING_DOWN);
       const sent = parseT3Launch(result.stdout);
       this.push(conversation, { role: 'user', text });
       conversation.view.status = 'running';
@@ -180,7 +181,10 @@ export class Agents {
     await Promise.allSettled(this.setups);
     const stopping: Array<Promise<void>> = [...this.commands].map(async (child) => await stopProcess(child, this.graceMs));
     for (const conversation of this.conversations.values()) {
-      if (conversation.poll !== undefined) clearTimeout(conversation.poll);
+      if (conversation.poll !== undefined) {
+        clearTimeout(conversation.poll);
+        delete conversation.poll;
+      }
       if (conversation.child === undefined) continue;
       conversation.stopReason = 'T3-Tab stopped while this run was working.';
       stopping.push(stopProcess(conversation.child, this.graceMs));
@@ -219,6 +223,7 @@ export class Agents {
       t3StartArgs({ project: params.project, provider: params.provider, model: params.model }),
       `${params.message}${claimNote(params.claim)}`,
     );
+    if (this.closed) throw new Error(SHUTTING_DOWN);
     const launch = parseT3Launch(result.stdout);
     const conversation = this.add(params, { threadId: launch.threadId });
     this.push(conversation, { role: 'user', text: params.message });
@@ -342,7 +347,11 @@ export class Agents {
   }
 
   private watchT3(conversation: Conversation, runId: string | undefined): void {
-    if (conversation.poll !== undefined) clearTimeout(conversation.poll);
+    if (conversation.poll !== undefined) {
+      clearTimeout(conversation.poll);
+      delete conversation.poll;
+    }
+    if (this.closed) return;
     if (runId === undefined) delete conversation.expectedRun;
     else conversation.expectedRun = runId;
     conversation.pollFailures = 0;

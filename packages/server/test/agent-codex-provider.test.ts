@@ -7,6 +7,7 @@ import { PassThrough, Writable } from 'node:stream';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { tomlValue } from '../src/agents/codex-provider.js';
 import { Agents } from '../src/agents/conversations.js';
 
 const CLAIM = 'abcdefghijklmnop1234';
@@ -238,8 +239,21 @@ describe('a Codex custom provider', () => {
 
   it.each([
     ['a secret query parameter', `base_url = "https://llm.corp.test/v1"\n[model_providers.corp.query_params]\napi-key = "${TOKEN}"\n`],
+    ['a non-string query parameter value', `base_url = "https://llm.corp.test/v1"\n[model_providers.corp.query_params]\nregion = { nested = "${TOKEN}" }\n`],
+    ['a numeric query parameter value', `base_url = "https://llm.corp.test/v1"\n[model_providers.corp.query_params]\nversion = 2\n`],
+    ['a sig query parameter', `base_url = "https://llm.corp.test/v1"\n[model_providers.corp.query_params]\nsig = "${TOKEN}"\n`],
+    ['a code query parameter', `base_url = "https://llm.corp.test/v1"\n[model_providers.corp.query_params]\nCode = "${TOKEN}"\n`],
     ['a password in the address', `base_url = "https://user:${TOKEN}@llm.corp.test/v1"\n`],
     ['a key in the address', `base_url = "https://llm.corp.test/v1?api_key=${TOKEN}"\n`],
+    ['a sig query parameter in the address', `base_url = "https://llm.corp.test/v1?SIG=${TOKEN}"\n`],
+    ['a code query parameter in the address', `base_url = "https://llm.corp.test/v1?code=${TOKEN}"\n`],
+    ['a hash fragment in the address', `base_url = "https://llm.corp.test/v1#access=${TOKEN}"\n`],
+    ['a non-table http_headers', `base_url = "https://llm.corp.test/v1"\nhttp_headers = ["Authorization: Bearer ${TOKEN}"]\n`],
+    ['a non-table env_http_headers', `base_url = "https://llm.corp.test/v1"\nenv_http_headers = ["Authorization: Bearer ${TOKEN}"]\n`],
+    ['a nested table in env_http_headers', `base_url = "https://llm.corp.test/v1"\n[model_providers.corp.env_http_headers]\nX-Auth = { token = "${TOKEN}" }\n`],
+    ['an array in env_http_headers', `base_url = "https://llm.corp.test/v1"\n[model_providers.corp.env_http_headers]\nX-Auth = ["${TOKEN}"]\n`],
+    ['a number in env_http_headers', `base_url = "https://llm.corp.test/v1"\n[model_providers.corp.env_http_headers]\nX-Auth = 42\n`],
+    ['a non-string env_key', `base_url = "https://llm.corp.test/v1"\nenv_key = { token = "${TOKEN}" }\n`],
     ['a sign-in command', `base_url = "https://llm.corp.test/v1"\n[model_providers.corp.auth]\ncommand = "/usr/bin/get-token"\nargs = ["${TOKEN}"]\n`],
   ])('refuses to start rather than put %s on the command line', async (_name, table) => {
     await config(`model_provider = "corp"\n[model_providers.corp]\n${table}`);
@@ -247,7 +261,57 @@ describe('a Codex custom provider', () => {
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toContain('corp');
     expect((failure as Error).message).not.toContain(TOKEN);
+    expect((failure as Error).message).not.toContain('42');
     expect(spawned).toEqual([]);
+  });
+
+  it('uses the bearer token route when env_key is empty and omits the empty env_key', async () => {
+    await config(
+      `model_provider = "corp"\n[model_providers.corp]\nbase_url = "https://llm.corp.test/v1"\nenv_key = ""\nexperimental_bearer_token = "${TOKEN}"\n`,
+    );
+    const started = await make().start({ via: 'codex', message: 'Hi', claim: CLAIM });
+    await idle(started.id);
+    const call = spawned[0] as Spawned;
+    const given = settings(call.args);
+    expect(given).toContain(`model_providers.corp.env_key="${TOKEN_VARIABLE}"`);
+    expect(given).not.toContain('model_providers.corp.env_key=""');
+    expect(call.args.join('\n')).not.toContain(TOKEN);
+    expect(call.env[TOKEN_VARIABLE]).toBe(TOKEN);
+  });
+
+  it('builds env_http_headers with a null-prototype map so __proto__ keys are kept safely', async () => {
+    await config(
+      `model_provider = "corp"\n[model_providers.corp]\nbase_url = "https://llm.corp.test/v1"\n[model_providers.corp.env_http_headers]\n"__proto__" = "PROTO_VAR"\nX-Ok = "OK_VAR"\n`,
+    );
+    const started = await make().start({ via: 'codex', message: 'Hi', claim: CLAIM });
+    await idle(started.id);
+    const call = spawned[0] as Spawned;
+    const headers = settings(call.args).find((value) => value.startsWith('model_providers.corp.env_http_headers='));
+    expect(headers).toBe('model_providers.corp.env_http_headers={ "__proto__" = "PROTO_VAR", "X-Ok" = "OK_VAR" }');
+  });
+
+  it('parses a config with an unrelated integer outside the safe JS range', async () => {
+    await config(`other_id = 9007199254740993\n${CUSTOM_CONFIG}`);
+    const started = await make().start({ via: 'codex', message: 'Hi', claim: CLAIM });
+    await idle(started.id);
+    const call = spawned[0] as Spawned;
+    expect(settings(call.args)).toContain('model_provider="corp"');
+    expect(call.env[TOKEN_VARIABLE]).toBe(TOKEN);
+  });
+
+  it('allows benign query parameters whose names only contain sig or code as substrings', async () => {
+    await config(
+      `model_provider = "corp"\n[model_providers.corp]\nbase_url = "https://llm.corp.test/v1?design=v2&unicode=utf8"\n[model_providers.corp.query_params]\nencode = "utf8"\n`,
+    );
+    const started = await make().start({ via: 'codex', message: 'Hi', claim: CLAIM });
+    await idle(started.id);
+    const given = settings((spawned[0] as Spawned).args);
+    expect(given).toContain('model_providers.corp.base_url="https://llm.corp.test/v1?design=v2&unicode=utf8"');
+    expect(given).toContain('model_providers.corp.query_params={ "encode" = "utf8" }');
+  });
+
+  it('escapes control characters in inline-table keys the same way as string values', () => {
+    expect(tomlValue({ 'a\u007fb': 'c\u007fd' })).toBe('{ "a\\u007Fb" = "c\\u007Fd" }');
   });
 
   it('refuses a config it cannot parse, without repeating its content', async () => {
