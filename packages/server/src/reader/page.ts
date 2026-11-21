@@ -16,6 +16,8 @@ const MAX_URL = 200;
 export interface ReadOptions {
   all?: boolean | undefined;
   find?: string | undefined;
+  /** Opt in to a regular expression for find. The default is literal text. */
+  regex?: boolean | undefined;
   ref?: string | undefined;
   depth?: number | undefined;
   full?: boolean | undefined;
@@ -69,7 +71,12 @@ export class TabState {
  * The reply to a `read`: a header line, then the page text on the first read of a view, a line diff
  * on later ones, or only the matching lines for a `find`.
  */
-export function formatRead(state: TabState, session: string, page: PageReadResult, options: ReadOptions): string {
+export async function formatRead(
+  state: TabState,
+  session: string,
+  page: PageReadResult,
+  options: ReadOptions,
+): Promise<string> {
   state.syncEpoch(page.epoch);
   const header = `tab ${page.tab}: ${truncate(page.title, MAX_TITLE)} — ${truncate(page.url, MAX_URL)}`;
 
@@ -95,7 +102,8 @@ export function formatRead(state: TabState, session: string, page: PageReadResul
   }
 
   if (find !== undefined) {
-    return limit(`${header}\n${findLines(lines, find).text}`);
+    const found = await findLines(lines, find, { regex: options.regex });
+    return limit(`${header}\n${found.text}`);
   }
 
   const text = lines.join('\n');

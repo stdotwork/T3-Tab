@@ -1,16 +1,14 @@
-import { randomUUID } from 'node:crypto';
-
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { BrowserStatus, ToolContent, ToolMethod } from '@t3-tab/protocol';
 
-import { callTool, getStatus } from './client.js';
+import { DaemonSession, getStatus } from './client.js';
 import { actShape, readShape, runJsShape, screenshotShape, tabsShape } from './tool-schemas.js';
 
 export async function runMcpServer(): Promise<void> {
   const server = new McpServer({ name: 't3-tab', version: '0.1.0' });
-  // This process is one agent's session: the daemon keeps its read baselines apart from other agents'.
-  const session = randomUUID();
+  // This process is one agent's session and owns its tabs and read baselines.
+  const control = new DaemonSession();
 
   server.registerTool(
     'status',
@@ -26,7 +24,7 @@ export async function runMcpServer(): Promise<void> {
 
   const browserTool = (method: ToolMethod) => async (params: Record<string, unknown>) => {
     try {
-      return { content: await callTool(method, params, session) satisfies ToolContent[] };
+      return { content: await control.callTool(method, params) satisfies ToolContent[] };
     } catch (error) {
       return failure(error);
     }
@@ -64,6 +62,10 @@ export async function runMcpServer(): Promise<void> {
     },
     browserTool('run_js'),
   );
+  server.server.oninitialized = () => {
+    control.setClientName(server.server.getClientVersion()?.name);
+    void control.register().catch(() => undefined);
+  };
   await server.connect(new StdioServerTransport());
 }
 

@@ -37,12 +37,26 @@ export interface BrowserTabClosedMessage {
   tabId: number;
 }
 
+export interface ToolSession {
+  /** Issued by the daemon and bound to the control connection that registered it. */
+  id: string;
+  /** The MCP client's name plus a short id, shown in the tab group and side panel. */
+  name: string;
+}
+
 export interface TabInfo {
   id: number;
   title: string;
   url: string;
   /** True for the tab the browser has in front: the default target of `read` and `screenshot`. */
   active: boolean;
+  /** Chromium's tab group id, when the tab is grouped. */
+  groupId?: number;
+  /**
+   * Set when the session has not approved the origin the tab now shows: `title` is empty and `url` is
+   * only that origin, until a read, an action or the owner approves it.
+   */
+  needsApproval?: true;
 }
 
 /** One accessibility node, trimmed in the extension to what the page reader needs. */
@@ -139,6 +153,8 @@ export interface ScreenshotResult {
 
 /** Requests the background program sends to the extension, with their params and results. */
 export interface BrowserMethods {
+  'session.register': { params: Record<string, never>; result: { registered: true } };
+  'session.unregister': { params: Record<string, never>; result: { unregistered: true } };
   'tabs.list': { params: Record<string, never>; result: { tabs: TabInfo[] } };
   'tabs.open': { params: { url: string }; result: { tab: TabInfo } };
   'tabs.switch': { params: { tab: number }; result: { tab: TabInfo } };
@@ -160,6 +176,7 @@ export type BrowserRequestMessage = {
     protocolVersion: typeof PROTOCOL_VERSION;
     requestId: string;
     method: M;
+    session: ToolSession;
     params: BrowserMethods[M]['params'];
   };
 }[BrowserMethod];
@@ -196,6 +213,14 @@ export interface BrowserStatus {
   tabCount: number;
 }
 
+export interface ControlSessionRegisterRequest {
+  type: 'control.request';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  requestId: string;
+  method: 'session.register';
+  clientName: string;
+}
+
 export interface ControlStatusRequest {
   type: 'control.request';
   protocolVersion: typeof PROTOCOL_VERSION;
@@ -205,13 +230,13 @@ export interface ControlStatusRequest {
 
 export type ToolMethod = 'tabs' | 'read' | 'screenshot' | 'act' | 'run_js';
 
-/** A browser tool call from an MCP server. `session` is the calling MCP process: it scopes read diffs. */
+/** A browser tool call from an MCP server. `session` is the calling MCP process and owns its tabs. */
 export interface ControlToolRequest {
   type: 'control.request';
   protocolVersion: typeof PROTOCOL_VERSION;
   requestId: string;
   method: ToolMethod;
-  session: string;
+  session: ToolSession;
   params: Record<string, unknown>;
 }
 
@@ -247,8 +272,22 @@ export interface ControlErrorResponse {
   error: string;
 }
 
-export type ControlRequest = ControlStatusRequest | ControlToolRequest;
-export type ControlResponse = ControlStatusResponse | ControlToolResponse | ControlErrorResponse;
+export interface ControlSessionRegisterResponse {
+  type: 'control.response';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  requestId: string;
+  ok: true;
+  result: {
+    session: ToolSession;
+  };
+}
+
+export type ControlRequest = ControlSessionRegisterRequest | ControlStatusRequest | ControlToolRequest;
+export type ControlResponse =
+  | ControlSessionRegisterResponse
+  | ControlStatusResponse
+  | ControlToolResponse
+  | ControlErrorResponse;
 
 export interface NativeDaemonRequest {
   type: 'native.daemon';

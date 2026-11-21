@@ -1,7 +1,10 @@
 import type { ActAction, ActFailure, ActStep, PageActionResult } from '@t3-tab/protocol';
 
-import { documentEpoch, ensureAttached, sendCommand } from './cdp';
+import { documentEpoch, ensureAttached, navigationsSince, sendCommand } from './cdp';
 import { readPage } from './page';
+import { originOf } from './permissions';
+import type { StoredSession } from './sessions';
+import { resolveSessionTab } from './tabs';
 import { settlePage } from './settle';
 
 const MAX_WAIT_MS = 10_000;
@@ -35,21 +38,27 @@ interface KeyStroke {
 
 /** Runs one ordered batch through CDP, settles after every step, and returns the resulting page read. */
 export async function actOnPage(
+  session: StoredSession,
   tabId: number,
   steps: ActStep[],
   backendIds: Array<number | null>,
   expectedEpoch: number,
+  expectedOrigin: string,
+  reloadSession: () => Promise<StoredSession>,
 ): Promise<PageActionResult> {
   await ensureAttached(tabId);
   await sendCommand(tabId, 'DOM.enable');
   let epoch = documentEpoch(tabId);
   let failure: ActFailure | undefined;
+  let activeSession = session;
 
   for (let index = 0; index < steps.length; index += 1) {
     const step = steps[index];
     if (step === undefined) continue;
     const action = actionOf(step);
     try {
+      activeSession = await reloadSession();
+      await assertActAccess(activeSession, tabId, expectedOrigin);
       const ref = refOf(step);
       if (ref !== undefined) {
         if (epoch !== expectedEpoch) throw staleRef(ref, `document epoch ${expectedEpoch} -> ${epoch}`);
@@ -59,6 +68,10 @@ export async function actOnPage(
       } else {
         await runPageStep(tabId, step);
       }
+      // CDP input goes to whatever document is current, with or without a ref. A new document on the
+      // approved origin is fine (a key press that submits a form replaces it); one from another origin
+      // may have taken the input, so the batch stops.
+      if (action !== 'wait') assertSameOriginSince(tabId, epoch, expectedOrigin, action);
     } catch (error) {
       failure = {
         step: index + 1,
@@ -68,12 +81,50 @@ export async function actOnPage(
     }
 
     await settlePage(tabId);
+    // Again after settling: a document from another origin that came and went (its navigation reported
+    // after the input returned) ends on the approved origin, which the check below would not see.
+    if (failure === undefined && action !== 'wait') {
+      try {
+        assertSameOriginSince(tabId, epoch, expectedOrigin, action);
+      } catch (error) {
+        failure = { step: index + 1, action, error: messageOf(error) };
+      }
+    }
     epoch = documentEpoch(tabId);
+    try {
+      activeSession = await reloadSession();
+      await assertActAccess(activeSession, tabId, expectedOrigin);
+    } catch (error) {
+      throw new Error(
+        `Step ${index + 1} (${action}) left the page outside the approved session origin: ${messageOf(error)}`,
+      );
+    }
     if (failure !== undefined) break;
   }
 
-  const page = await readPage(tabId);
+  activeSession = await reloadSession();
+  const page = await readPage(activeSession, tabId, expectedOrigin, reloadSession);
   return failure === undefined ? page : { ...page, failure };
+}
+
+function assertSameOriginSince(tabId: number, since: number, expectedOrigin: string, action: ActAction): void {
+  const urls = navigationsSince(tabId, since);
+  const foreign = urls === undefined ? 'an unknown page' : urls.find((url) => originOf(url) !== expectedOrigin);
+  if (foreign === undefined) return;
+  const where = urls === undefined ? foreign : (originOf(foreign) ?? foreign);
+  throw new Error(
+    `The page changed to ${where} during the ${action} step, so the input may not have reached the approved page. Read the page again.`,
+  );
+}
+
+async function assertActAccess(session: StoredSession, tabId: number, expectedOrigin: string): Promise<void> {
+  const tab = await resolveSessionTab(session, tabId);
+  const actual = originOf(tab.url ?? tab.pendingUrl ?? '');
+  if (actual !== expectedOrigin) {
+    throw new Error(
+      `The page moved from ${expectedOrigin} to ${actual ?? 'an unknown origin'}. Read the new page and approve it before acting there.`,
+    );
+  }
 }
 
 async function runElementStep(tabId: number, step: ActStep, backendId: number, ref: string): Promise<void> {

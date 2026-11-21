@@ -192,6 +192,7 @@ function classify(node: AxNode, all: boolean): Kind {
 
 function elementLine(node: AxNode, kind: Kind, name: string, refs: RefTable): string {
   const role = node.role.toLowerCase();
+  const passwordField = node.props?.password === true || node.props?.password === 'true';
   if (kind === 'heading') {
     const level = node.props?.level;
     const marks = typeof level === 'number' ? Math.min(Math.max(Math.trunc(level), 1), 6) : 2;
@@ -203,7 +204,9 @@ function elementLine(node: AxNode, kind: Kind, name: string, refs: RefTable): st
   }
   parts.push(role === 'image' ? 'img' : role);
   if (name !== '') parts.push(JSON.stringify(truncate(name, MAX_NAME)));
-  if (VALUE_ROLES.has(role) && node.value !== undefined && node.value !== '') {
+  if (passwordField) {
+    parts.push('value=<redacted>');
+  } else if (VALUE_ROLES.has(role) && node.value !== undefined && node.value !== '') {
     parts.push(`value=${JSON.stringify(truncate(normalize(node.value), MAX_VALUE))}`);
   }
   const flags = flagList(node.props);

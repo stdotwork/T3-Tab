@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 
@@ -9,6 +9,7 @@ import {
   type BrowserPongMessage,
   type ControlResponse,
   type ToolMethod,
+  type ToolSession,
 } from '@t3-tab/protocol';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
@@ -40,6 +41,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const token = randomBytes(32).toString('base64url');
   const roles = new WeakMap<IncomingMessage, ConnectionRole>();
   const browsers = new Map<WebSocket, BrowserConnection>();
+  const sessions = new Map<WebSocket, ToolSession>();
   const httpServer = createServer((request, response) => handleHttpRequest(request, response, token));
   const sockets = {
     extension: new WebSocketServer({ noServer: true, maxPayload: MAX_BROWSER_MESSAGE_BYTES }),
@@ -82,11 +84,17 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
 
     webSocket.on('message', (data) => {
       if (role === 'extension') handleBrowserMessage(webSocket, browsers, data);
-      else if (role === 'control') handleControlMessage(webSocket, browsers, data);
+      else if (role === 'control') handleControlMessage(webSocket, browsers, sessions, data);
     });
     const forget = (): void => {
       browsers.delete(webSocket);
       connection?.close();
+      const session = sessions.get(webSocket);
+      sessions.delete(webSocket);
+      if (session !== undefined) {
+        const live = [...browsers.values()].at(-1);
+        if (live !== undefined) void live.request(session, 'session.unregister', {}).catch(() => undefined);
+      }
     };
     webSocket.on('close', forget);
     webSocket.on('error', forget);
@@ -145,7 +153,11 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse, t
   sendJson(response, 404, { error: 'Not found' });
 }
 
-function handleBrowserMessage(webSocket: WebSocket, browsers: Map<WebSocket, BrowserConnection>, data: RawData): void {
+function handleBrowserMessage(
+  webSocket: WebSocket,
+  browsers: Map<WebSocket, BrowserConnection>,
+  data: RawData,
+): void {
   const value = parseJson(data);
   if (!isBrowserMessage(value)) {
     webSocket.close(1008, 'Invalid protocol message');
@@ -181,7 +193,12 @@ function handleBrowserMessage(webSocket: WebSocket, browsers: Map<WebSocket, Bro
   }
 }
 
-function handleControlMessage(webSocket: WebSocket, browsers: Map<WebSocket, BrowserConnection>, data: RawData): void {
+function handleControlMessage(
+  webSocket: WebSocket,
+  browsers: Map<WebSocket, BrowserConnection>,
+  sessions: Map<WebSocket, ToolSession>,
+  data: RawData,
+): void {
   const value = parseJson(data);
   if (!isControlRequest(value)) {
     sendControlError(webSocket, null, 'Invalid control request');
@@ -189,6 +206,31 @@ function handleControlMessage(webSocket: WebSocket, browsers: Map<WebSocket, Bro
   }
 
   const request = value;
+  if (request.method === 'session.register') {
+    if (sessions.has(webSocket)) {
+      sendControlError(webSocket, request.requestId, 'Control connection is already registered');
+      return;
+    }
+    if (typeof request.clientName !== 'string' || request.clientName.length > 160) {
+      sendControlError(webSocket, request.requestId, 'Invalid client name');
+      return;
+    }
+    const id = randomUUID();
+    const session: ToolSession = { id, name: makeSessionName(request.clientName, id) };
+    sessions.set(webSocket, session);
+    const connection = [...browsers.values()].at(-1);
+    if (connection !== undefined) void connection.request(session, 'session.register', {}).catch(() => undefined);
+    webSocket.send(
+      JSON.stringify({
+        type: 'control.response',
+        protocolVersion: PROTOCOL_VERSION,
+        requestId: request.requestId,
+        ok: true,
+        result: { session },
+      } satisfies ControlResponse),
+    );
+    return;
+  }
   if (request.method === 'status') {
     const response: ControlResponse = {
       type: 'control.response',
@@ -204,17 +246,21 @@ function handleControlMessage(webSocket: WebSocket, browsers: Map<WebSocket, Bro
     sendControlError(webSocket, request.requestId, `Unknown method: ${String(request.method)}`);
     return;
   }
-  void answerTool(webSocket, browsers, request);
+  void answerTool(webSocket, browsers, sessions, request);
 }
 
 async function answerTool(
   webSocket: WebSocket,
   browsers: Map<WebSocket, BrowserConnection>,
+  sessions: Map<WebSocket, ToolSession>,
   request: { requestId: string; method: string; session?: unknown; params?: unknown },
 ): Promise<void> {
   try {
-    if (typeof request.session !== 'string' || request.session === '' || request.session.length > 128) {
-      throw new Error('Invalid session');
+    const registered = sessions.get(webSocket);
+    if (registered === undefined) throw new Error('Session is not registered on this control connection');
+    const claimed = validSession(request.session);
+    if (claimed === undefined || claimed.id !== registered.id) {
+      throw new Error('Session does not match this control connection');
     }
     if (typeof request.params !== 'object' || request.params === null || Array.isArray(request.params)) {
       throw new Error('Invalid params');
@@ -222,7 +268,9 @@ async function answerTool(
     // The browser that connected last is the live one: an older socket may not have been cleaned up yet.
     const connection = [...browsers.values()].at(-1);
     if (connection === undefined) throw new Error('No browser is connected. Open the browser with the T3-Tab extension.');
-    const content = await runTool(connection, request.session, request.method as ToolMethod, request.params as Record<string, unknown>);
+    // Register only the session making this request. A new extension connection never learns other sessions.
+    await connection.request(registered, 'session.register', {});
+    const content = await runTool(connection, registered, request.method as ToolMethod, request.params as Record<string, unknown>);
     if (webSocket.readyState !== WebSocket.OPEN) return;
     const response: ControlResponse = {
       type: 'control.response',
@@ -258,6 +306,7 @@ function isControlRequest(value: unknown): value is {
   protocolVersion: typeof PROTOCOL_VERSION;
   requestId: string;
   method: string;
+  clientName?: unknown;
   session?: unknown;
   params?: unknown;
 } {
@@ -269,6 +318,25 @@ function isControlRequest(value: unknown): value is {
     typeof candidate.requestId === 'string' &&
     typeof candidate.method === 'string'
   );
+}
+
+export function makeSessionName(clientName: string, id: string): string {
+  const visible = [...clientName]
+    .map((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code < 32 || code === 127 ? ' ' : character;
+    })
+    .join('');
+  const base = visible.replace(/\s+/g, ' ').trim().slice(0, 80) || 'MCP client';
+  return `${base} · ${id.replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'session'}`;
+}
+
+function validSession(value: unknown): ToolSession | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.id !== 'string' || candidate.id === '' || candidate.id.length > 128) return undefined;
+  if (typeof candidate.name !== 'string' || candidate.name === '' || candidate.name.length > 160) return undefined;
+  return { id: candidate.id, name: candidate.name };
 }
 
 function sendControlError(webSocket: WebSocket, requestId: string | null, error: string): void {

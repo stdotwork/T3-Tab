@@ -16,7 +16,8 @@ export const tabsShape = {
 export const readShape = {
   tab: tab.describe('Tab id; default the front tab.'),
   all: z.boolean().optional().describe('Include all text, not only interactive elements.'),
-  find: z.string().optional().describe('Case-insensitive regex; returns only matching lines.'),
+  find: z.string().max(200).optional().describe('Case-insensitive literal text; returns only matching lines.'),
+  regex: z.boolean().optional().describe('Treat find as a regular expression; bounded by a timeout.'),
   ref: z.string().optional().describe("Read only this element's subtree."),
   depth: z.number().min(0).optional().describe('Deepest nesting to show.'),
   full: z.boolean().optional().describe('Whole page, not only what changed.'),

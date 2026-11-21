@@ -7,6 +7,7 @@ import {
   type BrowserRequestMessage,
   type BrowserResponseMessage,
   type BrowserStatus,
+  type ToolSession,
 } from '@t3-tab/protocol';
 import type { WebSocket } from 'ws';
 
@@ -18,7 +19,11 @@ const MAX_TABS_HELD = 200;
 
 /** What the tool code needs from a browser: ask it something, and look up what is held for a tab. */
 export interface BrowserLink {
-  request<M extends BrowserMethod>(method: M, params: BrowserMethods[M]['params']): Promise<BrowserMethods[M]['result']>;
+  request<M extends BrowserMethod>(
+    session: ToolSession,
+    method: M,
+    params: BrowserMethods[M]['params'],
+  ): Promise<BrowserMethods[M]['result']>;
   tabState(tabId: number): TabState;
   forgetTab(tabId: number): void;
 }
@@ -39,7 +44,11 @@ export class BrowserConnection implements BrowserLink {
     this.status = { id: `pending-${randomUUID()}`, name: 'Chromium', tabCount: 0 };
   }
 
-  request<M extends BrowserMethod>(method: M, params: BrowserMethods[M]['params']): Promise<BrowserMethods[M]['result']> {
+  request<M extends BrowserMethod>(
+    session: ToolSession,
+    method: M,
+    params: BrowserMethods[M]['params'],
+  ): Promise<BrowserMethods[M]['result']> {
     if (this.socket.readyState !== this.socket.OPEN) return Promise.reject(new Error('The browser is not connected'));
     const requestId = randomUUID();
     const message = {
@@ -47,6 +56,7 @@ export class BrowserConnection implements BrowserLink {
       protocolVersion: PROTOCOL_VERSION,
       requestId,
       method,
+      session,
       params,
     } as BrowserRequestMessage;
     return new Promise((resolve, reject) => {
