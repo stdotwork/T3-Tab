@@ -62,12 +62,10 @@ describe('which session a popup belongs to', () => {
     expect(sessionForPopup([session, other], { id: 78 })).toBeUndefined();
   });
 
-  it('follows a shared opener only when exactly one session with a group has it', () => {
-    expect(sessionForPopup([session, other], { id: 22, groupId: -1 })?.id).toBe('session-a');
-    const alsoShared: StoredSession = { ...other, sharedTabIds: [22] };
-    expect(sessionForPopup([session, alsoShared], { id: 22, groupId: -1 })).toBeUndefined();
-    const noGroup: StoredSession = { id: 'session-c', name: 'Session C', sharedTabIds: [22], approvedOrigins: {}, currentOrigins: {} };
-    expect(sessionForPopup([noGroup], { id: 22, groupId: -1 })).toBeUndefined();
+  it('is nobody\'s when the opener is an owner tab shared with a session', () => {
+    expect(session.sharedTabIds).toContain(22);
+    expect(sessionForPopup([session, other], { id: 22, groupId: -1 })).toBeUndefined();
+    expect(sessionForPopup([session, other], { id: 22 })).toBeUndefined();
   });
 
   it('prefers the group of an opener that is also shared with another session', () => {
