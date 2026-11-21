@@ -67,11 +67,11 @@ export async function actOnPage(
         await runElementStep(tabId, step, backendId, ref);
       } else {
         await runPageStep(tabId, step);
-        // Input without a ref goes to whatever document is current. A new document on the approved origin
-        // is fine (a key press that submits a form replaces it); one from another origin may have taken
-        // the input, so the batch stops.
-        if (action !== 'wait') assertSameOriginSince(tabId, epoch, expectedOrigin, action);
       }
+      // CDP input goes to whatever document is current, with or without a ref. A new document on the
+      // approved origin is fine (a key press that submits a form replaces it); one from another origin
+      // may have taken the input, so the batch stops.
+      if (action !== 'wait') assertSameOriginSince(tabId, epoch, expectedOrigin, action);
     } catch (error) {
       failure = {
         step: index + 1,
@@ -81,6 +81,15 @@ export async function actOnPage(
     }
 
     await settlePage(tabId);
+    // Again after settling: a document from another origin that came and went (its navigation reported
+    // after the input returned) ends on the approved origin, which the check below would not see.
+    if (failure === undefined && action !== 'wait') {
+      try {
+        assertSameOriginSince(tabId, epoch, expectedOrigin, action);
+      } catch (error) {
+        failure = { step: index + 1, action, error: messageOf(error) };
+      }
+    }
     epoch = documentEpoch(tabId);
     try {
       activeSession = await reloadSession();
@@ -104,7 +113,7 @@ function assertSameOriginSince(tabId: number, since: number, expectedOrigin: str
   if (foreign === undefined) return;
   const where = urls === undefined ? foreign : (originOf(foreign) ?? foreign);
   throw new Error(
-    `The page changed to ${where} while the ${action} step ran, so the input may not have reached the approved page. Read the page again.`,
+    `The page changed to ${where} during the ${action} step, so the input may not have reached the approved page. Read the page again.`,
   );
 }
 

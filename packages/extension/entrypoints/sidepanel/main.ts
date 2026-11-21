@@ -50,7 +50,9 @@ function render(state: PanelState): void {
   const current = state.currentTab;
   children.push(
     heading('Current tab', 2),
-    text('p', current === undefined ? 'No current tab' : `${current.title || '(untitled)'}\n${current.url}`, 'muted'),
+    // One line each, whatever the page's title: a block that changed height would move the prompt rows below.
+    text('p', current === undefined ? 'No current tab' : current.title || '(untitled)', 'muted line'),
+    text('p', current?.url ?? '', 'muted line'),
   );
 
   children.push(heading('Waiting for you', 2));

@@ -120,8 +120,8 @@ approvals; `read` and `screenshot` then show a `read` prompt, while `act` and `r
 action. `tabs list`, `switch` and `open` show only the origin and `[needs approval]` for a member tab whose
 current origin the session has not approved (and the site is not set to `read` or `allow`). A tab opened
 from a tab of a session, through `chrome.webNavigation.onCreatedNavigationTarget`, joins that session's
-group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own,
-is left alone. A prompt names its tab id and title; it can time out or be declined, and one session may
+group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own
+(shared or not), is left alone. A prompt names its tab id and title; it can time out or be declined, and one session may
 have at most three waiting prompts. The side panel keeps prompt rows stable and disables a prompt's buttons
 for 500 ms when it appears and again whenever a row is removed or inserted above another.
 
@@ -131,8 +131,10 @@ context's origin as the approved one, pinned by `uniqueContextId` (`mainWorldCon
 `packages/extension/src/cdp.ts`), so a navigation that replaced the page makes the call fail; the
 agent's text is never part of a check. A screenshot records the document epoch and address before the
 capture and discards the image if either changed. An `act` batch stops if a document from another origin
-replaces the page during a `type`, `press` or `scroll` step that has no ref; a new document on the approved
-origin, such as the page a `press Enter` submits to, is fine. A tab that moves while approval is pending or between
+replaced the page during a step other than `wait`, checked after the step's input and again after it
+settles, so a page that came and went is caught too; a new document on the approved origin, such as the
+page a `press Enter` submits to, is fine. CDP input cannot be aimed at one document, so input that reached
+such a page is reported, not prevented. A tab that moves while approval is pending or between
 steps is refused until its new origin is approved. Site setting writes are serialised.
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
