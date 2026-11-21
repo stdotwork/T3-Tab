@@ -26,7 +26,7 @@ import {
   text,
   waitForBrowser,
 } from './harness.mjs';
-import { checkPanelSessions, installFakeAgents } from './panel-sessions.mjs';
+import { checkPanelSessions, installFakeAgents, startFakeT3Environment } from './panel-sessions.mjs';
 
 const execFileAsync = promisify(execFile);
 const home = await createHome();
@@ -120,12 +120,15 @@ let autoPromptSessionId;
 let permissionServiceWorker;
 let panelPage;
 let framesPage = () => '';
+let fakeT3;
 
 try {
   await requireBuild(home);
   await checkInstallCommand();
   // After the install check, which uses the real agent CLIs: from here on the daemon finds the fakes first.
   const fakes = await installFakeAgents(home);
+  // A fake T3 environment (OAuth and /mcp) recorded under the temporary T3 home; the real T3 is never reached.
+  fakeT3 = await startFakeT3Environment(home);
   // The install check's `mcp list` started a daemon without the fakes on its PATH; the next client starts another.
   await stopDaemon(statePath);
 
@@ -227,6 +230,8 @@ try {
     panelPage,
     siteUrl,
     fakes,
+    fakeT3,
+    home,
     mcpClient,
     screenshotPath: process.env.T3_TAB_E2E_SCREENSHOT,
   });
@@ -240,6 +245,7 @@ try {
   if (browserContext !== undefined) {
     await browserContext.close();
   }
+  if (fakeT3 !== undefined) await fakeT3.close();
   if (pageServer !== undefined) await closeServer(pageServer);
   if (pageServerB !== undefined) await closeServer(pageServerB);
   await stopDaemon(statePath);

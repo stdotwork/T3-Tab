@@ -1,6 +1,7 @@
 // Shared by the fake `t3`, `claude` and `codex` commands the end-to-end run puts on the daemon's PATH. They record
 // how they were called and drive the real `t3-tab mcp` server the way an agent would, then print what the real
 // CLI prints. They never start a model.
+import { createHash } from 'node:crypto';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -9,8 +10,10 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 export const fakeDir = process.env.T3_TAB_FAKE_DIR ?? '';
 
+/** Records the call. The environment is kept only as hashes of its values, so a check can tell whether a secret was in it. */
 export function record(name, args, input) {
-  appendFileSync(join(fakeDir, 'calls.jsonl'), `${JSON.stringify({ name, args, input })}\n`);
+  const envHashes = Object.values(process.env).map((value) => createHash('sha256').update(value ?? '').digest('hex'));
+  appendFileSync(join(fakeDir, 'calls.jsonl'), `${JSON.stringify({ name, args, input, envHashes })}\n`);
 }
 
 export function readStdin() {
