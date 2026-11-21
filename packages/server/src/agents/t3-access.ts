@@ -39,6 +39,8 @@ interface PendingSignIn {
   state: string;
   verifier: string;
   server: Server;
+  /** The value of `T3Access.signInGeneration` when this sign-in started. */
+  generation: number;
   timer: ReturnType<typeof setTimeout>;
   /** An answer with the right state arrived; the code is being traded. */
   answered: boolean;
@@ -67,6 +69,8 @@ export class T3Access {
   private failed: { resource: string; at: number; detail: string } | undefined;
   private readonly findEnvironment: NonNullable<T3AccessOptions['findEnvironment']>;
   private closed = false;
+  /** Raised by every cancel. A sign-in holding an older value was replaced or cancelled and keeps nothing. */
+  private signInGeneration = 0;
   /** Writes and deletes of the credential file run one at a time, so a sign-out never races a sign-in's write. */
   private fileQueue: Promise<unknown> = Promise.resolve();
 
@@ -132,11 +136,14 @@ export class T3Access {
   async signIn(): Promise<{ url: string }> {
     if (this.closed) throw new Error('T3-Tab is shutting down.');
     this.cancel();
+    const generation = this.signInGeneration;
     this.detail = undefined;
     const environment = await this.findEnvironment(this.options.env);
+    this.assertCurrent(generation);
     if ('problem' in environment) throw new Error(`${environment.problem} Start T3 Code, then sign in.`);
     try {
       const metadata = await discover(environment);
+      this.assertCurrent(generation);
       const server = createServer();
       await listenLoopback(server);
       const address = server.address();
@@ -147,7 +154,9 @@ export class T3Access {
       const redirectUri = `http://127.0.0.1:${address.port}/callback`;
       let clientId: string;
       try {
+        this.assertCurrent(generation);
         clientId = await register(environment, metadata, redirectUri);
+        this.assertCurrent(generation);
       } catch (error) {
         server.close();
         throw error;
@@ -162,6 +171,7 @@ export class T3Access {
         state,
         verifier,
         server,
+        generation,
         timer: setTimeout(() => this.finish(pending, 'The sign-in was not approved within 10 minutes. Sign in again.'), SIGN_IN_TIMEOUT_MS),
         answered: false,
         finished: false,
@@ -213,7 +223,12 @@ export class T3Access {
   }
 
   private cancel(): void {
+    this.signInGeneration += 1;
     if (this.pending !== undefined) this.finish(this.pending, undefined);
+  }
+
+  private assertCurrent(generation: number): void {
+    if (generation !== this.signInGeneration) throw new SignInError('This sign-in was replaced or cancelled.');
   }
 
   private withDetail(view: T3AccessView): T3AccessView {
@@ -266,7 +281,7 @@ export class T3Access {
       // A sign-in replaced or cancelled meanwhile keeps nothing. Checked inside the file queue, so a sign-out that
       // started first has already cancelled it, and one that starts later deletes the file after this write.
       const kept = await this.onFile(async () => {
-        if (pending.finished || this.pending !== pending || this.closed) return false;
+        if (pending.finished || pending.generation !== this.signInGeneration) return false;
         await writeCredential(this.options.stateDir, credential);
         return true;
       });
