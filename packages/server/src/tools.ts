@@ -146,7 +146,9 @@ function limitJson(text: string): string {
 }
 
 function tabLine(tab: TabInfo): string {
-  return `${tab.id}${tab.active ? ' [front]' : ''} ${truncate(tab.title, MAX_TAB_TITLE)} — ${truncate(tab.url, MAX_TAB_URL)}`;
+  const front = tab.active ? ' [front]' : '';
+  if (tab.needsApproval === true) return `${tab.id}${front} [needs approval] ${truncate(tab.url, MAX_TAB_URL)}`;
+  return `${tab.id}${front} ${truncate(tab.title, MAX_TAB_TITLE)} — ${truncate(tab.url, MAX_TAB_URL)}`;
 }
 
 function parse<S extends z.ZodType>(schema: S, params: Record<string, unknown>): z.infer<S> {

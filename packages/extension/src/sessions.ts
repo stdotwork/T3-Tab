@@ -1,10 +1,14 @@
 import type { TabInfo, ToolSession } from '@t3-tab/protocol';
 
-import { restrictedPageReason } from './permissions';
+import { isOriginKey, restrictedPageReason } from './permissions';
 
 export interface StoredSession extends ToolSession {
   groupId?: number;
   sharedTabIds: number[];
+  /** Origins approved for this session on each tab, keyed by tab id. */
+  approvedOrigins: Record<string, string[]>;
+  /** Last origin observed for each tab. A different origin invalidates its approvals. */
+  currentOrigins: Record<string, string>;
 }
 
 export type SessionColor = 'grey' | 'blue' | 'red' | 'yellow' | 'green' | 'pink' | 'purple' | 'cyan' | 'orange';
@@ -22,6 +26,27 @@ export function assertSessionTab(session: StoredSession, tab: { groupId?: number
   throw new Error(
     `Tab ${tab.id ?? 'unknown'} is not available to this session. Only tabs in its tab group or tabs the owner shared can be used.`,
   );
+}
+
+/** True when the session has approved this origin for this tab, so its title and address may be shown. */
+export function hasApprovedOrigin(session: StoredSession, tabId: number, origin: string): boolean {
+  return session.approvedOrigins[String(tabId)]?.includes(origin) === true;
+}
+
+/**
+ * The one session a tab opened from `opener` belongs to, or undefined. The opener's tab group names its
+ * session; an ungrouped opener counts only when exactly one session, which has a group, was shared it.
+ */
+export function sessionForPopup(
+  sessions: StoredSession[],
+  opener: { id?: number | undefined; groupId?: number | undefined },
+): StoredSession | undefined {
+  const grouped = sessions.filter((session) => session.groupId !== undefined && session.groupId === opener.groupId);
+  if (grouped.length > 0) return grouped.length === 1 ? grouped[0] : undefined;
+  const sharing = sessions.filter(
+    (session) => session.groupId !== undefined && opener.id !== undefined && session.sharedTabIds.includes(opener.id),
+  );
+  return sharing.length === 1 ? sharing[0] : undefined;
 }
 
 export function usableSessionTabs(session: StoredSession, tabs: chrome.tabs.Tab[]): chrome.tabs.Tab[] {
@@ -71,7 +96,7 @@ export class SessionStore {
         existing.name = session.name;
         return existing;
       }
-      const created: StoredSession = { ...session, sharedTabIds: [] };
+      const created: StoredSession = { ...session, sharedTabIds: [], approvedOrigins: {}, currentOrigins: {} };
       sessions[session.id] = created;
       return created;
     });
@@ -92,19 +117,50 @@ export class SessionStore {
     });
   }
 
-  async share(id: string, tabId: number): Promise<StoredSession> {
+  async share(id: string, tabId: number, origin: string | undefined): Promise<StoredSession> {
     return await this.mutate((sessions) => {
       const session = sessions[id];
       if (session === undefined) throw new Error('Session is not registered');
       if (!session.sharedTabIds.includes(tabId)) session.sharedTabIds.push(tabId);
+      if (origin !== undefined) approve(session, tabId, origin);
       return session;
     });
+  }
+
+  async approveOrigin(id: string, tabId: number, origin: string): Promise<void> {
+    await this.mutate((sessions) => {
+      const session = sessions[id];
+      if (session === undefined) throw new Error('Session is not registered');
+      approve(session, tabId, origin);
+    });
+  }
+
+  async observeTabOrigin(tabId: number, origin: string | undefined): Promise<void> {
+    await this.mutate((sessions) => {
+      for (const session of Object.values(sessions)) {
+        const key = String(tabId);
+        if (origin === undefined) {
+          delete session.approvedOrigins[key];
+          delete session.currentOrigins[key];
+        } else if (session.currentOrigins[key] !== origin) {
+          delete session.approvedOrigins[key];
+          session.currentOrigins[key] = origin;
+        }
+      }
+    });
+  }
+
+  async hasApprovedOrigin(id: string, tabId: number, origin: string): Promise<boolean> {
+    const session = await this.get(id);
+    return session !== undefined && hasApprovedOrigin(session, tabId, origin);
   }
 
   async forgetTab(tabId: number): Promise<void> {
     await this.mutate((sessions) => {
       for (const session of Object.values(sessions)) {
         session.sharedTabIds = session.sharedTabIds.filter((value) => value !== tabId);
+        delete session.approvedOrigins[String(tabId)];
+        delete session.currentOrigins[String(tabId)];
       }
     });
   }
@@ -148,10 +204,40 @@ export class SessionStore {
         id,
         name: record.name,
         sharedTabIds: record.sharedTabIds.filter((tabId): tabId is number => Number.isInteger(tabId)),
+        approvedOrigins: parseApprovedOrigins(record.approvedOrigins),
+        currentOrigins: parseCurrentOrigins(record.currentOrigins),
       };
       if (typeof record.groupId === 'number') session.groupId = record.groupId;
       sessions[id] = session;
     }
     return sessions;
   }
+}
+
+function approve(session: StoredSession, tabId: number, origin: string): void {
+  const key = String(tabId);
+  const origins = session.approvedOrigins[key] ?? [];
+  if (!origins.includes(origin)) origins.push(origin);
+  session.approvedOrigins[key] = origins;
+  session.currentOrigins[key] = origin;
+}
+
+function parseCurrentOrigins(value: unknown): Record<string, string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const parsed: Record<string, string> = {};
+  for (const [tabId, origin] of Object.entries(value)) {
+    if (typeof origin === 'string' && isOriginKey(origin)) parsed[tabId] = origin;
+  }
+  return parsed;
+}
+
+function parseApprovedOrigins(value: unknown): Record<string, string[]> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const parsed: Record<string, string[]> = {};
+  for (const [tabId, origins] of Object.entries(value)) {
+    if (!Array.isArray(origins)) continue;
+    const valid = origins.filter((origin): origin is string => typeof origin === 'string' && isOriginKey(origin));
+    if (valid.length > 0) parsed[tabId] = valid;
+  }
+  return parsed;
 }

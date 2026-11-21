@@ -1,6 +1,7 @@
 import type { ScreenshotResult } from '@t3-tab/protocol';
 
-import { sendCommand } from './cdp';
+import { documentEpoch, ensureAttached, sendCommand } from './cdp';
+import { originOf } from './permissions';
 
 const JPEG_QUALITY = 85;
 
@@ -8,17 +9,34 @@ interface LayoutMetrics {
   cssVisualViewport: { clientWidth: number; clientHeight: number };
 }
 
+/** What the caller approved: the capture is only returned if the tab still shows this page afterwards. */
+export interface CaptureGuard {
+  origin: string;
+  currentUrl(): Promise<string>;
+}
+
 /**
  * A JPEG of the tab's viewport whose long edge is at most `maxEdge` pixels. The browser captures at
  * full resolution and the image is scaled here: asking the browser to scale the capture resizes the
- * page's viewport while it runs, which the page can see and react to.
+ * page's viewport while it runs, which the page can see and react to. The document epoch and address are
+ * recorded before the capture and compared after it; if either moved, the image is discarded.
  */
-export async function captureViewport(tabId: number, maxEdge: number): Promise<ScreenshotResult> {
+export async function captureViewport(tabId: number, maxEdge: number, guard: CaptureGuard): Promise<ScreenshotResult> {
+  await ensureAttached(tabId);
+  const epoch = documentEpoch(tabId);
+  const url = await guard.currentUrl();
+  const origin = originOf(url);
+  if (origin !== guard.origin) {
+    throw new Error(`The page moved from ${guard.origin} to ${origin ?? 'an unknown origin'}. Read the new page and approve it before taking a screenshot.`);
+  }
   const metrics = await sendCommand<LayoutMetrics>(tabId, 'Page.getLayoutMetrics');
   const captured = await sendCommand<{ data?: unknown }>(tabId, 'Page.captureScreenshot', {
     format: 'jpeg',
     quality: JPEG_QUALITY,
   });
+  if (documentEpoch(tabId) !== epoch || (await guard.currentUrl()) !== url) {
+    throw new Error('The page changed while the screenshot was being taken, so the image was discarded. Read the page and try again.');
+  }
   if (typeof captured.data !== 'string' || captured.data === '') throw new Error('The browser returned no image');
 
   const bitmap = await createImageBitmap(base64ToBlob(captured.data, 'image/jpeg'));

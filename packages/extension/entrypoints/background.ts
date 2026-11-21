@@ -14,8 +14,11 @@ import { defineBackground } from 'wxt/utils/define-background';
 
 import { initCdp } from '../src/cdp';
 import { handlePanelRequest } from '../src/panel';
+import { isSidePanelSender } from '../src/panel-security';
+import { originOf } from '../src/permissions';
 import { handleRequest } from '../src/requests';
 import { sessionStore } from '../src/runtime';
+import { adoptPopupTab } from '../src/tabs';
 
 const browserId = crypto.randomUUID();
 const browserName = navigator.userAgent.includes('Brave') ? 'Brave' : 'Chromium';
@@ -122,8 +125,15 @@ export default defineBackground(() => {
   };
 
   initCdp();
+  // The headless harness cannot open a real side panel; it calls the same panel function from the worker.
+  (globalThis as typeof globalThis & { __t3tabHandlePanelRequest?: typeof handlePanelRequest }).__t3tabHandlePanelRequest =
+    handlePanelRequest;
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
-  chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+    if (!isSidePanelSender(sender, chrome.runtime.id)) {
+      sendResponse({ ok: false, error: 'Forbidden' });
+      return false;
+    }
     void handlePanelRequest(message)
       .then((result) => sendResponse(result))
       .catch((error: unknown) =>
@@ -134,7 +144,15 @@ export default defineBackground(() => {
   chrome.runtime.onInstalled.addListener(() => {
     void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
   });
-  chrome.tabs.onCreated.addListener(reportTabCount);
+  chrome.tabs.onCreated.addListener(() => reportTabCount());
+  // The browser names the tab a new tab was opened from; only that tab's session may adopt it.
+  chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
+    void adoptPopupTab(details.tabId, details.sourceTabId, sessionStore);
+  });
+  chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+    if (change.url === undefined) return;
+    void sessionStore.observeTabOrigin(tabId, originOf(tab.url ?? change.url ?? ''));
+  });
   chrome.tabs.onRemoved.addListener(reportTabCount);
   chrome.tabs.onRemoved.addListener(reportTabClosed);
   chrome.tabs.onRemoved.addListener((tabId) => void sessionStore.forgetTab(tabId));

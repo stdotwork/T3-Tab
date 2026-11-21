@@ -4,7 +4,14 @@ import { SessionStore } from './sessions';
 export const sessionStore = new SessionStore();
 export const siteStore = new ChromeSitePermissionStore();
 
+const DEFAULT_PERMISSION_TIMEOUT_MS = 60_000;
+
 export const permissionPrompts = new PermissionPrompts(siteStore, {
+  timeoutMs: async () => {
+    const stored = await chrome.storage.local.get('permissionTimeoutMs');
+    const value = stored.permissionTimeoutMs;
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_PERMISSION_TIMEOUT_MS;
+  },
   onChange: (pending) => void updatePermissionBadge(pending).catch(() => undefined),
 });
 

@@ -22,7 +22,6 @@ const LOCK_STALE_MS = 30_000;
 const CONTROL_TIMEOUT_MS = 5_000;
 // Longer than the daemon waits on the browser, so the daemon's own error arrives first.
 const TOOL_TIMEOUT_MS = 310_000;
-const registrations = new Map<string, Promise<WebSocket>>();
 
 export async function ensureDaemon(env: NodeJS.ProcessEnv = process.env): Promise<DaemonState> {
   const directory = stateDirectory(env);
@@ -61,93 +60,142 @@ export async function getStatus(env: NodeJS.ProcessEnv = process.env): Promise<B
   return response.result.browsers;
 }
 
-/** Registers one MCP server process with the daemon and keeps its control connection alive while it runs. */
-export async function registerSession(session: ToolSession, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  const previous = registrations.get(session.id);
-  if (previous !== undefined) {
-    const socket = await previous.catch(() => undefined);
-    if (socket?.readyState === WebSocket.OPEN) return;
-  }
-  const registration = openSessionRegistration(session, env);
-  registrations.set(session.id, registration);
-  try {
-    const socket = await registration;
-    const forget = (): void => {
-      if (registrations.get(session.id) === registration) registrations.delete(session.id);
-    };
-    socket.once('close', forget);
-    socket.once('error', forget);
-  } catch (error) {
-    if (registrations.get(session.id) === registration) registrations.delete(session.id);
-    throw error;
-  }
+interface PendingControl {
+  resolve(response: ControlResponse): void;
+  reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
-async function openSessionRegistration(session: ToolSession, env: NodeJS.ProcessEnv): Promise<WebSocket> {
-  const state = await ensureDaemon(env);
-  const socket = new WebSocket(`ws://127.0.0.1:${state.port}/`, {
-    headers: { authorization: `Bearer ${state.token}` },
-  });
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const finish = (error?: Error): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (error === undefined) resolve();
-      else {
-        socket.terminate();
-        reject(error);
-      }
-    };
-    const timer = setTimeout(() => finish(new Error('T3-Tab daemon did not register the session')), CONTROL_TIMEOUT_MS);
-    socket.once('open', () => {
-      socket.send(
-        JSON.stringify({
+/** One long-lived control connection. The daemon issues its session id, which only this socket may use. */
+export class DaemonSession {
+  private socket: WebSocket | undefined;
+  private session: ToolSession | undefined;
+  private registration: Promise<ToolSession> | undefined;
+  private terminal = false;
+  private readonly pending = new Map<string, PendingControl>();
+  private clientName = 'MCP client';
+
+  constructor(private readonly env: NodeJS.ProcessEnv = process.env) {}
+
+  setClientName(name: string | undefined): void {
+    if (name !== undefined && name !== '') this.clientName = name;
+  }
+
+  async register(): Promise<ToolSession> {
+    if (this.terminal) throw new Error('The session control connection closed; restart the MCP client.');
+    if (this.session !== undefined) return this.session;
+    if (this.registration !== undefined) return await this.registration;
+    this.registration = this.connectAndRegister();
+    try {
+      return await this.registration;
+    } finally {
+      this.registration = undefined;
+    }
+  }
+
+  async callTool(method: ToolMethod, params: Record<string, unknown>): Promise<ToolContent[]> {
+    const session = await this.register();
+    const response = await this.request(
+      {
+        type: 'control.request',
+        protocolVersion: PROTOCOL_VERSION,
+        requestId: randomUUID(),
+        method,
+        session,
+        params,
+      },
+      TOOL_TIMEOUT_MS,
+    );
+    if (!response.ok) throw new Error(response.error);
+    if (!('content' in response.result)) throw new Error('T3-Tab daemon returned an unexpected reply');
+    return response.result.content;
+  }
+
+  private async connectAndRegister(): Promise<ToolSession> {
+    const state = await ensureDaemon(this.env);
+    const socket = new WebSocket(`ws://127.0.0.1:${state.port}/`, {
+      headers: { authorization: `Bearer ${state.token}` },
+    });
+    this.socket = socket;
+    try {
+      socket.on('message', (data) => this.handleMessage(data));
+      socket.on('error', (error) => this.failAll(error));
+      socket.on('close', () => this.failAll(new Error('The session control connection closed; restart the MCP client.')));
+      await new Promise<void>((resolve, reject) => {
+        socket.once('open', () => resolve());
+        socket.once('error', reject);
+      });
+      const response = await this.request(
+        {
           type: 'control.request',
           protocolVersion: PROTOCOL_VERSION,
           requestId: randomUUID(),
           method: 'session.register',
-          session,
-        } satisfies ControlRequest),
+          clientName: this.clientName,
+        },
+        CONTROL_TIMEOUT_MS,
       );
-    });
-    socket.once('message', (data) => {
-      try {
-        const response = JSON.parse(data.toString()) as ControlResponse;
-        if (response.ok) finish();
-        else finish(new Error(response.error));
-      } catch {
-        finish(new Error('T3-Tab daemon returned invalid JSON'));
+      if (!response.ok) throw new Error(response.error);
+      if (!('session' in response.result)) throw new Error('T3-Tab daemon did not issue a session');
+      const session = response.result.session;
+      if (typeof session.id !== 'string' || typeof session.name !== 'string') {
+        throw new Error('T3-Tab daemon returned an invalid session');
       }
-    });
-    socket.once('error', (error) => finish(error));
-    socket.once('close', () => finish(new Error('T3-Tab daemon closed the session registration')));
-  });
-  return socket;
-}
+      this.session = session;
+      return session;
+    } catch (error) {
+      if (this.socket === socket) this.socket = undefined;
+      socket.terminate();
+      throw error;
+    }
+  }
 
-/** Runs a browser tool through the daemon. `session` identifies the calling MCP server and owns its tabs. */
-export async function callTool(
-  method: ToolMethod,
-  params: Record<string, unknown>,
-  session: ToolSession,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<ToolContent[]> {
-  const state = await ensureDaemon(env);
-  await registerSession(session, env);
-  const request: ControlRequest = {
-    type: 'control.request',
-    protocolVersion: PROTOCOL_VERSION,
-    requestId: randomUUID(),
-    method,
-    session,
-    params,
-  };
-  const response = await sendControlRequest(state, request, TOOL_TIMEOUT_MS);
-  if (!response.ok) throw new Error(response.error);
-  if (!('content' in response.result)) throw new Error('T3-Tab daemon returned an unexpected reply');
-  return response.result.content;
+  private async request(request: ControlRequest, timeoutMs: number): Promise<ControlResponse> {
+    const socket = this.socket;
+    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
+      throw new Error('The session control connection is not open; restart the MCP client.');
+    }
+    return await new Promise<ControlResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(request.requestId);
+        reject(new Error('T3-Tab daemon did not answer the control request'));
+      }, timeoutMs);
+      this.pending.set(request.requestId, { resolve, reject, timer });
+      socket.send(JSON.stringify(request), (error?: Error | null) => {
+        if (error === undefined || error === null) return;
+        clearTimeout(timer);
+        this.pending.delete(request.requestId);
+        reject(error);
+      });
+    });
+  }
+
+  private handleMessage(data: WebSocket.RawData): void {
+    let response: ControlResponse;
+    try {
+      response = JSON.parse(data.toString()) as ControlResponse;
+    } catch {
+      this.failAll(new Error('T3-Tab daemon returned invalid JSON'));
+      return;
+    }
+    if (response.type !== 'control.response' || typeof response.requestId !== 'string') return;
+    const pending = this.pending.get(response.requestId);
+    if (pending === undefined) return;
+    this.pending.delete(response.requestId);
+    clearTimeout(pending.timer);
+    pending.resolve(response);
+  }
+
+  private failAll(error: Error): void {
+    this.terminal = true;
+    this.session = undefined;
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
+    this.socket = undefined;
+  }
 }
 
 export async function daemonIsHealthy(state: DaemonState): Promise<boolean> {
