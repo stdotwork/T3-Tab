@@ -62,6 +62,9 @@ export async function launchBrowser(home) {
     env: home.childEnv,
     args: [
       '--window-size=1600,1000',
+      // Without this, the "started debugging this browser" bar comes and goes as the extension attaches, and the
+      // viewport's height (so every screenshot's size) changes with it.
+      '--silent-debugger-extension-api',
       `--disable-extensions-except=${home.extensionDir}`,
       `--load-extension=${home.extensionDir}`,
     ],
