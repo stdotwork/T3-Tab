@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { BrowserStatus, ToolContent, ToolMethod } from '@t3-tab/protocol';
 
+import { takeClaimFile } from './agents/claim-file.js';
 import { DaemonSession, getStatus } from './client.js';
 import { actShape, readShape, runJsShape, screenshotShape, tabsShape } from './tool-schemas.js';
 
@@ -14,10 +15,12 @@ function withoutExecution<T extends { execution?: unknown }>(tool: T): T {
   return tool;
 }
 
-export async function runMcpServer(): Promise<void> {
+export async function runMcpServer(options: { claimFile?: string } = {}): Promise<void> {
   const server = new McpServer({ name: 't3-tab', version: '0.1.0' });
+  // A direct run from the side panel names a private file with its claim code; it is read once and deleted.
+  const claim = options.claimFile === undefined ? undefined : await takeClaimFile(options.claimFile);
   // This process is one agent's session and owns its tabs and read baselines.
-  const control = new DaemonSession();
+  const control = new DaemonSession(process.env, claim);
 
   withoutExecution(
     server.registerTool('status', { description: 'Show connected browsers and their tab counts.' }, async () => {

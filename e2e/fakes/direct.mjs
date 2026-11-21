@@ -2,8 +2,10 @@
 // (`--mcp-config` for Claude Code, `-c mcp_servers.t3-tab.*` for Codex), looks at its tabs, and prints the
 // JSON lines the real CLI prints. Usage: direct.mjs claude|codex <the CLI's arguments>.
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
-import { connect, lookAtTabs, readStdin, record } from './common.mjs';
+import { connect, fakeDir, lookAtTabs, readStdin, record } from './common.mjs';
 
 const [name, ...args] = process.argv.slice(2);
 const input = readStdin();
@@ -17,6 +19,7 @@ if (name === 'claude') {
   const sessionId = valueOf('--resume') ?? randomUUID();
   line({ type: 'system', subtype: 'init', session_id: sessionId, model: valueOf('--model') ?? 'default' });
   const seen = await lookAtTabs(client, undefined);
+  await holdIfAsked();
   await client.close();
   line({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: `Claude fake (${input.trim()}).\n${seen}` }] } });
   line({ type: 'result', subtype: 'success', is_error: false, result: 'done', session_id: sessionId });
@@ -42,6 +45,13 @@ if (name === 'claude') {
 } else {
   process.stderr.write(`unknown fake ${name}\n`);
   process.exit(2);
+}
+
+/** A message with `[hold]` keeps this turn's session open until the run writes `release`, so the owner can act on it. */
+async function holdIfAsked() {
+  if (!input.includes('[hold]')) return;
+  const deadline = Date.now() + 30_000;
+  while (!existsSync(join(fakeDir, 'release')) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
 function valueOf(flag) {

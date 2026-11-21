@@ -42,7 +42,7 @@ async function runTabs(
   params: z.infer<typeof tabsParams>,
 ): Promise<string> {
   // The owner's tabs for a thread started from the side panel; its first message carries the code.
-  if (params.claim !== undefined) await link.request(session, 'session.claim', { code: params.claim });
+  if (params.claim !== undefined) await link.request(session, 'session.claim', { code: params.claim, route: 'message' });
   switch (params.action ?? 'list') {
     case 'list': {
       const { tabs } = await link.request(session, 'tabs.list', {});

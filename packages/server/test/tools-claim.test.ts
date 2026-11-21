@@ -32,7 +32,7 @@ describe('tabs tool with a claim', () => {
     expect(await runTool(browser, SESSION, 'tabs', { claim: 'abcdefghijklmnop1234' })).toEqual([
       { type: 'text', text: '4 [front] First — http://localhost/a' },
     ]);
-    expect(browser.calls).toEqual(['session.claim {"code":"abcdefghijklmnop1234"}', 'tabs.list {}']);
+    expect(browser.calls).toEqual(['session.claim {"code":"abcdefghijklmnop1234","route":"message"}', 'tabs.list {}']);
   });
 
   it('sends no claim when none is given', async () => {
@@ -44,6 +44,6 @@ describe('tabs tool with a claim', () => {
   it('fails the call, without listing, when the claim is refused', async () => {
     const browser = link(true);
     await expect(runTool(browser, SESSION, 'tabs', { claim: 'abcdefghijklmnop1234' })).rejects.toThrow('Unknown claim code');
-    expect(browser.calls).toEqual(['session.claim {"code":"abcdefghijklmnop1234"}']);
+    expect(browser.calls).toEqual(['session.claim {"code":"abcdefghijklmnop1234","route":"message"}']);
   });
 });

@@ -1,7 +1,7 @@
 import type { AgentMessage, AgentStatus, AgentVia, T3State } from '@t3-tab/protocol';
 
-/** The variable a direct run's MCP server is started with, so its session claims the owner's tabs. */
-export const CLAIM_ENV = 'T3_TAB_CLAIM';
+import { TOOL_TIMEOUT_MS } from '../client.js';
+
 export const MCP_SERVER_NAME = 't3-tab';
 const CLAIM_NOTE_MARK = '\n\n[T3-Tab] ';
 
@@ -79,14 +79,22 @@ export function parseT3Launch(stdout: string): T3Launch {
 export interface T3Show {
   title?: string;
   status: AgentStatus;
-  /** True while a run is preparing, queued, starting or running. */
+  /** True until the run reaches a terminal status and nothing waits on an answer. */
   active: boolean;
   latestRunId?: string;
   messages: AgentMessage[];
+  /** Why a run ended without completing. */
+  error?: string;
 }
 
-const ACTIVE_RUN = new Set(['preparing', 'queued', 'starting', 'running']);
-const FAILED_RUN = new Set(['failed']);
+// T3 Code's thread statuses (`OrchestratorMcpThreadStatus`). A status not listed here is not terminal, so it is followed.
+const COMPLETED_RUN = new Set(['idle', 'completed']);
+const FAILED_RUN = new Map([
+  ['failed', 'The run failed.'],
+  ['interrupted', 'The run was interrupted.'],
+  ['cancelled', 'The run was cancelled.'],
+  ['rolled_back', 'The run was rolled back.'],
+]);
 
 export function parseT3Show(stdout: string): T3Show {
   const value = parseJsonObject(stdout);
@@ -95,9 +103,11 @@ export function parseT3Show(stdout: string): T3Show {
   const detail = thread as Record<string, unknown>;
   const runStatus = typeof detail.status === 'string' ? detail.status : 'idle';
   const pending = typeof detail.pendingRequestCount === 'number' ? detail.pendingRequestCount : 0;
-  const active = ACTIVE_RUN.has(runStatus);
-  const status: AgentStatus =
-    runStatus === 'waiting' || pending > 0 ? 'waiting' : active ? 'running' : FAILED_RUN.has(runStatus) ? 'failed' : 'idle';
+  const failure = FAILED_RUN.get(runStatus);
+  const terminal = COMPLETED_RUN.has(runStatus) || failure !== undefined;
+  const waiting = runStatus === 'waiting' || pending > 0;
+  const active = !terminal || waiting;
+  const status: AgentStatus = waiting ? 'waiting' : failure !== undefined ? 'failed' : terminal ? 'idle' : 'running';
   const messages: AgentMessage[] = [];
   for (const entry of Array.isArray(value?.messages) ? value.messages : []) {
     if (typeof entry !== 'object' || entry === null) continue;
@@ -108,20 +118,23 @@ export function parseT3Show(stdout: string): T3Show {
   const show: T3Show = { status, active, messages };
   if (typeof detail.title === 'string') show.title = detail.title;
   if (typeof detail.latestRunId === 'string') show.latestRunId = detail.latestRunId;
+  if (status === 'failed') show.error = typeof value?.error === 'string' && value.error !== '' ? value.error : (failure as string);
   return show;
 }
 
-/** The MCP server a direct run starts, with the claim code and the state folder its daemon uses. */
-function serverEnv(claim: string, env: NodeJS.ProcessEnv): Record<string, string> {
-  const serverEnvironment: Record<string, string> = { [CLAIM_ENV]: claim };
-  // Codex starts MCP servers with a short list of variables, so the daemon's state folder is passed on.
-  if (env.XDG_STATE_HOME !== undefined && env.XDG_STATE_HOME !== '') serverEnvironment.XDG_STATE_HOME = env.XDG_STATE_HOME;
-  return serverEnvironment;
+/** The state folder the MCP server's daemon uses. Codex starts MCP servers with a short list of variables. */
+function serverEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  return env.XDG_STATE_HOME === undefined || env.XDG_STATE_HOME === '' ? {} : { XDG_STATE_HOME: env.XDG_STATE_HOME };
+}
+
+function serverArgs(options: DirectRunOptions): string[] {
+  return options.claimFile === undefined ? options.server.args : [...options.server.args, '--claim-file', options.claimFile];
 }
 
 export interface DirectRunOptions {
   server: McpServerCommand;
-  claim: string;
+  /** A private file holding this turn's claim code; the code itself never goes on a command line. */
+  claimFile?: string | undefined;
   env: NodeJS.ProcessEnv;
   model?: string | undefined;
   /** The CLI's session id to continue. */
@@ -129,8 +142,9 @@ export interface DirectRunOptions {
 }
 
 /**
- * `claude -p` reading the message from stdin, with only the T3-Tab server (`--strict-mcp-config`, so a user-level
- * `t3-tab` entry does not start a second session) and only its tools allowed beyond Claude Code's read-only ones.
+ * `claude -p` reading the message from stdin, limited to the T3-Tab server: no user, project or local settings or
+ * hooks (`--restricted`, `--setting-sources ""`), no other MCP server (`--strict-mcp-config`), no built-in tools
+ * (`--tools ""`), no custom commands, and anything not allowed is denied instead of prompting (`dontAsk`).
  */
 export function claudeArgs(options: DirectRunOptions): string[] {
   const config = {
@@ -138,8 +152,8 @@ export function claudeArgs(options: DirectRunOptions): string[] {
       [MCP_SERVER_NAME]: {
         type: 'stdio',
         command: options.server.command,
-        args: options.server.args,
-        env: serverEnv(options.claim, options.env),
+        args: serverArgs(options),
+        env: serverEnv(options.env),
       },
     },
   };
@@ -148,35 +162,86 @@ export function claudeArgs(options: DirectRunOptions): string[] {
     '--output-format',
     'stream-json',
     '--verbose',
+    '--restricted',
+    '--setting-sources',
+    '',
     '--strict-mcp-config',
     '--mcp-config',
     JSON.stringify(config),
+    '--tools',
+    '',
     '--allowedTools',
     `mcp__${MCP_SERVER_NAME}`,
+    '--permission-mode',
+    'dontAsk',
+    '--disable-slash-commands',
     ...(options.model === undefined ? [] : ['--model', options.model]),
     ...(options.resume === undefined ? [] : ['--resume', options.resume]),
   ];
 }
 
 /**
- * `codex exec --json` (or `exec resume`) reading the message from stdin, in a read-only sandbox, with the T3-Tab
- * server set through `-c` so it replaces a user-level `t3-tab` entry rather than adding a second one.
+ * Codex features that run commands, reach other services or load the owner's extensions. `--disable` refuses a
+ * name Codex no longer knows, so a renamed feature stops the run instead of quietly staying on.
+ */
+const CODEX_DISABLED_FEATURES = [
+  'shell_tool',
+  'unified_exec',
+  'view_image',
+  'apps',
+  'plugins',
+  'remote_plugin',
+  'hooks',
+  'plugin_hooks',
+  'multi_agent',
+  'tool_suggest',
+  'in_app_browser',
+  'browser_use',
+  'browser_use_external',
+  'computer_use',
+  'image_generation',
+  'skill_mcp_dependency_install',
+  'goals',
+  'memories',
+  'standalone_web_search',
+];
+const T3_TAB_TOOLS = ['status', 'tabs', 'read', 'screenshot', 'act', 'run_js'];
+// Longer than T3-Tab's own wait, so its error arrives first. Codex's default is 60 seconds.
+const CODEX_TOOL_TIMEOUT_SEC = Math.ceil(TOOL_TIMEOUT_MS / 1_000) + 20;
+
+/**
+ * `codex exec --json` (or `exec resume`) reading the message from stdin, limited to the T3-Tab server.
+ * `--ignore-user-config` drops `$CODEX_HOME/config.toml` but keeps the login there, and leaves a project's
+ * `.codex/config.toml` untrusted, so it is not applied either. Every field of the server entry that could
+ * change what it does is set here, so an entry in a system-level config cannot redirect or narrow it.
+ * T3-Tab's tools are pre-approved: with approval `never`, Codex would otherwise refuse them.
  */
 export function codexArgs(options: DirectRunOptions): string[] {
-  const env = Object.entries(serverEnv(options.claim, options.env))
+  const env = Object.entries(serverEnv(options.env))
     .map(([key, value]) => `${key} = ${tomlString(value)}`)
     .join(', ');
+  const server = `mcp_servers.${MCP_SERVER_NAME}`;
   const config = [
+    'approval_policy="never"',
     'sandbox_mode="read-only"',
-    `mcp_servers.${MCP_SERVER_NAME}.command=${tomlString(options.server.command)}`,
-    `mcp_servers.${MCP_SERVER_NAME}.args=[${options.server.args.map(tomlString).join(', ')}]`,
-    `mcp_servers.${MCP_SERVER_NAME}.env={ ${env} }`,
+    'web_search="disabled"',
+    `${server}.command=${tomlString(options.server.command)}`,
+    `${server}.args=[${serverArgs(options).map(tomlString).join(', ')}]`,
+    `${server}.env={ ${env} }`,
+    `${server}.enabled=true`,
+    `${server}.enabled_tools=[${T3_TAB_TOOLS.map(tomlString).join(', ')}]`,
+    `${server}.disabled_tools=[]`,
+    `${server}.default_tools_approval_mode="approve"`,
+    `${server}.tool_timeout_sec=${CODEX_TOOL_TIMEOUT_SEC}`,
   ].flatMap((setting) => ['-c', setting]);
   return [
     'exec',
     ...(options.resume === undefined ? [] : ['resume']),
     '--json',
     '--skip-git-repo-check',
+    '--ignore-user-config',
+    '--ignore-rules',
+    ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['--disable', feature]),
     ...config,
     ...(options.model === undefined ? [] : ['-m', options.model]),
     ...(options.resume === undefined ? [] : [options.resume]),

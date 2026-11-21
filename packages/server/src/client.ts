@@ -15,14 +15,13 @@ import {
 } from '@t3-tab/protocol';
 import WebSocket from 'ws';
 
-import { CLAIM_ENV } from './agents/commands.js';
 import { readDaemonState, stateDirectory, type DaemonState } from './state.js';
 
 const START_TIMEOUT_MS = 10_000;
 const LOCK_STALE_MS = 30_000;
 const CONTROL_TIMEOUT_MS = 5_000;
 // Longer than the daemon waits on the browser, so the daemon's own error arrives first.
-const TOOL_TIMEOUT_MS = 310_000;
+export const TOOL_TIMEOUT_MS = 310_000;
 
 export async function ensureDaemon(env: NodeJS.ProcessEnv = process.env): Promise<DaemonState> {
   const directory = stateDirectory(env);
@@ -76,7 +75,11 @@ export class DaemonSession {
   private readonly pending = new Map<string, PendingControl>();
   private clientName = 'MCP client';
 
-  constructor(private readonly env: NodeJS.ProcessEnv = process.env) {}
+  /** `claim` is the side-panel code a direct run's MCP server read from its private file. */
+  constructor(
+    private readonly env: NodeJS.ProcessEnv = process.env,
+    private readonly claim?: string,
+  ) {}
 
   setClientName(name: string | undefined): void {
     if (name !== undefined && name !== '') this.clientName = name;
@@ -133,7 +136,7 @@ export class DaemonSession {
           requestId: randomUUID(),
           method: 'session.register',
           clientName: this.clientName,
-          ...claimFrom(this.env),
+          ...(this.claim === undefined ? {} : { claim: this.claim }),
         },
         CONTROL_TIMEOUT_MS,
       );
@@ -200,12 +203,6 @@ export class DaemonSession {
   }
 }
 
-/** A direct run from the side panel starts this MCP server with the panel's claim code for the owner's tabs. */
-function claimFrom(env: NodeJS.ProcessEnv): { claim?: string } {
-  const claim = env[CLAIM_ENV]?.trim();
-  return claim === undefined || claim === '' ? {} : { claim };
-}
-
 export async function daemonIsHealthy(state: DaemonState): Promise<boolean> {
   try {
     const response = await fetch(`http://127.0.0.1:${state.port}/health`, {
@@ -222,10 +219,8 @@ export async function daemonIsHealthy(state: DaemonState): Promise<boolean> {
 
 function startDaemonProcess(env: NodeJS.ProcessEnv): void {
   const cliPath = fileURLToPath(new URL('./cli.js', import.meta.url));
-  // A claim code belongs to the MCP process that was started with it, not to the daemon it may start.
-  const { [CLAIM_ENV]: _claim, ...daemonEnv } = env;
   const child = spawn(process.execPath, [cliPath, 'daemon'], {
-    env: daemonEnv,
+    env,
     detached: true,
     stdio: 'ignore',
   });

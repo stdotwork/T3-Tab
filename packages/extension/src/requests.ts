@@ -36,7 +36,7 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
   switch (request.method) {
     case 'session.claim':
       return {
-        shared: await claimTabs(claimStore, sessionStore, session.id, request.params.code),
+        shared: await claimTabs(claimStore, sessionStore, session.id, request.params.code, request.params.route),
       } satisfies BrowserMethods['session.claim']['result'];
     case 'tabs.list':
       return { tabs: await listTabs(session, siteSetting) } satisfies BrowserMethods['tabs.list']['result'];

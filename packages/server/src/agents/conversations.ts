@@ -13,6 +13,8 @@ import type {
   AgentVia,
 } from '@t3-tab/protocol';
 
+import { stateDirectory } from '../state.js';
+import { CLAIM_CODE, writeClaimFile, type ClaimFile } from './claim-file.js';
 import {
   claimNote,
   claudeArgs,
@@ -40,8 +42,12 @@ const T3_STATUS_TTL_MS = 60_000;
 const DIRECT_RUN_TIMEOUT_MS = 60 * 60_000;
 const POLL_GIVE_UP_MS = 6 * 60 * 60_000;
 const MAX_POLL_FAILURES = 5;
+const MAX_WAITING_POLL_MS = 30_000;
+// How long a stopped process gets after SIGTERM, then how long to wait for it to close after SIGKILL.
+const STOP_GRACE_MS = 5_000;
+const KILL_WAIT_MS = 2_000;
+const CLAIM_HIDDEN = '[claim code hidden]';
 const NAME = /^[^\s-][^\s]{0,199}$/;
-const CLAIM = /^[A-Za-z0-9_-]{16,64}$/;
 
 export type Spawn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 
@@ -51,18 +57,32 @@ export interface AgentsOptions {
   server: McpServerCommand;
   spawn?: Spawn;
   pollMs?: number;
+  /** Where a direct turn's private claim file goes. Default: the daemon's state folder for `env`. */
+  stateDir?: string;
+  directTimeoutMs?: number;
+  pollGiveUpMs?: number;
+  graceMs?: number;
 }
 
 interface Conversation {
   view: AgentConversation;
-  claim: string;
+  /** Every claim code issued for this conversation, kept out of everything the panel shows. */
+  codes: Set<string>;
+  /** The code the current direct turn's MCP server holds. */
+  launchCode?: string;
   cwd?: string;
   child?: ChildProcess;
+  /** True while a direct turn is being set up, before it has a process. */
+  starting?: boolean;
+  /** Why T3-Tab stopped the current direct turn. */
+  stopReason?: string;
   poll?: ReturnType<typeof setTimeout>;
   /** The T3 run this conversation waits on; polling stops once the thread shows it finished. */
   expectedRun?: string;
   pollFailures: number;
   pollStarted: number;
+  /** Polls in a row that found the run waiting on an answer; they back off. */
+  waitingPolls: number;
 }
 
 /**
@@ -74,12 +94,23 @@ export class Agents {
   private readonly conversations = new Map<string, Conversation>();
   private readonly spawn: Spawn;
   private readonly pollMs: number;
+  private readonly stateDir: string;
+  private readonly directTimeoutMs: number;
+  private readonly pollGiveUpMs: number;
+  private readonly graceMs: number;
+  /** The short `t3` commands running now, so shutdown can stop them. */
+  private readonly commands = new Set<ChildProcess>();
   private t3Cache: { at: number; value: AgentsStatus['t3'] } | undefined;
+  private t3Probe: Promise<AgentsStatus['t3']> | undefined;
   private closed = false;
 
   constructor(private readonly options: AgentsOptions) {
     this.spawn = options.spawn ?? ((command, args, spawnOptions) => spawnProcess(command, args, spawnOptions));
     this.pollMs = options.pollMs ?? 3_000;
+    this.stateDir = options.stateDir ?? stateDirectory(options.env);
+    this.directTimeoutMs = options.directTimeoutMs ?? DIRECT_RUN_TIMEOUT_MS;
+    this.pollGiveUpMs = options.pollGiveUpMs ?? POLL_GIVE_UP_MS;
+    this.graceMs = options.graceMs ?? STOP_GRACE_MS;
   }
 
   async status(refresh = false): Promise<AgentsStatus> {
@@ -104,11 +135,13 @@ export class Agents {
     return await this.startDirect(params);
   }
 
-  async send(id: unknown, message: unknown): Promise<AgentConversation> {
+  /** `claim` is a fresh code the extension issued for this turn of a direct run. */
+  async send(id: unknown, message: unknown, claim?: unknown): Promise<AgentConversation> {
     if (typeof id !== 'string') throw new Error('Invalid conversation id');
     const conversation = this.conversations.get(id);
     if (conversation === undefined) throw new Error('No such conversation. The background program may have restarted.');
     const text = parseMessage(message);
+    if (claim !== undefined && (typeof claim !== 'string' || !CLAIM_CODE.test(claim))) throw new Error('Invalid claim code');
     if (conversation.view.via === 't3') {
       const threadId = conversation.view.threadId ?? '';
       const t3 = await this.requireT3();
@@ -120,20 +153,38 @@ export class Agents {
       this.watchT3(conversation, sent.runId);
       return conversation.view;
     }
-    if (conversation.child !== undefined) throw new Error('The agent is still working on the last message.');
+    if (conversation.child !== undefined || conversation.starting === true) {
+      throw new Error('The agent is still working on the last message.');
+    }
     if (conversation.view.threadId === undefined) {
       throw new Error('This run printed no session id, so it cannot be continued. Start a new one.');
     }
     this.push(conversation, { role: 'user', text });
-    await this.runDirect(conversation, text, conversation.view.threadId);
+    await this.runDirect(conversation, text, conversation.view.threadId, claim);
     return conversation.view;
   }
 
-  close(): void {
+  /** Stops every polling loop and process, and returns once the processes have closed. */
+  async close(): Promise<void> {
     this.closed = true;
+    const stopping: Array<Promise<void>> = [...this.commands].map(async (child) => await stopProcess(child, this.graceMs));
     for (const conversation of this.conversations.values()) {
       if (conversation.poll !== undefined) clearTimeout(conversation.poll);
-      conversation.child?.kill('SIGTERM');
+      if (conversation.child === undefined) continue;
+      conversation.stopReason = 'T3-Tab stopped while this run was working.';
+      stopping.push(stopProcess(conversation.child, this.graceMs));
+    }
+    await Promise.all(stopping);
+  }
+
+  /** Tells the owner, in the conversation it was issued for, that its tabs could not be shared. */
+  claimFailed(code: string, reason: string): void {
+    for (const conversation of this.conversations.values()) {
+      if (conversation.launchCode !== code) continue;
+      this.push(conversation, {
+        role: 'error',
+        text: `T3-Tab could not share your tabs with this turn: ${reason} Share a tab from the session list if the agent needs it.`,
+      });
     }
   }
 
@@ -162,7 +213,7 @@ export class Agents {
     conversation.view.project = cwd;
     this.push(conversation, { role: 'user', text: params.message });
     try {
-      await this.runDirect(conversation, params.message, undefined);
+      await this.runDirect(conversation, params.message, undefined, params.claim);
     } catch (error) {
       this.conversations.delete(conversation.view.id);
       throw error;
@@ -174,7 +225,7 @@ export class Agents {
     const view: AgentConversation = {
       id: randomUUID(),
       via: params.via,
-      title: firstLine(params.message).slice(0, 80) || 'Untitled',
+      title: firstLine(params.message.replaceAll(params.claim, CLAIM_HIDDEN)).slice(0, 80) || 'Untitled',
       status: 'running',
       messages: [],
       updatedAt: Date.now(),
@@ -183,7 +234,7 @@ export class Agents {
     if (params.project !== undefined) view.project = params.project;
     if (params.provider !== undefined) view.provider = params.provider;
     if (params.model !== undefined) view.model = params.model;
-    const conversation: Conversation = { view, claim: params.claim, pollFailures: 0, pollStarted: Date.now() };
+    const conversation: Conversation = { view, codes: new Set([params.claim]), pollFailures: 0, pollStarted: Date.now(), waitingPolls: 0 };
     this.conversations.set(view.id, conversation);
     this.prune();
     return conversation;
@@ -201,19 +252,27 @@ export class Agents {
   }
 
   private push(conversation: Conversation, message: AgentMessage): void {
-    conversation.view.messages.push({ role: message.role, text: cap(message.text) });
+    conversation.view.messages.push({ role: message.role, text: cap(hideCodes(message.text, conversation.codes)) });
     if (conversation.view.messages.length > MAX_MESSAGES) conversation.view.messages.splice(0, conversation.view.messages.length - MAX_MESSAGES);
     conversation.view.updatedAt = Date.now();
   }
 
   private async t3Status(refresh: boolean): Promise<AgentsStatus['t3']> {
     if (!refresh && this.t3Cache !== undefined && Date.now() - this.t3Cache.at < T3_STATUS_TTL_MS) return this.t3Cache.value;
+    // Each probe signs in to T3 for a moment, so overlapping panel refreshes share one.
+    this.t3Probe ??= this.probeT3().finally(() => {
+      this.t3Probe = undefined;
+    });
+    return await this.t3Probe;
+  }
+
+  private async probeT3(): Promise<AgentsStatus['t3']> {
     const path = await findT3(this.options.env);
     let value: AgentsStatus['t3'];
     if (path === undefined) value = { state: 'missing', detail: 'T3 Code was not found.' };
     else {
       try {
-        const result = await run(this.spawn, path, t3ProbeArgs(), { env: this.options.env, timeoutMs: 15_000 });
+        const result = await this.runCommand(path, t3ProbeArgs(), undefined, 15_000);
         const state = result.code === 0 ? 'running' : t3FailureState(result.stderr);
         value = { state, path };
         if (state !== 'running') value.detail = firstLine(result.stderr) || `t3 exited with code ${String(result.code)}`;
@@ -233,7 +292,7 @@ export class Agents {
 
   /** Runs one `t3` command and throws its own one-line error when it fails. */
   private async runT3(path: string, args: string[], input?: string): Promise<RunResult> {
-    const result = await run(this.spawn, path, args, { env: this.options.env, input, timeoutMs: T3_COMMAND_TIMEOUT_MS });
+    const result = await this.runCommand(path, args, input, T3_COMMAND_TIMEOUT_MS);
     if (result.code !== 0) {
       const state = t3FailureState(result.stderr);
       if (state === 'stopped') this.t3Cache = { at: Date.now(), value: { state, path, detail: firstLine(result.stderr) } };
@@ -242,11 +301,30 @@ export class Agents {
     return result;
   }
 
+  private async runCommand(path: string, args: string[], input: string | undefined, timeoutMs: number): Promise<RunResult> {
+    let started: ChildProcess | undefined;
+    try {
+      return await run(this.spawn, path, args, {
+        env: this.options.env,
+        input,
+        timeoutMs,
+        graceMs: this.graceMs,
+        onSpawn: (child) => {
+          started = child;
+          this.commands.add(child);
+        },
+      });
+    } finally {
+      if (started !== undefined) this.commands.delete(started);
+    }
+  }
+
   private watchT3(conversation: Conversation, runId: string | undefined): void {
     if (conversation.poll !== undefined) clearTimeout(conversation.poll);
     if (runId === undefined) delete conversation.expectedRun;
     else conversation.expectedRun = runId;
     conversation.pollFailures = 0;
+    conversation.waitingPolls = 0;
     conversation.pollStarted = Date.now();
     conversation.poll = setTimeout(() => void this.pollT3(conversation), this.pollMs);
   }
@@ -255,53 +333,93 @@ export class Agents {
     delete conversation.poll;
     if (this.closed || !this.conversations.has(conversation.view.id)) return;
     let keepGoing = true;
+    let delay = this.pollMs;
     try {
       const t3 = await this.requireT3();
       const result = await this.runT3(t3, t3ShowArgs(conversation.view.threadId ?? ''));
       const show = parseT3Show(result.stdout);
       conversation.pollFailures = 0;
-      if (show.title !== undefined && show.title !== '') conversation.view.title = show.title.slice(0, 80);
+      const { view, codes } = conversation;
+      if (show.title !== undefined && show.title !== '') view.title = hideCodes(show.title, codes).slice(0, 80);
       if (show.messages.length > 0) {
-        conversation.view.messages = show.messages.slice(-MAX_MESSAGES).map((message) => ({ ...message, text: cap(message.text) }));
+        view.messages = show.messages.slice(-MAX_MESSAGES).map((message) => ({ ...message, text: cap(hideCodes(message.text, codes)) }));
       }
       const runSeen = conversation.expectedRun === undefined || show.latestRunId === undefined || show.latestRunId === conversation.expectedRun;
       // Right after a send the thread can still show its last run finished; it is running until the new run shows.
-      conversation.view.status = !runSeen && show.status !== 'waiting' ? 'running' : show.status;
-      conversation.view.updatedAt = Date.now();
+      view.status = !runSeen && show.status !== 'waiting' ? 'running' : show.status;
+      view.updatedAt = Date.now();
+      if (view.status === 'failed') {
+        view.error = hideCodes(show.error ?? 'The run failed.', codes);
+        this.push(conversation, { role: 'error', text: view.error });
+      } else delete view.error;
       keepGoing = show.active || !runSeen;
+      if (show.status === 'waiting') {
+        // A run waiting on the owner can wait for hours; it is checked less often the longer it waits.
+        delay = Math.min(this.pollMs * 2 ** conversation.waitingPolls, Math.max(this.pollMs, MAX_WAITING_POLL_MS));
+        conversation.waitingPolls += 1;
+      } else conversation.waitingPolls = 0;
     } catch (error) {
       conversation.pollFailures += 1;
       if (conversation.pollFailures >= MAX_POLL_FAILURES) {
-        conversation.view.status = 'failed';
-        conversation.view.error = error instanceof Error ? error.message : String(error);
-        conversation.view.updatedAt = Date.now();
+        this.failConversation(conversation, error instanceof Error ? error.message : String(error));
         keepGoing = false;
       }
     }
-    if (keepGoing && Date.now() - conversation.pollStarted < POLL_GIVE_UP_MS && !this.closed) {
-      conversation.poll = setTimeout(() => void this.pollT3(conversation), this.pollMs);
+    if (!keepGoing || this.closed) return;
+    if (Date.now() - conversation.pollStarted >= this.pollGiveUpMs) {
+      const hours = Math.round(this.pollGiveUpMs / 3_600_000);
+      this.failConversation(conversation, `T3-Tab stopped following this thread after ${hours} hours. It may still be running in T3 Code.`);
+      return;
     }
+    conversation.poll = setTimeout(() => void this.pollT3(conversation), delay);
+  }
+
+  private failConversation(conversation: Conversation, reason: string): void {
+    const text = hideCodes(reason, conversation.codes);
+    conversation.view.status = 'failed';
+    conversation.view.error = text;
+    conversation.view.updatedAt = Date.now();
+    this.push(conversation, { role: 'error', text });
   }
 
   /** Starts one turn of a direct run and returns once the process is running; replies arrive as it prints them. */
-  private async runDirect(conversation: Conversation, message: string, resume: string | undefined): Promise<void> {
+  private async runDirect(conversation: Conversation, message: string, resume: string | undefined, claim: string | undefined): Promise<void> {
+    conversation.starting = true;
+    let claimFile: ClaimFile | undefined;
+    let child: ChildProcess;
     const via = conversation.view.via as Exclude<AgentVia, 't3'>;
-    const executable = await findExecutable(via, this.options.env);
-    if (executable === undefined) throw new Error(`${via === 'claude' ? 'Claude Code' : 'Codex'} was not found on this machine.`);
-    const runOptions = {
-      server: this.options.server,
-      claim: conversation.claim,
-      env: this.options.env,
-      model: conversation.view.model,
-      resume,
-    };
-    const args = via === 'claude' ? claudeArgs(runOptions) : codexArgs(runOptions);
-    const child = this.spawn(executable, args, {
-      cwd: conversation.cwd ?? homedir(),
-      env: this.options.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    try {
+      const executable = await findExecutable(via, this.options.env);
+      if (executable === undefined) throw new Error(`${via === 'claude' ? 'Claude Code' : 'Codex'} was not found on this machine.`);
+      delete conversation.launchCode;
+      if (claim !== undefined) {
+        conversation.codes.add(claim);
+        conversation.launchCode = claim;
+        claimFile = await writeClaimFile(this.stateDir, claim);
+      }
+      const runOptions = {
+        server: this.options.server,
+        claimFile: claimFile?.path,
+        env: this.options.env,
+        model: conversation.view.model,
+        resume,
+      };
+      const args = via === 'claude' ? claudeArgs(runOptions) : codexArgs(runOptions);
+      // Its own process group, so stopping it also stops whatever it started.
+      child = this.spawn(executable, args, {
+        cwd: conversation.cwd ?? homedir(),
+        env: this.options.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: true,
+      });
+    } catch (error) {
+      await claimFile?.remove().catch(() => undefined);
+      throw error;
+    } finally {
+      delete conversation.starting;
+    }
     conversation.child = child;
+    delete conversation.stopReason;
     conversation.view.status = 'running';
     delete conversation.view.error;
     conversation.view.updatedAt = Date.now();
@@ -310,7 +428,10 @@ export class Agents {
     let finished: { ok: boolean; error?: string; result?: string } | undefined;
     let lastError: string | undefined;
     let stderr = '';
-    const timer = setTimeout(() => child.kill('SIGTERM'), DIRECT_RUN_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      conversation.stopReason = `The run timed out after ${Math.round(this.directTimeoutMs / 60_000)} minutes and was stopped.`;
+      void stopProcess(child, this.graceMs);
+    }, this.directTimeoutMs);
     if (child.stdout !== null) {
       createInterface({ input: child.stdout }).on('line', (line) => {
         const event = parse(line);
@@ -320,7 +441,7 @@ export class Agents {
             this.push(conversation, { role: 'assistant', text: event.text });
             reply = conversation.view.messages.at(-1);
           } else {
-            reply.text = cap(`${reply.text}\n\n${event.text}`);
+            reply.text = cap(`${reply.text}\n\n${hideCodes(event.text, conversation.codes)}`);
             conversation.view.updatedAt = Date.now();
           }
         }
@@ -334,29 +455,33 @@ export class Agents {
     child.on('close', (code) => {
       clearTimeout(timer);
       delete conversation.child;
+      void claimFile?.remove().catch(() => undefined);
+      if (conversation.stopReason !== undefined) {
+        this.failConversation(conversation, conversation.stopReason);
+        delete conversation.stopReason;
+        return;
+      }
       if (reply === undefined && finished?.ok === true && finished.result !== undefined && finished.result.trim() !== '') {
         this.push(conversation, { role: 'assistant', text: finished.result });
       }
       const ok = finished?.ok ?? code === 0;
-      if (ok && code === 0) conversation.view.status = 'idle';
-      else {
-        conversation.view.status = 'failed';
-        conversation.view.error =
-          finished?.error ?? lastError ?? (firstLine(stderr) || `${via} exited with code ${String(code)}`);
-        this.push(conversation, { role: 'error', text: conversation.view.error });
-      }
-      conversation.view.updatedAt = Date.now();
+      if (ok && code === 0) {
+        conversation.view.status = 'idle';
+        conversation.view.updatedAt = Date.now();
+      } else this.failConversation(conversation, finished?.error ?? lastError ?? (firstLine(stderr) || `${via} exited with code ${String(code)}`));
     });
     await new Promise<void>((resolve, reject) => {
       child.once('spawn', () => resolve());
       child.once('error', (error) => {
         clearTimeout(timer);
         delete conversation.child;
+        void claimFile?.remove().catch(() => undefined);
         conversation.view.status = 'failed';
-        conversation.view.error = error.message;
+        conversation.view.error = hideCodes(error.message, conversation.codes);
         reject(error);
       });
     });
+    child.stdin?.on('error', () => undefined);
     child.stdin?.end(message);
   }
 }
@@ -375,7 +500,7 @@ export function parseStartParams(value: unknown): StartParams {
   if (typeof value !== 'object' || value === null) throw new Error('Invalid start request');
   const candidate = value as Partial<Record<keyof AgentStartParams, unknown>>;
   if (candidate.via !== 't3' && candidate.via !== 'claude' && candidate.via !== 'codex') throw new Error('Invalid agent');
-  if (typeof candidate.claim !== 'string' || !CLAIM.test(candidate.claim)) throw new Error('Invalid claim code');
+  if (typeof candidate.claim !== 'string' || !CLAIM_CODE.test(candidate.claim)) throw new Error('Invalid claim code');
   const params: StartParams = { via: candidate.via, message: parseMessage(candidate.message), claim: candidate.claim };
   const project = optionalText(candidate.project);
   if (project !== undefined) {
@@ -413,6 +538,12 @@ async function workingFolder(folder: string | undefined): Promise<string> {
   return folder;
 }
 
+function hideCodes(text: string, codes: ReadonlySet<string>): string {
+  let hidden = text;
+  for (const code of codes) hidden = hidden.replaceAll(code, CLAIM_HIDDEN);
+  return hidden;
+}
+
 function cap(text: string): string {
   return text.length <= MAX_SHOWN_CHARS ? text : `${text.slice(0, MAX_SHOWN_CHARS)}\n… (cut)`;
 }
@@ -425,21 +556,61 @@ interface RunResult {
 
 const MAX_OUTPUT_BYTES = 4 * 1_024 * 1_024;
 
+function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid !== undefined && process.platform !== 'win32') {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+    }
+  }
+  child.kill(signal);
+}
+
+/** SIGTERM to the child's process group, SIGKILL after `graceMs`, and returns once it has closed. */
+export async function stopProcess(child: ChildProcess, graceMs: number): Promise<void> {
+  const closed = new Promise<boolean>((resolve) => {
+    child.once('close', () => resolve(true));
+  });
+  const within = async (ms: number): Promise<boolean> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const elapsed = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), ms);
+    });
+    const result = await Promise.race([closed, elapsed]);
+    clearTimeout(timer);
+    return result;
+  };
+  signalGroup(child, 'SIGTERM');
+  if (await within(graceMs)) return;
+  signalGroup(child, 'SIGKILL');
+  await within(KILL_WAIT_MS);
+}
+
 /** Runs a short command with its input on stdin and collects what it prints. */
 export async function run(
   spawn: Spawn,
   command: string,
   args: string[],
-  options: { env: NodeJS.ProcessEnv; input?: string | undefined; timeoutMs: number },
+  options: {
+    env: NodeJS.ProcessEnv;
+    input?: string | undefined;
+    timeoutMs: number;
+    graceMs?: number;
+    onSpawn?: (child: ChildProcess) => void;
+  },
 ): Promise<RunResult> {
   return await new Promise<RunResult>((resolve, reject) => {
-    const child = spawn(command, args, { env: options.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { env: options.env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+    options.onSpawn?.(child);
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let timedOut: Error | undefined;
     const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      finish(new Error(`${command} did not finish within ${options.timeoutMs / 1_000} seconds`));
+      timedOut = new Error(`${command} did not finish within ${options.timeoutMs / 1_000} seconds`);
+      void stopProcess(child, options.graceMs ?? STOP_GRACE_MS).finally(() => finish(timedOut));
     }, options.timeoutMs);
     const finish = (error: Error | undefined, code?: number | null): void => {
       if (settled) return;
@@ -455,7 +626,7 @@ export async function run(
       if (stderr.length < MAX_OUTPUT_BYTES) stderr += chunk.toString();
     });
     child.once('error', (error) => finish(error));
-    child.once('close', (code) => finish(undefined, code));
+    child.once('close', (code) => finish(timedOut, code));
     child.stdin?.on('error', () => undefined);
     child.stdin?.end(options.input ?? '');
   });

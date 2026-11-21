@@ -13,7 +13,7 @@ import {
 import { defineBackground } from 'wxt/utils/define-background';
 
 import { initCdp } from '../src/cdp';
-import { handleDaemonReply, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
+import { handleDaemonReply, noteDaemonClose, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
 import { handlePanelRequest } from '../src/panel';
 import { isSidePanelSender } from '../src/panel-security';
 import { originOf } from '../src/permissions';
@@ -114,7 +114,8 @@ export default defineBackground(() => {
         const request = parseRequest(value);
         if (request !== undefined) void answer(current, request);
       });
-      current.addEventListener('close', () => {
+      current.addEventListener('close', (event) => {
+        if (socket === current) noteDaemonClose(event.code, event.reason);
         if (socket === current) setDaemonSocket(undefined);
         if (socket === current) scheduleReconnect();
         else clearKeepalive();

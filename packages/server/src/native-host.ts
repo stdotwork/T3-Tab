@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, type NativeDaemonRequest, type NativeResponse } from '@t3-tab/protocol';
+import { PROTOCOL_MISMATCH, PROTOCOL_VERSION, type NativeDaemonRequest, type NativeResponse } from '@t3-tab/protocol';
 
 import { ensureDaemon } from './client.js';
 import { readNativeMessage, writeNativeMessage } from './native-json.js';
@@ -7,6 +7,7 @@ export async function runNativeHost(): Promise<void> {
   let response: NativeResponse;
   try {
     const request: unknown = await readNativeMessage(process.stdin);
+    if (isOtherProtocolVersion(request)) throw new Error(PROTOCOL_MISMATCH);
     if (!isNativeDaemonRequest(request)) throw new Error('Unsupported native messaging request');
     const state = await ensureDaemon();
     response = {
@@ -29,4 +30,10 @@ function isNativeDaemonRequest(value: unknown): value is NativeDaemonRequest {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return candidate.type === 'native.daemon' && candidate.protocolVersion === PROTOCOL_VERSION;
+}
+
+function isOtherProtocolVersion(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.type === 'native.daemon' && candidate.protocolVersion !== PROTOCOL_VERSION;
 }

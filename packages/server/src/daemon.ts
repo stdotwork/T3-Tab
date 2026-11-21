@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_DAEMON_PORT,
+  PROTOCOL_MISMATCH,
   PROTOCOL_VERSION,
   type BrowserDaemonRequestMessage,
   type BrowserMessage,
@@ -16,6 +17,7 @@ import {
 } from '@t3-tab/protocol';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
+import { CLAIM_CODE } from './agents/claim-file.js';
 import { Agents } from './agents/conversations.js';
 import { BrowserConnection } from './browser-link.js';
 import { connectionRole, tokensMatch, isLoopbackHostHeader, type ConnectionRole } from './security.js';
@@ -41,7 +43,8 @@ const MAX_CONTROL_MESSAGE_BYTES = 1_024_000;
 // A page's accessibility tree and a screenshot come back from the browser in one message.
 const MAX_BROWSER_MESSAGE_BYTES = 16 * 1_024 * 1_024;
 const TOOL_METHODS: ReadonlySet<string> = new Set<ToolMethod>(['tabs', 'read', 'screenshot', 'act', 'run_js']);
-const CLAIM_CODE = /^[A-Za-z0-9_-]{16,64}$/;
+// The browser's answer for a code it will never honour, as opposed to a moment it could not answer.
+const CLAIM_REFUSED = /^Unknown claim code/;
 
 /** What the daemon holds for one control connection: its session, and a claim code it registered with. */
 interface ControlState {
@@ -61,6 +64,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     options.agents ??
     new Agents({
       env: process.env,
+      stateDir,
       server: { command: process.execPath, args: [fileURLToPath(new URL('./cli.js', import.meta.url)), 'mcp'] },
     });
   const httpServer = createServer((request, response) => handleHttpRequest(request, response, token));
@@ -105,7 +109,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
 
     webSocket.on('message', (data) => {
       if (role === 'extension') handleBrowserMessage(webSocket, browsers, agents, data);
-      else if (role === 'control') handleControlMessage(webSocket, browsers, control, data);
+      else if (role === 'control') handleControlMessage(webSocket, browsers, control, agents, data);
     });
     const forget = (): void => {
       browsers.delete(webSocket);
@@ -152,7 +156,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     close: async () => {
       if (closed) return;
       closed = true;
-      agents.close();
+      await agents.close();
       await clearDaemonState(stateDir, token);
       await closeServer(httpServer, sockets);
     },
@@ -184,7 +188,7 @@ function handleBrowserMessage(
 ): void {
   const value = parseJson(data);
   if (!isBrowserMessage(value)) {
-    webSocket.close(1008, 'Invalid protocol message');
+    webSocket.close(1008, isOtherProtocolVersion(value) ? PROTOCOL_MISMATCH : 'Invalid protocol message');
     return;
   }
 
@@ -228,7 +232,7 @@ async function answerDaemonRequest(webSocket: WebSocket, agents: Agents, message
     if (message.method === 'agents.status') result = await agents.status(params.refresh === true);
     else if (message.method === 'agents.list') result = { conversations: agents.list() };
     else if (message.method === 'agents.start') result = { conversation: await agents.start(params) };
-    else if (message.method === 'agents.send') result = { conversation: await agents.send(params.id, params.message) };
+    else if (message.method === 'agents.send') result = { conversation: await agents.send(params.id, params.message, params.claim) };
     else throw new Error(`Unknown method: ${String((message as { method?: unknown }).method)}`);
     reply = { type: 'daemon.reply', protocolVersion: PROTOCOL_VERSION, requestId: message.requestId, ok: true, result };
   } catch (error) {
@@ -247,6 +251,7 @@ function handleControlMessage(
   webSocket: WebSocket,
   browsers: Map<WebSocket, BrowserConnection>,
   control: ControlState,
+  agents: Agents,
   data: RawData,
 ): void {
   const { sessions } = control;
@@ -303,13 +308,14 @@ function handleControlMessage(
     sendControlError(webSocket, request.requestId, `Unknown method: ${String(request.method)}`);
     return;
   }
-  void answerTool(webSocket, browsers, control, request);
+  void answerTool(webSocket, browsers, control, agents, request);
 }
 
 async function answerTool(
   webSocket: WebSocket,
   browsers: Map<WebSocket, BrowserConnection>,
   control: ControlState,
+  agents: Agents,
   request: { requestId: string; method: string; session?: unknown; params?: unknown },
 ): Promise<void> {
   try {
@@ -329,9 +335,16 @@ async function answerTool(
     await connection.request(registered, 'session.register', {});
     const claim = control.claims.get(webSocket);
     if (claim !== undefined) {
-      control.claims.delete(webSocket);
-      // A direct run's MCP server carries the code the panel issued; a code the browser no longer holds shares nothing.
-      await connection.request(registered, 'session.claim', { code: claim }).catch(() => undefined);
+      // A direct run's MCP server carries the code the panel issued. The tool still runs when the claim fails: the
+      // owner sees why in the conversation, and a failure the browser may recover from is tried on the next call.
+      try {
+        await connection.request(registered, 'session.claim', { code: claim, route: 'launch' });
+        control.claims.delete(webSocket);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        if (CLAIM_REFUSED.test(reason)) control.claims.delete(webSocket);
+        agents.claimFailed(claim, reason);
+      }
     }
     const content = await runTool(connection, registered, request.method as ToolMethod, request.params as Record<string, unknown>);
     if (webSocket.readyState !== WebSocket.OPEN) return;
@@ -363,6 +376,12 @@ function isBrowserMessage(value: unknown): value is BrowserMessage {
       (candidate.type === 'browser.daemonRequest' && typeof candidate.requestId === 'string' && typeof candidate.method === 'string') ||
       (candidate.type === 'browser.response' && typeof candidate.requestId === 'string' && typeof candidate.ok === 'boolean'))
   );
+}
+
+function isOtherProtocolVersion(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const version = (value as Record<string, unknown>).protocolVersion;
+  return typeof version === 'number' && version !== PROTOCOL_VERSION;
 }
 
 function isControlRequest(value: unknown): value is {

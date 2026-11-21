@@ -1,4 +1,6 @@
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
+/** Shown when the extension and the background program speak different protocol versions. It is also a WebSocket close reason, so at most 123 bytes. */
+export const PROTOCOL_MISMATCH = 'T3-Tab extension and background program are different versions. Rebuild, run t3-tab install, reload.';
 export const DEFAULT_DAEMON_PORT = 8765;
 export const NATIVE_HOST_NAME = 'com.t3tab.native';
 export const EXTENSION_ID = 'gggnknbjooockcnnocejdolfdpjifebm';
@@ -151,14 +153,18 @@ export interface ScreenshotResult {
   viewportHeight: number;
 }
 
+/** How a claim code reaches the session that redeems it. */
+export type ClaimRoute = 'launch' | 'message';
+
 /** Requests the background program sends to the extension, with their params and results. */
 export interface BrowserMethods {
   'session.register': { params: Record<string, never>; result: { registered: true } };
   /**
    * Shares with the calling session the tabs the owner picked in the side panel when it started an agent. The
-   * extension issued `code` and holds the tabs it names; the daemon only passes it on.
+   * extension issued `code` and holds the tabs it names; the daemon only passes it on. `route` says how the code
+   * arrived: `launch` from a direct run's private file, `message` from the `tabs` tool. A code works on one route.
    */
-  'session.claim': { params: { code: string }; result: { shared: number[] } };
+  'session.claim': { params: { code: string; route: ClaimRoute }; result: { shared: number[] } };
   'session.unregister': { params: Record<string, never>; result: { unregistered: true } };
   'tabs.list': { params: Record<string, never>; result: { tabs: TabInfo[] } };
   'tabs.open': { params: { url: string }; result: { tab: TabInfo } };
@@ -255,7 +261,7 @@ export interface DaemonMethods {
   'agents.status': { params: { refresh?: boolean }; result: AgentsStatus };
   'agents.list': { params: Record<string, never>; result: { conversations: AgentConversation[] } };
   'agents.start': { params: AgentStartParams; result: { conversation: AgentConversation } };
-  'agents.send': { params: { id: string; message: string }; result: { conversation: AgentConversation } };
+  'agents.send': { params: { id: string; message: string; claim?: string }; result: { conversation: AgentConversation } };
 }
 
 export type DaemonMethod = keyof DaemonMethods;
@@ -295,7 +301,7 @@ export interface ControlSessionRegisterRequest {
   requestId: string;
   method: 'session.register';
   clientName: string;
-  /** A side-panel claim code the MCP process was started with (`T3_TAB_CLAIM`), for a direct run. */
+  /** A side-panel claim code the MCP process read from its private file, for a direct run. */
   claim?: string;
 }
 
