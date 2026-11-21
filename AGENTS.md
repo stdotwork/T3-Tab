@@ -104,13 +104,19 @@ when needed.
 tree into lines with refs, `refs.ts` keeps a ref stable for an element until the tab's document is
 replaced, `smart-diff.ts` is the line diff, `find.ts` the search, and `page.ts` puts a reply together and
 caps it at 12,000 characters. Diff baselines are kept per MCP server process, so two agents reading the
-same tab do not take each other's diffs.
+same tab do not take each other's diffs. A reply starts with `tab <id>: <title> — <url>`; when the session
+last saw that same title and address for the tab, it starts with `tab <id>` alone.
 
-`act` resolves refs to backend DOM node ids, runs its steps through Chrome DevTools Protocol input and DOM
-commands, and settles after every step by waiting for network, DOM and layout activity to stay quiet. A
-navigation invalidates refs held from before it. `run_js` evaluates an expression or async function body in
-the page for cases the structured tools do not cover. The extension sends a WebSocket ping every 20 seconds
-while the daemon is connected so Chrome does not stop its service worker.
+`act` takes its steps as flat objects, `{ "action": "fill", "ref": "e7", "text": "Ada" }`, with the fields
+`ref`, `text`, `key`, `dx`, `dy` and `ms` (`packages/server/src/tool-schemas.ts`): the schema the agent reads
+is one object so the tool definition stays small, and `convertStep` there refuses a step that is missing a
+field its action needs, carries one it does not take, or is out of range, then turns the step into the
+nested form the extension runs (`ActStep` in `packages/protocol`). It resolves refs to backend DOM node ids,
+runs its steps through Chrome DevTools Protocol input and DOM commands, and settles after every step by
+waiting for network, DOM and layout activity to stay quiet. A navigation invalidates refs held from before
+it. `run_js` evaluates an expression or async function body in the page for cases the structured tools do
+not cover. The extension sends a WebSocket ping every 20 seconds while the daemon is connected so Chrome
+does not stop its service worker.
 
 `read` returns the main frame's document and same-origin child frames only. A child frame of another
 origin, or one the browser cannot name, is left out with one line `frame omitted: <origin>` in its place

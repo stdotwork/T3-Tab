@@ -413,10 +413,10 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
 
   const crossSessionCalls = [
     ['read B', rawCall(mcpClient, 'read', { tab: tabB })],
-    ['act B', rawCall(mcpClient, 'act', { tab: tabB, steps: [{ scroll: { dy: 1 } }] })],
+    ['act B', rawCall(mcpClient, 'act', { tab: tabB, steps: [{ action: 'scroll', dy: 1 }] })],
     ['run_js B', rawCall(mcpClient, 'run_js', { tab: tabB, expression: '1' })],
     ['read owner', rawCall(mcpClient, 'read', { tab: ownerTab.id })],
-    ['act owner', rawCall(mcpClient, 'act', { tab: ownerTab.id, steps: [{ scroll: { dy: 1 } }] })],
+    ['act owner', rawCall(mcpClient, 'act', { tab: ownerTab.id, steps: [{ action: 'scroll', dy: 1 }] })],
     ['run_js owner', rawCall(mcpClient, 'run_js', { tab: ownerTab.id, expression: '1' })],
   ];
   for (const [label, pending] of crossSessionCalls) {
@@ -456,7 +456,7 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
   const actionRef = refFor(text(pageA), 'button "Action A"');
   assert(actionRef, `Session A's action page has no button ref:\n${text(pageA)}`);
 
-  const firstAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const firstAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const actPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   assertPromptTab(actPrompt, 'Permission A');
   await decidePrompt(serviceWorker, actPrompt.id, 'allow-once');
@@ -464,20 +464,20 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
   assert(allowedAct.isError !== true && text(allowedAct).includes('Action A completed'), `Allow once did not run the act: ${text(allowedAct)}`);
   console.log(`Ask origin, Allow once: act succeeded on tab ${actPrompt.tab.id} "${actPrompt.tab.title}"`);
 
-  const secondAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const secondAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const declinePrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   await decidePrompt(serviceWorker, declinePrompt.id, 'decline');
   const declinedAct = await secondAct;
   assert(declinedAct.isError === true && /Permission declined/.test(text(declinedAct)), `Decline did not refuse the act: ${text(declinedAct)}`);
   console.log('Ask origin, Decline: act refused');
 
-  const alwaysAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const alwaysAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const alwaysPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   await decidePrompt(serviceWorker, alwaysPrompt.id, 'always-allow');
   const alwaysResult = await alwaysAct;
   assert(alwaysResult.isError !== true, `Always allow did not run the first act: ${text(alwaysResult)}`);
   const noPromptAct = await withDeadline(
-    rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] }),
+    rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] }),
     2_000,
     'second act after Always allow',
   );
@@ -488,7 +488,7 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
 
   await serviceWorker.evaluate(() => chrome.storage.local.set({ permissionTimeoutMs: 1_200 }));
   const timeoutStarted = Date.now();
-  const timedOutAct = await rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const timedOutAct = await rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const timeoutElapsed = Date.now() - timeoutStarted;
   assert(timedOutAct.isError === true && /timed out and was declined/.test(text(timedOutAct)), `The prompt timeout did not decline: ${text(timedOutAct)}`);
   assert(timeoutElapsed >= 900 && timeoutElapsed < 4_000, `The configured timeout took ${timeoutElapsed} ms`);
@@ -496,7 +496,7 @@ async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, pa
   console.log(`Prompt timeout: declined after ${timeoutElapsed} ms`);
 
   await panelRequest(serviceWorker, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: ownerTab.id });
-  const unsharedWhileWaiting = rawCall(mcpClient, 'act', { tab: ownerTab.id, steps: [{ scroll: { dy: 1 } }] });
+  const unsharedWhileWaiting = rawCall(mcpClient, 'act', { tab: ownerTab.id, steps: [{ action: 'scroll', dy: 1 }] });
   const unsharePrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   assertPromptTab(unsharePrompt, 'T3-Tab E2E');
   await panelRequest(serviceWorker, { type: 'panel.unshareTab', sessionId: sessionA.id, tabId: ownerTab.id });
@@ -667,14 +667,14 @@ async function checkReadGrant({ mcpClient, serviceWorker, sessionA, siteUrl, pop
     const result = await pending;
     assert(result.isError === true && /Permission declined/.test(text(result)), `${label} was not declined: ${text(result)}`);
   };
-  await declineNext(() => rawCall(mcpClient, 'act', { tab: second.id, steps: [{ click: { ref: buttonRef } }] }), 'act', 'act on a read-granted site');
+  await declineNext(() => rawCall(mcpClient, 'act', { tab: second.id, steps: [{ action: 'click', ref: buttonRef }] }), 'act', 'act on a read-granted site');
   await declineNext(() => rawCall(mcpClient, 'run_js', { tab: second.id, expression: 'document.title' }), 'run_js', 'run_js on a read-granted site');
   await declineNext(() => rawCall(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/about` }), 'open', 'opening on a read-granted site');
   assert((await siteSetting()) === 'read', 'A declined prompt changed the read grant');
   console.log('Read grant: read needs no prompt; act, run_js and open each still prompt (kinds act, run_js, open) and were declined');
 
   // The full grant, from an act prompt, covers reading, run_js and opening as well.
-  const acting = rawCall(mcpClient, 'act', { tab: second.id, steps: [{ click: { ref: buttonRef } }] });
+  const acting = rawCall(mcpClient, 'act', { tab: second.id, steps: [{ action: 'click', ref: buttonRef }] });
   const actPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   await assertDecisionRefused(serviceWorker, actPrompt.id, 'always-allow-read', /only from a read request/);
   await decidePrompt(serviceWorker, actPrompt.id, 'always-allow');
@@ -733,7 +733,7 @@ async function checkRaces({ mcpClient, serviceWorker, sessionA, siteUrl, otherSi
   // that submits a form does.
   await waitForTabUrl(serviceWorker, tabA, `${otherSiteUrl}/perm-b`);
   await installDebuggerHook(serviceWorker, { method: 'Input.dispatchKeyEvent', tabId: tabA, action: 'reload' });
-  const pressing = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ press: { key: 'Tab' } }, { press: { key: 'Tab' } }] });
+  const pressing = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'press', key: 'Tab' }, { action: 'press', key: 'Tab' }] });
   await decideNext('act');
   const pressed = await pressing;
   assert(await hookFired(serviceWorker), 'The act race was not exercised: the document was never replaced during the key press');
@@ -743,7 +743,7 @@ async function checkRaces({ mcpClient, serviceWorker, sessionA, siteUrl, otherSi
 
   // act: the same, but the new document is on another origin, so the batch stops before step 2.
   await installDebuggerHook(serviceWorker, { method: 'Input.dispatchKeyEvent', tabId: tabA, action: 'navigate', url: `${siteUrl}/secret` });
-  const crossing = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ press: { key: 'Tab' } }, { press: { key: 'Tab' } }] });
+  const crossing = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'press', key: 'Tab' }, { action: 'press', key: 'Tab' }] });
   await decideNext('act');
   const crossed = await crossing;
   assert(await hookFired(serviceWorker), 'The cross-origin act race was not exercised: the page never moved during the key press');
@@ -1160,15 +1160,30 @@ async function checkActionTools({ mcpClient, page }) {
 
   const acted = await call(mcpClient, 'act', {
     steps: [
-      { fill: { ref: nameRef, value: 'Ada Lovelace' } },
-      { fill: { ref: emailRef, value: 'ada@example.com' } },
-      { click: { ref: submitRef } },
+      { action: 'fill', ref: nameRef, text: 'Ada Lovelace' },
+      { action: 'fill', ref: emailRef, text: 'ada@example.com' },
+      { action: 'click', ref: submitRef },
     ],
   });
   show('act (fill, fill, click)', acted);
   assert(acted.isError !== true, `act failed: ${text(acted)}`);
   assert(/Changed since the last read:/.test(text(acted)), `act did not return a diff:\n${text(acted)}`);
   assert(text(acted).includes('Welcome Ada Lovelace (ada@example.com)'), `act did not show the form result:\n${text(acted)}`);
+
+  // A step that is missing a field, carries one its action does not take, or is in the old nested form is
+  // refused with a message that says what is wrong, before anything reaches the page.
+  for (const [bad, expected] of [
+    [{ action: 'click' }, /click needs ref/],
+    [{ action: 'click', ref: submitRef, text: 'x' }, /click does not take text/],
+    [{ action: 'wait', ms: 99_999 }, /wait ms must be a whole number from 0 to 10000/],
+    [{ action: 'scroll' }, /scroll needs either ref or dx\/dy/],
+    [{ click: { ref: submitRef } }, /action/],
+  ]) {
+    const refusedStep = await rawCall(mcpClient, 'act', { steps: [bad] });
+    assert(refusedStep.isError === true && expected.test(text(refusedStep)), `act accepted or mis-described ${JSON.stringify(bad)}: ${text(refusedStep)}`);
+  }
+  const unchangedForm = await call(mcpClient, 'read', {});
+  assert(text(unchangedForm).endsWith('No changes since the last read.'), `A refused step changed the page: ${text(unchangedForm)}`);
 
   const title = await call(mcpClient, 'run_js', { expression: 'document.title' });
   show('run_js document.title', title);
@@ -1183,7 +1198,7 @@ async function checkActionTools({ mcpClient, page }) {
   const staleRef = refFor(freshText, 'textbox "Name"');
   assert(aboutRef && staleRef, `Navigation refs are missing:\n${freshText}`);
   const stale = await call(mcpClient, 'act', {
-    steps: [{ click: { ref: aboutRef } }, { click: { ref: staleRef } }],
+    steps: [{ action: 'click', ref: aboutRef }, { action: 'click', ref: staleRef }],
   });
   show('act (click navigation, then stale ref)', stale);
   assert(stale.isError === true, `A ref from before navigation was accepted: ${text(stale)}`);
@@ -1199,7 +1214,7 @@ async function checkActionTools({ mcpClient, page }) {
   await page.getByRole('heading', { name: 'Search' }).waitFor();
   const searchRef = refFor(text(await call(mcpClient, 'read', { full: true })), 'textbox "Query"');
   assert(searchRef, 'The search box ref is missing');
-  const submitted = await call(mcpClient, 'act', { steps: [{ fill: { ref: searchRef, value: 'refs' } }, { press: { key: 'Enter' } }] });
+  const submitted = await call(mcpClient, 'act', { steps: [{ action: 'fill', ref: searchRef, text: 'refs' }, { action: 'press', key: 'Enter' }] });
   show('act (fill, press Enter submits the form)', submitted);
   assert(submitted.isError !== true, `Enter that submits a form failed: ${text(submitted)}`);
   assert(text(submitted).includes('# About') && page.url().includes('/about?q=refs'), `Enter did not submit the form: ${text(submitted)} at ${page.url()}`);

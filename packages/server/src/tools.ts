@@ -10,7 +10,7 @@ import type { z } from 'zod';
 
 import type { BrowserLink } from './browser-link.js';
 import { formatRead, MAX_OUTPUT_CHARS } from './reader/page.js';
-import { actParams, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
+import { actParams, convertStep, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
 
 const MAX_TAB_TITLE = 80;
 const MAX_TAB_URL = 150;
@@ -94,7 +94,12 @@ async function runAct(
 ): Promise<string> {
   const tabId = params.tab ?? (await currentTabId(link, session));
   const state = link.tabState(tabId);
-  const backendIds = params.steps.map((step) => {
+  const steps = params.steps.map((flat) => {
+    const step = convertStep(flat);
+    if (typeof step === 'string') throw new Error(`Invalid arguments: ${step}`);
+    return step;
+  });
+  const backendIds = steps.map((step) => {
     const ref = refOf(step);
     if (ref === undefined) return null;
     const backendId = state.refTable.backendIdOf(ref);
@@ -103,7 +108,7 @@ async function runAct(
   });
   const page = await link.request(session, 'page.act', {
     tab: tabId,
-    steps: params.steps,
+    steps,
     backendIds,
     epoch: state.currentEpoch,
   });

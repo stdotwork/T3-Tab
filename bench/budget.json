@@ -2,114 +2,114 @@
   "comment": "Limits for `pnpm bench`: each is the measured number plus 5% (40% for JPEG bytes, which vary with fonts). Raise one only on purpose, with the reason in the PR.",
   "limits": {
     "definitions.total": {
-      "chars": 5065,
-      "tokens": 1162
+      "chars": 3099,
+      "tokens": 740
     },
     "definitions.status": {
-      "chars": 178,
-      "tokens": 39
+      "chars": 136,
+      "tokens": 31
     },
     "definitions.tabs": {
-      "chars": 459,
-      "tokens": 111
+      "chars": 417,
+      "tokens": 101
     },
     "definitions.read": {
-      "chars": 933,
-      "tokens": 206
+      "chars": 850,
+      "tokens": 187
     },
     "definitions.screenshot": {
-      "chars": 414,
-      "tokens": 104
+      "chars": 361,
+      "tokens": 92
     },
     "definitions.act": {
-      "chars": 2597,
-      "tokens": 601
+      "chars": 933,
+      "tokens": 246
     },
     "definitions.run_js": {
-      "chars": 489,
-      "tokens": 111
+      "chars": 408,
+      "tokens": 94
     },
     "form.open": {
-      "chars": 72,
-      "tokens": 29
+      "chars": 73,
+      "tokens": 30
     },
     "form.read-first": {
-      "chars": 697,
-      "tokens": 224
+      "chars": 698,
+      "tokens": 225
     },
     "form.act-fill-submit": {
-      "chars": 590,
-      "tokens": 189
+      "chars": 551,
+      "tokens": 173
     },
     "form.screenshot": {
-      "chars": 48,
-      "tokens": 22,
+      "chars": 49,
+      "tokens": 23,
       "imageBytes": 38883,
       "imageTokens": 1232
     },
     "hidden.open": {
-      "chars": 72,
-      "tokens": 29
+      "chars": 73,
+      "tokens": 30
     },
     "hidden.read-first": {
-      "chars": 697,
-      "tokens": 224
+      "chars": 698,
+      "tokens": 225
     },
     "hidden.act-click": {
-      "chars": 211,
-      "tokens": 69
+      "chars": 172,
+      "tokens": 52
     },
     "hidden.run_js": {
       "chars": 7,
       "tokens": 4
     },
     "hidden.read-diff": {
-      "chars": 211,
-      "tokens": 68
+      "chars": 172,
+      "tokens": 51
     },
     "hidden.read-unchanged": {
-      "chars": 91,
-      "tokens": 34
+      "chars": 51,
+      "tokens": 17
     },
     "navigate.open": {
-      "chars": 77,
-      "tokens": 28
-    },
-    "navigate.read-first": {
-      "chars": 328,
-      "tokens": 114
-    },
-    "navigate.act-click-link": {
-      "chars": 279,
-      "tokens": 101
-    },
-    "navigate.tabs-list": {
-      "chars": 168,
-      "tokens": 70
-    },
-    "long.open": {
-      "chars": 74,
+      "chars": 78,
       "tokens": 29
     },
+    "navigate.read-first": {
+      "chars": 329,
+      "tokens": 115
+    },
+    "navigate.act-click-link": {
+      "chars": 280,
+      "tokens": 102
+    },
+    "navigate.tabs-list": {
+      "chars": 172,
+      "tokens": 73
+    },
+    "long.open": {
+      "chars": 75,
+      "tokens": 30
+    },
     "long.read-first": {
-      "chars": 3301,
-      "tokens": 1114
+      "chars": 3302,
+      "tokens": 1115
     },
     "long.find": {
-      "chars": 1395,
-      "tokens": 329
+      "chars": 1353,
+      "tokens": 312
     },
     "long.read-subtree": {
-      "chars": 186,
-      "tokens": 69
+      "chars": 144,
+      "tokens": 52
     },
     "long.read-all": {
-      "chars": 12617,
-      "tokens": 3141
+      "chars": 12679,
+      "tokens": 3148
     },
     "long.screenshot": {
-      "chars": 48,
-      "tokens": 22,
+      "chars": 49,
+      "tokens": 23,
       "imageBytes": 127174,
       "imageTokens": 1232
     }

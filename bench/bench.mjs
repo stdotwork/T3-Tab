@@ -141,10 +141,10 @@ async function measure() {
     };
     await run('form', 'act-fill-submit', 'act', {
       steps: [
-        { fill: { ref: refs.name, value: 'Ada Lovelace' } },
-        { fill: { ref: refs.email, value: 'ada@example.com' } },
-        { select: { ref: refs.country, value: 'Brazil' } },
-        { click: { ref: refs.submit } },
+        { action: 'fill', ref: refs.name, text: 'Ada Lovelace' },
+        { action: 'fill', ref: refs.email, text: 'ada@example.com' },
+        { action: 'select', ref: refs.country, text: 'Brazil' },
+        { action: 'click', ref: refs.submit },
       ],
     });
     await run('form', 'screenshot', 'screenshot', {});
@@ -153,7 +153,7 @@ async function measure() {
     // the next `read` is a diff.
     await run('hidden', 'open', 'tabs', { action: 'open', url: `${siteUrl}/form` });
     const hiddenRead = await run('hidden', 'read-first', 'read', {});
-    await run('hidden', 'act-click', 'act', { steps: [{ click: { ref: need(hiddenRead, 'button "Show details"') } }] });
+    await run('hidden', 'act-click', 'act', { steps: [{ action: 'click', ref: need(hiddenRead, 'button "Show details"') }] });
     await run('hidden', 'run_js', 'run_js', { expression: "document.getElementById('toggle').click()" });
     await run('hidden', 'read-diff', 'read', {});
     await run('hidden', 'read-unchanged', 'read', {});
@@ -161,7 +161,7 @@ async function measure() {
     // 3. Follow a link: the reply to the click is the new page.
     await run('navigate', 'open', 'tabs', { action: 'open', url: `${siteUrl}/products` });
     const productsRead = await run('navigate', 'read-first', 'read', {});
-    await run('navigate', 'act-click-link', 'act', { steps: [{ click: { ref: need(productsRead, 'link "Day pack"') } }] });
+    await run('navigate', 'act-click-link', 'act', { steps: [{ action: 'click', ref: need(productsRead, 'link "Day pack"') }] });
     await run('navigate', 'tabs-list', 'tabs', {});
 
     // 4. Search a longer page.
