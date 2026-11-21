@@ -4,6 +4,9 @@ export const NATIVE_HOST_NAME = 'com.t3tab.native';
 export const EXTENSION_ID = 'gggnknbjooockcnnocejdolfdpjifebm';
 export const EXTENSION_ORIGIN = `chrome-extension://${EXTENSION_ID}`;
 
+/** Default long edge, in pixels, of a screenshot. */
+export const DEFAULT_SCREENSHOT_MAX_EDGE = 1280;
+
 export interface BrowserHelloMessage {
   type: 'browser.hello';
   protocolVersion: typeof PROTOCOL_VERSION;
@@ -17,7 +20,101 @@ export interface BrowserTabCountMessage {
   tabCount: number;
 }
 
-export type BrowserMessage = BrowserHelloMessage | BrowserTabCountMessage;
+/** Sent when a tab is closed, so the background program can drop what it holds for it. */
+export interface BrowserTabClosedMessage {
+  type: 'browser.tabClosed';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  tabId: number;
+}
+
+export interface TabInfo {
+  id: number;
+  title: string;
+  url: string;
+  /** True for the tab the browser has in front: the default target of `read` and `screenshot`. */
+  active: boolean;
+}
+
+/** One accessibility node, trimmed in the extension to what the page reader needs. */
+export interface AxNode {
+  id: string;
+  /** Empty for ignored nodes. */
+  role: string;
+  name: string;
+  value?: string;
+  ignored?: true;
+  /** Flags the reader prints, such as `checked`, `disabled`, `expanded`, `level`. */
+  props?: Record<string, string | number | boolean>;
+  children: string[];
+  /** Stable for the life of one document; the key of a ref. */
+  backendId?: number;
+}
+
+export interface PageReadResult {
+  tab: number;
+  title: string;
+  url: string;
+  /** Changes when the tab's document is replaced; held refs are void then. */
+  epoch: number;
+  /** Root first. */
+  nodes: AxNode[];
+}
+
+export interface ScreenshotResult {
+  tab: number;
+  /** Base64 JPEG. */
+  data: string;
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
+/** Requests the background program sends to the extension, with their params and results. */
+export interface BrowserMethods {
+  'tabs.list': { params: Record<string, never>; result: { tabs: TabInfo[] } };
+  'tabs.open': { params: { url: string }; result: { tab: TabInfo } };
+  'tabs.switch': { params: { tab: number }; result: { tab: TabInfo } };
+  'tabs.close': { params: { tab: number }; result: { closed: number } };
+  'page.read': { params: { tab?: number }; result: PageReadResult };
+  'page.screenshot': { params: { tab?: number; maxEdge: number }; result: ScreenshotResult };
+}
+
+export type BrowserMethod = keyof BrowserMethods;
+
+export type BrowserRequestMessage = {
+  [M in BrowserMethod]: {
+    type: 'browser.request';
+    protocolVersion: typeof PROTOCOL_VERSION;
+    requestId: string;
+    method: M;
+    params: BrowserMethods[M]['params'];
+  };
+}[BrowserMethod];
+
+export interface BrowserResponseOkMessage {
+  type: 'browser.response';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  requestId: string;
+  ok: true;
+  result: unknown;
+}
+
+export interface BrowserResponseErrorMessage {
+  type: 'browser.response';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  requestId: string;
+  ok: false;
+  error: string;
+}
+
+export type BrowserResponseMessage = BrowserResponseOkMessage | BrowserResponseErrorMessage;
+
+export type BrowserMessage =
+  | BrowserHelloMessage
+  | BrowserTabCountMessage
+  | BrowserTabClosedMessage
+  | BrowserResponseMessage;
 
 export interface BrowserStatus {
   id: string;
@@ -32,6 +129,22 @@ export interface ControlStatusRequest {
   method: 'status';
 }
 
+export type ToolMethod = 'tabs' | 'read' | 'screenshot';
+
+/** A browser tool call from an MCP server. `session` is the calling MCP process: it scopes read diffs. */
+export interface ControlToolRequest {
+  type: 'control.request';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  requestId: string;
+  method: ToolMethod;
+  session: string;
+  params: Record<string, unknown>;
+}
+
+export type ToolContent =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string };
+
 export interface ControlStatusResponse {
   type: 'control.response';
   protocolVersion: typeof PROTOCOL_VERSION;
@@ -39,6 +152,16 @@ export interface ControlStatusResponse {
   ok: true;
   result: {
     browsers: BrowserStatus[];
+  };
+}
+
+export interface ControlToolResponse {
+  type: 'control.response';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  requestId: string;
+  ok: true;
+  result: {
+    content: ToolContent[];
   };
 }
 
@@ -50,8 +173,8 @@ export interface ControlErrorResponse {
   error: string;
 }
 
-export type ControlRequest = ControlStatusRequest;
-export type ControlResponse = ControlStatusResponse | ControlErrorResponse;
+export type ControlRequest = ControlStatusRequest | ControlToolRequest;
+export type ControlResponse = ControlStatusResponse | ControlToolResponse | ControlErrorResponse;
 
 export interface NativeDaemonRequest {
   type: 'native.daemon';
