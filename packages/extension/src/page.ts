@@ -1,20 +1,38 @@
-import type { AxNode, PageReadResult } from '@t3-tab/protocol';
+import type { PageReadResult } from '@t3-tab/protocol';
 
 import { slimAxNodes } from './ax';
 import { documentEpoch, ensureAttached, sendCommand } from './cdp';
+import { redactPasswordValues } from './password';
+import { originOf } from './permissions';
 import type { StoredSession } from './sessions';
 import { resolveSessionTab } from './tabs';
 
-export async function readPage(session: StoredSession, tab: number | undefined): Promise<PageReadResult> {
-  const resolved = await resolveSessionTab(session, tab);
-  const tabId = resolved.id ?? -1;
+export async function readPage(
+  session: StoredSession,
+  tab: number | undefined,
+  expectedOrigin: string,
+  reloadSession: () => Promise<StoredSession>,
+): Promise<PageReadResult> {
+  const initial = await resolveSessionTab(session, tab);
+  const tabId = initial.id ?? -1;
   await ensureAttached(tabId);
+  const before = await resolveSessionTab(await reloadSession(), tabId);
+  assertOrigin(before, expectedOrigin);
   // Taken before the tree: a navigation during the read then shows up as a new value on the next one.
   const epoch = documentEpoch(tabId);
   const tree = await sendCommand<{ nodes?: unknown }>(tabId, 'Accessibility.getFullAXTree');
+  const after = await resolveSessionTab(await reloadSession(), tabId);
+  assertOrigin(after, expectedOrigin);
   const nodes = slimAxNodes(tree.nodes);
-  await redactPasswordValues(tabId, nodes);
-  return { tab: tabId, title: resolved.title ?? '', url: resolved.url ?? resolved.pendingUrl ?? '', epoch, nodes };
+  await redactPasswordValues(nodes, async (backendId) => isPasswordInput(await describeNode(tabId, backendId)));
+  return { tab: tabId, title: after.title ?? '', url: after.url ?? after.pendingUrl ?? '', epoch, nodes };
+}
+
+function assertOrigin(tab: chrome.tabs.Tab, expectedOrigin: string): void {
+  const actual = originOf(tab.url ?? tab.pendingUrl ?? '');
+  if (actual !== expectedOrigin) {
+    throw new Error(`The page moved from ${expectedOrigin} to ${actual ?? 'an unknown origin'} while reading; approve the new origin first.`);
+  }
 }
 
 
@@ -22,28 +40,9 @@ interface DescribedNode {
   node?: { nodeName?: string; attributes?: string[] };
 }
 
-/** The accessibility tree shows password values as bullets, but their count is still the length. */
-async function redactPasswordValues(tabId: number, nodes: AxNode[]): Promise<void> {
-  const fields = nodes
-    .filter((node) => node.role.toLowerCase() === 'textbox' && node.backendId !== undefined)
-    .slice(0, 200);
-  await Promise.all(
-    fields.map(async (node) => {
-      let described: DescribedNode;
-      try {
-        described = await sendCommand<DescribedNode>(tabId, 'DOM.describeNode', { backendNodeId: node.backendId });
-      } catch {
-        return;
-      }
-      if (!isPasswordInput(described.node) && !looksMasked(node.value)) return;
-      delete node.value;
-      node.props = { ...node.props, password: true };
-    }),
-  );
-}
-
-function looksMasked(value: string | undefined): boolean {
-  return value !== undefined && value !== '' && /^•+$/.test(value);
+async function describeNode(tabId: number, backendId: number): Promise<DescribedNode['node']> {
+  const described = await sendCommand<DescribedNode>(tabId, 'DOM.describeNode', { backendNodeId: backendId });
+  return described.node;
 }
 
 function isPasswordInput(node: DescribedNode['node']): boolean {

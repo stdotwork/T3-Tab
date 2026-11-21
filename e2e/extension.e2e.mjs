@@ -108,28 +108,30 @@ let mcpClient;
 let mcpTransport;
 let mcpClientB;
 let mcpTransportB;
-let panelPage;
 let pageServer;
+let pageServerB;
+let autoPromptSessionId;
+let permissionServiceWorker;
+let panelPage;
 
 try {
   await stat(join(extensionDir, 'manifest.json'));
   await mkdir(profileDir, { recursive: true });
 
-  pageServer = createServer((request, response) => {
+  const siteHandler = (request, response) => {
     const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
     const body = SITE[path];
     response.writeHead(body === undefined ? 404 : 200, { 'content-type': 'text/html; charset=utf-8' });
     response.end(body ?? SITE_NOT_FOUND);
-  });
-
-  await new Promise((resolve, reject) => {
-    pageServer.once('error', reject);
-    pageServer.listen(0, '127.0.0.1', resolve);
-  });
+  };
+  pageServer = createServer(siteHandler);
+  pageServerB = createServer(siteHandler);
+  await Promise.all([listen(pageServer), listen(pageServerB)]);
 
   const address = pageServer.address();
-  if (address === null || typeof address === 'string') {
-    throw new Error('Test page server did not bind to a TCP address');
+  const addressB = pageServerB.address();
+  if (address === null || typeof address === 'string' || addressB === null || typeof addressB === 'string') {
+    throw new Error('Test page servers did not bind to TCP addresses');
   }
 
   await execFileAsync(
@@ -155,6 +157,7 @@ try {
   await page.goto(`http://127.0.0.1:${address.port}`);
   await page.getByRole('heading', { name: 'T3-Tab E2E' }).waitFor();
   const siteUrl = `http://127.0.0.1:${address.port}`;
+  const otherSiteUrl = `http://127.0.0.1:${addressB.port}`;
 
   const isExtensionWorker = (worker) => worker.url().startsWith('chrome-extension://');
   let serviceWorker = browserContext.serviceWorkers().find(isExtensionWorker);
@@ -165,6 +168,7 @@ try {
     });
   }
 
+  permissionServiceWorker = serviceWorker;
   const extensionId = await serviceWorker.evaluate(() => chrome.runtime.id);
   if (!/^[a-p]{32}$/.test(extensionId)) {
     throw new Error(`Unexpected extension id from service worker: ${extensionId}`);
@@ -219,15 +223,31 @@ try {
   mcpClientB = new Client({ name: 't3-tab-e2e-b', version: '1.0.0' });
   await mcpClientB.connect(mcpTransportB);
 
-  panelPage = await browserContext.newPage();
-  await panelPage.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await rawCall(mcpClient, 'tabs', {});
+  await rawCall(mcpClientB, 'tabs', {});
 
-  await checkPermissions({ mcpClient, mcpClientB, page, panelPage, serviceWorker, siteUrl });
-  await panelRequest(panelPage, { type: 'panel.setSite', origin: siteUrl, setting: 'allow' });
+  panelPage = await browserContext.newPage();
+  await panelPage.goto(`chrome-extension://${extensionId}/sidepanel.html?headless=1`);
+  const senderGuard = await panelPage.evaluate(async () => await chrome.runtime.sendMessage({ type: 'panel.state' }));
+  assert(senderGuard?.ok === false && senderGuard.error === 'Forbidden', `A tab-hosted panel message was not refused: ${JSON.stringify(senderGuard)}`);
+  console.log('Panel message guard: extension page hosted in a tab was refused');
+
+  const permission = await checkPermissions({
+    mcpClient,
+    mcpClientB,
+    page,
+    serviceWorker,
+    panelPage,
+    siteUrl,
+    otherSiteUrl,
+  });
+  autoPromptSessionId = permission.sessionA.id;
   await page.goto(siteUrl);
   await page.getByRole('heading', { name: 'T3-Tab E2E' }).waitFor();
   await page.bringToFront();
+  await panelRequest(serviceWorker, { type: 'panel.shareTab', sessionId: permission.sessionA.id, tabId: permission.ownerTabId });
 
+  console.log('Existing tool checks: site setting remains ask; the harness auto-answers each prompt with Allow once');
   await checkBrowserTools({ mcpClient, page, siteUrl });
   const newCheckFailures = [];
   try {
@@ -253,48 +273,46 @@ try {
   if (browserContext !== undefined) {
     await browserContext.close();
   }
-  if (pageServer !== undefined) {
-    await new Promise((resolve, reject) => {
-      pageServer.close((error) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
-  }
+  if (pageServer !== undefined) await closeServer(pageServer);
+  if (pageServerB !== undefined) await closeServer(pageServerB);
   await stopDaemon();
   await rm(tempHome, { recursive: true, force: true });
 }
 
-
-async function checkPermissions({ mcpClient, mcpClientB, page, panelPage, serviceWorker, siteUrl }) {
-  const sessions = await waitForSessions(panelPage, 2);
+async function checkPermissions({ mcpClient, mcpClientB, page, serviceWorker, panelPage, siteUrl, otherSiteUrl }) {
+  const sessions = await waitForSessions(serviceWorker, 2);
   const sessionA = sessions.find((session) => session.name.startsWith('t3-tab-e2e-a ·'));
   const sessionB = sessions.find((session) => session.name.startsWith('t3-tab-e2e-b ·'));
   assert(sessionA && sessionB, `Both MCP sessions are not listed:\n${JSON.stringify(sessions, null, 2)}`);
   assert(sessionA.name.endsWith(sessionA.id.slice(0, 8)), `Session A name lacks its short id: ${sessionA.name}`);
-  await panelPage.getByRole('heading', { name: 'Connected sessions' }).waitFor();
-  await panelPage.getByText(sessionA.name).first().waitFor();
+  console.log('Panel UI: headless harness uses the side panel handler directly; sender validation is unit-tested.');
   console.log(`Permission sessions: ${sessionA.name}; ${sessionB.name}`);
 
-  const openA = call(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/perm-a` });
-  const openPromptA = await waitForPrompt(panelPage, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'open');
-  await panelPage.getByRole('button', { name: 'Allow once' }).waitFor();
-  await panelPage.getByRole('button', { name: 'Always allow on this site' }).waitFor();
-  await panelPage.getByRole('button', { name: 'Decline' }).waitFor();
+  await setSite(serviceWorker, siteUrl, 'ask');
+  await setSite(serviceWorker, otherSiteUrl, 'ask');
+
+  const openA = rawCall(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/perm-a` });
+  const openPromptA = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'open');
+  assertPromptTab(openPromptA, 'Permission A');
+  await assertPromptMetadata(serviceWorker, openPromptA);
+  await assertPromptUi(panelPage, serviceWorker, openPromptA);
   const badgeWhilePending = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
   assert(badgeWhilePending === '1', `The action badge does not show the pending prompt: ${badgeWhilePending}`);
   console.log(`Permission badge while waiting: ${badgeWhilePending}`);
-  await panelRequest(panelPage, { type: 'panel.decide', promptId: openPromptA.id, decision: 'allow-once' });
-  const badgeAfterDecision = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
-  assert(badgeAfterDecision === '', `The action badge was not cleared: ${badgeAfterDecision}`);
+  await decidePrompt(serviceWorker, openPromptA.id, 'allow-once');
   const openedA = await openA;
   assert(openedA.isError !== true, `Session A could not open its tab: ${text(openedA)}`);
   const tabA = Number(/^Opened tab (\d+)/.exec(text(openedA))?.[1]);
   assert(Number.isInteger(tabA), `Session A open reply has no tab id: ${text(openedA)}`);
+  assert(openPromptA.tab.id === tabA, `The open prompt named tab ${openPromptA.tab.id}, opened ${tabA}`);
+  const badgeAfterDecision = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
+  assert(badgeAfterDecision === '', `The action badge was not cleared: ${badgeAfterDecision}`);
+  console.log(`Open approval named tab ${openPromptA.tab.id} "${openPromptA.tab.title}" at ${openPromptA.origin}`);
 
-  const openB = call(mcpClientB, 'tabs', { action: 'open', url: `${siteUrl}/perm-b` });
-  const openPromptB = await waitForPrompt(panelPage, (prompt) => prompt.session.id === sessionB.id && prompt.tool === 'open');
-  await panelRequest(panelPage, { type: 'panel.decide', promptId: openPromptB.id, decision: 'allow-once' });
+  const openB = rawCall(mcpClientB, 'tabs', { action: 'open', url: `${otherSiteUrl}/perm-b` });
+  const openPromptB = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionB.id && prompt.tool === 'open');
+  assertPromptTab(openPromptB, 'Permission B');
+  await decidePrompt(serviceWorker, openPromptB.id, 'allow-once');
   const openedB = await openB;
   assert(openedB.isError !== true, `Session B could not open its tab: ${text(openedB)}`);
   const tabB = Number(/^Opened tab (\d+)/.exec(text(openedB))?.[1]);
@@ -307,106 +325,268 @@ async function checkPermissions({ mcpClient, mcpClientB, page, panelPage, servic
   assert(groupA.title === sessionA.name && groupB.title === sessionB.name, `Group titles do not name their sessions: ${JSON.stringify({ groupA, groupB })}`);
   console.log(`Tab groups: A ${groupA.groupId} "${groupA.title}", B ${groupB.groupId} "${groupB.title}"`);
 
-  const listA = await call(mcpClient, 'tabs', {});
-  assert(!new RegExp(`^${tabB}\\b`, 'm').test(text(listA)), `Session A can list session B's tab:\n${text(listA)}`);
-
-  const refusedB = await call(mcpClient, 'read', { tab: tabB });
-  assert(refusedB.isError === true && /not available to this session/.test(text(refusedB)), `Session A was not refused B's tab: ${text(refusedB)}`);
-  console.log(`Refused session B's tab: ${text(refusedB)}`);
-
-  const ownerTabs = await serviceWorker.evaluate(async () => (await chrome.tabs.query({})).map((tab) => ({ id: tab.id, url: tab.url })));
+  const ownerTabs = await serviceWorker.evaluate(async () => (await chrome.tabs.query({})).map((tab) => ({ id: tab.id, url: tab.url, title: tab.title })));
   const ownerTab = ownerTabs.find((tab) => tab.url === `${siteUrl}/`);
   assert(ownerTab?.id !== undefined, `The owner's ungrouped tab is missing: ${JSON.stringify(ownerTabs)}`);
+
+  const listA = await rawCall(mcpClient, 'tabs', {});
+  assert(!listsTab(listA, tabB), `Session A can list session B's tab:\n${text(listA)}`);
   assert(!listsTab(listA, ownerTab.id), `Session A can list the unshared owner tab:\n${text(listA)}`);
-  const refusedOwner = await call(mcpClient, 'read', { tab: ownerTab.id });
-  assert(refusedOwner.isError === true && /not available to this session/.test(text(refusedOwner)), `Session A was not refused the unshared owner tab: ${text(refusedOwner)}`);
-  console.log(`Refused unshared owner tab ${ownerTab.id}: ${text(refusedOwner)}`);
 
-  await panelRequest(panelPage, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: ownerTab.id });
-  const sharedRead = await call(mcpClient, 'read', { tab: ownerTab.id });
-  const sharedList = await call(mcpClient, 'tabs', {});
-  assert(listsTab(sharedList, ownerTab.id), `The shared owner tab is not listed:\n${text(sharedList)}`);
+  const crossSessionCalls = [
+    ['read B', rawCall(mcpClient, 'read', { tab: tabB })],
+    ['act B', rawCall(mcpClient, 'act', { tab: tabB, steps: [{ scroll: { dy: 1 } }] })],
+    ['run_js B', rawCall(mcpClient, 'run_js', { tab: tabB, expression: '1' })],
+    ['read owner', rawCall(mcpClient, 'read', { tab: ownerTab.id })],
+    ['act owner', rawCall(mcpClient, 'act', { tab: ownerTab.id, steps: [{ scroll: { dy: 1 } }] })],
+    ['run_js owner', rawCall(mcpClient, 'run_js', { tab: ownerTab.id, expression: '1' })],
+  ];
+  for (const [label, pending] of crossSessionCalls) {
+    const refused = await pending;
+    assert(refused.isError === true && /not available to this session/.test(text(refused)), `${label} was not refused: ${text(refused)}`);
+  }
+  const refusedAFromB = await rawCall(mcpClientB, 'read', { tab: tabA });
+  assert(refusedAFromB.isError === true && /not available to this session/.test(text(refusedAFromB)), `Session B was not refused A's tab: ${text(refusedAFromB)}`);
+  console.log("Membership refusals: A cannot use B's tab or the unshared owner tab; B cannot use A's tab");
+
+  await panelRequest(serviceWorker, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: ownerTab.id });
+  const sharedRead = await rawCall(mcpClient, 'read', { tab: ownerTab.id });
   assert(sharedRead.isError !== true && text(sharedRead).includes('# T3-Tab E2E'), `Session A cannot read the shared owner tab: ${text(sharedRead)}`);
-  console.log(`Shared owner tab ${ownerTab.id}: readable by session A`);
-  await panelRequest(panelPage, { type: 'panel.unshareTab', sessionId: sessionA.id, tabId: ownerTab.id });
-  const unsharedRead = await call(mcpClient, 'read', { tab: ownerTab.id });
-  assert(unsharedRead.isError === true && /not available to this session/.test(text(unsharedRead)), `Session A can still read the unshared owner tab: ${text(unsharedRead)}`);
-  console.log(`Unshared owner tab ${ownerTab.id}: refused again`);
-  await panelRequest(panelPage, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: ownerTab.id });
+  const sharedList = await rawCall(mcpClient, 'tabs', {});
+  assert(listsTab(sharedList, ownerTab.id), `The shared owner tab is not listed:\n${text(sharedList)}`);
 
-  const pageA = await call(mcpClient, 'read', { tab: tabA, full: true });
+  await page.goto(otherSiteUrl);
+  await page.getByRole('heading', { name: 'T3-Tab E2E' }).waitFor();
+  await page.bringToFront();
+  const movedShareRead = rawCall(mcpClient, 'read', { tab: ownerTab.id });
+  const movedSharePrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'read' && prompt.tab.id === ownerTab.id);
+  assert(movedSharePrompt.origin === otherSiteUrl, `The shared tab's new origin was not prompted: ${movedSharePrompt.origin}`);
+  await decidePrompt(serviceWorker, movedSharePrompt.id, 'decline');
+  const movedShareResult = await movedShareRead;
+  assert(movedShareResult.isError === true && /Permission declined/.test(text(movedShareResult)), `A share covered a different origin: ${text(movedShareResult)}`);
+  console.log(`Share no longer covered tab ${ownerTab.id} after it moved to ${otherSiteUrl}`);
+  await page.goto(siteUrl);
+  await page.getByRole('heading', { name: 'T3-Tab E2E' }).waitFor();
+  await page.bringToFront();
+
+  await panelRequest(serviceWorker, { type: 'panel.unshareTab', sessionId: sessionA.id, tabId: ownerTab.id });
+  const unsharedRead = await rawCall(mcpClient, 'read', { tab: ownerTab.id });
+  assert(unsharedRead.isError === true && /not available to this session/.test(text(unsharedRead)), `Session A can read the unshared owner tab: ${text(unsharedRead)}`);
+  console.log(`Share covers the origin shown when shared: tab ${ownerTab.id} readable at ${siteUrl}, then refused after unshare`);
+
+  const pageA = await rawCall(mcpClient, 'read', { tab: tabA, full: true });
   const actionRef = refFor(text(pageA), 'button "Action A"');
   assert(actionRef, `Session A's action page has no button ref:\n${text(pageA)}`);
-  const firstAct = call(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
-  const actPrompt = await waitForPrompt(panelPage, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
-  await panelRequest(panelPage, { type: 'panel.decide', promptId: actPrompt.id, decision: 'allow-once' });
+
+  const firstAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const actPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
+  assertPromptTab(actPrompt, 'Permission A');
+  await decidePrompt(serviceWorker, actPrompt.id, 'allow-once');
   const allowedAct = await firstAct;
-  assert(allowedAct.isError !== true, `Allow once did not let the action through: ${text(allowedAct)}`);
-  assert(text(allowedAct).includes('Action A completed'), `The allowed action did not run:\n${text(allowedAct)}`);
-  console.log(`Ask origin, Allow once: act succeeded (${actPrompt.origin})`);
+  assert(allowedAct.isError !== true && text(allowedAct).includes('Action A completed'), `Allow once did not run the act: ${text(allowedAct)}`);
+  console.log(`Ask origin, Allow once: act succeeded on tab ${actPrompt.tab.id} "${actPrompt.tab.title}"`);
 
-  const secondAct = call(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
-  const declinePrompt = await waitForPrompt(panelPage, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
-  await panelRequest(panelPage, { type: 'panel.decide', promptId: declinePrompt.id, decision: 'decline' });
+  const secondAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const declinePrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
+  await decidePrompt(serviceWorker, declinePrompt.id, 'decline');
   const declinedAct = await secondAct;
-  assert(declinedAct.isError === true && /Permission declined/.test(text(declinedAct)), `Decline did not refuse the action: ${text(declinedAct)}`);
-  console.log(`Ask origin, Decline: refused (${text(declinedAct)})`);
+  assert(declinedAct.isError === true && /Permission declined/.test(text(declinedAct)), `Decline did not refuse the act: ${text(declinedAct)}`);
+  console.log('Ask origin, Decline: act refused');
 
-  const promptAfterAct = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
-  assert(promptAfterAct === '', `The badge stayed set after the prompt was answered: ${promptAfterAct}`);
-  const stateBeforeAllow = await panelRequest(panelPage, { type: 'panel.state', tabId: tabA });
-  const siteBefore = stateBeforeAllow.sites.find((site) => site.origin === siteUrl);
-  assert(siteBefore?.setting === 'ask', `The panel does not list the site as ask: ${JSON.stringify(stateBeforeAllow.sites)}`);
-  await panelRequest(panelPage, { type: 'panel.setSite', origin: siteUrl, setting: 'allow' });
-  const stateAfterAllow = await panelRequest(panelPage, { type: 'panel.state', tabId: tabA });
-  const siteAfter = stateAfterAllow.sites.find((site) => site.origin === siteUrl);
-  assert(siteAfter?.setting === 'allow', `The panel did not change the site to allow: ${JSON.stringify(stateAfterAllow.sites)}`);
-  console.log(`Site setting: ${siteUrl} ask -> allow in the panel`);
+  const alwaysAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const alwaysPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
+  await decidePrompt(serviceWorker, alwaysPrompt.id, 'always-allow');
+  const alwaysResult = await alwaysAct;
+  assert(alwaysResult.isError !== true, `Always allow did not run the first act: ${text(alwaysResult)}`);
+  const noPromptAct = await withDeadline(
+    rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] }),
+    2_000,
+    'second act after Always allow',
+  );
+  assert(noPromptAct.isError !== true, `The second act after Always allow failed: ${text(noPromptAct)}`);
+  assert((await pendingPrompts(serviceWorker)).length === 0, 'Always allow left a prompt waiting');
+  await setSite(serviceWorker, siteUrl, 'ask');
+  console.log('Always allow: the second act ran without a prompt');
+
+  await serviceWorker.evaluate(() => chrome.storage.local.set({ permissionTimeoutMs: 1_200 }));
+  const timeoutStarted = Date.now();
+  const timedOutAct = await rawCall(mcpClient, 'act', { tab: tabA, steps: [{ click: { ref: actionRef } }] });
+  const timeoutElapsed = Date.now() - timeoutStarted;
+  assert(timedOutAct.isError === true && /timed out and was declined/.test(text(timedOutAct)), `The prompt timeout did not decline: ${text(timedOutAct)}`);
+  assert(timeoutElapsed >= 900 && timeoutElapsed < 4_000, `The configured timeout took ${timeoutElapsed} ms`);
+  await serviceWorker.evaluate(() => chrome.storage.local.remove('permissionTimeoutMs'));
+  console.log(`Prompt timeout: declined after ${timeoutElapsed} ms`);
+
+  await panelRequest(serviceWorker, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: ownerTab.id });
+  const unsharedWhileWaiting = rawCall(mcpClient, 'act', { tab: ownerTab.id, steps: [{ scroll: { dy: 1 } }] });
+  const unsharePrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
+  assertPromptTab(unsharePrompt, 'T3-Tab E2E');
+  await panelRequest(serviceWorker, { type: 'panel.unshareTab', sessionId: sessionA.id, tabId: ownerTab.id });
+  await decidePrompt(serviceWorker, unsharePrompt.id, 'allow-once');
+  const unsharedAct = await unsharedWhileWaiting;
+  assert(unsharedAct.isError === true && /not available to this session/.test(text(unsharedAct)), `Allow after unshare still acted: ${text(unsharedAct)}`);
+  console.log(`Unshared while waiting: Allow once still refused tab ${ownerTab.id}`);
+
+  const runJsOnX = rawCall(mcpClient, 'run_js', { tab: tabA, expression: 'document.title' });
+  const runJsPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'run_js');
+  await decidePrompt(serviceWorker, runJsPrompt.id, 'allow-once');
+  const runJsResult = await runJsOnX;
+  assert(runJsResult.isError !== true && text(runJsResult) === '"Permission A"', `Approved run_js failed: ${text(runJsResult)}`);
+  console.log(`Approved run_js on ${siteUrl}: ${text(runJsResult)}`);
+
+  const navigate = rawCall(mcpClient, 'run_js', {
+    tab: tabA,
+    expression: `const target = ${JSON.stringify(`${otherSiteUrl}/perm-b`)}; setTimeout(() => { location.href = target; }, 0); return 'navigating';`,
+  });
+  const navigationPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'run_js');
+  await decidePrompt(serviceWorker, navigationPrompt.id, 'allow-once');
+  const navigateResult = await navigate;
+  assert(navigateResult.isError !== true, `Navigation run_js failed before moving: ${text(navigateResult)}`);
+  await waitForTabUrl(serviceWorker, tabA, `${otherSiteUrl}/perm-b`);
+  console.log(`Tab ${tabA} navigated from ${siteUrl} to ${otherSiteUrl}`);
+
+  const pendingRead = rawCall(mcpClient, 'read', { tab: tabA });
+  const crossOriginPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'read');
+  assertPromptTab(crossOriginPrompt, 'Permission B');
+  assert(crossOriginPrompt.origin === otherSiteUrl, `Read prompt used origin ${crossOriginPrompt.origin}`);
+  await decidePrompt(serviceWorker, crossOriginPrompt.id, 'decline');
+  const crossOriginRead = await pendingRead;
+  assert(crossOriginRead.isError === true && /Permission declined/.test(text(crossOriginRead)), `Cross-origin read was answered without approval: ${text(crossOriginRead)}`);
+  console.log(`Cross-origin read on tab ${crossOriginPrompt.tab.id} "${crossOriginPrompt.tab.title}" prompted (kind ${crossOriginPrompt.tool}) at ${otherSiteUrl} and was declined`);
+
+  const screenshotOnY = rawCall(mcpClient, 'screenshot', { tab: tabA, maxEdge: 320 });
+  const screenshotPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'read');
+  await decidePrompt(serviceWorker, screenshotPrompt.id, 'allow-once');
+  const screenshotResult = await screenshotOnY;
+  assert(screenshotResult.isError !== true && screenshotResult.content.some((item) => item.type === 'image'), `Screenshot did not get read approval: ${text(screenshotResult)}`);
+  console.log('Screenshot used a read prompt, then returned an image after Allow once');
+
+  const beforePopup = new Set(await serviceWorker.evaluate(async () => (await chrome.tabs.query({})).map((tab) => tab.id)));
+  const popupCall = rawCall(mcpClient, 'run_js', {
+    tab: tabA,
+    expression: `const opened = window.open(${JSON.stringify(`${siteUrl}/perm-a`)}, '_blank'); return 'opened';`,
+  });
+  const popupPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'run_js');
+  await decidePrompt(serviceWorker, popupPrompt.id, 'allow-once');
+  const popupResult = await popupCall;
+  assert(popupResult.isError !== true, `window.open run_js failed: ${text(popupResult)}`);
+  const popupTab = await waitForNewTab(serviceWorker, beforePopup, `${siteUrl}/perm-a`);
+  const popupGroup = await tabGroup(serviceWorker, popupTab.id);
+  assert(popupGroup.groupId === groupA.groupId, `window.open tab ${popupTab.id} is in group ${popupGroup.groupId}, expected ${groupA.groupId}`);
+  const popupRead = rawCall(mcpClient, 'read', { tab: popupTab.id });
+  const popupReadPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'read' && prompt.tab.id === popupTab.id);
+  await decidePrompt(serviceWorker, popupReadPrompt.id, 'decline');
+  const popupReadResult = await popupRead;
+  assert(popupReadResult.isError === true && /Permission declined/.test(text(popupReadResult)), `window.open tab was readable without approval: ${text(popupReadResult)}`);
+  console.log(`window.open created grouped tab ${popupTab.id} "${popupTab.title}"; read prompt (kind ${popupReadPrompt.tool}) was declined`);
 
   const restricted = await browserContext.newPage();
   await restricted.goto('chrome://version');
   const restrictedId = await serviceWorker.evaluate(async () => (await chrome.tabs.query({})).find((tab) => tab.url?.startsWith('chrome://version'))?.id);
   assert(Number.isInteger(restrictedId), 'The harness could not find its chrome://version tab');
-  await panelRequest(panelPage, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: restrictedId });
-  const restrictedRead = await call(mcpClient, 'read', { tab: restrictedId });
-  assert(restrictedRead.isError === true && /restricted/.test(text(restrictedRead)), `chrome://version was not refused: ${text(restrictedRead)}`);
-  console.log(`Restricted page refused: ${text(restrictedRead)}`);
+  await panelRequest(serviceWorker, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: restrictedId });
+  const restrictedRead = await rawCall(mcpClient, 'read', { tab: restrictedId });
+  assert(restrictedRead.isError === true && /T3-Tab cannot access this page/.test(text(restrictedRead)), `chrome://version was not refused by T3-Tab policy: ${text(restrictedRead)}`);
+  console.log(`Restricted page refused by T3-Tab policy: ${text(restrictedRead)}`);
   await restricted.close();
+
 
   await page.goto(`${siteUrl}/regex`);
   await page.getByRole('heading', { name: 'Regex timeout' }).waitFor();
   await page.bringToFront();
+  await panelRequest(serviceWorker, { type: 'panel.shareTab', sessionId: sessionA.id, tabId: ownerTab.id });
   const started = Date.now();
-  const heavy = await call(mcpClient, 'read', { tab: ownerTab.id, find: '(a+)+$', regex: true });
+  const heavy = await rawCall(mcpClient, 'read', { tab: ownerTab.id, find: '(a+)+$', regex: true });
   const elapsed = Date.now() - started;
   assert(heavy.isError === true && /Find regex timed out/.test(text(heavy)), `Regex-heavy find did not time out: ${text(heavy)}`);
   assert(elapsed < 3_000, `Regex-heavy find took ${elapsed} ms`);
-  console.log(`Regex-heavy find declined promptly: ${elapsed} ms (${text(heavy)})`);
+  console.log(`Regex-heavy find declined promptly: ${elapsed} ms`);
 
+  assert((await pendingPrompts(serviceWorker)).length === 0, 'Permission checks left a prompt waiting');
   console.log('Permissions: all checks passed');
+  return { sessionA, sessionB, tabA, tabB, ownerTabId: ownerTab.id };
 }
 
-async function waitForSessions(panelPage, minimum) {
+async function assertPromptMetadata(serviceWorker, prompt) {
+  const pending = await pendingPrompts(serviceWorker);
+  assert(pending[0]?.id === prompt.id, 'The newest prompt is not first in arrival order');
+  assertPromptTab(prompt, 'Permission A');
+}
+
+async function assertPromptUi(panelPage, serviceWorker, prompt) {
+  const state = await panelRequest(serviceWorker, { type: 'panel.state' });
+  await renderPanelState(panelPage, state);
+  const description = `tab ${prompt.tab.id} "${prompt.tab.title}"`;
+  await panelPage.getByText(new RegExp(description.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).waitFor();
+  const allow = panelPage.getByRole('button', { name: 'Allow once' });
+  await allow.waitFor();
+  assert(await allow.isDisabled(), 'New prompt buttons were enabled immediately');
+  const handle = await allow.elementHandle();
+  assert(handle !== null, 'Could not hold the prompt button');
+  await handle.evaluate((element) => {
+    element.dataset.stabilityCheck = 'kept';
+  });
+  await sleep(650);
+  assert(!(await allow.isDisabled()), 'Prompt buttons did not enable after the short delay');
+  await renderPanelState(panelPage, state);
+  assert(
+    await handle.evaluate((element) => element.isConnected && element.dataset.stabilityCheck === 'kept'),
+    'A rendered prompt item was rebuilt instead of kept',
+  );
+  console.log(`Prompt UI: tab ${prompt.tab.id} "${prompt.tab.title}", buttons delayed, item kept across rerender`);
+}
+
+async function renderPanelState(panelPage, state) {
+  await panelPage.evaluate((next) => {
+    const render = globalThis.__t3tabRenderPanelState;
+    if (typeof render !== 'function') throw new Error('Panel renderer is unavailable');
+    render(next);
+  }, state);
+}
+
+function assertPromptTab(prompt, expectedTitle) {
+  assert(Number.isInteger(prompt.tab?.id) && prompt.tab.id >= 0, `Prompt has no tab id: ${JSON.stringify(prompt)}`);
+  assert(typeof prompt.tab.title === 'string' && prompt.tab.title.length > 0, `Prompt has no tab title: ${JSON.stringify(prompt)}`);
+  assert(prompt.tab.title.includes(expectedTitle), `Prompt named "${prompt.tab.title}", expected "${expectedTitle}"`);
+}
+
+async function waitForSessions(serviceWorker, minimum) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const state = await panelRequest(panelPage, { type: 'panel.state' });
+    const state = await panelRequest(serviceWorker, { type: 'panel.state' });
     if (state.sessions?.length >= minimum) return state.sessions;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await sleep(100);
   }
   throw new Error(`The panel did not list ${minimum} MCP sessions`);
 }
 
-async function waitForPrompt(panelPage, match) {
+async function waitForPrompt(serviceWorker, match) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const state = await panelRequest(panelPage, { type: 'panel.state' });
-    const prompt = state.pending?.find(match);
+    const prompt = (await pendingPrompts(serviceWorker)).find(match);
     if (prompt !== undefined) return prompt;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await sleep(100);
   }
   throw new Error('The side panel did not show the expected permission request');
 }
 
-async function panelRequest(panelPage, request) {
-  const response = await panelPage.evaluate(async (message) => await chrome.runtime.sendMessage(message), request);
+async function pendingPrompts(serviceWorker) {
+  const state = await panelRequest(serviceWorker, { type: 'panel.state' });
+  return state.pending ?? [];
+}
+
+async function decidePrompt(serviceWorker, promptId, decision) {
+  await panelRequest(serviceWorker, { type: 'panel.decide', promptId, decision });
+}
+
+async function setSite(serviceWorker, origin, setting) {
+  await panelRequest(serviceWorker, { type: 'panel.setSite', origin, setting });
+}
+
+async function panelRequest(serviceWorker, request) {
+  const response = await serviceWorker.evaluate(async (message) => {
+    const handle = globalThis.__t3tabHandlePanelRequest;
+    if (typeof handle !== 'function') throw new Error('Panel handler is unavailable');
+    return await handle(message);
+  }, request);
   if (response === undefined) throw new Error(`The extension did not answer ${request.type}`);
   if (response?.ok === false) throw new Error(`${request.type}: ${response.error}`);
   return response;
@@ -419,6 +599,41 @@ async function tabGroup(serviceWorker, tabId) {
     const group = await chrome.tabGroups.get(tab.groupId);
     return { groupId: tab.groupId, title: group.title ?? '' };
   }, tabId);
+}
+
+async function waitForTabUrl(serviceWorker, tabId, expectedUrl) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const tab = await serviceWorker.evaluate(async (id) => await chrome.tabs.get(id), tabId);
+    if (tab.url === expectedUrl) return tab;
+    await sleep(100);
+  }
+  throw new Error(`Tab ${tabId} did not navigate to ${expectedUrl}`);
+}
+
+async function waitForNewTab(serviceWorker, before, expectedUrl) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const tabs = await serviceWorker.evaluate(async () => (await chrome.tabs.query({})).map((tab) => ({ id: tab.id, url: tab.url, title: tab.title })));
+    const found = tabs.find((tab) => tab.id !== undefined && !before.has(tab.id) && tab.url === expectedUrl);
+    if (found !== undefined) return found;
+    await sleep(100);
+  }
+  throw new Error(`No new tab committed to ${expectedUrl}`);
+}
+
+async function withDeadline(promise, milliseconds, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} did not finish within ${milliseconds} ms`)), milliseconds);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function checkBrowserTools({ mcpClient, page, siteUrl }) {
@@ -649,8 +864,29 @@ async function settledViewport(page) {
   return JSON.parse(previous);
 }
 
-async function call(client, name, args) {
+async function rawCall(client, name, args) {
   return await client.callTool({ name, arguments: args });
+}
+
+async function call(client, name, args) {
+  if (autoPromptSessionId === undefined) return await rawCall(client, name, args);
+  const result = rawCall(client, name, args);
+  let settled = false;
+  void result.then(
+    () => { settled = true; },
+    () => { settled = true; },
+  );
+  const decided = new Set();
+  while (!settled) {
+    const prompts = await pendingPrompts(permissionServiceWorker).catch(() => []);
+    for (const prompt of prompts) {
+      if (prompt.session.id !== autoPromptSessionId || decided.has(prompt.id)) continue;
+      decided.add(prompt.id);
+      await decidePrompt(permissionServiceWorker, prompt.id, 'allow-once');
+    }
+    if (!settled) await sleep(75);
+  }
+  return await result;
 }
 
 function text(result) {
@@ -689,6 +925,26 @@ function jpegSize(bytes) {
     offset += 2 + ((bytes[offset + 2] << 8) | bytes[offset + 3]);
   }
   return undefined;
+}
+
+async function listen(server) {
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+}
+
+async function closeServer(server) {
+  if (server.listening !== true) return;
+  await new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }
 
 function cleanEnv(env) {

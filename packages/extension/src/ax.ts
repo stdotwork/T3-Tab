@@ -14,7 +14,6 @@ const KEPT_PROPS = new Set([
   'readonly',
   'invalid',
   'level',
-  'protected',
 ]);
 
 /**

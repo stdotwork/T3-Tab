@@ -32,8 +32,10 @@ The built server is `packages/server/dist/cli.js`; `node_modules/.bin/t3-tab` ru
 `pnpm e2e` launches headless Playwright Chromium with that built extension, starts the real native host and
 two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
 links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
-`screenshot`, `act` and `run_js`. It also checks session tab groups, tab sharing, per-site allow/decline
-prompts, restricted pages, password redaction and a regex timeout. The action run fills and submits the
+`screenshot`, `act` and `run_js`. It also checks session tab groups, socket-bound session ids, tab sharing,
+read and action prompts, cross-origin navigation and `window.open`, restricted pages, password redaction
+and a regex timeout. Existing tool checks run with the site still set to ask and the harness answering
+prompts with Allow once. The action run fills and submits the
 test form, checks a stale ref after navigation, evaluates page JavaScript and waits past the extension
 worker's idle timeout before another `status` call. It prints each reply and its size. Every process it
 starts uses a temporary HOME and XDG directories.
@@ -73,21 +75,28 @@ the page for cases the structured tools do not cover. The extension sends a WebS
 while the daemon is connected so Chrome does not stop its service worker.
 
 `find` matches case-insensitive literal text by default. Passing `regex: true` opts into a regular
-expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. Password inputs
-are identified through the DOM and sent as `value=<redacted>`, without their value or length.
+expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. Every text box
+is inspected in bounded batches; password values are removed before the accessibility tree leaves the
+extension and render as `value=<redacted>`.
 
 ## Sessions and permissions
 
-Each MCP server process is a session named from the MCP client's name plus a short id. Tabs it opens go
-into its own Chromium tab group. A session can list and use only tabs in that group or tabs the owner
-shares from the side panel; every other tab id is refused.
+The daemon issues each session id and binds it to the control connection that registered it; tool requests
+on another socket, or with another id, are refused. Tabs a session opens go into its own Chromium tab
+group. It can list and use only tabs in that group or tabs the owner shares from the side panel.
 
-Site permissions are stored per HTTP(S) origin: `ask` by default, or `allow`. On `ask`, `act`, `run_js` and
-opening a tab wait for the owner to choose Allow once, Always allow on this site, or Decline in the side
-panel. A prompt that times out is declined. The action icon shows how many prompts are waiting. Reads and
-screenshots do not prompt, but they still require a usable tab. An action batch, `run_js` and a newly opened
-tab are checked again against the approved origin, so a page that moves during approval or between steps
-is refused until its new origin is approved.
+Site permissions are stored per HTTP(S) origin: `ask` by default, or `allow`. Each session also records the
+origins approved for each tab by opening it, reading it, acting on it, or sharing it. A tab commit to a
+different origin clears those approvals; `read` and `screenshot` then show a `read` prompt, while `act` and
+`run_js` keep prompting for action. `window.open` tabs from a session are kept in that session group without
+inheriting origin approval. A prompt names its tab id and title; it can time out or be declined, and one
+session may have at most three waiting prompts. The side panel keeps prompt rows stable and enables new
+buttons after 500 ms.
+
+Membership, restricted-page and approved-origin checks run again after every permission wait and before
+every `act` step. `run_js` checks the origin both before evaluation and inside the evaluated context. A tab
+that moves while approval is pending or between steps is refused until its new origin is approved. Site
+setting writes are serialised.
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
 `view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel's plain permissions view

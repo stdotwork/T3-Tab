@@ -14,6 +14,7 @@ import {
 const OPEN_TIMEOUT_MS = 15_000;
 const OPENABLE_PROTOCOLS = new Set(['http:', 'https:']);
 const grouping = new Map<string, Promise<unknown>>();
+const popupClaims = new Map<string, number>();
 
 export async function listTabs(session: StoredSession): Promise<TabInfo[]> {
   const [tabs, front] = await Promise.all([
@@ -92,6 +93,27 @@ async function getTab(tabId: number): Promise<chrome.tabs.Tab> {
     return await chrome.tabs.get(tabId);
   } catch {
     throw new Error(`No tab with id ${tabId}`);
+  }
+}
+
+export function beginPopupCapture(session: StoredSession): () => void {
+  if (session.groupId === undefined) return () => undefined;
+  const id = crypto.randomUUID();
+  popupClaims.set(id, session.groupId);
+  return () => popupClaims.delete(id);
+}
+
+/** A window.open from a tab can inherit the wrong session group when that tab is not active. */
+export async function adoptPopupTab(tab: chrome.tabs.Tab): Promise<void> {
+  if (tab.id === undefined || tab.openerTabId === undefined) return;
+  const claims = [...popupClaims.values()];
+  if (claims.length !== 1) return;
+  const groupId = claims[0];
+  if (groupId === undefined) return;
+  try {
+    await chrome.tabs.group({ tabIds: [tab.id], groupId });
+  } catch {
+    // The popup or group can close before adoption.
   }
 }
 

@@ -35,7 +35,7 @@ export async function handlePanelRequest(value: unknown): Promise<PanelState | {
   if (request.type === 'panel.state') return await panelState(request.tabId);
   if (request.type === 'panel.shareTab') {
     const tab = await panelTab(request.tabId);
-    await sessionStore.share(request.sessionId, tab.id);
+    await sessionStore.share(request.sessionId, tab.id, originOf(tab.url));
     return { ok: true };
   }
   if (request.type === 'panel.unshareTab') {

@@ -2,8 +2,9 @@ import type { ActAction, ActFailure, ActStep, PageActionResult } from '@t3-tab/p
 
 import { documentEpoch, ensureAttached, sendCommand } from './cdp';
 import { readPage } from './page';
+import { originOf } from './permissions';
 import type { StoredSession } from './sessions';
-import { assertTabOrigin } from './tabs';
+import { resolveSessionTab } from './tabs';
 import { settlePage } from './settle';
 
 const MAX_WAIT_MS = 10_000;
@@ -43,18 +44,21 @@ export async function actOnPage(
   backendIds: Array<number | null>,
   expectedEpoch: number,
   expectedOrigin: string,
+  reloadSession: () => Promise<StoredSession>,
 ): Promise<PageActionResult> {
   await ensureAttached(tabId);
   await sendCommand(tabId, 'DOM.enable');
   let epoch = documentEpoch(tabId);
   let failure: ActFailure | undefined;
+  let activeSession = session;
 
   for (let index = 0; index < steps.length; index += 1) {
     const step = steps[index];
     if (step === undefined) continue;
     const action = actionOf(step);
     try {
-      await assertTabOrigin(tabId, expectedOrigin);
+      activeSession = await reloadSession();
+      await assertActAccess(activeSession, tabId, expectedOrigin);
       const ref = refOf(step);
       if (ref !== undefined) {
         if (epoch !== expectedEpoch) throw staleRef(ref, `document epoch ${expectedEpoch} -> ${epoch}`);
@@ -74,11 +78,30 @@ export async function actOnPage(
 
     await settlePage(tabId);
     epoch = documentEpoch(tabId);
+    try {
+      activeSession = await reloadSession();
+      await assertActAccess(activeSession, tabId, expectedOrigin);
+    } catch (error) {
+      throw new Error(
+        `Step ${index + 1} (${action}) left the page outside the approved session origin: ${messageOf(error)}`,
+      );
+    }
     if (failure !== undefined) break;
   }
 
-  const page = await readPage(session, tabId);
+  activeSession = await reloadSession();
+  const page = await readPage(activeSession, tabId, expectedOrigin, reloadSession);
   return failure === undefined ? page : { ...page, failure };
+}
+
+async function assertActAccess(session: StoredSession, tabId: number, expectedOrigin: string): Promise<void> {
+  const tab = await resolveSessionTab(session, tabId);
+  const actual = originOf(tab.url ?? tab.pendingUrl ?? '');
+  if (actual !== expectedOrigin) {
+    throw new Error(
+      `The page moved from ${expectedOrigin} to ${actual ?? 'an unknown origin'}. Read the new page and approve it before acting there.`,
+    );
+  }
 }
 
 async function runElementStep(tabId: number, step: ActStep, backendId: number, ref: string): Promise<void> {

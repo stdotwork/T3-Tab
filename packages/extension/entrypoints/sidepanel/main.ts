@@ -1,6 +1,12 @@
 import type { PanelRequest, PanelState } from '../../src/panel';
-import type { PermissionDecision } from '../../src/permissions';
+import type { PermissionDecision, PermissionPrompt } from '../../src/permissions';
 
+interface PromptNode {
+  item: HTMLLIElement;
+  description: HTMLElement;
+}
+
+const BUTTON_DELAY_MS = 500;
 const app = document.querySelector<HTMLElement>('#app');
 const tabIdParam = new URL(location.href).searchParams.get('tabId');
 const fixedTabId = tabIdParam === null ? undefined : Number(tabIdParam);
@@ -8,6 +14,8 @@ const stateRequest: PanelRequest =
   fixedTabId !== undefined && Number.isInteger(fixedTabId)
     ? { type: 'panel.state', tabId: fixedTabId }
     : { type: 'panel.state' };
+const headless = new URL(location.href).searchParams.get('headless') === '1';
+const promptNodes = new Map<string, PromptNode>();
 
 async function refresh(): Promise<void> {
   if (app === null) return;
@@ -42,22 +50,7 @@ function render(state: PanelState): void {
 
   children.push(heading('Waiting for you', 2));
   if (state.pending.length === 0) children.push(text('p', 'No permission requests.', 'muted'));
-  else {
-    const list = document.createElement('ul');
-    for (const prompt of state.pending) {
-      const item = document.createElement('li');
-      item.append(
-        text('div', `${prompt.session.name} wants to ${prompt.tool === 'open' ? 'open' : `use ${prompt.tool} on`} ${prompt.origin}.`),
-        buttons([
-          ['Allow once', () => decide(prompt.id, 'allow-once')],
-          ['Always allow on this site', () => decide(prompt.id, 'always-allow')],
-          ['Decline', () => decide(prompt.id, 'decline'), 'danger'],
-        ]),
-      );
-      list.append(item);
-    }
-    children.push(list);
-  }
+  else children.push(promptList(state.pending));
 
   children.push(heading('Connected sessions', 2));
   if (state.sessions.length === 0) children.push(text('p', 'No MCP clients are connected.', 'muted'));
@@ -68,21 +61,10 @@ function render(state: PanelState): void {
       const item = document.createElement('li');
       item.append(
         text('div', session.name),
-        text(
-          'div',
-          session.groupId === undefined ? 'No tab group yet' : `Tab group ${session.groupId}`,
-          'muted',
-        ),
+        text('div', session.groupId === undefined ? 'No tab group yet' : `Tab group ${session.groupId}`, 'muted'),
       );
       if (current !== undefined) {
-        item.append(
-          buttons([
-            [
-              shared ? 'Unshare current tab' : 'Share current tab',
-              () => toggleShare(session.id, current.id, shared),
-            ],
-          ]),
-        );
+        item.append(buttons([[shared ? 'Unshare current tab' : 'Share current tab', () => toggleShare(session.id, shared)]]));
       }
       list.append(item);
     }
@@ -111,13 +93,51 @@ function render(state: PanelState): void {
   app.replaceChildren(...children);
 }
 
+function promptList(pending: PermissionPrompt[]): HTMLElement {
+  const list = document.createElement('ul');
+  const ids = new Set(pending.map((prompt) => prompt.id));
+  for (const [id, node] of promptNodes) {
+    if (ids.has(id)) continue;
+    node.item.remove();
+    promptNodes.delete(id);
+  }
+  for (const prompt of pending) {
+    let node = promptNodes.get(prompt.id);
+    if (node === undefined) {
+      const item = document.createElement('li');
+      const description = text('div', '', 'prompt-text');
+      const controls = buttons([
+        ['Allow once', () => decide(prompt.id, 'allow-once'), null, true],
+        ['Always allow on this site', () => decide(prompt.id, 'always-allow'), null, true],
+        ['Decline', () => decide(prompt.id, 'decline'), 'danger', true],
+      ]);
+      item.append(description, controls);
+      node = { item, description };
+      promptNodes.set(prompt.id, node);
+      const enable = (): void => {
+        for (const button of controls.querySelectorAll('button')) button.disabled = false;
+      };
+      setTimeout(enable, BUTTON_DELAY_MS);
+    }
+    node.description.textContent = promptDescription(prompt);
+    list.append(node.item);
+  }
+  return list;
+}
+
+function promptDescription(prompt: PermissionPrompt): string {
+  const action = prompt.tool === 'open' ? 'open' : prompt.tool === 'read' ? 'read' : `use ${prompt.tool} on`;
+  return `${prompt.session.name} wants to ${action} tab ${prompt.tab.id} "${prompt.tab.title}" at ${prompt.origin}.`;
+}
+
 async function decide(promptId: string, decision: PermissionDecision): Promise<void> {
   await send({ type: 'panel.decide', promptId, decision });
   await refresh();
 }
 
-async function toggleShare(sessionId: string, tabId: number, shared: boolean): Promise<void> {
-  await send({ type: shared ? 'panel.unshareTab' : 'panel.shareTab', sessionId, tabId });
+async function toggleShare(sessionId: string, shared: boolean): Promise<void> {
+  // Do not pass a tab id: the owner may have switched tabs since this list was rendered.
+  await send({ type: shared ? 'panel.unshareTab' : 'panel.shareTab', sessionId });
   await refresh();
 }
 
@@ -137,18 +157,23 @@ function text(tag: string, value: string, className?: string): HTMLElement {
   return element;
 }
 
-function buttons(items: Array<[string, () => Promise<void>, string?]>): HTMLElement {
+function buttons(items: Array<[string, () => Promise<void>, (string | null)?, boolean?]>): HTMLElement {
   const row = document.createElement('div');
   row.className = 'buttons';
-  for (const [label, action, className] of items) {
+  for (const [label, action, className, disabled] of items) {
     const button = document.createElement('button');
     button.textContent = label;
-    if (className !== undefined) button.className = className;
+    if (className !== undefined && className !== null) button.className = className;
+    if (disabled === true) button.disabled = true;
     button.addEventListener('click', () => void action());
     row.append(button);
   }
   return row;
 }
 
-void refresh();
-setInterval(() => void refresh(), 1_000);
+if (headless) {
+  (globalThis as typeof globalThis & { __t3tabRenderPanelState?: typeof render }).__t3tabRenderPanelState = render;
+} else {
+  void refresh();
+  setInterval(() => void refresh(), 1_000);
+}

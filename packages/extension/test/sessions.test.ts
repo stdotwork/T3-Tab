@@ -8,7 +8,14 @@ import {
   type StoredSession,
 } from '../src/sessions';
 
-const session: StoredSession = { id: 'session-a', name: 'Session A', groupId: 12, sharedTabIds: [22] };
+const session: StoredSession = {
+  id: 'session-a',
+  name: 'Session A',
+  groupId: 12,
+  sharedTabIds: [22],
+  approvedOrigins: {},
+  currentOrigins: {},
+};
 
 describe('session tab ownership', () => {
   it('allows only tabs in the session group or explicitly shared', () => {
