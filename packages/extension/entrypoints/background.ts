@@ -13,6 +13,7 @@ import {
 import { defineBackground } from 'wxt/utils/define-background';
 
 import { initCdp } from '../src/cdp';
+import { handleDaemonReply, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
 import { handlePanelRequest } from '../src/panel';
 import { isSidePanelSender } from '../src/panel-security';
 import { originOf } from '../src/permissions';
@@ -91,6 +92,7 @@ export default defineBackground(() => {
       socket = current;
       current.addEventListener('open', () => {
         reconnectAttempt = 0;
+        setDaemonSocket(current);
         const hello: BrowserHelloMessage = {
           type: 'browser.hello',
           protocolVersion: PROTOCOL_VERSION,
@@ -107,10 +109,13 @@ export default defineBackground(() => {
         }, 20_000);
       });
       current.addEventListener('message', (event) => {
-        const request = parseRequest(event.data);
+        const value = parseMessage(event.data);
+        if (handleDaemonReply(value)) return;
+        const request = parseRequest(value);
         if (request !== undefined) void answer(current, request);
       });
       current.addEventListener('close', () => {
+        if (socket === current) setDaemonSocket(undefined);
         if (socket === current) scheduleReconnect();
         else clearKeepalive();
       });
@@ -124,6 +129,7 @@ export default defineBackground(() => {
     }
   };
 
+  setDaemonConnector(() => void connect());
   initCdp();
   // The headless harness cannot open a real side panel; it calls the same panel function from the worker.
   (globalThis as typeof globalThis & { __t3tabHandlePanelRequest?: typeof handlePanelRequest }).__t3tabHandlePanelRequest =
@@ -181,16 +187,19 @@ async function nativeConfiguration(): Promise<{ port: number; token: string }> {
   return { port: response.port, token: response.token };
 }
 
-function parseRequest(data: unknown): BrowserRequestMessage | undefined {
+function parseMessage(data: unknown): unknown {
   if (typeof data !== 'string') return undefined;
   try {
-    const value: unknown = JSON.parse(data);
-    if (typeof value !== 'object' || value === null) return undefined;
-    const candidate = value as Record<string, unknown>;
-    if (candidate.type !== 'browser.request' || candidate.protocolVersion !== PROTOCOL_VERSION) return undefined;
-    if (typeof candidate.requestId !== 'string' || typeof candidate.method !== 'string') return undefined;
-    return value as BrowserRequestMessage;
+    return JSON.parse(data);
   } catch {
     return undefined;
   }
+}
+
+function parseRequest(value: unknown): BrowserRequestMessage | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.type !== 'browser.request' || candidate.protocolVersion !== PROTOCOL_VERSION) return undefined;
+  if (typeof candidate.requestId !== 'string' || typeof candidate.method !== 'string') return undefined;
+  return value as BrowserRequestMessage;
 }

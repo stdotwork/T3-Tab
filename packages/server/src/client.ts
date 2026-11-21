@@ -15,6 +15,7 @@ import {
 } from '@t3-tab/protocol';
 import WebSocket from 'ws';
 
+import { CLAIM_ENV } from './agents/commands.js';
 import { readDaemonState, stateDirectory, type DaemonState } from './state.js';
 
 const START_TIMEOUT_MS = 10_000;
@@ -132,6 +133,7 @@ export class DaemonSession {
           requestId: randomUUID(),
           method: 'session.register',
           clientName: this.clientName,
+          ...claimFrom(this.env),
         },
         CONTROL_TIMEOUT_MS,
       );
@@ -198,6 +200,12 @@ export class DaemonSession {
   }
 }
 
+/** A direct run from the side panel starts this MCP server with the panel's claim code for the owner's tabs. */
+function claimFrom(env: NodeJS.ProcessEnv): { claim?: string } {
+  const claim = env[CLAIM_ENV]?.trim();
+  return claim === undefined || claim === '' ? {} : { claim };
+}
+
 export async function daemonIsHealthy(state: DaemonState): Promise<boolean> {
   try {
     const response = await fetch(`http://127.0.0.1:${state.port}/health`, {
@@ -214,8 +222,10 @@ export async function daemonIsHealthy(state: DaemonState): Promise<boolean> {
 
 function startDaemonProcess(env: NodeJS.ProcessEnv): void {
   const cliPath = fileURLToPath(new URL('./cli.js', import.meta.url));
+  // A claim code belongs to the MCP process that was started with it, not to the daemon it may start.
+  const { [CLAIM_ENV]: _claim, ...daemonEnv } = env;
   const child = spawn(process.execPath, [cliPath, 'daemon'], {
-    env,
+    env: daemonEnv,
     detached: true,
     stdio: 'ignore',
   });

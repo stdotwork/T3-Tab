@@ -1,10 +1,11 @@
 import type { BrowserMethods, BrowserRequestMessage, ToolSession } from '@t3-tab/protocol';
 
 import { actOnPage } from './actions';
+import { claimTabs } from './claims';
 import { evaluatePage } from './evaluate';
 import { readPage } from './page';
 import { originOf, restrictedPageError, type PromptTab } from './permissions';
-import { permissionPrompts, sessionStore, siteStore } from './runtime';
+import { claimStore, permissionPrompts, sessionStore, siteStore } from './runtime';
 import { captureViewport } from './screenshot';
 import type { StoredSession } from './sessions';
 import {
@@ -33,6 +34,10 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
 
   const session = await registeredSession(request.session);
   switch (request.method) {
+    case 'session.claim':
+      return {
+        shared: await claimTabs(claimStore, sessionStore, session.id, request.params.code),
+      } satisfies BrowserMethods['session.claim']['result'];
     case 'tabs.list':
       return { tabs: await listTabs(session, siteSetting) } satisfies BrowserMethods['tabs.list']['result'];
     case 'tabs.open':

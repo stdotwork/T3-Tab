@@ -154,6 +154,11 @@ export interface ScreenshotResult {
 /** Requests the background program sends to the extension, with their params and results. */
 export interface BrowserMethods {
   'session.register': { params: Record<string, never>; result: { registered: true } };
+  /**
+   * Shares with the calling session the tabs the owner picked in the side panel when it started an agent. The
+   * extension issued `code` and holds the tabs it names; the daemon only passes it on.
+   */
+  'session.claim': { params: { code: string }; result: { shared: number[] } };
   'session.unregister': { params: Record<string, never>; result: { unregistered: true } };
   'tabs.list': { params: Record<string, never>; result: { tabs: TabInfo[] } };
   'tabs.open': { params: { url: string }; result: { tab: TabInfo } };
@@ -199,8 +204,79 @@ export interface BrowserResponseErrorMessage {
 
 export type BrowserResponseMessage = BrowserResponseOkMessage | BrowserResponseErrorMessage;
 
+/** How a side-panel conversation runs: as a T3 Code thread, or as Claude Code or Codex started directly. */
+export type AgentVia = 't3' | 'claude' | 'codex';
+
+export type AgentStatus = 'running' | 'waiting' | 'idle' | 'failed';
+
+export interface AgentMessage {
+  role: 'user' | 'assistant' | 'error';
+  text: string;
+}
+
+/** One conversation the side panel started. The daemon holds it in memory. */
+export interface AgentConversation {
+  id: string;
+  via: AgentVia;
+  title: string;
+  status: AgentStatus;
+  /** The T3 thread id, or the Claude Code or Codex session id once the CLI reported it. */
+  threadId?: string;
+  /** For a T3 thread: the project id or path. For a direct run: the working folder. */
+  project?: string;
+  provider?: string;
+  model?: string;
+  messages: AgentMessage[];
+  error?: string;
+  updatedAt: number;
+}
+
+export type T3State = 'running' | 'stopped' | 'missing' | 'error';
+
+export interface AgentsStatus {
+  t3: { state: T3State; path?: string; detail?: string };
+  /** Paths of the agent CLIs a direct run would use, when found. */
+  claude?: string;
+  codex?: string;
+}
+
+export interface AgentStartParams {
+  via: AgentVia;
+  message: string;
+  project?: string;
+  provider?: string;
+  model?: string;
+  /** Issued by the extension for the tabs the owner shares with this conversation. */
+  claim: string;
+}
+
+/** Requests the extension sends to the background program for the side panel, with their params and results. */
+export interface DaemonMethods {
+  'agents.status': { params: { refresh?: boolean }; result: AgentsStatus };
+  'agents.list': { params: Record<string, never>; result: { conversations: AgentConversation[] } };
+  'agents.start': { params: AgentStartParams; result: { conversation: AgentConversation } };
+  'agents.send': { params: { id: string; message: string }; result: { conversation: AgentConversation } };
+}
+
+export type DaemonMethod = keyof DaemonMethods;
+
+export type BrowserDaemonRequestMessage = {
+  [M in DaemonMethod]: {
+    type: 'browser.daemonRequest';
+    protocolVersion: typeof PROTOCOL_VERSION;
+    requestId: string;
+    method: M;
+    params: DaemonMethods[M]['params'];
+  };
+}[DaemonMethod];
+
+export type DaemonReplyMessage =
+  | { type: 'daemon.reply'; protocolVersion: typeof PROTOCOL_VERSION; requestId: string; ok: true; result: unknown }
+  | { type: 'daemon.reply'; protocolVersion: typeof PROTOCOL_VERSION; requestId: string; ok: false; error: string };
+
 export type BrowserMessage =
   | BrowserHelloMessage
+  | BrowserDaemonRequestMessage
   | BrowserPingMessage
   | BrowserPongMessage
   | BrowserTabCountMessage
@@ -219,6 +295,8 @@ export interface ControlSessionRegisterRequest {
   requestId: string;
   method: 'session.register';
   clientName: string;
+  /** A side-panel claim code the MCP process was started with (`T3_TAB_CLAIM`), for a direct run. */
+  claim?: string;
 }
 
 export interface ControlStatusRequest {

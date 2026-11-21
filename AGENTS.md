@@ -45,8 +45,15 @@ run with the site still set to ask and the harness answering prompts with Allow 
 test form, checks a stale ref after navigation, evaluates page JavaScript and waits past the extension
 worker's idle timeout before another `status` call. It checks the install command through direct config
 edits, `--print`, a second install, uninstall and, when both agent CLIs are available, their CLI path and
-`mcp list` output. It prints each reply and its size. Every process it starts uses a temporary HOME and XDG
-directories, and every browser is headless.
+`mcp list` output. It then checks side-panel sessions (`e2e/panel-sessions.mjs`) with fake `t3`, `claude`
+and `codex` commands (`e2e/fakes/`) first on the daemon's PATH, which record their arguments and drive the
+real `t3-tab mcp` server: a T3 thread started with project, provider and model claims the owner's tab and
+reads it, is continued with `t3 thread send` and polled with `t3 thread show`; a made-up claim code is
+refused; T3 stopped and T3 missing are reported; direct Claude Code and Codex runs read the tab, and are
+resumed with the session id they printed. It renders the panel from that state and, when
+`T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
+process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
+variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless.
 
 `pnpm bench` (after `pnpm build`) measures what an agent is sent, in characters and estimated tokens: the
 `tools/list` payload (total and per tool) and each tool reply on four fixed tasks over three local pages
@@ -165,6 +172,40 @@ Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-ex
 `view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel's plain permissions view
 is in `packages/extension/entrypoints/sidepanel`; its sharing and prompt calls live in
 `packages/extension/src/panel.ts`, and the policy is in `permissions.ts`, `sessions.ts` and `tabs.ts`.
+
+## Side panel sessions
+
+The side panel starts and continues agents with the owner's tabs; T3-Tab never runs a model. The panel asks
+the extension's service worker, which passes the request over its link to the daemon
+(`browser.daemonRequest`, answered with `daemon.reply`); the panel never talks to T3 itself. The daemon keeps
+the conversations in memory (`packages/server/src/agents/`), so they end when it stops.
+
+- **T3 Code threads.** The daemon runs `t3 thread start --json [--provider <instance> --model <slug>]
+  <project> -`, `t3 thread send --json <thread> -` and `t3 thread show --json --messages 20 <thread>`, with
+  the message on stdin, and polls `show` every 3 seconds until the run it started has finished. Each `t3 thread` command signs in to T3
+  for a moment, so the panel checks T3's state at most once a minute unless the owner reopens the panel. The project is
+  a T3 project id or a folder inside one; provider and model are optional (both or neither). The `t3` CLI has
+  no command that lists projects, providers or models, so the panel takes them as text.
+- **Finding `t3`.** `T3_TAB_T3` when set (and then only it), else `t3` on PATH or in the usual install
+  folders, else the launchers listed in `<T3 home>/runtime/launchers`, else the newest fully installed
+  `<T3 home>/runtime/versions/<version>/t3`; the T3 home is `T3CODE_HOME` or `~/.t3`. Whether T3 is running
+  comes from `t3 thread list --json --project /`: a running server answers that no project matches, a stopped
+  one that it is not running. The panel shows "not found" or "not running" and then offers the direct runs.
+- **Direct runs.** Claude Code: `claude -p --output-format stream-json --verbose --strict-mcp-config
+  --mcp-config <T3-Tab only> --allowedTools mcp__t3-tab [--model <m>] [--resume <session>]`. Codex: `codex
+  exec [resume] --json --skip-git-repo-check -c sandbox_mode="read-only" -c mcp_servers.t3-tab.*=… [-m <m>]
+  [<session>] -`. The message goes on stdin, the folder defaults to the home folder, and each turn is one
+  process, continued with the session id the CLI printed. Only T3-Tab's MCP server is loaded, and the agent
+  gets T3-Tab's tools plus the CLI's read-only ones.
+- **The owner's tabs.** Start shares the current tab, or every tab of its group when the owner made that
+  group (not a session's). The extension issues a random claim code for those tabs (`claims.ts`, kept in
+  `chrome.storage.session`) and the daemon only passes it on. A direct run's MCP server is started with
+  `T3_TAB_CLAIM` and claims at its first tool call. A T3 thread's agent starts its MCP servers from its own
+  config, so its first message ends with a line asking it to call `tabs` with `{"claim": "<code>"}`; the panel
+  hides that line. The session that claims gets the tabs shared as the panel's "Share current tab" does: a
+  tab still on the origin it showed at start is shared with that origin approved, and a tab that moved is
+  shared unapproved. Every prompt, site setting and check above still applies, and the owner can unshare
+  from the session list. A code the extension did not issue is refused.
 
 ## CI
 

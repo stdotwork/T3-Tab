@@ -19,9 +19,26 @@
       button { font: inherit; padding: 4px 8px; }
       button.danger { color: #b3261e; }
       code { overflow-wrap: anywhere; }
+      .stack { display: flex; flex-direction: column; gap: 6px; }
+      label { display: flex; flex-direction: column; gap: 2px; }
+      label[hidden] { display: none; }
+      input, select, textarea { font: inherit; padding: 4px 6px; box-sizing: border-box; width: 100%; }
+      textarea { resize: vertical; }
+      .error { color: #b3261e; margin: 0; overflow-wrap: anywhere; }
+      .error:empty { display: none; }
+      button.link { border: 0; background: none; padding: 0; text-align: left; text-decoration: underline; cursor: pointer; color: inherit; }
+      button.link[aria-pressed="true"] { font-weight: 600; }
+      ol.messages { list-style: none; margin: 8px 0; padding: 0; }
+      .message { margin: 6px 0; padding: 6px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, currentColor 20%, transparent); }
+      .message.user { background: color-mix(in srgb, currentColor 6%, transparent); }
+      .message.error { border-color: #b3261e; }
+      .message .role { font-size: 11px; opacity: .7; }
+      .message .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+      #agent { margin-bottom: 16px; }
     </style>
   </head>
   <body>
+    <section id="agent" aria-live="polite"></section>
     <main id="app" aria-live="polite">
       <h1>Permissions</h1>
       <p class="muted">Loading…</p>
