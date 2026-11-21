@@ -187,7 +187,7 @@ try {
 
   let statusText = '';
   let tabCount = 0;
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 160; attempt += 1) {
     const result = await mcpClient.callTool({ name: 'status', arguments: {} });
     statusText = result.content
       .filter((item) => item.type === 'text')
