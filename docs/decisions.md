@@ -77,7 +77,6 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   a port was explicitly requested) and writes its port and random bearer token to `daemon.json`
   (mode `0600` under `$XDG_STATE_HOME/t3-tab/` or `~/.local/state/t3-tab/`). Falling back to a free
   port was chosen over failing hard on 8765 because every client reads the port from `daemon.json`.
-  A health guard stops a second daemon from overwriting `daemon.json`.
 - **Native messaging bootstrap and a separate extension token.** Chrome native messaging (Chromium's
   mechanism for an extension to start a registered local helper process, `t3-tab native-host`) hands
   the extension the daemon's port and its own random token from `extension.json` (mode `0600`).
@@ -182,7 +181,7 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 
 ## Not in v1
 
-- Remote machines, non-loopback or tailnet listeners, and remote T3 environments (T3 Connect).
+- Remote machines, and listeners on anything but loopback.
 - Firefox support.
 - T3-Tab plugins, themes, or adopting T3 Code's plugin system.
 - Direct runners beyond Claude Code and Codex (such as pi).
