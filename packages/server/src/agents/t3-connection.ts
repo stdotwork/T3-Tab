@@ -19,9 +19,7 @@ const CONNECT_TIMEOUT_MS = 5_000;
 const ACCEPT_TIMEOUT_MS = 2_000;
 const ACCEPT_POLL_MS = 10;
 // Linux reports process start times in units of 1/100 s on every architecture Node.js supports.
-const TICKS_PER_SECOND = 100;
-// The boot time in /proc/stat has whole seconds and moves with clock corrections.
-const START_TOLERANCE_MS = 10_000;
+const MS_PER_TICK = 10;
 const ESTABLISHED = '01';
 
 /** Thrown with one fixed message before anything is written to the connection. */
@@ -104,7 +102,7 @@ async function confirmOwner(socket: Socket, owner: T3Process, signal: AbortSigna
     const inode = await serverSocketInode(server, client);
     if (inode !== undefined && inode !== '0') {
       if (!(await processHoldsSocket(owner.pid, inode))) throw new T3ConnectionError();
-      if ((await processStartMs(owner.pid)) > owner.startedAt + START_TOLERANCE_MS) throw new T3ConnectionError();
+      if ((await processStartMs(owner.pid)) > owner.startedAt) throw new T3ConnectionError();
       return;
     }
     if (Date.now() >= deadline) throw new T3ConnectionError();
@@ -168,13 +166,20 @@ async function processHoldsSocket(pid: number, inode: string): Promise<boolean> 
   return false;
 }
 
+/**
+ * When the process started, rounded down: the boot time in `/proc/stat` drops its fraction of a second and the start
+ * time drops its fraction of a tick, so the result is at most 1.01 s before the real start and never after it. T3 writes
+ * its record after it starts, so the real T3 passes with no tolerance, and a process that started more than 1.01 s after
+ * the record is refused. The boot time moves when the wall clock is stepped: a forward step after T3 started, larger
+ * than the time T3 took to write its record plus that rounding, refuses T3 until it restarts.
+ */
 async function processStartMs(pid: number): Promise<number> {
   const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
   // The command name, field 2, may hold spaces and brackets; field 22 is the start time in ticks after boot.
   const ticks = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
   const bootSeconds = Number(/^btime (\d+)$/m.exec(await readFile('/proc/stat', 'utf8'))?.[1]);
   if (!Number.isFinite(ticks) || !Number.isFinite(bootSeconds)) throw new T3ConnectionError();
-  return (bootSeconds + ticks / TICKS_PER_SECOND) * 1_000;
+  return bootSeconds * 1_000 + ticks * MS_PER_TICK;
 }
 
 async function send(socket: Socket, target: URL, init: RequestInit): Promise<Response> {

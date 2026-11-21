@@ -445,6 +445,53 @@ describe('the checked connection to T3', () => {
     };
   }
 
+  /** A real separate process listening on loopback, so its start time in `/proc` is the moment it was spawned. */
+  async function serverProcess(): Promise<{ pid: number; origin: string; requests(): number; stop(): void }> {
+    const script =
+      "require('http').createServer((q,r)=>{process.stdout.write('request\\n');r.end('answered')})" +
+      ".listen(0,'127.0.0.1',function(){process.stdout.write('port '+this.address().port+'\\n')})";
+    const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let output = '';
+    const port = await new Promise<number>((resolve, reject) => {
+      child.once('error', reject);
+      child.stdout.on('data', (chunk: Buffer) => {
+        output += chunk.toString();
+        const found = /^port (\d+)$/m.exec(output);
+        if (found !== null) resolve(Number(found[1]));
+      });
+    });
+    return {
+      pid: child.pid as number,
+      origin: `http://127.0.0.1:${port}`,
+      requests: () => output.split('\n').filter((line) => line === 'request').length,
+      stop: () => child.kill('SIGKILL'),
+    };
+  }
+
+  it('sends nothing to a process that started 1.5 seconds after the recorded start', async () => {
+    // Above the at most 1.01 s by which the start time read from /proc can come out early.
+    const recorded = Date.now() - 1_500;
+    const server = await serverProcess();
+    try {
+      const send = confirmedFetch(server.origin, { pid: server.pid, startedAt: recorded });
+      await expect(send(`${server.origin}/check`)).rejects.toThrow('could not confirm');
+      expect(server.requests()).toBe(0);
+    } finally {
+      server.stop();
+    }
+  });
+
+  it('accepts a process whose record was written right after it started', async () => {
+    const server = await serverProcess();
+    try {
+      const response = await confirmedFetch(server.origin, { pid: server.pid, startedAt: Date.now() })(`${server.origin}/check`);
+      expect(await response.text()).toBe('answered');
+      expect(server.requests()).toBe(1);
+    } finally {
+      server.stop();
+    }
+  });
+
   // T3 with no host set listens on every address and records 127.0.0.1, so its side of the connection is IPv4-mapped.
   it.each([
     ['every address, reached over 127.0.0.1', '::', 'http://127.0.0.1'],
