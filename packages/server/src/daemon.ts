@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 
@@ -6,13 +6,15 @@ import {
   DEFAULT_DAEMON_PORT,
   PROTOCOL_VERSION,
   type BrowserMessage,
-  type BrowserStatus,
   type ControlResponse,
+  type ToolMethod,
 } from '@t3-tab/protocol';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
+import { BrowserConnection } from './browser-link.js';
 import { connectionRole, tokensMatch, isLoopbackHostHeader, type ConnectionRole } from './security.js';
 import { clearDaemonState, writeDaemonState, type DaemonState } from './state.js';
+import { runTool } from './tools.js';
 
 export interface DaemonOptions {
   port?: number;
@@ -26,16 +28,22 @@ export interface DaemonHandle {
   close(): Promise<void>;
 }
 
-const MAX_MESSAGE_BYTES = 1_024_000;
+const MAX_CONTROL_MESSAGE_BYTES = 1_024_000;
+// A page's accessibility tree and a screenshot come back from the browser in one message.
+const MAX_BROWSER_MESSAGE_BYTES = 16 * 1_024 * 1_024;
+const TOOL_METHODS: ReadonlySet<string> = new Set<ToolMethod>(['tabs', 'read', 'screenshot']);
 
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   if (options.stateDir === undefined) throw new Error('A state directory is required');
   const stateDir = options.stateDir;
   const token = randomBytes(32).toString('base64url');
   const roles = new WeakMap<IncomingMessage, ConnectionRole>();
-  const browsers = new Map<WebSocket, BrowserStatus>();
+  const browsers = new Map<WebSocket, BrowserConnection>();
   const httpServer = createServer((request, response) => handleHttpRequest(request, response, token));
-  const sockets = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
+  const sockets = {
+    extension: new WebSocketServer({ noServer: true, maxPayload: MAX_BROWSER_MESSAGE_BYTES }),
+    control: new WebSocketServer({ noServer: true, maxPayload: MAX_CONTROL_MESSAGE_BYTES }),
+  };
 
   httpServer.on('upgrade', (request, socket, head) => {
     const host = singleHeader(request.headers.host);
@@ -57,28 +65,33 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     }
 
     roles.set(request, role);
-    sockets.handleUpgrade(request, socket, head, (webSocket) => {
-      sockets.emit('connection', webSocket, request);
+    const server = sockets[role];
+    server.handleUpgrade(request, socket, head, (webSocket) => {
+      server.emit('connection', webSocket, request);
     });
   });
 
-  sockets.on('connection', (webSocket, request) => {
+  const onConnection = (webSocket: WebSocket, request: IncomingMessage): void => {
     const role = roles.get(request);
+    let connection: BrowserConnection | undefined;
     if (role === 'extension') {
-      browsers.set(webSocket, {
-        id: `pending-${randomUUID()}`,
-        name: 'Chromium',
-        tabCount: 0,
-      });
+      connection = new BrowserConnection(webSocket);
+      browsers.set(webSocket, connection);
     }
 
     webSocket.on('message', (data) => {
       if (role === 'extension') handleBrowserMessage(webSocket, browsers, data);
       else if (role === 'control') handleControlMessage(webSocket, browsers, data);
     });
-    webSocket.on('close', () => browsers.delete(webSocket));
-    webSocket.on('error', () => browsers.delete(webSocket));
-  });
+    const forget = (): void => {
+      browsers.delete(webSocket);
+      connection?.close();
+    };
+    webSocket.on('close', forget);
+    webSocket.on('error', forget);
+  };
+  sockets.extension.on('connection', onConnection);
+  sockets.control.on('connection', onConnection);
 
   await listen(httpServer, options.port ?? DEFAULT_DAEMON_PORT);
   const address = httpServer.address();
@@ -131,7 +144,7 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse, t
   sendJson(response, 404, { error: 'Not found' });
 }
 
-function handleBrowserMessage(webSocket: WebSocket, browsers: Map<WebSocket, BrowserStatus>, data: RawData): void {
+function handleBrowserMessage(webSocket: WebSocket, browsers: Map<WebSocket, BrowserConnection>, data: RawData): void {
   const value = parseJson(data);
   if (!isBrowserMessage(value)) {
     webSocket.close(1008, 'Invalid protocol message');
@@ -139,9 +152,14 @@ function handleBrowserMessage(webSocket: WebSocket, browsers: Map<WebSocket, Bro
   }
 
   const message = value;
-  const browser = browsers.get(webSocket);
-  if (browser === undefined) return;
-  if (message.type === 'browser.hello') {
+  const connection = browsers.get(webSocket);
+  if (connection === undefined) return;
+  const browser = connection.status;
+  if (message.type === 'browser.response') {
+    connection.handleResponse(message);
+  } else if (message.type === 'browser.tabClosed') {
+    if (Number.isInteger(message.tabId)) connection.forgetTab(message.tabId);
+  } else if (message.type === 'browser.hello') {
     if (typeof message.browserId !== 'string' || typeof message.browserName !== 'string') {
       webSocket.close(1008, 'Invalid browser hello');
       return;
@@ -157,7 +175,7 @@ function handleBrowserMessage(webSocket: WebSocket, browsers: Map<WebSocket, Bro
   }
 }
 
-function handleControlMessage(webSocket: WebSocket, browsers: Map<WebSocket, BrowserStatus>, data: RawData): void {
+function handleControlMessage(webSocket: WebSocket, browsers: Map<WebSocket, BrowserConnection>, data: RawData): void {
   const value = parseJson(data);
   if (!isControlRequest(value)) {
     sendControlError(webSocket, null, 'Invalid control request');
@@ -165,24 +183,66 @@ function handleControlMessage(webSocket: WebSocket, browsers: Map<WebSocket, Bro
   }
 
   const request = value;
-  if (request.method !== 'status') {
+  if (request.method === 'status') {
+    const response: ControlResponse = {
+      type: 'control.response',
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: request.requestId,
+      ok: true,
+      result: { browsers: [...browsers.values()].map((connection) => connection.status) },
+    };
+    webSocket.send(JSON.stringify(response));
+    return;
+  }
+  if (!TOOL_METHODS.has(request.method)) {
     sendControlError(webSocket, request.requestId, `Unknown method: ${String(request.method)}`);
     return;
   }
-  const response: ControlResponse = {
-    type: 'control.response',
-    protocolVersion: PROTOCOL_VERSION,
-    requestId: request.requestId,
-    ok: true,
-    result: { browsers: [...browsers.values()] },
-  };
-  webSocket.send(JSON.stringify(response));
+  void answerTool(webSocket, browsers, request);
+}
+
+async function answerTool(
+  webSocket: WebSocket,
+  browsers: Map<WebSocket, BrowserConnection>,
+  request: { requestId: string; method: string; session?: unknown; params?: unknown },
+): Promise<void> {
+  try {
+    if (typeof request.session !== 'string' || request.session === '' || request.session.length > 128) {
+      throw new Error('Invalid session');
+    }
+    if (typeof request.params !== 'object' || request.params === null || Array.isArray(request.params)) {
+      throw new Error('Invalid params');
+    }
+    // The browser that connected last is the live one: an older socket may not have been cleaned up yet.
+    const connection = [...browsers.values()].at(-1);
+    if (connection === undefined) throw new Error('No browser is connected. Open the browser with the T3-Tab extension.');
+    const content = await runTool(connection, request.session, request.method as ToolMethod, request.params as Record<string, unknown>);
+    if (webSocket.readyState !== WebSocket.OPEN) return;
+    const response: ControlResponse = {
+      type: 'control.response',
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: request.requestId,
+      ok: true,
+      result: { content },
+    };
+    webSocket.send(JSON.stringify(response));
+  } catch (error) {
+    if (webSocket.readyState === WebSocket.OPEN) {
+      sendControlError(webSocket, request.requestId, error instanceof Error ? error.message : String(error));
+    }
+  }
 }
 
 function isBrowserMessage(value: unknown): value is BrowserMessage {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
-  return candidate.protocolVersion === PROTOCOL_VERSION && (candidate.type === 'browser.hello' || candidate.type === 'browser.tabCount');
+  return (
+    candidate.protocolVersion === PROTOCOL_VERSION &&
+    (candidate.type === 'browser.hello' ||
+      candidate.type === 'browser.tabCount' ||
+      candidate.type === 'browser.tabClosed' ||
+      (candidate.type === 'browser.response' && typeof candidate.requestId === 'string' && typeof candidate.ok === 'boolean'))
+  );
 }
 
 function isControlRequest(value: unknown): value is {
@@ -190,6 +250,8 @@ function isControlRequest(value: unknown): value is {
   protocolVersion: typeof PROTOCOL_VERSION;
   requestId: string;
   method: string;
+  session?: unknown;
+  params?: unknown;
 } {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
@@ -255,11 +317,16 @@ async function listen(server: ReturnType<typeof createServer>, port: number): Pr
   });
 }
 
-async function closeServer(server: ReturnType<typeof createServer>, sockets: WebSocketServer): Promise<void> {
-  for (const socket of sockets.clients) socket.terminate();
-  await new Promise<void>((resolve) => {
-    sockets.close(() => resolve());
-  });
+async function closeServer(
+  server: ReturnType<typeof createServer>,
+  sockets: { extension: WebSocketServer; control: WebSocketServer },
+): Promise<void> {
+  for (const group of [sockets.extension, sockets.control]) {
+    for (const socket of group.clients) socket.terminate();
+    await new Promise<void>((resolve) => {
+      group.close(() => resolve());
+    });
+  }
   await closeHttpServer(server);
 }
 

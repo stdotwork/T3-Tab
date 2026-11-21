@@ -7,5 +7,5 @@ export const EXTENSION_MANIFEST = {
   description: 'Browser tools and a side panel for coding agents.',
   version: '0.1.0',
   key: EXTENSION_KEY,
-  permissions: ['nativeMessaging', 'sidePanel', 'tabs'],
+  permissions: ['debugger', 'nativeMessaging', 'sidePanel', 'tabs'],
 };

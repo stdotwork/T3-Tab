@@ -1,0 +1,123 @@
+import type { PageReadResult } from '@t3-tab/protocol';
+
+import { findLines } from './find.js';
+import { RefGoneError, renderTree } from './format.js';
+import { RefTable } from './refs.js';
+import { createSmartDiff } from './smart-diff.js';
+
+/** Longest reply a read returns, in characters (about 3,000 tokens). */
+export const MAX_OUTPUT_CHARS = 12_000;
+
+const MAX_SESSIONS_PER_TAB = 16;
+const MAX_KEYS_PER_SESSION = 8;
+const MAX_TITLE = 80;
+const MAX_URL = 200;
+
+export interface ReadOptions {
+  all?: boolean | undefined;
+  find?: string | undefined;
+  ref?: string | undefined;
+  depth?: number | undefined;
+  full?: boolean | undefined;
+}
+
+/** What the background program holds for one tab: its refs and, per calling session, the last text read. */
+export class TabState {
+  private epoch = -1;
+  private refs = new RefTable();
+  private readonly baselines = new Map<string, Map<string, string>>();
+
+  /** Drops refs and baselines when the document the tab shows is not the one they came from. */
+  syncEpoch(epoch: number): void {
+    if (epoch === this.epoch) return;
+    this.epoch = epoch;
+    this.refs = new RefTable();
+    this.baselines.clear();
+  }
+
+  get refTable(): RefTable {
+    return this.refs;
+  }
+
+  baseline(session: string, key: string): string | undefined {
+    return this.baselines.get(session)?.get(key);
+  }
+
+  setBaseline(session: string, key: string, text: string): void {
+    let keys = this.baselines.get(session);
+    if (keys === undefined) {
+      if (this.baselines.size >= MAX_SESSIONS_PER_TAB) {
+        const oldest = this.baselines.keys().next().value;
+        if (oldest !== undefined) this.baselines.delete(oldest);
+      }
+      keys = new Map();
+      this.baselines.set(session, keys);
+    }
+    if (!keys.has(key) && keys.size >= MAX_KEYS_PER_SESSION) {
+      const oldest = keys.keys().next().value;
+      if (oldest !== undefined) keys.delete(oldest);
+    }
+    keys.set(key, text);
+  }
+}
+
+/**
+ * The reply to a `read`: a header line, then the page text on the first read of a view, a line diff
+ * on later ones, or only the matching lines for a `find`.
+ */
+export function formatRead(state: TabState, session: string, page: PageReadResult, options: ReadOptions): string {
+  state.syncEpoch(page.epoch);
+  const header = `tab ${page.tab}: ${truncate(page.title, MAX_TITLE)} — ${truncate(page.url, MAX_URL)}`;
+
+  let target: number | undefined;
+  if (options.ref !== undefined) {
+    target = state.refTable.backendIdOf(options.ref);
+    if (target === undefined) {
+      throw new Error(`Unknown ref ${options.ref}: refs reset when the page navigates. Read the page again.`);
+    }
+  }
+
+  const find = options.find === '' ? undefined : options.find;
+  // A search covers every node unless the caller narrowed it to interactive ones.
+  const all = options.all ?? find !== undefined;
+  let lines: string[];
+  try {
+    lines = renderTree(page.nodes, state.refTable, { all, target, depth: options.depth });
+  } catch (error) {
+    if (error instanceof RefGoneError) {
+      throw new Error(`${options.ref ?? 'The ref'} is no longer on the page. Read the page again.`);
+    }
+    throw error;
+  }
+
+  if (find !== undefined) {
+    return limit(`${header}\n${findLines(lines, find).text}`);
+  }
+
+  const text = lines.join('\n');
+  const key = `${all ? 'all' : 'interactive'}|${options.ref ?? ''}|${options.depth ?? ''}`;
+  const previous = state.baseline(session, key);
+  state.setBaseline(session, key, text);
+
+  if (lines.length === 0) {
+    return `${header}\n${all ? '(empty page)' : '(no interactive elements; use all to see the text)'}`;
+  }
+  if (previous === undefined || options.full === true) return limit(`${header}\n${text}`);
+
+  const diff = createSmartDiff({ oldContent: previous, newContent: text });
+  if (diff.type === 'no-change') return `${header}\nNo changes since the last read.`;
+  if (diff.type === 'diff') return limit(`${header}\nChanged since the last read:\n${diff.content}`);
+  return limit(`${header}\n${text}`);
+}
+
+/** Cuts a reply at a line boundary once it is over the cap, and says how to get at the rest. */
+function limit(text: string): string {
+  if (text.length <= MAX_OUTPUT_CHARS) return text;
+  const cut = text.lastIndexOf('\n', MAX_OUTPUT_CHARS);
+  const kept = text.slice(0, cut > 0 ? cut : MAX_OUTPUT_CHARS);
+  return `${kept}\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use find, a ref subtree or depth to read the rest.`;
+}
+
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}

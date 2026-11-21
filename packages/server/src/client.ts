@@ -4,7 +4,14 @@ import { open, mkdir, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { PROTOCOL_VERSION, type BrowserStatus, type ControlRequest, type ControlResponse } from '@t3-tab/protocol';
+import {
+  PROTOCOL_VERSION,
+  type BrowserStatus,
+  type ControlRequest,
+  type ControlResponse,
+  type ToolContent,
+  type ToolMethod,
+} from '@t3-tab/protocol';
 import WebSocket from 'ws';
 
 import { readDaemonState, stateDirectory, type DaemonState } from './state.js';
@@ -12,6 +19,8 @@ import { readDaemonState, stateDirectory, type DaemonState } from './state.js';
 const START_TIMEOUT_MS = 10_000;
 const LOCK_STALE_MS = 30_000;
 const CONTROL_TIMEOUT_MS = 5_000;
+// Longer than the daemon waits on the browser, so the daemon's own error arrives first.
+const TOOL_TIMEOUT_MS = 40_000;
 
 export async function ensureDaemon(env: NodeJS.ProcessEnv = process.env): Promise<DaemonState> {
   const directory = stateDirectory(env);
@@ -44,9 +53,32 @@ export async function getStatus(env: NodeJS.ProcessEnv = process.env): Promise<B
     requestId: randomUUID(),
     method: 'status',
   };
-  const response = await sendControlRequest(state, request);
+  const response = await sendControlRequest(state, request, CONTROL_TIMEOUT_MS);
   if (!response.ok) throw new Error(response.error);
+  if (!('browsers' in response.result)) throw new Error('T3-Tab daemon returned an unexpected status');
   return response.result.browsers;
+}
+
+/** Runs a browser tool through the daemon. `session` identifies the calling MCP server, so read diffs stay its own. */
+export async function callTool(
+  method: ToolMethod,
+  params: Record<string, unknown>,
+  session: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ToolContent[]> {
+  const state = await ensureDaemon(env);
+  const request: ControlRequest = {
+    type: 'control.request',
+    protocolVersion: PROTOCOL_VERSION,
+    requestId: randomUUID(),
+    method,
+    session,
+    params,
+  };
+  const response = await sendControlRequest(state, request, TOOL_TIMEOUT_MS);
+  if (!response.ok) throw new Error(response.error);
+  if (!('content' in response.result)) throw new Error('T3-Tab daemon returned an unexpected reply');
+  return response.result.content;
 }
 
 async function daemonIsHealthy(state: DaemonState): Promise<boolean> {
@@ -73,7 +105,11 @@ function startDaemonProcess(env: NodeJS.ProcessEnv): void {
   child.unref();
 }
 
-async function sendControlRequest(state: DaemonState, request: ControlRequest): Promise<ControlResponse> {
+async function sendControlRequest(
+  state: DaemonState,
+  request: ControlRequest,
+  timeoutMs: number,
+): Promise<ControlResponse> {
   return await new Promise<ControlResponse>((resolve, reject) => {
     const socket = new WebSocket(`ws://127.0.0.1:${state.port}/`, {
       headers: { authorization: `Bearer ${state.token}` },
@@ -90,7 +126,7 @@ async function sendControlRequest(state: DaemonState, request: ControlRequest): 
     };
     const timer = setTimeout(() => {
       finish(new Error('T3-Tab daemon did not answer the control request'));
-    }, CONTROL_TIMEOUT_MS);
+    }, timeoutMs);
 
     socket.on('open', () => socket.send(JSON.stringify(request)));
     socket.on('message', (data) => {
