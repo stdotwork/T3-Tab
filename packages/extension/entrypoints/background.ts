@@ -2,11 +2,17 @@ import {
   NATIVE_HOST_NAME,
   PROTOCOL_VERSION,
   type BrowserHelloMessage,
+  type BrowserRequestMessage,
+  type BrowserResponseMessage,
+  type BrowserTabClosedMessage,
   type BrowserTabCountMessage,
   type NativeDaemonRequest,
   type NativeResponse,
 } from '@t3-tab/protocol';
 import { defineBackground } from 'wxt/utils/define-background';
+
+import { initCdp } from '../src/cdp';
+import { handleRequest } from '../src/requests';
 
 const browserId = crypto.randomUUID();
 const browserName = navigator.userAgent.includes('Brave') ? 'Brave' : 'Chromium';
@@ -28,6 +34,29 @@ export default defineBackground(() => {
       };
       socket.send(JSON.stringify(message));
     });
+  };
+
+  const reportTabClosed = (tabId: number): void => {
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    const message: BrowserTabClosedMessage = { type: 'browser.tabClosed', protocolVersion: PROTOCOL_VERSION, tabId };
+    socket.send(JSON.stringify(message));
+  };
+
+  const answer = async (current: WebSocket, request: BrowserRequestMessage): Promise<void> => {
+    let response: BrowserResponseMessage;
+    try {
+      const result = await handleRequest(request);
+      response = { type: 'browser.response', protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, ok: true, result };
+    } catch (error) {
+      response = {
+        type: 'browser.response',
+        protocolVersion: PROTOCOL_VERSION,
+        requestId: request.requestId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (current.readyState === WebSocket.OPEN) current.send(JSON.stringify(response));
   };
 
   const scheduleReconnect = (): void => {
@@ -58,6 +87,10 @@ export default defineBackground(() => {
         current.send(JSON.stringify(hello));
         reportTabCount();
       });
+      current.addEventListener('message', (event) => {
+        const request = parseRequest(event.data);
+        if (request !== undefined) void answer(current, request);
+      });
       current.addEventListener('close', () => {
         if (socket === current) scheduleReconnect();
       });
@@ -71,8 +104,10 @@ export default defineBackground(() => {
     }
   };
 
+  initCdp();
   chrome.tabs.onCreated.addListener(reportTabCount);
   chrome.tabs.onRemoved.addListener(reportTabCount);
+  chrome.tabs.onRemoved.addListener(reportTabClosed);
   chrome.tabs.onReplaced.addListener(reportTabCount);
   chrome.tabs.onAttached.addListener(reportTabCount);
   chrome.tabs.onDetached.addListener(reportTabCount);
@@ -96,4 +131,18 @@ async function nativeConfiguration(): Promise<{ port: number; token: string }> {
   if (response.type === 'native.error') throw new Error(response.error);
   if (response.protocolVersion !== PROTOCOL_VERSION) throw new Error('Native host protocol mismatch');
   return { port: response.port, token: response.token };
+}
+
+function parseRequest(data: unknown): BrowserRequestMessage | undefined {
+  if (typeof data !== 'string') return undefined;
+  try {
+    const value: unknown = JSON.parse(data);
+    if (typeof value !== 'object' || value === null) return undefined;
+    const candidate = value as Record<string, unknown>;
+    if (candidate.type !== 'browser.request' || candidate.protocolVersion !== PROTOCOL_VERSION) return undefined;
+    if (typeof candidate.requestId !== 'string' || typeof candidate.method !== 'string') return undefined;
+    return value as BrowserRequestMessage;
+  } catch {
+    return undefined;
+  }
 }

@@ -10,7 +10,9 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
     "@t3-tab/protocol": "workspace:*",
-    "ws": "8.23.0"
+    "diff": "9.0.0",
+    "ws": "8.23.0",
+    "zod": "4.6.7"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

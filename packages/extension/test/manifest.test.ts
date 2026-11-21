@@ -15,6 +15,10 @@ describe('extension manifest', () => {
     expect(EXTENSION_MANIFEST.permissions).toContain('tabs');
   });
 
+  it('asks for the debugger permission the page reader needs', () => {
+    expect(EXTENSION_MANIFEST.permissions).toContain('debugger');
+  });
+
   it('derives the fixed extension id shared with the daemon', () => {
     const digest = createHash('sha256').update(Buffer.from(EXTENSION_KEY, 'base64')).digest().subarray(0, 16);
     const derived = [...digest]
