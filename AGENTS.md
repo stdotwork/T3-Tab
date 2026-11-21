@@ -8,7 +8,8 @@ work, with the browser tools injected.
 ## Layout
 
 - `packages/extension` — the WXT Manifest V3 Chromium extension, including its service worker and side panel.
-- `packages/server` — the Node.js/TypeScript background program.
+- `packages/server` — the Node.js/TypeScript daemon, Chrome native host and stdio MCP server. The
+  `t3-tab` binary in `dist/cli.js` provides all three commands.
 - `packages/protocol` — the versioned types shared by the extension and background program.
 - `e2e/` — the Playwright end-to-end harness.
 - `.github/workflows/ci.yml` — the pull request and `main` checks.
@@ -27,7 +28,26 @@ pnpm e2e
 ```
 
 `pnpm build` writes the Chromium extension to `packages/extension/.output/chrome-mv3`.
-`pnpm e2e` launches Playwright's Chromium with that built extension.
+The built server is `packages/server/dist/cli.js`; `node_modules/.bin/t3-tab` runs it after installation.
+`pnpm e2e` launches Playwright's Chromium with that built extension, starts the real native host and MCP
+client, and checks the loopback link. Every process it starts uses a temporary HOME and XDG directories.
+
+## CLI
+
+Build before running the CLI:
+
+```sh
+pnpm exec t3-tab daemon
+pnpm exec t3-tab native-host install --browser chromium
+pnpm exec t3-tab native-host install --browser chrome
+pnpm exec t3-tab native-host install --browser brave
+pnpm exec t3-tab mcp
+```
+
+`daemon` listens on `127.0.0.1:8765` by default. Set `T3_TAB_PORT` or pass `--port <number>` to change the
+port. Its random token is stored in `$XDG_STATE_HOME/t3-tab/daemon.json` with mode `0600`, falling back to
+`$HOME/.local/state/t3-tab/daemon.json`. `native-host` is normally started by Chromium, not by hand. `mcp`
+serves the `status` tool over stdio and starts the daemon when needed.
 
 ## CI
 

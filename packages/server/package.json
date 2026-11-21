@@ -4,16 +4,22 @@
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
+  "bin": {
+    "t3-tab": "./dist/cli.js"
+  },
   "dependencies": {
-    "@t3-tab/protocol": "workspace:*"
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@t3-tab/protocol": "workspace:*",
+    "ws": "8.23.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json",
-    "start": "node dist/index.js"
+    "start": "node dist/cli.js daemon"
   },
   "devDependencies": {
     "@types/node": "26.6.6",
+    "@types/ws": "8.18.2",
     "typescript": "7.0.2"
   }
 }
