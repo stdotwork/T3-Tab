@@ -2,12 +2,12 @@
  * Keyed permission prompt list for the T3-Tab side panel.
  *
  * Safeguards preserved from T3-Tab's permission policy:
- * - Button labels and scopes come verbatim from `promptChoices` in `panel-prompts.ts`.
+ * - Button labels and scopes come verbatim from `promptChoices` in `prompt-choices.ts`.
  * - Buttons stay disabled for 500 ms when a prompt appears and whenever rows shift (`rowsShifted`).
  * - Existing prompt items are kept in place across refreshes so DOM nodes never jump.
  * - Prompt cards never steal focus when they appear (Nanobrowser Cards.tsx rule, Apache-2.0).
  */
-import { promptChoices, rowsShifted } from '../../src/panel-prompts';
+import { promptChoices, rowsShifted } from './prompt-choices';
 import type { PermissionDecision, PermissionPrompt } from '../../src/permissions';
 import { icon } from './icons';
 import { el, promptEyebrow, promptMeta, promptSentence, type PanelActions } from './shared';

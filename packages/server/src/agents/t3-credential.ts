@@ -19,7 +19,7 @@ export interface T3Credential {
   expiresAt: number;
 }
 
-export const CREDENTIAL_FILE = 't3-credential.json';
+const CREDENTIAL_FILE = 't3-credential.json';
 // The name `writeCredential` gives its temporary file, and nothing looser.
 const TEMPORARY_FILE = /^t3-credential\.json\.[0-9a-f]{16}\.tmp$/;
 

@@ -10,7 +10,7 @@ import { deleteCredential, readCredential, removeTemporaryCredentials, writeCred
 import { findT3Environment, type T3Environment } from './t3-environment.js';
 
 /** The one scope T3 grants a client approved for "Read only" (`mcpClientScopes('read-only')` in T3 Code). */
-export const T3_READ_SCOPE = 'orchestration:read';
+const T3_READ_SCOPE = 'orchestration:read';
 const CLIENT_NAME = 'T3-Tab';
 const SIGN_IN_TIMEOUT_MS = 10 * 60_000;
 const HTTP_TIMEOUT_MS = 15_000;
