@@ -166,6 +166,18 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   endpoint, so Sign out deletes the local file and instructs the user to revoke T3-Tab in T3's
   Settings → Sharing & access.
 
+- **Inbox layout for the panel.** The panel's home lists waiting permission prompts first, across
+  every session, then conversations with their status, the current tab and connected sessions.
+  A conversation, the new-conversation form and settings (T3 sign-in and site permissions) open as
+  their own views. Prompts can come from any MCP session, not only from panel conversations, so a
+  layout built around one open conversation (as in Claude in Chrome) would show them in the wrong
+  place, and a tabbed layout would hide them; both were tried in a prototype and rejected.
+- **One set of design tokens, no UI framework.** All panel styling comes from CSS custom properties
+  in `tokens.css` (light and dark, one accent, a 4 px spacing scale, focus ring, reduced motion),
+  so a theme can later replace the tokens without touching prompt wording or buttons. The panel is
+  plain TypeScript: about 39 KB of script (11 KB gzip), first render with real state in about 6 ms
+  headless. Prompt and site button labels come only from `prompt-choices.ts`.
+
 ## How it is checked
 
 - **One end-to-end seam backed by unit tests.** `pnpm e2e` launches headless Playwright Chromium
@@ -188,6 +200,7 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - Loading T3 Code's web UI inside the side panel.
 - Streaming or incremental `/mcp` thread reads (v1 polls `t3 thread show`).
 - Persisting side-panel conversation history across daemon restarts.
+- A Stop control for side-panel runs (the daemon has no stop request yet).
 - Per-model tool profiles or on-demand tool packs.
 - Cross-product token benchmarks against Claude in Chrome or the Codex Chrome plugin (v1 benchmarks
   T3-Tab against its own budget).
