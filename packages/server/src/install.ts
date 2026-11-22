@@ -12,24 +12,22 @@ import {
 } from 'node:fs/promises';
 import { delimiter, dirname, join } from 'node:path';
 
-import { EXTENSION_ID, NATIVE_HOST_NAME } from '@t3-tab/protocol';
+import {
+  CLAUDE_SERVER_NAME,
+  CODEX_SERVER_NAME,
+  addClaudeServer,
+  addCodexServer,
+  findCodexServerRange,
+  isRecord,
+  parseClaudeConfig,
+  removeClaudeServer,
+  removeCodexServer,
+  type McpCommand,
+} from './install-config.js';
+import { BROWSERS, nativeHostPaths, type SupportedBrowser } from './install-native-host.js';
 
-import { tomlString } from './toml.js';
-
-export type SupportedBrowser = 'chromium' | 'chrome' | 'brave';
 export type Agent = 'claude' | 'codex';
 export type InstallMethod = 'cli' | 'file';
-
-export interface McpCommand {
-  command: string;
-  args: string[];
-}
-
-export interface InstallNativeHostOptions {
-  browser: SupportedBrowser;
-  home: string;
-  cliPath: string;
-}
 
 export interface InstallAgentOptions {
   agent: Agent;
@@ -57,68 +55,12 @@ export interface AgentUninstallResult {
   removed: boolean;
 }
 
-export interface NativeHostPaths {
-  launcherPath: string;
-  manifestDirectory: string;
-  manifestPath: string;
-}
-
-const CLAUDE_SERVER_NAME = 't3-tab';
-const CODEX_SERVER_NAME = 't3-tab';
 const AGENTS: readonly Agent[] = ['claude', 'codex'];
-const BROWSERS: readonly SupportedBrowser[] = ['chromium', 'chrome', 'brave'];
 const BROWSER_EXECUTABLES: Record<SupportedBrowser, readonly string[]> = {
   chromium: ['chromium', 'chromium-browser'],
   chrome: ['google-chrome', 'google-chrome-stable'],
   brave: ['brave', 'brave-browser', 'brave-browser-stable'],
 };
-
-export async function installNativeHost(options: InstallNativeHostOptions): Promise<string> {
-  const paths = nativeHostPaths(options.browser, options.home);
-  await mkdir(dirname(paths.launcherPath), { recursive: true, mode: 0o700 });
-  await writeFile(paths.launcherPath, nativeHostLauncher(process.execPath, options.cliPath), { mode: 0o755 });
-  await chmod(paths.launcherPath, 0o755);
-
-  const manifest = {
-    name: NATIVE_HOST_NAME,
-    description: 'T3-Tab browser link',
-    path: paths.launcherPath,
-    type: 'stdio',
-    allowed_origins: [`chrome-extension://${EXTENSION_ID}/`],
-  };
-  await mkdir(paths.manifestDirectory, { recursive: true, mode: 0o700 });
-  await writeFile(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o644 });
-  await chmod(paths.manifestPath, 0o644);
-  return paths.manifestPath;
-}
-
-export function nativeHostPaths(browser: SupportedBrowser, home: string): NativeHostPaths {
-  const hostDirectory = join(home, '.local', 'share', 't3-tab');
-  const manifestDirectory = join(home, '.config', browserConfigDirectory(browser), 'NativeMessagingHosts');
-  return {
-    launcherPath: join(hostDirectory, 'native-host'),
-    manifestDirectory,
-    manifestPath: join(manifestDirectory, `${NATIVE_HOST_NAME}.json`),
-  };
-}
-
-export async function uninstallNativeHosts(home: string): Promise<SupportedBrowser[]> {
-  const removed: SupportedBrowser[] = [];
-  for (const browser of BROWSERS) {
-    const paths = nativeHostPaths(browser, home);
-    let manifest: unknown;
-    try {
-      manifest = JSON.parse(await readFile(paths.manifestPath, 'utf8'));
-    } catch {
-      continue;
-    }
-    if (!isNativeHostManifest(manifest, paths.launcherPath)) continue;
-    await unlink(paths.manifestPath).catch(() => undefined);
-    removed.push(browser);
-  }
-  await unlink(nativeHostPaths('chromium', home).launcherPath).catch(() => undefined);
-  return removed;
-}
 
 export async function installAgent(options: InstallAgentOptions): Promise<AgentInstallResult> {
   const configPath = agentConfigPath(options.agent, options.home);
@@ -185,157 +127,6 @@ export async function findBrowsers(home: string, env: NodeJS.ProcessEnv): Promis
     }
   }
   return found;
-}
-
-export function addClaudeServer(source: string, server: McpCommand): string {
-  const config = parseClaudeConfig(source);
-  const mcpServers = ensureMcpServers(config);
-  mcpServers[CLAUDE_SERVER_NAME] = {
-    type: 'stdio',
-    command: server.command,
-    args: server.args,
-    env: {},
-  };
-  return `${JSON.stringify(config, null, 2)}\n`;
-}
-
-export function removeClaudeServer(source: string): string {
-  const config = parseClaudeConfig(source);
-  const mcpServers = config.mcpServers;
-  if (!isRecord(mcpServers) || !Object.hasOwn(mcpServers, CLAUDE_SERVER_NAME)) return source;
-  delete mcpServers[CLAUDE_SERVER_NAME];
-  return `${JSON.stringify(config, null, 2)}\n`;
-}
-
-export function addCodexServer(source: string, server: McpCommand): string {
-  const block = codexServerBlock(server);
-  const range = findCodexServerRange(source);
-  if (range === undefined) return appendCodexServer(source, block);
-  const before = ensureBlankLineBefore(source.slice(0, range.start));
-  const after = removeCodexServer(source.slice(range.end));
-  return `${before}${block}${ensureBlankLineAfter(after)}`;
-}
-
-export function removeCodexServer(source: string): string {
-  let current = source;
-  for (;;) {
-    const range = findCodexServerRange(current);
-    if (range === undefined) return current;
-    const before = current.slice(0, range.start);
-    const after = current.slice(range.end);
-    current = after.length === 0 ? before.replace(/\n\n$/, '\n') : `${before}${after}`;
-  }
-}
-
-function codexServerBlock(server: McpCommand): string {
-  const args = server.args.map(tomlString).join(', ');
-  return `[mcp_servers.${CODEX_SERVER_NAME}]\ncommand = ${tomlString(server.command)}\nargs = [${args}]\n`;
-}
-
-function parseClaudeConfig(source: string): Record<string, unknown> {
-  const parsed: unknown = source.trim() === '' ? {} : JSON.parse(source);
-  if (!isRecord(parsed)) throw new Error('Claude Code config must contain a JSON object');
-  return parsed;
-}
-
-function ensureMcpServers(config: Record<string, unknown>): Record<string, unknown> {
-  const existing = config.mcpServers;
-  if (existing === undefined) {
-    const created: Record<string, unknown> = {};
-    config.mcpServers = created;
-    return created;
-  }
-  if (!isRecord(existing)) throw new Error('mcpServers must be an object');
-  return existing;
-}
-
-function findCodexServerRange(source: string): { start: number; end: number } | undefined {
-  const lines = linesWithOffsets(source);
-  const first = lines.findIndex((line) => {
-    const key = tableKey(line.text);
-    return key !== undefined && isT3TabHeader(key);
-  });
-  if (first === -1) return undefined;
-
-  let boundary = lines.length;
-  for (let index = first + 1; index < lines.length; index += 1) {
-    const key = tableKey(lines[index]?.text ?? '');
-    if (key !== undefined && !isT3TabHeader(key)) {
-      boundary = index;
-      while (boundary > first + 1 && (lines[boundary - 1]?.text.trimStart().startsWith('#') ?? false)) {
-        boundary -= 1;
-      }
-      break;
-    }
-  }
-
-  let start = first;
-  while (start > 0 && (lines[start - 1]?.text.trimStart().startsWith('#') ?? false)) {
-    start -= 1;
-  }
-
-  return {
-    start: lines[start]?.start ?? 0,
-    end: boundary < lines.length ? (lines[boundary]?.start ?? source.length) : source.length,
-  };
-}
-
-function appendCodexServer(source: string, block: string): string {
-  if (source === '') return block;
-  return `${ensureBlankLineBefore(source)}${block}`;
-}
-
-function ensureBlankLineBefore(value: string): string {
-  if (value === '') return '';
-  if (value.endsWith('\n\n')) return value;
-  return value.endsWith('\n') ? `${value}\n` : `${value}\n\n`;
-}
-
-function ensureBlankLineAfter(value: string): string {
-  if (value === '') return '';
-  return value.startsWith('\n') ? value : `\n${value}`;
-}
-
-function linesWithOffsets(source: string): Array<{ text: string; start: number }> {
-  const lines: Array<{ text: string; start: number }> = [];
-  let start = 0;
-  while (start < source.length) {
-    const newline = source.indexOf('\n', start);
-    const end = newline === -1 ? source.length : newline + 1;
-    lines.push({ text: source.slice(start, end), start });
-    start = end;
-  }
-  return lines;
-}
-
-function tableKey(line: string): string | undefined {
-  const trimmed = line.trimStart();
-  if (!trimmed.startsWith('[') || trimmed.startsWith('[[')) return undefined;
-  let quote: '"' | "'" | undefined;
-  let escaped = false;
-  for (let index = 1; index < trimmed.length; index += 1) {
-    const character = trimmed[index];
-    if (quote === '"') {
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === quote) quote = undefined;
-    } else if (quote === "'") {
-      if (character === quote) quote = undefined;
-    } else if (character === '"' || character === "'") {
-      quote = character;
-    } else if (character === ']') {
-      return trimmed.slice(1, index).trim();
-    } else if (character === '#') {
-      return undefined;
-    }
-  }
-  return undefined;
-}
-
-function isT3TabHeader(key: string): boolean {
-  return /^(?:"mcp_servers"|'mcp_servers'|mcp_servers)\s*\.\s*(?:"t3-tab"|'t3-tab'|t3-tab)(?:\s*\.|$)/.test(
-    key,
-  );
 }
 
 async function editAgentConfig(
@@ -483,15 +274,6 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isNativeHostManifest(value: unknown, launcherPath: string): boolean {
-  if (!isRecord(value)) return false;
-  return value.name === NATIVE_HOST_NAME && value.path === launcherPath && value.type === 'stdio';
-}
-
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
   return error instanceof Error && 'code' in error && error.code === code;
 }
@@ -499,23 +281,4 @@ function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoExcepti
 function requireServer(server: McpCommand | undefined): McpCommand {
   if (server === undefined) throw new Error('An MCP server command is required');
   return server;
-}
-
-function browserConfigDirectory(browser: SupportedBrowser): string {
-  switch (browser) {
-    case 'chromium':
-      return 'chromium';
-    case 'chrome':
-      return 'google-chrome';
-    case 'brave':
-      return 'BraveSoftware/Brave-Browser';
-  }
-}
-
-function nativeHostLauncher(nodePath: string, cliPath: string): string {
-  return `#!/bin/sh\nexec ${shellQuote(nodePath)} ${shellQuote(cliPath)} native-host\n`;
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
