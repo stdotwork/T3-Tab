@@ -252,4 +252,18 @@ describe('ConversationView', () => {
     ).toBe(true);
     expect(ol.children).toHaveLength(2);
   });
+
+  it('keeps an unsent reply with its own conversation', () => {
+    const view = new ConversationView(noopActions);
+    const first: AgentConversation = { id: 'a', via: 'claude', title: 'A', status: 'idle', messages: [], updatedAt: 1 };
+    const second: AgentConversation = { id: 'b', via: 'codex', title: 'B', status: 'idle', messages: [], updatedAt: 2 };
+    const input = (view.element as unknown as FakeElement).querySelectorAll('textarea')[0]!;
+
+    view.update(first, []);
+    input.value = 'draft for A';
+    view.update(second, []);
+    expect(input.value).toBe('');
+    view.update(first, []);
+    expect(input.value).toBe('draft for A');
+  });
 });

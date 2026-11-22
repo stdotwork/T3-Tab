@@ -29,6 +29,8 @@ export class ConversationView {
   private lastMessagesKey = '';
   private lastTabsKey = '';
   private sending = false;
+  /** Unsent replies per conversation, so a draft never follows the owner into another conversation. */
+  private readonly drafts = new Map<string, string>();
 
   constructor(private readonly actions: PanelActions) {
     this.element = el('section', 'panel-view pushed');
@@ -112,11 +114,17 @@ export class ConversationView {
   /** Updates the view for the given conversation. Only touches the message or tab DOM when data changed. */
   update(conversation: AgentConversation | undefined, heldTabs: readonly PanelTab[]): boolean {
     if (conversation === undefined) {
+      if (this.conversationId !== undefined) this.drafts.set(this.conversationId, this.replyInput.value);
+      this.replyInput.value = '';
       this.conversationId = undefined;
       return false;
     }
 
     const switched = this.conversationId !== conversation.id;
+    if (switched) {
+      if (this.conversationId !== undefined) this.drafts.set(this.conversationId, this.replyInput.value);
+      this.replyInput.value = this.drafts.get(conversation.id) ?? '';
+    }
     this.conversationId = conversation.id;
 
     const cleanTitle = plainText(conversation.title) || 'Conversation';
@@ -213,7 +221,8 @@ export class ConversationView {
     this.sendBtn.disabled = true;
     try {
       await this.actions.send({ type: 'panel.agentSend', id, message: text });
-      this.replyInput.value = '';
+      this.drafts.delete(id);
+      if (this.conversationId === id) this.replyInput.value = '';
       this.actions.announce('Message sent.');
       await this.actions.refreshAgents();
     } catch (failure) {
