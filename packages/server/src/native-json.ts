@@ -1,6 +1,6 @@
 import type { Readable, Writable } from 'node:stream';
 
-export const MAX_NATIVE_MESSAGE_BYTES = 1_024_000;
+const MAX_NATIVE_MESSAGE_BYTES = 1_024_000;
 
 export async function readNativeMessage(stream: Readable): Promise<unknown> {
   let buffered = Buffer.alloc(0);

@@ -197,7 +197,7 @@ function isNotAttached(error: unknown): boolean {
   return error instanceof Error && /not attached|detached/i.test(error.message);
 }
 
-export async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error(message)), milliseconds);

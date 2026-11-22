@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "./dist/index.js",
   "bin": {
     "t3-tab": "./dist/cli.js"
   },
@@ -17,8 +16,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "build": "tsc -p tsconfig.build.json",
-    "start": "node dist/cli.js daemon"
+    "build": "tsc -p tsconfig.build.json"
   },
   "devDependencies": {
     "@types/node": "26.6.6",

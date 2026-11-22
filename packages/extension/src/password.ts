@@ -2,7 +2,7 @@ import type { AxNode } from '@t3-tab/protocol';
 
 const DESCRIBE_BATCH_SIZE = 25;
 
-export function looksMaskedValue(value: string | undefined): boolean {
+function looksMaskedValue(value: string | undefined): boolean {
   return value !== undefined && value !== '' && /^•+$/.test(value);
 }
 

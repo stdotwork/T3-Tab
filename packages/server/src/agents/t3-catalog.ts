@@ -5,7 +5,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { T3ConnectionError, type T3Fetch } from './t3-connection.js';
 
 /** The only T3 tools T3-Tab calls. Both are read-only in T3 (`McpToolAccess.reads`). */
-export const T3_LIST_TOOLS = ['t3_project_list', 'orchestrator_capabilities'] as const;
+const T3_LIST_TOOLS = ['t3_project_list', 'orchestrator_capabilities'] as const;
 
 const CALL_TIMEOUT_MS = 15_000;
 const PAGE_LIMIT = 100;
@@ -102,7 +102,7 @@ function failure(seen: Seen, message: string): T3CatalogError {
   return seen.unauthorized ? new T3CatalogError('T3 Code no longer accepts T3-Tab\'s sign-in.', true) : new T3CatalogError(message);
 }
 
-export function parseProjectPage(value: unknown): { projects: T3Project[]; nextCursor: number | null } {
+function parseProjectPage(value: unknown): { projects: T3Project[]; nextCursor: number | null } {
   const page = record(value);
   if (!Array.isArray(page.projects)) throw new T3CatalogError("T3 Code's project list could not be read.");
   const projects: T3Project[] = [];
@@ -123,7 +123,7 @@ export function parseProjectPage(value: unknown): { projects: T3Project[]; nextC
   return { projects, nextCursor: typeof next === 'number' && Number.isInteger(next) && next > 0 ? next : null };
 }
 
-export function parseProviders(value: unknown): T3Provider[] {
+function parseProviders(value: unknown): T3Provider[] {
   const result = record(value);
   if (!Array.isArray(result.providers)) throw new T3CatalogError("T3 Code's provider list could not be read.");
   const providers: T3Provider[] = [];

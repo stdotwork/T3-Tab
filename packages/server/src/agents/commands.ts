@@ -3,7 +3,7 @@ import type { AgentMessage, AgentStatus, AgentVia, T3State } from '@t3-tab/proto
 import { TOOL_TIMEOUT_MS } from '../client.js';
 import { tomlValue, type CodexProvider } from './codex-provider.js';
 
-export const MCP_SERVER_NAME = 't3-tab';
+const MCP_SERVER_NAME = 't3-tab';
 const CLAIM_NOTE_MARK = '\n\n[T3-Tab] ';
 
 export interface McpServerCommand {

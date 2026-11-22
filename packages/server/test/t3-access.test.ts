@@ -15,7 +15,7 @@ import { T3Access } from '../src/agents/t3-access.js';
 import { confirmedFetch } from '../src/agents/t3-connection.js';
 import { credentialPath, readCredential, writeCredential } from '../src/agents/t3-credential.js';
 import { findT3Environment, t3EnvironmentAt, type T3Environment } from '../src/agents/t3-environment.js';
-import { startDaemon, type DaemonHandle } from '../src/index.js';
+import { startDaemon, type DaemonHandle } from '../src/daemon.js';
 
 const fakes: FakeT3[] = [];
 const accesses: T3Access[] = [];

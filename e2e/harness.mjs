@@ -183,7 +183,7 @@ export function cleanEnv(env) {
   );
 }
 
-export function processIsAlive(pid) {
+function processIsAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;

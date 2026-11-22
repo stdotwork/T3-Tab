@@ -48,7 +48,7 @@ export interface PermissionPromptsOptions {
 const MAX_PENDING_PER_SESSION = 3;
 
 /** Whether a site's setting lets a tool call through without a prompt. A read grant never covers more than reading. */
-export function settingCovers(setting: SitePermission | undefined, tool: PromptKind): boolean {
+function settingCovers(setting: SitePermission | undefined, tool: PromptKind): boolean {
   return setting === 'allow' || (setting === 'read' && tool === 'read');
 }
 
