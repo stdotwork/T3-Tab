@@ -6,7 +6,7 @@ import { EXTENSION_ORIGIN, PROTOCOL_VERSION, type ToolSession } from '@t3-tab/pr
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
-import { startDaemon, type DaemonHandle } from '../src/index.js';
+import { startDaemon, type DaemonHandle } from '../src/daemon.js';
 
 let daemon: DaemonHandle | undefined;
 let directory: string | undefined;

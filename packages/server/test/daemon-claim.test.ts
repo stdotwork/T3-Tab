@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
 import { Agents } from '../src/agents/conversations.js';
-import { startDaemon, type DaemonHandle } from '../src/index.js';
+import { startDaemon, type DaemonHandle } from '../src/daemon.js';
 
 const CODE = 'abcdefghijklmnop1234';
 

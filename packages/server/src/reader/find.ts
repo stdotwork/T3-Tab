@@ -3,7 +3,7 @@ import { Worker } from 'node:worker_threads';
 const CONTEXT_LINES = 1;
 const MAX_MATCHES = 20;
 export const MAX_QUERY_LENGTH = 200;
-export const REGEX_TIMEOUT_MS = 500;
+const REGEX_TIMEOUT_MS = 500;
 
 export interface FindOptions {
   /** Opt in to a regular expression. The default is a literal, case-insensitive search. */

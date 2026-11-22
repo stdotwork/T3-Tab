@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startDaemon, type DaemonHandle } from '../src/index.js';
+import { startDaemon, type DaemonHandle } from '../src/daemon.js';
 
 let daemon: DaemonHandle | undefined;
 let directory: string | undefined;

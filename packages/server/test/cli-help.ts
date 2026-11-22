@@ -10,7 +10,7 @@ const VERSION_MANAGERS = new Set(['mise', 'rtx', 'asdf', 'volta', 'volta-shim'])
 // A wrapper script that fetches its tool when run.
 const FETCHING_WRAPPER = /\b(?:mise|rtx|asdf|volta|npx|bunx|uvx)\b|\bpnpm\s+dlx\b/;
 
-export const HELP_TIMEOUT_MS = 5_000;
+const HELP_TIMEOUT_MS = 5_000;
 
 export type HelpTarget = { path: string } | { skip: string };
 

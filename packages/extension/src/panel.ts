@@ -190,7 +190,7 @@ function optionalFields(request: AgentStartRequest): { project?: string; provide
 }
 
 /** The current tab, or all tabs of its group when that group is the owner's own rather than a session's. */
-export async function shareTargets(tabId: number | undefined): Promise<PanelTab[]> {
+async function shareTargets(tabId: number | undefined): Promise<PanelTab[]> {
   const current = await panelTab(tabId);
   const tab = await chrome.tabs.get(current.id);
   const groupId = tab.groupId;

@@ -29,7 +29,7 @@ export function stateDirectory(env: NodeJS.ProcessEnv = process.env): string {
   return join(home === undefined || home === '' ? homedir() : home, '.local', 'state', 't3-tab');
 }
 
-export function daemonStatePath(directory: string): string {
+function daemonStatePath(directory: string): string {
   return join(directory, 'daemon.json');
 }
 
@@ -46,7 +46,7 @@ export async function writeDaemonState(directory: string, state: DaemonState): P
   await writePrivateJson(directory, daemonStatePath(directory), state.pid, state);
 }
 
-export function extensionStatePath(directory: string): string {
+function extensionStatePath(directory: string): string {
   return join(directory, 'extension.json');
 }
 
