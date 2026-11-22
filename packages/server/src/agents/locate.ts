@@ -18,7 +18,8 @@ export async function findExecutable(name: string, env: NodeJS.ProcessEnv): Prom
 
 /**
  * Finds the `t3` command. In order: `T3_TAB_T3` when set, `t3` on PATH or in the usual folders, the launchers T3
- * records in `<T3 home>/runtime/launchers`, and the newest fully installed `<T3 home>/runtime/versions/<v>/t3`.
+ * records in `<T3 home>/runtime/launchers`, `<T3 home>/runtime/bin/t3`, the desktop app's `<T3 home>/bin/t3`, and
+ * the newest fully installed `<T3 home>/runtime/versions/<v>/t3`.
  * The T3 home is `T3CODE_HOME`, or `~/.t3`. Only these paths are read, never T3's data or settings.
  */
 export async function findT3(env: NodeJS.ProcessEnv): Promise<string | undefined> {
@@ -33,6 +34,9 @@ export async function findT3(env: NodeJS.ProcessEnv): Promise<string | undefined
   }
   const bin = join(runtime, 'bin', 't3');
   if (await isExecutable(bin)) return bin;
+  // T3 Code's desktop app writes its CLI launcher here.
+  const desktop = join(t3Home(env), 'bin', 't3');
+  if (await isExecutable(desktop)) return desktop;
   return await newestVersion(join(runtime, 'versions'));
 }
 

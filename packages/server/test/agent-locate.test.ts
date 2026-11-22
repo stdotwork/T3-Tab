@@ -90,6 +90,16 @@ describe('findT3', () => {
     expect(await findT3({ PATH: '', HOME: home })).toBe(bin);
   });
 
+  it("uses the desktop app's bin/t3 after runtime/bin and before versions", async () => {
+    const desktop = await exe(join(home, '.t3', 'bin', 't3'));
+    const version = join(home, '.t3', 'runtime', 'versions', '0.1.9', 't3');
+    await exe(version);
+    await writeFile(join(version, '..', '.install-complete'), '');
+    expect(await findT3({ PATH: '', HOME: home })).toBe(desktop);
+    const runtime = await exe(join(home, '.t3', 'runtime', 'bin', 't3'));
+    expect(await findT3({ PATH: '', HOME: home })).toBe(runtime);
+  });
+
   it('picks the newest version that has an install marker and skips one without', async () => {
     const versions = join(home, '.t3', 'runtime', 'versions');
     const old = await exe(join(versions, '0.1.8-nightly.20261101.1', 't3'));
