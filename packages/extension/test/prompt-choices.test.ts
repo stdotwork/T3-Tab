@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { promptChoices, rowsShifted, siteChoices, siteStatus } from '../src/panel-prompts';
+import { promptChoices, rowsShifted, siteChoices, siteStatus } from '../entrypoints/sidepanel/prompt-choices';
 
 describe('what each prompt button says it grants', () => {
   it('limits a read prompt\'s lasting choice to reading', () => {

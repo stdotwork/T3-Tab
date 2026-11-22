@@ -5,7 +5,7 @@
 import type { T3Access } from '@t3-tab/protocol';
 
 import type { PanelRequest, PanelState } from '../../src/panel';
-import { siteChoices, siteStatus } from '../../src/panel-prompts';
+import { siteChoices, siteStatus } from './prompt-choices';
 import type { SitePermission } from '../../src/permissions';
 import { icon } from './icons';
 import { accessText, el, type PanelActions } from './shared';
