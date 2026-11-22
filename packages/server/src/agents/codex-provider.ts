@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import { parse } from 'smol-toml';
 
+import { tomlString } from '../toml.js';
+
 /** The variable a provider's bearer token reaches Codex through. Codex does not pass it on to MCP servers. */
 export const CODEX_TOKEN_ENV = 'T3_TAB_CODEX_PROVIDER_TOKEN';
 const HEADER_ENV_PREFIX = 'T3_TAB_CODEX_PROVIDER_HEADER_';
@@ -50,10 +52,6 @@ export interface CodexProvider {
 
 function isTable(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date);
-}
-
-function tomlString(value: string): string {
-  return JSON.stringify(value).replaceAll('\u007f', '\\u007F');
 }
 
 /** A TOML value for a `-c` setting, on one line. */

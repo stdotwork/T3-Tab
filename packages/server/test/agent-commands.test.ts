@@ -1,3 +1,4 @@
+import { parse as parseToml } from 'smol-toml';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -177,6 +178,21 @@ describe('codexArgs', () => {
     expect(args.slice(0, 2)).toEqual(['exec', 'resume']);
     expect(args.slice(-2)).toEqual(['th-7', '-']);
     expect(args[args.indexOf('-m') + 1]).toBe('gpt-x');
+  });
+
+  it('escapes ASCII DEL in -c settings so they parse with smol-toml', () => {
+    const args = codexArgs({
+      server: { command: '/bin/node\u007fx', args: ['/x\u007fy/cli.js', 'mcp'] },
+      claimFile: '/run/claim\u007fz',
+      env: { XDG_STATE_HOME: '/state\u007fdir' },
+    });
+    const settings = args.filter((_, index) => args[index - 1] === '-c');
+    const parsed = parseToml(settings.join('\n')) as {
+      mcp_servers: { 't3-tab': { command: string; args: string[]; env: Record<string, string> } };
+    };
+    expect(parsed.mcp_servers['t3-tab'].command).toBe('/bin/node\u007fx');
+    expect(parsed.mcp_servers['t3-tab'].args).toEqual(['/x\u007fy/cli.js', 'mcp', '--claim-file', '/run/claim\u007fz']);
+    expect(parsed.mcp_servers['t3-tab'].env).toEqual({ XDG_STATE_HOME: '/state\u007fdir' });
   });
 });
 

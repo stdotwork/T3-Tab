@@ -1,6 +1,7 @@
 import type { AgentMessage, AgentStatus, AgentVia, T3State } from '@t3-tab/protocol';
 
 import { TOOL_TIMEOUT_MS } from '../client.js';
+import { tomlString } from '../toml.js';
 import { tomlValue, type CodexProvider } from './codex-provider.js';
 
 export const MCP_SERVER_NAME = 't3-tab';
@@ -323,8 +324,4 @@ function parseJsonObject(text: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
-}
-
-function tomlString(value: string): string {
-  return JSON.stringify(value);
 }
