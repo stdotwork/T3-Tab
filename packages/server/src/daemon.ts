@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
@@ -8,24 +8,20 @@ import {
   PROTOCOL_MISMATCH,
   PROTOCOL_VERSION,
   type BrowserDaemonRequestMessage,
-  type BrowserMessage,
   type BrowserPongMessage,
-  type ClaimFileProblem,
-  type ControlResponse,
   type DaemonReplyMessage,
-  type ToolMethod,
   type ToolSession,
 } from '@t3-tab/protocol';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
-import { CLAIM_CODE, CLAIM_FILE_PROBLEMS } from './agents/claim-file.js';
 import { Agents } from './agents/conversations.js';
 import { T3Access } from './agents/t3-access.js';
 import { removeTemporaryCredentials } from './agents/t3-credential.js';
 import { BrowserConnection } from './browser-link.js';
+import { handleControlMessage, type ControlState } from './daemon-control.js';
+import { isBrowserMessage, isOtherProtocolVersion, parseJson } from './daemon-messages.js';
 import { connectionRole, tokensMatch, isLoopbackHostHeader, type ConnectionCredential, type ConnectionRole } from './security.js';
 import { clearDaemonState, clearExtensionState, writeDaemonState, writeExtensionState, type DaemonState } from './state.js';
-import { runTool } from './tools.js';
 
 export interface DaemonOptions {
   /** A port the caller asked for. When omitted, the default port is tried first, then any free loopback port. */
@@ -50,18 +46,6 @@ export interface DaemonHandle {
 const MAX_CONTROL_MESSAGE_BYTES = 1_024_000;
 // A page's accessibility tree and a screenshot come back from the browser in one message.
 const MAX_BROWSER_MESSAGE_BYTES = 16 * 1_024 * 1_024;
-const TOOL_METHODS: ReadonlySet<string> = new Set<ToolMethod>(['tabs', 'read', 'screenshot', 'act', 'run_js']);
-// The browser's answer for a code it will never honour, as opposed to a moment it could not answer.
-const CLAIM_REFUSED = /^Unknown claim code/;
-const MAX_CLAIM_FILE_PATH = 4_096;
-
-/** What the daemon holds for one control connection: its session, and a claim code it registered with. */
-interface ControlState {
-  sessions: Map<WebSocket, ToolSession>;
-  claims: Map<WebSocket, string>;
-  /** The redemption running for a connection, so simultaneous first tool calls share it. */
-  redeeming: Map<WebSocket, Promise<void>>;
-}
 
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   if (options.stateDir === undefined) throw new Error('A state directory is required');
@@ -286,239 +270,6 @@ async function answerDaemonRequest(webSocket: WebSocket, { agents, t3Access }: P
     };
   }
   if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify(reply));
-}
-
-function handleControlMessage(
-  webSocket: WebSocket,
-  browsers: Map<WebSocket, BrowserConnection>,
-  control: ControlState,
-  agents: Agents,
-  data: RawData,
-): void {
-  const { sessions } = control;
-  const value = parseJson(data);
-  if (!isControlRequest(value)) {
-    sendControlError(webSocket, null, 'Invalid control request');
-    return;
-  }
-
-  const request = value;
-  if (request.method === 'session.register') {
-    if (sessions.has(webSocket)) {
-      sendControlError(webSocket, request.requestId, 'Control connection is already registered');
-      return;
-    }
-    if (typeof request.clientName !== 'string' || request.clientName.length > 160) {
-      sendControlError(webSocket, request.requestId, 'Invalid client name');
-      return;
-    }
-    if (request.claim !== undefined && (typeof request.claim !== 'string' || !CLAIM_CODE.test(request.claim))) {
-      sendControlError(webSocket, request.requestId, 'Invalid claim code');
-      return;
-    }
-    const claimFileProblem = parseClaimFileProblem(request.claimFileProblem);
-    if (request.claimFileProblem !== undefined && claimFileProblem === undefined) {
-      sendControlError(webSocket, request.requestId, 'Invalid claim file report');
-      return;
-    }
-    const id = randomUUID();
-    const session: ToolSession = { id, name: makeSessionName(request.clientName, id) };
-    sessions.set(webSocket, session);
-    if (claimFileProblem !== undefined) agents.claimFileFailed(claimFileProblem.file, claimFileProblem.problem);
-    // Applied with the session's first tool call, once a browser is sure to have registered it.
-    if (typeof request.claim === 'string') control.claims.set(webSocket, request.claim);
-    const connection = [...browsers.values()].at(-1);
-    if (connection !== undefined) void connection.request(session, 'session.register', {}).catch(() => undefined);
-    webSocket.send(
-      JSON.stringify({
-        type: 'control.response',
-        protocolVersion: PROTOCOL_VERSION,
-        requestId: request.requestId,
-        ok: true,
-        result: { session },
-      } satisfies ControlResponse),
-    );
-    return;
-  }
-  if (request.method === 'status') {
-    const response: ControlResponse = {
-      type: 'control.response',
-      protocolVersion: PROTOCOL_VERSION,
-      requestId: request.requestId,
-      ok: true,
-      result: { browsers: [...browsers.values()].map((connection) => connection.status) },
-    };
-    webSocket.send(JSON.stringify(response));
-    return;
-  }
-  if (!TOOL_METHODS.has(request.method)) {
-    sendControlError(webSocket, request.requestId, `Unknown method: ${String(request.method)}`);
-    return;
-  }
-  void answerTool(webSocket, browsers, control, agents, request);
-}
-
-async function answerTool(
-  webSocket: WebSocket,
-  browsers: Map<WebSocket, BrowserConnection>,
-  control: ControlState,
-  agents: Agents,
-  request: { requestId: string; method: string; session?: unknown; params?: unknown },
-): Promise<void> {
-  try {
-    const registered = control.sessions.get(webSocket);
-    if (registered === undefined) throw new Error('Session is not registered on this control connection');
-    const claimed = validSession(request.session);
-    if (claimed === undefined || claimed.id !== registered.id) {
-      throw new Error('Session does not match this control connection');
-    }
-    if (typeof request.params !== 'object' || request.params === null || Array.isArray(request.params)) {
-      throw new Error('Invalid params');
-    }
-    // The browser that connected last is the live one: an older socket may not have been cleaned up yet.
-    const connection = [...browsers.values()].at(-1);
-    if (connection === undefined) throw new Error('No browser is connected. Open the browser with the T3-Tab extension.');
-    // Register only the session making this request. A new extension connection never learns other sessions.
-    await connection.request(registered, 'session.register', {});
-    await redeemClaim(webSocket, connection, registered, control, agents);
-    const content = await runTool(connection, registered, request.method as ToolMethod, request.params as Record<string, unknown>);
-    if (webSocket.readyState !== WebSocket.OPEN) return;
-    const response: ControlResponse = {
-      type: 'control.response',
-      protocolVersion: PROTOCOL_VERSION,
-      requestId: request.requestId,
-      ok: true,
-      result: { content },
-    };
-    webSocket.send(JSON.stringify(response));
-  } catch (error) {
-    if (webSocket.readyState === WebSocket.OPEN) {
-      sendControlError(webSocket, request.requestId, error instanceof Error ? error.message : String(error));
-    }
-  }
-}
-
-/**
- * Redeems the code a direct run's MCP server carries. The tool still runs when the claim fails: the owner sees why
- * in the conversation, and a failure the browser may recover from is tried on the next call. Calls that arrive
- * during a redemption wait for it, so one session never redeems its code twice.
- */
-async function redeemClaim(
-  webSocket: WebSocket,
-  connection: BrowserConnection,
-  session: ToolSession,
-  control: ControlState,
-  agents: Agents,
-): Promise<void> {
-  const running = control.redeeming.get(webSocket);
-  if (running !== undefined) {
-    await running;
-    return;
-  }
-  const claim = control.claims.get(webSocket);
-  if (claim === undefined) return;
-  const redemption = (async () => {
-    try {
-      await connection.request(session, 'session.claim', { code: claim, route: 'launch' });
-      control.claims.delete(webSocket);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      if (CLAIM_REFUSED.test(reason)) control.claims.delete(webSocket);
-      agents.claimFailed(claim, reason);
-    } finally {
-      control.redeeming.delete(webSocket);
-    }
-  })();
-  control.redeeming.set(webSocket, redemption);
-  await redemption;
-}
-
-function parseClaimFileProblem(value: unknown): { file: string; problem: ClaimFileProblem } | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  const { file, problem } = value as Record<string, unknown>;
-  if (typeof file !== 'string' || file === '' || file.length > MAX_CLAIM_FILE_PATH) return undefined;
-  if (typeof problem !== 'string' || !CLAIM_FILE_PROBLEMS.has(problem)) return undefined;
-  return { file, problem: problem as ClaimFileProblem };
-}
-
-function isBrowserMessage(value: unknown): value is BrowserMessage {
-  if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    candidate.protocolVersion === PROTOCOL_VERSION &&
-    (candidate.type === 'browser.hello' ||
-      candidate.type === 'browser.ping' ||
-      candidate.type === 'browser.pong' ||
-      candidate.type === 'browser.tabCount' ||
-      candidate.type === 'browser.tabClosed' ||
-      (candidate.type === 'browser.daemonRequest' && typeof candidate.requestId === 'string' && typeof candidate.method === 'string') ||
-      (candidate.type === 'browser.response' && typeof candidate.requestId === 'string' && typeof candidate.ok === 'boolean'))
-  );
-}
-
-function isOtherProtocolVersion(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null) return false;
-  const version = (value as Record<string, unknown>).protocolVersion;
-  return typeof version === 'number' && version !== PROTOCOL_VERSION;
-}
-
-function isControlRequest(value: unknown): value is {
-  type: 'control.request';
-  protocolVersion: typeof PROTOCOL_VERSION;
-  requestId: string;
-  method: string;
-  clientName?: unknown;
-  claim?: unknown;
-  claimFileProblem?: unknown;
-  session?: unknown;
-  params?: unknown;
-} {
-  if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    candidate.type === 'control.request' &&
-    candidate.protocolVersion === PROTOCOL_VERSION &&
-    typeof candidate.requestId === 'string' &&
-    typeof candidate.method === 'string'
-  );
-}
-
-export function makeSessionName(clientName: string, id: string): string {
-  const visible = [...clientName]
-    .map((character) => {
-      const code = character.codePointAt(0) ?? 0;
-      return code < 32 || code === 127 ? ' ' : character;
-    })
-    .join('');
-  const base = visible.replace(/\s+/g, ' ').trim().slice(0, 80) || 'MCP client';
-  return `${base} · ${id.replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'session'}`;
-}
-
-function validSession(value: unknown): ToolSession | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  const candidate = value as Record<string, unknown>;
-  if (typeof candidate.id !== 'string' || candidate.id === '' || candidate.id.length > 128) return undefined;
-  if (typeof candidate.name !== 'string' || candidate.name === '' || candidate.name.length > 160) return undefined;
-  return { id: candidate.id, name: candidate.name };
-}
-
-function sendControlError(webSocket: WebSocket, requestId: string | null, error: string): void {
-  const response: ControlResponse = {
-    type: 'control.response',
-    protocolVersion: PROTOCOL_VERSION,
-    requestId,
-    ok: false,
-    error,
-  };
-  webSocket.send(JSON.stringify(response));
-}
-
-function parseJson(data: RawData): unknown {
-  try {
-    return JSON.parse(data.toString());
-  } catch {
-    return null;
-  }
 }
 
 function singleHeader(value: string | string[] | undefined): string | undefined {
