@@ -6,7 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { fakeDir, readStdin, record } from './common.mjs';
+import { fakeDir, readStdin, record, valueOf } from './common.mjs';
 
 const args = process.argv.slice(2);
 const mode = existsSync(join(fakeDir, 't3-mode')) ? readFileSync(join(fakeDir, 't3-mode'), 'utf8').trim() : 'running';
@@ -21,7 +21,7 @@ if (!json) fail('fake t3 needs --json');
 const command = args[1];
 const positional = positionals(args.slice(2));
 if (command === 'list') {
-  const project = valueOf('--project');
+  const project = valueOf(args, '--project');
   if (project === '/') fail("No T3 Code project matches '/'. Pass a project id or a path inside a project.");
   print([]);
 } else if (command === 'start') {
@@ -33,8 +33,8 @@ if (command === 'list') {
     title: input.split('\n')[0].slice(0, 80),
     status: 'running',
     latestRunId: 'run-1',
-    providerInstanceId: valueOf('--provider') ?? 'default',
-    model: valueOf('--model') ?? 'default',
+    providerInstanceId: valueOf(args, '--provider') ?? 'default',
+    model: valueOf(args, '--model') ?? 'default',
     pendingRequestCount: 0,
     messages: [{ role: 'user', runId: 'run-1', text: input }],
   });
@@ -58,7 +58,7 @@ if (command === 'list') {
 } else if (command === 'show') {
   const [id] = positional;
   const { messages, ...thread } = readThread(id);
-  print({ thread, messages: messages.slice(-Number(valueOf('--messages') ?? 10)) });
+  print({ thread, messages: messages.slice(-Number(valueOf(args, '--messages') ?? 10)) });
 } else {
   fail(`fake t3 does not know thread ${command}`);
 }
@@ -72,11 +72,6 @@ function positionals(rest) {
     else values.push(value);
   }
   return values;
-}
-
-function valueOf(flag) {
-  const index = args.indexOf(flag);
-  return index === -1 ? undefined : args[index + 1];
 }
 
 function threadPath(id) {

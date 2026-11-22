@@ -1,11 +1,11 @@
-import type { ActAction, ActFailure, ActStep, PageActionResult } from '@t3-tab/protocol';
+import { actStepRef, type ActAction, type ActFailure, type ActStep, type PageActionResult } from '@t3-tab/protocol';
 
 import { documentEpoch, ensureAttached, navigationsSince, sendCommand } from './cdp';
 import { readPage } from './page';
 import { originOf } from './permissions';
 import type { StoredSession } from './sessions';
 import { resolveSessionTab } from './tabs';
-import { settlePage } from './settle';
+import { settlePage, sleep } from './settle';
 
 const MAX_WAIT_MS = 10_000;
 const MAX_FOR_TEXT_MS = 10_000;
@@ -59,7 +59,7 @@ export async function actOnPage(
     try {
       activeSession = await reloadSession();
       await assertActAccess(activeSession, tabId, expectedOrigin);
-      const ref = refOf(step);
+      const ref = actStepRef(step);
       if (ref !== undefined) {
         if (epoch !== expectedEpoch) throw staleRef(ref, `document epoch ${expectedEpoch} -> ${epoch}`);
         const backendId = backendIds[index];
@@ -394,16 +394,6 @@ function actionOf(step: ActStep): ActAction {
   return 'wait';
 }
 
-function refOf(step: ActStep): string | undefined {
-  if ('click' in step) return step.click.ref;
-  if ('type' in step) return step.type.ref;
-  if ('fill' in step) return step.fill.ref;
-  if ('select' in step) return step.select.ref;
-  if ('scroll' in step) return step.scroll.ref;
-  if ('hover' in step) return step.hover.ref;
-  return undefined;
-}
-
 function staleRef(ref: string, detail?: string): Error {
   return new Error(`${ref} is no longer on the page; read again${detail === undefined ? '' : ` (${detail})`}`);
 }
@@ -414,8 +404,4 @@ function messageOf(error: unknown): string {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
