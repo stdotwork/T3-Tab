@@ -1,4 +1,4 @@
-import type { PermissionDecision, PromptKind, SitePermission } from './permissions';
+import type { PermissionDecision, PromptKind, SitePermission } from '../../src/permissions';
 
 export interface PromptChoice {
   decision: PermissionDecision;
