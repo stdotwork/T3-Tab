@@ -124,7 +124,9 @@ function t3Line(status: AgentsStatus): string {
 /** One line on T3-Tab's read-only T3 sign-in and what it gives the panel. */
 export function accessText(access: T3Access): string {
   const detail = access.detail === undefined ? '' : `${access.detail} `;
-  if (access.state === 'signing-in') return `${detail}Approve T3-Tab in the T3 Code tab that opened, and choose Read only.`;
+  if (access.state === 'signing-in') {
+    return `${detail}Approve T3-Tab in the T3 Code tab that opened, and choose Read only. If it asks for a sign-in code, create one in T3 Code under Settings → Sharing & access.`;
+  }
   if (access.state === 'signed-out') {
     return `${detail}Sign in to T3 Code once to pick projects and models from its lists. T3-Tab asks for read-only access.`;
   }

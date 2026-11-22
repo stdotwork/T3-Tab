@@ -94,7 +94,7 @@ describe('accessText', () => {
       'The sign-in was declined in T3 Code. Sign in to T3 Code once to pick projects and models from its lists. T3-Tab asks for read-only access.',
     );
     expect(accessText({ state: 'signing-in', environment: 'http://127.0.0.1:3773' })).toBe(
-      'Approve T3-Tab in the T3 Code tab that opened, and choose Read only.',
+      'Approve T3-Tab in the T3 Code tab that opened, and choose Read only. If it asks for a sign-in code, create one in T3 Code under Settings → Sharing & access.',
     );
   });
 
