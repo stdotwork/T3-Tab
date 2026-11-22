@@ -10,14 +10,16 @@ import {
   findAgents,
   findBrowsers,
   installAgent,
+  uninstallAgent,
+  type Agent,
+} from './install.js';
+import type { McpCommand } from './install-config.js';
+import {
   installNativeHost,
   nativeHostPaths,
-  uninstallAgent,
   uninstallNativeHosts,
-  type Agent,
-  type McpCommand,
   type SupportedBrowser,
-} from './install.js';
+} from './install-native-host.js';
 import { runMcpServer } from './mcp.js';
 import { runNativeHost } from './native-host.js';
 import { readDaemonState, stateDirectory } from './state.js';
