@@ -9,7 +9,7 @@ import {
   removeClaudeServer,
   removeCodexServer,
   type McpCommand,
-} from '../src/install.js';
+} from '../src/install-config.js';
 
 const command: McpCommand = {
   command: '/home/owner/.nvm/versions/node/v26.13.1/bin/node',
