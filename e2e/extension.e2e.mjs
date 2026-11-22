@@ -906,12 +906,14 @@ async function assertPromptRows(panelPage, serviceWorker) {
     { origin: 'http://read.test', setting: 'read' },
   ];
   await show([], sites);
-  const readSite = panelPage.locator('li').filter({ hasText: 'http://read.test' });
+  await panelPage.locator('#btn-settings').click();
+  const readSite = panelPage.locator('#site-permissions li').filter({ hasText: 'http://read.test' });
   await readSite.getByText('Reading allowed; opening, acting and JavaScript ask').waitFor();
   const readSiteButtons = await readSite.locator('button').allTextContents();
   assert(JSON.stringify(readSiteButtons) === JSON.stringify(['Ask every time', 'Always allow everything']), `Read-only site buttons: ${JSON.stringify(readSiteButtons)}`);
-  await panelPage.locator('li').filter({ hasText: 'http://all.test' }).getByText('Everything allowed: reading, opening, acting, JavaScript').waitFor();
+  await panelPage.locator('#site-permissions li').filter({ hasText: 'http://all.test' }).getByText('Everything allowed: reading, opening, acting, JavaScript').waitFor();
   console.log('Site list: a read-only grant is shown as "Reading allowed; opening, acting and JavaScript ask"');
+  await panelPage.locator('#btn-settings-back').click();
   await show([]);
 }
 
