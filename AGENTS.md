@@ -184,8 +184,10 @@ such a page is reported, not prevented. A tab that moves while approval is pendi
 steps is refused until its new origin is approved. Site setting writes are serialised.
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
-`view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel's plain permissions view
-is in `packages/extension/entrypoints/sidepanel`; its sharing and prompt calls live in
+`view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel lives in
+`packages/extension/entrypoints/sidepanel` (inbox layout: Home with waiting prompts in "Needs you",
+conversations, current tab and connected sessions, plus pushed Conversation, New conversation and
+Settings views styled through `tokens.css`); its sharing and prompt calls live in
 `packages/extension/src/panel.ts`, and the policy is in `permissions.ts`, `sessions.ts` and `tabs.ts`.
 
 ## Side panel sessions
