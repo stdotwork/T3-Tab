@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 
+import { parse as parseToml } from 'smol-toml';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -117,5 +118,21 @@ value = 2
 
     expect(updated).toContain('command = "/path/with \\"quotes\\"/node"');
     expect(updated).toContain('args = ["/path/with \\\\ backslash/cli.js", "mcp"]');
+  });
+
+  it('escapes ASCII DEL so the generated TOML parses with smol-toml', () => {
+    const updated = addCodexServer('', {
+      command: '/path/with\u007fdel/node',
+      args: ['/path/with\u007fdel/cli.js', 'mcp'],
+    });
+
+    expect(parseToml(updated)).toEqual({
+      mcp_servers: {
+        't3-tab': {
+          command: '/path/with\u007fdel/node',
+          args: ['/path/with\u007fdel/cli.js', 'mcp'],
+        },
+      },
+    });
   });
 });

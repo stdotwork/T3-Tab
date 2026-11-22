@@ -14,6 +14,8 @@ import { delimiter, dirname, join } from 'node:path';
 
 import { EXTENSION_ID, NATIVE_HOST_NAME } from '@t3-tab/protocol';
 
+import { tomlString } from './toml.js';
+
 export type SupportedBrowser = 'chromium' | 'chrome' | 'brave';
 export type Agent = 'claude' | 'codex';
 export type InstallMethod = 'cli' | 'file';
@@ -334,10 +336,6 @@ function isT3TabHeader(key: string): boolean {
   return /^(?:"mcp_servers"|'mcp_servers'|mcp_servers)\s*\.\s*(?:"t3-tab"|'t3-tab'|t3-tab)(?:\s*\.|$)/.test(
     key,
   );
-}
-
-function tomlString(value: string): string {
-  return JSON.stringify(value);
 }
 
 async function editAgentConfig(
