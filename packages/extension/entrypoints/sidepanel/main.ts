@@ -1,41 +1,56 @@
-import type { PanelRequest, PanelState } from '../../src/panel';
-import { initAgentPanel } from './agent';
-import { promptChoices, rowsShifted, siteChoices, siteStatus } from '../../src/panel-prompts';
-import type { PermissionDecision, PermissionPrompt, SitePermission } from '../../src/permissions';
+/*
+ * Entry point and view controller for the T3-Tab side panel (inbox structure).
+ *
+ * Manages:
+ * - Performance marks (`panel-start`, `panel-ready`)
+ * - View stack (Home -> Conversation / New conversation / Settings) with Escape to go Back
+ *   and focus restoration
+ * - Single polite live region for completed replies and status changes
+ * - Polling via the extension service worker (never talking to the daemon or T3 directly)
+ * - Headless render hooks used by the end-to-end suite
+ */
+performance.mark('panel-start');
 
-interface PromptNode {
-  item: HTMLLIElement;
-  description: HTMLElement;
-  controls: HTMLElement;
-  timer: ReturnType<typeof setTimeout> | undefined;
-}
+import type { AgentStatus } from '@t3-tab/protocol';
 
-const BUTTON_DELAY_MS = 500;
+import type { AgentPanelState, PanelRequest, PanelState } from '../../src/panel';
+import { ConversationView } from './conversation';
+import { HomeView } from './home';
+import { NewConversationView } from './new-conversation';
+import { SettingsView } from './settings';
+import { plainText, type PanelActions } from './shared';
+
+type Screen = 'home' | 'conversation' | 'new' | 'settings';
+
 const app = document.querySelector<HTMLElement>('#app');
-const agentRoot = document.querySelector<HTMLElement>('#agent');
-const tabIdParam = new URL(location.href).searchParams.get('tabId');
+const liveStatus = document.querySelector<HTMLElement>('#live-status');
+const params = new URL(location.href).searchParams;
+const tabIdParam = params.get('tabId');
 const fixedTabId = tabIdParam === null ? undefined : Number(tabIdParam);
 const stateRequest: PanelRequest =
   fixedTabId !== undefined && Number.isInteger(fixedTabId)
     ? { type: 'panel.state', tabId: fixedTabId }
     : { type: 'panel.state' };
-const headless = new URL(location.href).searchParams.get('headless') === '1';
-const promptNodes = new Map<string, PromptNode>();
-/** The prompt ids in the order the list last showed them. */
-let shownOrder: string[] = [];
+const headless = params.get('headless') === '1';
 
-async function refresh(): Promise<void> {
-  if (app === null) return;
-  try {
-    const state = (await send(stateRequest)) as PanelState | { ok: true };
-    if (!('sessions' in state)) throw new Error('Unexpected panel state');
-    render(state);
-  } catch (error) {
-    app.replaceChildren(
-      heading('Permissions'),
-      text('p', error instanceof Error ? error.message : String(error), 'muted'),
-    );
-  }
+let panelState: PanelState | undefined;
+let agentState: AgentPanelState | undefined;
+let panelError: string | undefined;
+let agentError: string | undefined;
+let currentScreen: Screen = 'home';
+let selectedConversationId: string | undefined;
+let returnFocusEl: HTMLElement | undefined;
+let readyMarked = false;
+
+/** Last observed status and assistant message count per conversation, for polite live announcements. */
+const observedConversations = new Map<string, { status: AgentStatus; assistantCount: number }>();
+
+function announce(message: string): void {
+  if (liveStatus === null) return;
+  liveStatus.textContent = '';
+  requestAnimationFrame(() => {
+    liveStatus.textContent = message;
+  });
 }
 
 async function send(request: PanelRequest): Promise<unknown> {
@@ -46,160 +61,159 @@ async function send(request: PanelRequest): Promise<unknown> {
   return result;
 }
 
-function render(state: PanelState): void {
-  if (app === null) return;
-  const children: Node[] = [heading('Permissions')];
-  const current = state.currentTab;
-  children.push(
-    heading('Current tab', 2),
-    // One line each, whatever the page's title: a block that changed height would move the prompt rows below.
-    text('p', current === undefined ? 'No current tab' : current.title || '(untitled)', 'muted line'),
-    text('p', current?.url ?? '', 'muted line'),
-  );
+const actions: PanelActions = {
+  send,
+  refreshPanel,
+  refreshAgents,
+  announce,
+  openConversation(id, trigger) {
+    selectedConversationId = id;
+    pushScreen('conversation', trigger);
+  },
+  openNewConversation(trigger) {
+    pushScreen('new', trigger);
+  },
+  openSettings(trigger) {
+    pushScreen('settings', trigger);
+  },
+  goBack() {
+    if (currentScreen === 'home') return;
+    currentScreen = 'home';
+    syncVisibleScreen();
+    renderAll();
+    const target = returnFocusEl;
+    returnFocusEl = undefined;
+    if (target !== undefined && target.isConnected) {
+      target.focus();
+    } else if (selectedConversationId !== undefined) {
+      const row = homeView.element.querySelector<HTMLButtonElement>(`[data-conversation-id="${CSS.escape(selectedConversationId)}"]`);
+      row?.focus();
+    }
+  },
+};
 
-  children.push(heading('Waiting for you', 2));
-  const prompts = promptList(state.pending);
-  children.push(state.pending.length === 0 ? text('p', 'No permission requests.', 'muted') : prompts);
+const homeView = new HomeView(actions);
+const conversationView = new ConversationView(actions);
+const newConversationView = new NewConversationView(actions);
+const settingsView = new SettingsView(actions);
 
-  children.push(heading('Connected sessions', 2));
-  if (state.sessions.length === 0) children.push(text('p', 'No MCP clients are connected.', 'muted'));
-  else {
-    const list = document.createElement('ul');
-    for (const session of state.sessions) {
-      const shared = current !== undefined && session.sharedTabIds.includes(current.id);
-      const item = document.createElement('li');
-      item.append(
-        text('div', session.name),
-        text('div', session.groupId === undefined ? 'No tab group yet' : `Tab group ${session.groupId}`, 'muted'),
-      );
-      if (current !== undefined) {
-        item.append(buttons([[shared ? 'Unshare current tab' : 'Share current tab', () => toggleShare(session.id, shared)]]));
+if (app !== null) {
+  app.replaceChildren(homeView.element, conversationView.element, newConversationView.element, settingsView.element);
+}
+
+function pushScreen(screen: Exclude<Screen, 'home'>, trigger?: HTMLElement): void {
+  if (currentScreen === 'home' && trigger !== undefined) {
+    returnFocusEl = trigger;
+  }
+  currentScreen = screen;
+  syncVisibleScreen();
+  renderAll();
+  const heading =
+    screen === 'conversation'
+      ? conversationView.heading
+      : screen === 'new'
+        ? newConversationView.heading
+        : settingsView.heading;
+  heading.focus();
+}
+
+function syncVisibleScreen(): void {
+  homeView.element.hidden = currentScreen !== 'home';
+  conversationView.element.hidden = currentScreen !== 'conversation';
+  newConversationView.element.hidden = currentScreen !== 'new';
+  settingsView.element.hidden = currentScreen !== 'settings';
+}
+
+function renderAll(): void {
+  homeView.update(panelState, agentState, panelError, agentError);
+  if (currentScreen === 'conversation') {
+    const conv = agentState?.conversations.find((candidate) => candidate.id === selectedConversationId);
+    const held = conv === undefined ? [] : (agentState?.conversationTabs[conv.id] ?? []);
+    conversationView.update(conv, held);
+  }
+  newConversationView.update(agentState, agentError ?? panelError);
+  settingsView.update(panelState, agentState?.t3Access);
+
+  if (!readyMarked && (panelState !== undefined || agentState !== undefined)) {
+    readyMarked = true;
+    performance.mark('panel-ready');
+  }
+}
+
+function noteConversationUpdates(next: AgentPanelState): void {
+  for (const conv of next.conversations) {
+    const assistantCount = conv.messages.filter((m) => m.role === 'assistant').length;
+    const prev = observedConversations.get(conv.id);
+    if (prev !== undefined) {
+      const title = plainText(conv.title) || 'conversation';
+      if (assistantCount > prev.assistantCount) {
+        announce(`New reply in ${title}.`);
+      } else if (prev.status !== conv.status) {
+        if (conv.status === 'idle') announce(`${title} finished.`);
+        else if (conv.status === 'failed') announce(`${title} failed.`);
+        else if (conv.status === 'waiting') announce(`${title} is waiting for an answer in T3 Code.`);
       }
-      list.append(item);
     }
-    children.push(list);
+    observedConversations.set(conv.id, { status: conv.status, assistantCount });
   }
+}
 
-  children.push(heading('Site permissions', 2));
-  if (state.sites.length === 0) children.push(text('p', 'No sites yet. Sites default to ask.', 'muted'));
-  else {
-    const list = document.createElement('ul');
-    for (const site of state.sites) {
-      const item = document.createElement('li');
-      item.append(
-        text('div', site.origin),
-        text('div', siteStatus(site.setting), 'muted'),
-        buttons(siteChoices(site.setting).map((choice) => [choice.label, () => setSite(site.origin, choice.setting)])),
-      );
-      list.append(item);
-    }
-    children.push(list);
+function renderPanelState(next: PanelState): void {
+  panelState = next;
+  panelError = undefined;
+  renderAll();
+}
+
+function renderAgentState(next: AgentPanelState): void {
+  agentState = next;
+  agentError = undefined;
+  noteConversationUpdates(next);
+  renderAll();
+}
+
+async function refreshPanel(): Promise<void> {
+  try {
+    const result = (await send(stateRequest)) as PanelState | { ok: true };
+    if (!('sessions' in result)) throw new Error('Unexpected panel state');
+    renderPanelState(result);
+  } catch (failure) {
+    panelError = failure instanceof Error ? failure.message : String(failure);
+    renderAll();
   }
-  app.replaceChildren(...children);
 }
 
-function promptList(pending: PermissionPrompt[]): HTMLElement {
-  const list = document.createElement('ul');
-  const order = pending.map((prompt) => prompt.id);
-  const ids = new Set(order);
-  for (const [id, node] of promptNodes) {
-    if (ids.has(id)) continue;
-    clearTimeout(node.timer);
-    node.item.remove();
-    promptNodes.delete(id);
+async function refreshAgents(force = false): Promise<void> {
+  try {
+    const req: PanelRequest =
+      fixedTabId !== undefined && Number.isInteger(fixedTabId)
+        ? { type: 'panel.agents', ...(force ? { refresh: true } : {}), tabId: fixedTabId }
+        : { type: 'panel.agents', ...(force ? { refresh: true } : {}) };
+    const result = (await send(req)) as AgentPanelState;
+    renderAgentState(result);
+  } catch (failure) {
+    agentError = failure instanceof Error ? failure.message : String(failure);
+    renderAll();
   }
-  for (const prompt of pending) {
-    let node = promptNodes.get(prompt.id);
-    if (node === undefined) {
-      const item = document.createElement('li');
-      const description = text('div', '', 'prompt-text');
-      const controls = buttons(
-        promptChoices(prompt.tool).map((choice): [string, () => Promise<void>, (string | null)?] => [
-          choice.label,
-          () => decide(prompt.id, choice.decision),
-          choice.danger === true ? 'danger' : null,
-        ]),
-      );
-      item.append(description, controls);
-      node = { item, description, controls, timer: undefined };
-      promptNodes.set(prompt.id, node);
-      lock(node);
-    }
-    node.description.textContent = promptDescription(prompt);
-    list.append(node.item);
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+  if (currentScreen !== 'home') {
+    event.preventDefault();
+    actions.goBack();
   }
-  // A row that went away or came in above another moves the buttons under the owner's pointer.
-  if (rowsShifted(shownOrder, order)) for (const node of promptNodes.values()) lock(node);
-  shownOrder = order;
-  return list;
-}
-
-/** Disables a prompt's buttons and enables them again once the pointer has had time to settle. */
-function lock(node: PromptNode): void {
-  clearTimeout(node.timer);
-  for (const button of node.controls.querySelectorAll('button')) button.disabled = true;
-  node.timer = setTimeout(() => {
-    for (const button of node.controls.querySelectorAll('button')) button.disabled = false;
-  }, BUTTON_DELAY_MS);
-}
-
-function promptDescription(prompt: PermissionPrompt): string {
-  const action = prompt.tool === 'open' ? 'open' : prompt.tool === 'read' ? 'read' : `use ${prompt.tool} on`;
-  return `${prompt.session.name} wants to ${action} tab ${prompt.tab.id} "${prompt.tab.title}" at ${prompt.origin}.`;
-}
-
-async function decide(promptId: string, decision: PermissionDecision): Promise<void> {
-  await send({ type: 'panel.decide', promptId, decision });
-  await refresh();
-}
-
-async function toggleShare(sessionId: string, shared: boolean): Promise<void> {
-  // Do not pass a tab id: the owner may have switched tabs since this list was rendered.
-  await send({ type: shared ? 'panel.unshareTab' : 'panel.shareTab', sessionId });
-  await refresh();
-}
-
-async function setSite(origin: string, setting: SitePermission): Promise<void> {
-  await send({ type: 'panel.setSite', origin, setting });
-  await refresh();
-}
-
-function heading(value: string, level = 1): HTMLElement {
-  return text(`h${level}`, value);
-}
-
-function text(tag: string, value: string, className?: string): HTMLElement {
-  const element = document.createElement(tag);
-  element.textContent = value;
-  if (className !== undefined) element.className = className;
-  return element;
-}
-
-function buttons(items: Array<[string, () => Promise<void>, (string | null)?]>): HTMLElement {
-  const row = document.createElement('div');
-  row.className = 'buttons';
-  for (const [label, action, className] of items) {
-    const button = document.createElement('button');
-    button.textContent = label;
-    if (className !== undefined && className !== null) button.className = className;
-    button.addEventListener('click', () => void action());
-    row.append(button);
-  }
-  return row;
-}
-
-const agentPanel = agentRoot === null ? undefined : initAgentPanel(agentRoot, send);
+});
 
 if (headless) {
   const hooks = globalThis as typeof globalThis & {
-    __t3tabRenderPanelState?: typeof render;
-    __t3tabRenderAgentState?: (state: Parameters<NonNullable<typeof agentPanel>['render']>[0]) => void;
+    __t3tabRenderPanelState?: typeof renderPanelState;
+    __t3tabRenderAgentState?: typeof renderAgentState;
   };
-  hooks.__t3tabRenderPanelState = render;
-  hooks.__t3tabRenderAgentState = (state) => agentPanel?.render(state);
+  hooks.__t3tabRenderPanelState = renderPanelState;
+  hooks.__t3tabRenderAgentState = renderAgentState;
 } else {
-  void refresh();
-  setInterval(() => void refresh(), 1_000);
-  void agentPanel?.refresh(true);
-  setInterval(() => void agentPanel?.refresh(), 2_000);
+  void refreshPanel();
+  setInterval(() => void refreshPanel(), 1_000);
+  void refreshAgents(true);
+  setInterval(() => void refreshAgents(), 2_000);
 }

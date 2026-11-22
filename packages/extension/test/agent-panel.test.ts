@@ -1,7 +1,21 @@
-import type { AgentsStatus } from '@t3-tab/protocol';
+import { PROTOCOL_MISMATCH, type AgentConversation, type AgentsStatus } from '@t3-tab/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { accessText, choice, defaultVia, nextTurnLine, shareLine, statusLine } from '../entrypoints/sidepanel/agent';
+import {
+  accessText,
+  choice,
+  defaultVia,
+  headerStatus,
+  isProtocolMismatch,
+  nextTurnLine,
+  plainText,
+  promptEyebrow,
+  promptMeta,
+  promptSentence,
+  shareLine,
+  sortConversations,
+  statusLine,
+} from '../entrypoints/sidepanel/shared';
 
 const running: AgentsStatus = { t3: { state: 'running' } };
 
@@ -38,12 +52,36 @@ describe('statusLine', () => {
   });
 });
 
+describe('headerStatus', () => {
+  it('summarizes daemon errors, version mismatches and T3 states in a few words', () => {
+    expect(headerStatus(undefined, PROTOCOL_MISMATCH)).toEqual({ label: 'Update needed', tone: 'danger' });
+    expect(headerStatus(undefined, 'Not connected')).toEqual({ label: 'Disconnected', tone: 'danger' });
+    expect(headerStatus(undefined, undefined)).toEqual({ label: 'Checking…', tone: 'neutral' });
+    expect(headerStatus({ t3: { state: 'running' } }, undefined)).toEqual({ label: 'T3 ready', tone: 'success' });
+    expect(headerStatus({ t3: { state: 'stopped' } }, undefined)).toEqual({ label: 'T3 stopped', tone: 'warning' });
+    expect(headerStatus({ t3: { state: 'missing' }, claude: '/c' }, undefined)).toEqual({ label: 'Direct mode', tone: 'neutral' });
+    expect(headerStatus({ t3: { state: 'missing' } }, undefined)).toEqual({ label: 'T3 not found', tone: 'warning' });
+    expect(headerStatus({ t3: { state: 'error' } }, undefined)).toEqual({ label: 'T3 error', tone: 'danger' });
+  });
+
+  it('detects protocol version mismatches', () => {
+    expect(isProtocolMismatch(PROTOCOL_MISMATCH)).toBe(true);
+    expect(isProtocolMismatch('T3-Tab is not connected')).toBe(false);
+    expect(isProtocolMismatch(undefined)).toBe(false);
+  });
+});
+
 describe('shareLine', () => {
-  it('describes none, one, and several tabs', () => {
+  it('describes none, one, and several tabs without raw tab ids', () => {
     expect(shareLine([])).toBe('No current tab to share.');
-    expect(shareLine([{ id: 4, title: 'Home' } as never])).toBe('Shares tab 4 "Home"');
-    expect(shareLine([{ id: 4, title: '' } as never])).toBe('Shares tab 4 "(untitled)"');
-    expect(shareLine([{ id: 4, title: 'A' }, { id: 5, title: 'B' }] as never)).toBe('Shares 2 tabs of this tab group, starting with tab 4 "A"');
+    expect(shareLine([{ id: 4, title: 'Home', url: 'https://a.test/' }])).toBe('Shares "Home"');
+    expect(shareLine([{ id: 4, title: '', url: 'https://a.test/' }])).toBe('Shares "(untitled)"');
+    expect(
+      shareLine([
+        { id: 4, title: 'A', url: 'https://a.test/' },
+        { id: 5, title: 'B', url: 'https://b.test/' },
+      ]),
+    ).toBe('Shares 2 tabs of this tab group, starting with "A"');
   });
 });
 
@@ -56,7 +94,7 @@ describe('accessText', () => {
       'The sign-in was declined in T3 Code. Sign in to T3 Code once to pick projects and models from its lists. T3-Tab asks for read-only access.',
     );
     expect(accessText({ state: 'signing-in', environment: 'http://127.0.0.1:3773' })).toBe(
-      'Approve T3-Tab in the T3 Code tab that opened, and choose Read only.',
+      'Approve T3-Tab in the T3 Code tab that opened, and choose Read only. If it asks for a sign-in code, create one in T3 Code under Settings → Sharing & access.',
     );
   });
 
@@ -96,8 +134,8 @@ describe('nextTurnLine', () => {
   const two = [...one, { id: 5, title: '', url: 'https://b.test/' }];
 
   it('says which tabs the next message of a direct run will share', () => {
-    expect(nextTurnLine('claude', one)).toBe('Your next message shares tab 4 "Home".');
-    expect(nextTurnLine('codex', two)).toBe('Your next message shares 2 tabs: tab 4 "Home", tab 5 "(untitled)".');
+    expect(nextTurnLine('claude', one)).toBe('Your next message shares "Home".');
+    expect(nextTurnLine('codex', two)).toBe('Your next message shares 2 tabs: "Home", "(untitled)".');
   });
 
   it('says when the next message of a direct run shares nothing', () => {
@@ -105,7 +143,39 @@ describe('nextTurnLine', () => {
   });
 
   it('describes a T3 thread, whose session keeps its tabs between messages', () => {
-    expect(nextTurnLine('t3', one)).toBe('This thread can use tab 4 "Home".');
+    expect(nextTurnLine('t3', one)).toBe('This thread can use "Home".');
     expect(nextTurnLine('t3', [])).toBe('This thread has no tabs from you.');
+  });
+});
+
+describe('prompt formatting and text sanitising', () => {
+  it('strips control and bidi-override characters', () => {
+    expect(plainText('Hello\u202e\n\tWorld\u200b!')).toBe('Hello World !');
+  });
+
+  it('names the tab by title in the sentence and by id in the muted meta', () => {
+    const sample = {
+      id: 'p1',
+      origin: 'https://example.test',
+      tool: 'act' as const,
+      session: { id: 's1', name: 'claude-code · 12345678' },
+      tab: { id: 42, title: 'Billing Portal' },
+    };
+    expect(promptEyebrow(sample.tool)).toBe('Action request');
+    expect(promptSentence(sample)).toBe('claude-code · 12345678 wants to use act on "Billing Portal" at https://example.test.');
+    expect(promptSentence({ ...sample, tool: 'read' as const })).toBe('claude-code · 12345678 wants to read "Billing Portal" at https://example.test.');
+    expect(promptSentence({ ...sample, tool: 'open' as const, tab: { id: 42, title: '' } })).toBe('claude-code · 12345678 wants to open "(untitled)" at https://example.test.');
+    expect(promptMeta(sample)).toBe('tab 42');
+  });
+});
+
+describe('sortConversations', () => {
+  it('orders conversations most recent first', () => {
+    const list: AgentConversation[] = [
+      { id: 'old', via: 't3', title: 'Old', status: 'idle', messages: [], updatedAt: 100 },
+      { id: 'new', via: 'claude', title: 'New', status: 'running', messages: [], updatedAt: 300 },
+      { id: 'mid', via: 'codex', title: 'Mid', status: 'failed', messages: [], updatedAt: 200 },
+    ];
+    expect(sortConversations(list).map((c) => c.id)).toEqual(['new', 'mid', 'old']);
   });
 });

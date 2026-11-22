@@ -184,8 +184,10 @@ such a page is reported, not prevented. A tab that moves while approval is pendi
 steps is refused until its new origin is approved. Site setting writes are serialised.
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
-`view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel's plain permissions view
-is in `packages/extension/entrypoints/sidepanel`; its sharing and prompt calls live in
+`view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel lives in
+`packages/extension/entrypoints/sidepanel` (inbox layout: Home with waiting prompts in "Needs you",
+conversations, current tab and connected sessions, plus pushed Conversation, New conversation and
+Settings views styled through `tokens.css`); its sharing and prompt calls live in
 `packages/extension/src/panel.ts`, and the policy is in `permissions.ts`, `sessions.ts` and `tabs.ts`.
 
 ## Side panel sessions
@@ -212,7 +214,8 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
   OAuth metadata, dynamic client registration as "T3-Tab", and the authorization code flow with PKCE (S256).
   The address comes from `<T3 home>/userdata/server-runtime.json` (only `origin`, `pid` and `startedAt`; its server
   must be alive, and the address a loopback `http` one). The extension opens T3's approval page in a normal tab; the owner
-  approves there and picks the access level. T3 sends the answer to a one-use listener on `127.0.0.1` that
+  approves there and picks the access level. When T3 asks for a sign-in code there, the owner creates one in T3 Code under
+  Settings → Sharing & access, and the panel says so while the sign-in waits. T3 sends the answer to a one-use listener on `127.0.0.1` that
   checks `state` and `iss` (T3's metadata must promise `iss`, and an answer without it is refused) and closes after
   one answer. T3-Tab keeps the sign-in only when T3 granted exactly
   `orchestration:read` (T3's "Read only"); anything broader is not stored, and the panel asks the owner to
