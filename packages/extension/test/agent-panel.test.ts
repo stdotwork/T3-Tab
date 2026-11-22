@@ -153,7 +153,7 @@ describe('prompt formatting and text sanitising', () => {
     expect(plainText('Hello\u202e\n\tWorld\u200b!')).toBe('Hello World !');
   });
 
-  it('puts tab id and title in muted meta rather than the main sentence', () => {
+  it('names the tab by title in the sentence and by id in the muted meta', () => {
     const sample = {
       id: 'p1',
       origin: 'https://example.test',
@@ -162,8 +162,10 @@ describe('prompt formatting and text sanitising', () => {
       tab: { id: 42, title: 'Billing Portal' },
     };
     expect(promptEyebrow(sample.tool)).toBe('Action request');
-    expect(promptSentence(sample)).toBe('claude-code · 12345678 wants to use act at https://example.test.');
-    expect(promptMeta(sample)).toBe('tab 42 "Billing Portal"');
+    expect(promptSentence(sample)).toBe('claude-code · 12345678 wants to use act on "Billing Portal" at https://example.test.');
+    expect(promptSentence({ ...sample, tool: 'read' as const })).toBe('claude-code · 12345678 wants to read "Billing Portal" at https://example.test.');
+    expect(promptSentence({ ...sample, tool: 'open' as const, tab: { id: 42, title: '' } })).toBe('claude-code · 12345678 wants to open "(untitled)" at https://example.test.');
+    expect(promptMeta(sample)).toBe('tab 42');
   });
 });
 

@@ -926,8 +926,9 @@ async function assertPromptMetadata(serviceWorker, prompt) {
 async function assertPromptUi(panelPage, serviceWorker, prompt) {
   const state = await panelRequest(serviceWorker, { type: 'panel.state' });
   await renderPanelState(panelPage, state);
-  const description = `tab ${prompt.tab.id} "${prompt.tab.title}"`;
-  await panelPage.getByText(new RegExp(description.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).waitFor();
+  // The prompt names its tab by title in the sentence and by id in the meta line, both in the same card.
+  const card = panelPage.locator('.prompt-card').filter({ hasText: `"${prompt.tab.title}"` });
+  await card.getByText(`tab ${prompt.tab.id}`, { exact: true }).waitFor();
   const allow = panelPage.getByRole('button', { name: 'Allow opening once' });
   await allow.waitFor();
   assert(await allow.isDisabled(), 'New prompt buttons were enabled immediately');

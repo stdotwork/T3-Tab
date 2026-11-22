@@ -86,14 +86,15 @@ export function promptEyebrow(tool: PromptKind): string {
 
 /** Main sentence for a permission prompt card: who wants to do what, and where. */
 export function promptSentence(prompt: PermissionPrompt): string {
-  const action = prompt.tool === 'open' ? 'open a tab' : prompt.tool === 'read' ? 'read this tab' : `use ${prompt.tool}`;
-  return `${plainText(prompt.session.name)} wants to ${action} at ${plainText(prompt.origin)}.`;
+  // The prompt's tab need not be the owner's current tab, so the sentence names it by title.
+  const action = prompt.tool === 'open' ? 'open' : prompt.tool === 'read' ? 'read' : `use ${prompt.tool} on`;
+  const title = plainText(prompt.tab.title || '(untitled)');
+  return `${plainText(prompt.session.name)} wants to ${action} "${title}" at ${plainText(prompt.origin)}.`;
 }
 
-/** Muted metadata line for a permission prompt card: names the tab id and title as required by AGENTS.md. */
+/** Muted metadata line for a permission prompt card: the tab id (the sentence names its title). */
 export function promptMeta(prompt: PermissionPrompt): string {
-  const title = plainText(prompt.tab.title || '(untitled)');
-  return `tab ${prompt.tab.id} "${title}"`;
+  return `tab ${prompt.tab.id}`;
 }
 
 export function defaultVia(status: AgentsStatus): AgentVia {
