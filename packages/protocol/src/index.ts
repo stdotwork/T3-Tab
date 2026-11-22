@@ -129,6 +129,17 @@ export type ActStep =
   | ActHoverStep
   | ActWaitStep;
 
+/** Returns the target element ref of an `act` step, when the step names one. */
+export function actStepRef(step: ActStep): string | undefined {
+  if ('click' in step) return step.click.ref;
+  if ('type' in step) return step.type.ref;
+  if ('fill' in step) return step.fill.ref;
+  if ('select' in step) return step.select.ref;
+  if ('scroll' in step) return step.scroll.ref;
+  if ('hover' in step) return step.hover.ref;
+  return undefined;
+}
+
 export type ActAction = 'click' | 'type' | 'fill' | 'press' | 'select' | 'scroll' | 'hover' | 'wait';
 
 export interface ActFailure {

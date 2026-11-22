@@ -1,7 +1,7 @@
 import type { PageReadResult } from '@t3-tab/protocol';
 
 import { findLines } from './find.js';
-import { RefGoneError, renderTree } from './format.js';
+import { RefGoneError, renderTree, truncate } from './format.js';
 import { RefTable } from './refs.js';
 import { createSmartDiff } from './smart-diff.js';
 
@@ -149,8 +149,4 @@ function limit(text: string): string {
   const cut = text.lastIndexOf('\n', MAX_OUTPUT_CHARS);
   const kept = text.slice(0, cut > 0 ? cut : MAX_OUTPUT_CHARS);
   return `${kept}\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use find, a ref subtree or depth to read the rest.`;
-}
-
-function truncate(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
