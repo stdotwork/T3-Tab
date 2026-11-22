@@ -11,7 +11,8 @@ import type { AgentConversation } from '@t3-tab/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { claimNote, claudeArgs, t3SendArgs, t3ShowArgs, t3StartArgs } from '../src/agents/commands.js';
-import { Agents, parseStartParams, run, stopProcess, type Spawn } from '../src/agents/conversations.js';
+import { Agents, parseStartParams } from '../src/agents/conversations.js';
+import { run, stopProcess, type Spawn } from '../src/agents/process.js';
 import { findExecutable } from '../src/agents/locate.js';
 import { t3ShowJson } from './t3-show-fixture.js';
 
