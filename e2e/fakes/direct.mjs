@@ -5,20 +5,20 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { connect, fakeDir, lookAtTabs, readStdin, record } from './common.mjs';
+import { connect, fakeDir, lookAtTabs, readStdin, record, valueOf } from './common.mjs';
 
 const [name, ...args] = process.argv.slice(2);
 const input = readStdin();
 record(name, args, input);
 
 if (name === 'claude') {
-  const config = JSON.parse(valueOf('--mcp-config'));
+  const config = JSON.parse(valueOf(args, '--mcp-config'));
   const server = config.mcpServers['t3-tab'];
   spoilClaimFile(server.args);
   // Claude Code starts a stdio server with its own environment plus the server's `env`.
   const client = await connect('claude-code', { command: server.command, args: server.args, env: { ...process.env, ...server.env } });
-  const sessionId = valueOf('--resume') ?? randomUUID();
-  line({ type: 'system', subtype: 'init', session_id: sessionId, model: valueOf('--model') ?? 'default' });
+  const sessionId = valueOf(args, '--resume') ?? randomUUID();
+  line({ type: 'system', subtype: 'init', session_id: sessionId, model: valueOf(args, '--model') ?? 'default' });
   const seen = await lookAtTabs(client, undefined);
   await holdIfAsked();
   await client.close();
@@ -70,11 +70,6 @@ async function holdIfAsked() {
   if (!input.includes('[hold]')) return;
   const deadline = Date.now() + 30_000;
   while (!existsSync(join(fakeDir, 'release')) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-}
-
-function valueOf(flag) {
-  const index = args.indexOf(flag);
-  return index === -1 ? undefined : args[index + 1];
 }
 
 function line(value) {

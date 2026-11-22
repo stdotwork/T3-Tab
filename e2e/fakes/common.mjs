@@ -36,6 +36,11 @@ export function textOf(result) {
   return (result.content ?? []).filter((item) => item.type === 'text').map((item) => item.text).join('\n');
 }
 
+export function valueOf(args, flag) {
+  const index = args.indexOf(flag);
+  return index === -1 ? undefined : args[index + 1];
+}
+
 /** Lists the session's tabs (claiming the owner's first when a code is given) and reads the first one. */
 export async function lookAtTabs(client, claim) {
   const tabs = await client.callTool({ name: 'tabs', arguments: claim === undefined ? {} : { claim } });

@@ -26,8 +26,8 @@ T3-Tab is Apache-2.0 licensed. Files copied or adapted from another project are 
 ## Lucide
 
 - Source: https://github.com/lucide-icons/lucide, icon path data (`alert-circle`, `arrow-left`, `arrow-up`, `chevron-right`, `globe`, `log-in`, `log-out`, `plus`, `refresh-cw`, `settings`, `shield-alert`, `x`)
-- Revision: Lucide 0.x (https://lucide.dev)
-- Licence: ISC, Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of Feather (MIT). All other copyright (c) for Lucide are held by Lucide Contributors 2022.
+- Revision: `0.344.0` (`a0aa1326828256ec68ed0a5c8fb3706e67f553e4`, verified exact match for all 12 icon SVGs)
+- Licence: ISC, Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of Feather (MIT). All other copyright (c) for Lucide are held by Lucide Contributors 2022 (the full notice is at the top of the local file).
 - Local files: `packages/extension/entrypoints/sidepanel/icons.ts`
 - Changes: extracted only the 12 needed icon path definitions into a minimal inline SVG DOM helper with zero runtime dependencies.
 

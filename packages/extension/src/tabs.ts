@@ -35,7 +35,7 @@ export async function listTabs(session: StoredSession, siteSetting: SiteSetting)
  * A tab as the agent sees it. Its title and address are shown only for an origin the session approved for
  * that tab, or one the owner allows reading on; otherwise only the origin and that approval is needed.
  */
-export async function describeTab(
+async function describeTab(
   session: StoredSession,
   tab: chrome.tabs.Tab,
   active: boolean,
@@ -142,7 +142,7 @@ export async function adoptPopupTab(tabId: number, sourceTabId: number, store: S
   }
 }
 
-export async function assertTabOrigin(tabId: number, expectedOrigin: string): Promise<void> {
+async function assertTabOrigin(tabId: number, expectedOrigin: string): Promise<void> {
   const tab = await getTab(tabId);
   assertAllowedTab(tab);
   const url = tab.url ?? tab.pendingUrl ?? '';

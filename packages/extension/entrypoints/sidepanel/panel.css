@@ -396,12 +396,6 @@ body {
   color: var(--destructive);
 }
 
-.banner-warning {
-  background: var(--warning-surface);
-  border-color: var(--warning-border);
-  color: var(--warning);
-}
-
 .error-text {
   margin: 0;
   font-size: var(--text-xs);

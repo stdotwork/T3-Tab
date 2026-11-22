@@ -227,7 +227,7 @@ export function removeCodexServer(source: string): string {
   }
 }
 
-export function codexServerBlock(server: McpCommand): string {
+function codexServerBlock(server: McpCommand): string {
   const args = server.args.map(tomlString).join(', ');
   return `[mcp_servers.${CODEX_SERVER_NAME}]\ncommand = ${tomlString(server.command)}\nargs = [${args}]\n`;
 }

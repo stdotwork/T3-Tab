@@ -1,6 +1,6 @@
 import {
+  actStepRef,
   DEFAULT_SCREENSHOT_MAX_EDGE,
-  type ActStep,
   type TabInfo,
   type ToolContent,
   type ToolMethod,
@@ -9,6 +9,7 @@ import {
 import type { z } from 'zod';
 
 import type { BrowserLink } from './browser-link.js';
+import { truncate } from './reader/format.js';
 import { formatRead, MAX_OUTPUT_CHARS } from './reader/page.js';
 import { actParams, convertStep, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
 
@@ -102,7 +103,7 @@ async function runAct(
     return step;
   });
   const backendIds = steps.map((step) => {
-    const ref = refOf(step);
+    const ref = actStepRef(step);
     if (ref === undefined) return null;
     const backendId = state.refTable.backendIdOf(ref);
     if (backendId === undefined) throw new Error(`Unknown ref ${ref}: read the page again`);
@@ -137,16 +138,6 @@ async function currentTabId(link: BrowserLink, session: ToolSession): Promise<nu
   return front.id;
 }
 
-function refOf(step: ActStep): string | undefined {
-  if ('click' in step) return step.click.ref;
-  if ('type' in step) return step.type.ref;
-  if ('fill' in step) return step.fill.ref;
-  if ('select' in step) return step.select.ref;
-  if ('scroll' in step) return step.scroll.ref;
-  if ('hover' in step) return step.hover.ref;
-  return undefined;
-}
-
 function limitJson(text: string): string {
   if (text.length <= MAX_OUTPUT_CHARS) return text;
   return `${text.slice(0, MAX_OUTPUT_CHARS)}\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use a narrower expression.`;
@@ -164,8 +155,4 @@ function parse<S extends z.ZodType>(schema: S, params: Record<string, unknown>):
   const issue = result.error.issues[0];
   const path = issue === undefined || issue.path.length === 0 ? '' : `${issue.path.join('.')}: `;
   throw new Error(`Invalid arguments: ${path}${issue?.message ?? 'unexpected input'}`);
-}
-
-function truncate(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }

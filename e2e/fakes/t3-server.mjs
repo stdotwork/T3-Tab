@@ -18,14 +18,14 @@ const OPERATE = 'orchestration:operate';
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 const NOW = '2026-11-20T10:00:00.000Z';
 
-export const FAKE_PROJECTS = [
+const FAKE_PROJECTS = [
   project('proj-demo', 'Demo app', '/work/demo', { instanceId: 'claudeAgent', model: 'claude-sonnet-5-5' }),
   project('proj-docs', 'Docs site', '/work/docs', null),
   project('proj-api', 'API server', '/work/api', { instanceId: 'codex', model: 'gpt-5.3-codex' }),
   { ...project('proj-old', 'Old archived thing', '/work/old', null), archivedAt: NOW },
 ];
 
-export const FAKE_CAPABILITIES = {
+const FAKE_CAPABILITIES = {
   parentThreadId: null,
   inheritedProviderInstanceId: null,
   inheritedModel: null,

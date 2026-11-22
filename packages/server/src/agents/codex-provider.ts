@@ -7,7 +7,7 @@ import { parse } from 'smol-toml';
 import { tomlString } from '../toml.js';
 
 /** The variable a provider's bearer token reaches Codex through. Codex does not pass it on to MCP servers. */
-export const CODEX_TOKEN_ENV = 'T3_TAB_CODEX_PROVIDER_TOKEN';
+const CODEX_TOKEN_ENV = 'T3_TAB_CODEX_PROVIDER_TOKEN';
 const HEADER_ENV_PREFIX = 'T3_TAB_CODEX_PROVIDER_HEADER_';
 
 /** Provider settings of Codex 0.166.0 (`ModelProviderInfo`) that hold no credential once checked below. */

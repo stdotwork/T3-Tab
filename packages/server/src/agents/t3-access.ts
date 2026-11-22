@@ -3,13 +3,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import type { T3Access as T3AccessView, T3Catalog } from '@t3-tab/protocol';
 
+import { tokensMatch } from '../security.js';
 import { fetchCatalog, T3CatalogError } from './t3-catalog.js';
 import { T3ConnectionError } from './t3-connection.js';
 import { deleteCredential, readCredential, removeTemporaryCredentials, writeCredential, type T3Credential } from './t3-credential.js';
 import { findT3Environment, type T3Environment } from './t3-environment.js';
 
 /** The one scope T3 grants a client approved for "Read only" (`mcpClientScopes('read-only')` in T3 Code). */
-export const T3_READ_SCOPE = 'orchestration:read';
+const T3_READ_SCOPE = 'orchestration:read';
 const CLIENT_NAME = 'T3-Tab';
 const SIGN_IN_TIMEOUT_MS = 10 * 60_000;
 const HTTP_TIMEOUT_MS = 15_000;
@@ -280,7 +281,7 @@ export class T3Access {
       page(response, 404, 'Not found.');
       return;
     }
-    if (pending.finished || pending.answered || !sameSecret(url.searchParams.get('state'), pending.state)) {
+    if (pending.finished || pending.answered || !tokensMatch(pending.state, url.searchParams.get('state') ?? undefined)) {
       page(response, 400, 'This sign-in answer is not for the sign-in T3-Tab started. Start it again from the T3-Tab side panel.');
       return;
     }
@@ -434,13 +435,6 @@ function requestSignal(signal: AbortSignal): AbortSignal {
 /** Errors whose fixed messages may be shown to the owner. */
 function isSafeError(error: unknown): error is Error {
   return error instanceof SignInError || error instanceof T3ConnectionError;
-}
-
-function sameSecret(presented: string | null, expected: string): boolean {
-  if (presented === null || presented.length !== expected.length) return false;
-  let difference = 0;
-  for (let index = 0; index < expected.length; index += 1) difference |= presented.charCodeAt(index) ^ expected.charCodeAt(index);
-  return difference === 0;
 }
 
 /** A small page for the sign-in tab. Its script drops the code from the address bar and from this history entry. */

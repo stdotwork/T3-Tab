@@ -4,7 +4,7 @@ import { TOOL_TIMEOUT_MS } from '../client.js';
 import { tomlString } from '../toml.js';
 import { tomlValue, type CodexProvider } from './codex-provider.js';
 
-export const MCP_SERVER_NAME = 't3-tab';
+const MCP_SERVER_NAME = 't3-tab';
 const CLAIM_NOTE_MARK = '\n\n[T3-Tab] ';
 
 export interface McpServerCommand {
