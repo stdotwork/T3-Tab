@@ -239,7 +239,8 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
   when the panel opens, and on "Reload lists"; after a failure, at most once a minute. Threads still start and
   continue through `t3 thread`.
 - **Finding `t3`.** `T3_TAB_T3` when set (and then only it), else `t3` on PATH or in the usual install
-  folders, else the launchers listed in `<T3 home>/runtime/launchers`, else the newest fully installed
+  folders, else the launchers listed in `<T3 home>/runtime/launchers`, else `<T3 home>/runtime/bin/t3`, else
+  the desktop app's launcher `<T3 home>/bin/t3`, else the newest fully installed
   `<T3 home>/runtime/versions/<version>/t3`; the T3 home is `T3CODE_HOME` or `~/.t3`. Whether T3 is running
   comes from `t3 thread list --json --project /`: a running server answers that no project matches, a stopped
   one that it is not running. The panel shows "not found" or "not running" and then offers the direct runs.
