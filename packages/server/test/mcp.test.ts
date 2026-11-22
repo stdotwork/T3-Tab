@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { makeSessionName } from '../src/daemon.js';
+import { makeSessionName } from '../src/daemon-messages.js';
 
 describe('MCP sessions', () => {
   it('names a session from the MCP client name and a short id', () => {
