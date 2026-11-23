@@ -157,7 +157,8 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **Opening a page asks first, and does not take the owner's tab.** The prompt names the address and nothing is
   fetched or run until the owner says yes, because a page loaded before the answer has already used their cookies. The
   page opens behind the tab they are on, so the side panel stays in view for the answer. A hidden page gets no animation
-  frames, so it counts as visible until it has settled and for a screenshot, then goes back to hidden. A redirect to
+  frames, so it counts as visible until it has settled and for a screenshot, then goes back to hidden; the reply does
+  not wait for the settling, only for the first frames. A redirect to
   another origin keeps the tab, unapproved, rather than failing: the approval covers only the origin asked for.
 - **A session has a current tab.** With tabs opening in the background, the tab in front no longer says what the agent
   is working on. Calls that name no tab use the last one the session opened, switched to or was handed. The owner moving

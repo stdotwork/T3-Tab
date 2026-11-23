@@ -183,7 +183,12 @@ export async function checkAgentTools() {
       const painted = await openAllowed('/painted');
       const content = await call('read', { tab: painted, all: true });
       assert(content.text.includes('painted by script'), `a page that renders in animation frames stayed blank in the background: ${content.text}`);
-      const visibility = await call('run_js', { tab: painted, expression: 'document.visibilityState' });
+      let visibility;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        visibility = await call('run_js', { tab: painted, expression: 'document.visibilityState' });
+        if (visibility.text === '"hidden"') break;
+        await sleep(100);
+      }
       assert(visibility.text === '"hidden"', `the tab did not go back to hidden: ${visibility.text}`);
       await closeTab(painted);
     });

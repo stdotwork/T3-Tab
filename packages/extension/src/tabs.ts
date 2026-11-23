@@ -113,24 +113,39 @@ export async function loadAddress(tabId: number, url: string): Promise<void> {
 }
 
 /**
- * Runs a command that moves the tab, then waits for the new document to load and settle. A dialog that opens counts as
- * arrived. A hidden page gets no animation frames and slow timers, so a page that renders from script would stay blank:
- * the tab counts as visible until it has settled, and goes back to hidden.
+ * Runs a command that moves the tab, then waits for the new document to load and paint its first frames. A dialog that
+ * opens counts as arrived. A hidden page gets no animation frames and slow timers, so a page that renders from script
+ * would stay blank: the tab counts as visible until it has settled, which goes on after this returns so the agent is not
+ * kept waiting, and then goes back to hidden.
  */
 async function navigated(tabId: number, go: () => Promise<boolean>, throughHistory = false): Promise<void> {
   const since = documentEpoch(tabId);
   // A history entry can belong to this same document (a fragment, `pushState`), which fires no load event.
   const moves = throughHistory ? sameDocumentMoveCount(tabId) : undefined;
   const release = await holdInputFocus(tabId);
+  let settling = false;
   try {
     if (!(await go())) return;
     await waitForDocumentLoad(tabId, since, OPEN_TIMEOUT_MS, moves);
-    await settlePage(tabId);
+    await firstFrames(tabId);
+    settling = true;
+    void settlePage(tabId)
+      .catch(() => undefined)
+      .finally(() => void release());
   } catch (error) {
     if (!(error instanceof DialogOpenError)) throw error;
   } finally {
-    await release();
+    if (!settling) await release();
   }
+}
+
+/** Two animation frames, or 100 ms if the page produces none. */
+async function firstFrames(tabId: number): Promise<void> {
+  await sendCommand(tabId, 'Runtime.evaluate', {
+    contextId: await privateWorld(tabId),
+    awaitPromise: true,
+    expression: 'new Promise((done) => { setTimeout(done, 100); requestAnimationFrame(() => requestAnimationFrame(done)); })',
+  });
 }
 
 export interface HistoryTarget {

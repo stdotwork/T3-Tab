@@ -66,6 +66,8 @@ export async function settlePage(tabId: number): Promise<SettleResult> {
   while (true) {
     // A dialog pauses the page, so there is nothing to wait for until it is answered.
     if (openDialog(tabId) !== undefined) return { settled: true, timedOut: false, elapsedMs: Date.now() - startedAt };
+    // The tab closed: its epoch is forgotten, and there is nothing left to wait for.
+    if (documentEpoch(tabId) === 0) return { settled: false, timedOut: false, elapsedMs: Date.now() - startedAt };
     const probe = await probePage(tabId);
     const now = Date.now();
     const snapshot: SettleSnapshot = {

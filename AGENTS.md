@@ -257,7 +257,7 @@ already had open, the tool says to ask the owner to answer it.
 **Background tabs.** Chromium never acknowledges wheel input on a hidden page and holds mouse input for seconds, so
 an `act` batch on a hidden tab turns on `Emulation.setFocusEmulationEnabled` while its steps run and off afterwards.
 So do a screenshot and a load through `tabs`, because a hidden page gets no animation frames and would stay blank if it
-renders from script; a load holds it until the page settles. The page sees itself as visible and focused for that long.
+renders from script. A load replies after the first two frames and holds the tab visible until the page settles. The page sees itself as visible and focused for that long.
 The settle probe runs in an isolated world (`privateWorld` in `cdp.ts`), so its observer and counter are not on the page.
 
 **Other extensions' frames.** Chromium drops `chrome.debugger` from a tab, and refuses to attach, while any frame in
