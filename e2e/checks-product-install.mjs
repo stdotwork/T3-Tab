@@ -127,7 +127,12 @@ export async function checkProductInstall() {
     const afterUninstall = JSON.parse(await readFile(claudeConfig, 'utf8').catch(() => '{}'));
     assert(afterUninstall.mcpServers?.['t3-tab'] === undefined, 'Uninstall left the Claude Code entry');
     assert(!isAlive(fresh.pid), 'Uninstall left the daemon running');
-    const gone = await waitForHelper(serviceWorker, false);
+    let gone = await waitForHelper(serviceWorker, false);
+    // The link closing is reported first; then the browser's own answer, that it knows no helper.
+    for (let attempt = 0; attempt < 20 && gone.problem !== 'missing'; attempt += 1) {
+      await sleep(500);
+      gone = await panelRequest(serviceWorker, { type: 'panel.helper' });
+    }
     assert(gone.problem === 'missing', `After uninstall the panel should call the helper missing: ${JSON.stringify(gone)}`);
     console.log('Product install: uninstall removed the program, launchers, manifest, state and agent entry, and stopped the daemon');
 

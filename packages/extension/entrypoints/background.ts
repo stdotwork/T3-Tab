@@ -13,7 +13,7 @@ import {
 import { defineBackground } from 'wxt/utils/define-background';
 
 import { initCdp } from '../src/cdp';
-import { handleDaemonReply, noteDaemonClose, noteDaemonProblem, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
+import { handleDaemonReply, noteDaemonClose, noteDaemonProblem, noteSocketClosed, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
 import { handlePanelRequest } from '../src/panel';
 import { isSidePanelSender } from '../src/panel-security';
 import { originOf } from '../src/permissions';
@@ -90,7 +90,9 @@ export default defineBackground(() => {
       url.searchParams.set('token', configuration.token);
       const current = new WebSocket(url);
       socket = current;
+      let wasOpen = false;
       current.addEventListener('open', () => {
+        wasOpen = true;
         reconnectAttempt = 0;
         setDaemonSocket(current);
         const hello: BrowserHelloMessage = {
@@ -115,7 +117,10 @@ export default defineBackground(() => {
         if (request !== undefined) void answer(current, request);
       });
       current.addEventListener('close', (event) => {
-        if (socket === current) noteDaemonClose(event.code, event.reason);
+        if (socket === current) {
+          noteDaemonClose(event.code, event.reason);
+          noteSocketClosed(event.code, event.reason, wasOpen);
+        }
         if (socket === current) setDaemonSocket(undefined);
         if (socket === current) scheduleReconnect();
         else clearKeepalive();

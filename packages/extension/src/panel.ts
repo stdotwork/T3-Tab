@@ -12,6 +12,7 @@ import {
 } from '@t3-tab/protocol';
 
 import { newClaimCode, removeConversationTab, T3_CONVERSATION_PREFIX, type ClaimTab } from './claims';
+import { BUILD_ID } from './build-id';
 import { askDaemon, daemonLinkState, type HelperState } from './daemon-link';
 import {
   isOriginKey,
@@ -68,6 +69,7 @@ export interface AgentStartRequest {
 export type PanelRequest =
   | { type: 'panel.state'; tabId?: number }
   | { type: 'panel.helper' }
+  | { type: 'panel.build' }
   | { type: 'panel.setup'; refresh?: boolean }
   | { type: 'panel.addAgent'; agent: SetupAgent }
   | { type: 'panel.t3Pair'; origin: string; dpop: string }
@@ -100,6 +102,7 @@ export async function handlePanelRequest(
   | { conversation: AgentConversation }
   | T3Access
   | HelperState
+  | { buildId: string }
   | SetupStatus
   | T3Pairing
   | T3SessionReply
@@ -110,6 +113,7 @@ export async function handlePanelRequest(
   const request = parsePanelRequest(value);
   if (request.type === 'panel.state') return await panelState(request.tabId);
   if (request.type === 'panel.helper') return await daemonLinkState();
+  if (request.type === 'panel.build') return { buildId: BUILD_ID };
   if (request.type === 'panel.setup') return await askDaemon('setup.status', request.refresh === true ? { refresh: true } : {});
   if (request.type === 'panel.addAgent') return await askDaemon('setup.addAgent', { agent: request.agent });
   if (request.type === 'panel.t3Pair') return await askDaemon('t3.pair', { origin: request.origin, dpop: request.dpop });
@@ -357,7 +361,7 @@ function parsePanelRequest(value: unknown): PanelRequest {
   ) {
     return { type: 'panel.t3Session', kind: candidate.kind, origin: candidate.origin, accessToken: candidate.accessToken, dpop: candidate.dpop };
   }
-  if (candidate.type === 'panel.helper' || candidate.type === 'panel.t3Unpair') {
+  if (candidate.type === 'panel.helper' || candidate.type === 'panel.build' || candidate.type === 'panel.t3Unpair') {
     return { type: candidate.type };
   }
   if (candidate.type === 'panel.setup') return { type: 'panel.setup', refresh: candidate.refresh === true };

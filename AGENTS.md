@@ -133,6 +133,25 @@ says why it is missing (`HelperProblem` in `daemon-link.ts`): not registered, re
 the native host stopped, or the helper or the extension is behind (the side that sees the other's newer or older
 protocol version says so), and shows the command or a pointer to the extensions page accordingly.
 
+**The panel and the service worker can be different builds.** An unpacked extension's panel files are read from disk
+each time the panel opens, but its service worker keeps the code it started with until the extension is reloaded (the
+daemon link's 20-second ping keeps it alive), so after a rebuild a new panel can talk to an old worker. Both carry
+`BUILD_ID` (`src/build-id.ts`, set per build by `wxt.config.ts`; `T3_TAB_BUILD_ID` fixes it). The panel asks the worker
+`panel.build` first (`checkWorkerBuild` in `lib/store.ts`). A different ID, or a worker too old to know the request
+(it answers `Invalid panel request`), makes the panel write `t3tab.workerReload` (its build ID and the time) to
+`chrome.storage.local` and call `chrome.runtime.reload()`, which closes the panel; opening it again finds the new worker.
+The write comes first and a reload already tried for the same panel build in the last five minutes is not repeated, so
+it cannot loop: the panel then says the extension is still an old build and to reload it on the extensions page. A
+failed request (the worker restarting) is asked again later and reloads nothing. Whatever the helper connection last
+hit is shown in the helper row (`helperNote` in `Setup.tsx`, from `HelperState` in `daemon-link.ts`): a native
+messaging error, a `native.error` from the host, or a WebSocket that never opened or was closed, with its code and
+reason (`noteSocketClosed`), each with its one action; "Run this in a terminal" appears only when the browser reports
+no helper registered, and "Connecting" while no attempt has failed yet. `e2e/checks-stale-worker.mjs` swaps the files
+under a running browser, covers a worker too old to answer and a reload that does not help, and renders each error.
+Headless Chromium cannot bring back a `--load-extension` extension after `chrome.runtime.reload()`, so there the
+panel's call is recorded and the browser is restarted on the same profile without its cached worker script; the real
+call was not exercised in headless Chromium, and whether a real side panel comes back by itself after it was not checked.
+
 The macOS and Windows registrations are written and unit-tested (`helper-install.test.ts`) but have not been run
 on those systems. Linux was run, with Node 26.13.1 only.
 

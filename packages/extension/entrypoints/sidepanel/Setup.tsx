@@ -2,6 +2,7 @@ import { Check, Copy, Plug } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 
 import { HELPER_COMMAND, HELPER_REQUIREMENT } from '../../src/helper-command';
+import { classifyHelperProblem } from '../../src/helper-problem';
 import { errorText, panel } from './lib/api';
 import type { LiveState } from './lib/store';
 import { refreshSetup } from './lib/store';
@@ -46,31 +47,55 @@ export function CommandLine(): ReactNode {
   );
 }
 
-const OUTDATED_HELPER = 'This extension is newer than the helper on this machine. Run this to update it:';
+/** What the helper row says and does. `command`: show the setup command; `detail`: what the browser reported. */
+export interface HelperNote {
+  text: string;
+  /** A few words for the banner on other screens. */
+  short: string;
+  command: boolean;
+  /** Something is under way and nothing is asked of the owner. */
+  waiting?: boolean;
+  detail?: string;
+}
 
-/** What the panel tells the owner about the helper, and what to do: one command, or one browser page, never both. */
-export function helperNote(live: LiveState): { text: string; command: boolean } {
+/**
+ * What the panel tells the owner about the helper, and the one thing to do: the setup command, or one browser page.
+ * It names the error the connection last hit; the plain "run this" text is only for a helper the browser has no record of.
+ */
+export function helperNote(live: LiveState): HelperNote {
   const { helper } = live;
-  if (helper.connected) return { text: 'Running', command: false };
-  if (!live.loaded) return { text: 'Looking for the helper', command: false };
-  switch (helper.problem) {
+  if (live.build === 'stuck') {
+    return { text: 'This extension is still an old build and could not reload itself. Reload T3-Tab on your browser’s extensions page.', short: 'the extension is an old build', command: false };
+  }
+  if (live.build === 'reloading') return { text: 'Updating the extension', short: 'updating the extension', command: false, waiting: true };
+  if (helper.connected) return { text: 'Running', short: '', command: false };
+  if (!live.loaded) return { text: 'Looking for the helper', short: 'looking for it', command: false, waiting: true };
+  const problem = helper.problem ?? classifyHelperProblem(helper.error);
+  const detail = helper.error;
+  switch (problem) {
+    case 'pending':
+      return { text: 'Connecting to the helper', short: 'connecting', command: false, waiting: true };
     case 'extension-outdated':
-      return { text: 'This extension is older than the helper. Update T3-Tab on your browser’s extensions page.', command: false };
+      return { text: 'This extension is older than the helper. Reload T3-Tab on your browser’s extensions page, or update it.', short: 'the extension is out of date', command: false, ...(detail === undefined ? {} : { detail }) };
     case 'helper-outdated':
-      return { text: OUTDATED_HELPER, command: true };
+      return { text: 'The helper on this machine is older than this extension. Run this to update it:', short: 'the helper is out of date', command: true, ...(detail === undefined ? {} : { detail }) };
     case 'blocked':
-      return { text: 'The helper on this machine does not know this extension. Run this again to update it:', command: true };
+      return { text: 'The helper on this machine does not know this extension. Run this again to update it:', short: 'it does not know this extension', command: true, ...(detail === undefined ? {} : { detail }) };
     case 'failed':
-      return { text: `The helper is installed but would not start. ${HELPER_REQUIREMENT} Run this again:`, command: true };
+      return { text: `The browser started the helper and it stopped. ${HELPER_REQUIREMENT} Run this again:`, short: 'it would not start', command: true, ...(detail === undefined ? {} : { detail }) };
+    case 'connection':
+      return { text: 'The helper is installed, but the browser could not connect to it. Running this again restarts it:', short: 'the browser could not reach it', command: true, ...(detail === undefined ? {} : { detail }) };
+    case 'unknown':
+      return { text: 'The browser reported a problem with the helper. Running this again usually fixes it:', short: detail ?? 'the browser reported a problem', command: true, ...(detail === undefined ? {} : { detail }) };
     default:
-      return { text: `Run this in a terminal, from any folder. ${HELPER_REQUIREMENT}`, command: true };
+      return { text: `Run this in a terminal, from any folder. ${HELPER_REQUIREMENT}`, short: 'it is not installed', command: true, ...(detail === undefined ? {} : { detail }) };
   }
 }
 
 /** The helper's row and, while it is not connected and a command helps, the command to copy. */
 export function HelperStep({ live, icon = true }: { live: LiveState; icon?: boolean }): ReactNode {
   const note = helperNote(live);
-  const ready = live.helper.connected;
+  const ready = live.helper.connected && live.build !== 'stuck' && live.build !== 'reloading';
   return (
     <>
       <div className={note.command ? 'setup-row helper-row' : 'setup-row'}>
@@ -82,8 +107,9 @@ export function HelperStep({ live, icon = true }: { live: LiveState; icon?: bool
         <span className="setup-text">
           <strong>T3-Tab helper</strong>
           <small>{note.text}</small>
+          {note.detail === undefined ? null : <small className="helper-detail">The browser said: {note.detail}</small>}
         </span>
-        {ready ? <Ready /> : live.helper.problem === 'extension-outdated' ? null : <Spinner />}
+        {ready ? <Ready /> : note.command || note.waiting === true ? <Spinner /> : null}
       </div>
       {note.command ? <CommandLine /> : null}
     </>

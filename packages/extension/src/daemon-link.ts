@@ -11,6 +11,8 @@ import {
   type DaemonReplyMessage,
 } from '@t3-tab/protocol';
 
+import { NOT_CONNECTED, classifyHelperProblem, type HelperProblem } from './helper-problem';
+
 interface Pending {
   resolve(result: unknown): void;
   reject(error: Error): void;
@@ -28,14 +30,16 @@ let closeReason: string | undefined;
 const pending = new Map<string, Pending>();
 /** Why the last attempt to reach the background program failed, for the panel's "install the helper" step. */
 let lastProblem: string | undefined;
+/** Set when the problem is one the message alone does not name, such as a refused WebSocket. */
+let lastKind: HelperProblem | undefined;
 
-const NOT_CONNECTED = 'T3-Tab is not connected to its helper.';
 
 /** The service worker's current link to the background program, set when it opens and cleared when it closes. */
 export function setDaemonSocket(current: WebSocket | undefined): void {
   if (current !== undefined) {
     closeReason = undefined;
     lastProblem = undefined;
+    lastKind = undefined;
   }
   if (socket !== undefined && socket !== current) {
     failAll(new Error(closeReason ?? 'The connection to the T3-Tab helper closed'));
@@ -52,9 +56,21 @@ export function noteDaemonClose(code: number, reason: string): void {
   closeReason = versionProblem ? (reason === 'Invalid protocol message' ? HELPER_OUTDATED : reason) : undefined;
 }
 
+/**
+ * Records a WebSocket that closed or never opened, with the browser's code and the helper's reason, so the panel can
+ * show it. A version mismatch is recorded by `noteDaemonClose`, which the caller runs first.
+ */
+export function noteSocketClosed(code: number, reason: string, wasOpen: boolean): void {
+  if (closeReason !== undefined) return;
+  const why = reason === '' ? `code ${code}` : `${reason}, code ${code}`;
+  lastProblem = wasOpen ? `The helper's background program closed the connection (${why}).` : `The browser could not connect to the helper's background program (${why}).`;
+  lastKind = 'connection';
+}
+
 /** Records why the worker could not reach the helper, such as a native host that is not installed. */
 export function noteDaemonProblem(error: unknown): void {
   closeReason = undefined;
+  lastKind = undefined;
   lastProblem = error instanceof Error ? error.message : String(error);
 }
 
@@ -63,28 +79,12 @@ export function sendPromptNotice(message: BrowserPromptOpenedMessage | BrowserPr
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
 }
 
-/**
- * Why the helper is not connected, in the words the panel acts on:
- * `missing` (the browser knows no helper: run the setup command), `blocked` (one is registered but not for this
- * extension: run it again), `helper-outdated` (run it again to update), `extension-outdated` (update the extension),
- * `failed` (the browser started the helper and it stopped, such as for want of Node) and `unknown`.
- */
-export type HelperProblem = 'missing' | 'blocked' | 'helper-outdated' | 'extension-outdated' | 'failed' | 'unknown';
+export type { HelperProblem } from './helper-problem';
 
 export interface HelperState {
   connected: boolean;
   error?: string;
   problem?: HelperProblem;
-}
-
-export function classifyHelperProblem(message: string | undefined): HelperProblem {
-  if (message === undefined) return 'missing';
-  if (message === EXTENSION_OUTDATED) return 'extension-outdated';
-  if (message === HELPER_OUTDATED || message === PROTOCOL_MISMATCH || message === 'Native host protocol mismatch' || message === 'Invalid protocol message') return 'helper-outdated';
-  if (/not found/i.test(message) || message === NOT_CONNECTED) return 'missing';
-  if (/forbidden/i.test(message)) return 'blocked';
-  if (/exited|communicating/i.test(message)) return 'failed';
-  return 'unknown';
 }
 
 /**
@@ -99,8 +99,9 @@ export async function daemonLinkState(waitMs = 1_500): Promise<HelperState> {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   if (socket?.readyState === WebSocket.OPEN) return { connected: true };
-  const error = closeReason ?? lastProblem ?? NOT_CONNECTED;
-  return { connected: false, error, problem: classifyHelperProblem(error) };
+  const error = closeReason ?? lastProblem;
+  // No error yet means an attempt is still under way, not that the helper is missing.
+  return error === undefined ? { connected: false, problem: 'pending' } : { connected: false, error, problem: lastKind ?? classifyHelperProblem(error) };
 }
 
 /** Called when a request finds no open link, so the worker tries to connect again. */

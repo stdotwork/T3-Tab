@@ -8,7 +8,7 @@ import { ApprovalCard, QuestionCard, Timeline } from './Thread';
 import { Composer, ModelPicker, RuntimeMenu, TabChip } from './Composer';
 import { PromptCards } from './PromptCards';
 import { Settings, type SettingsTab } from './Settings';
-import { Setup } from './Setup';
+import { Setup, helperNote } from './Setup';
 import { errorText, panel } from './lib/api';
 import { choiceLabel, directProviders, resolveChoice, selectionFor, t3Providers, type Choice, type PickerProvider } from './lib/catalog';
 import { headlessRender, refreshConversations, startPolling, useLive, useStored, type LiveState } from './lib/store';
@@ -180,7 +180,8 @@ function TopBar({ title, onThreads, onNew, onSettings }: { title: ReactNode; onT
 
 function Banner({ live, state, onConnections }: { live: LiveState; state: T3State; onConnections: () => void }): ReactNode {
   let text: string | undefined;
-  if (!live.helper.connected) text = 'The T3-Tab helper is not connected.';
+  if (live.build === 'stuck') text = 'This extension is still an old build. Reload it on the extensions page.';
+  else if (!live.helper.connected) text = `The T3-Tab helper is not connected: ${helperNote(live).short}.`;
   else if (state.status === 'lost') text = 'Reconnecting to T3 Code…';
   if (text === undefined) return null;
   return (

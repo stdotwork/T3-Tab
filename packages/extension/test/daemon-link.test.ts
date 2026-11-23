@@ -6,6 +6,7 @@ import {
   daemonLinkState,
   noteDaemonClose,
   noteDaemonProblem,
+  noteSocketClosed,
   sendPromptNotice,
   setDaemonConnector,
   setDaemonSocket,
@@ -49,7 +50,8 @@ describe('the helper state the panel asks for', () => {
   it('answers with no link at all, tries to connect, and says what is wrong', async () => {
     const connector = vi.fn();
     setDaemonConnector(connector);
-    expect(await daemonLinkState(0)).toEqual({ connected: false, error: 'T3-Tab is not connected to its helper.', problem: 'missing' });
+    // No attempt has failed yet, so nothing is said to be missing.
+    expect(await daemonLinkState(0)).toEqual({ connected: false, problem: 'pending' });
     expect(connector).toHaveBeenCalled();
     noteDaemonProblem(new Error('Specified native messaging host not found.'));
     expect(await daemonLinkState(0)).toEqual({ connected: false, error: 'Specified native messaging host not found.', problem: 'missing' });
@@ -68,8 +70,18 @@ describe('the helper state the panel asks for', () => {
     expect(await daemonLinkState(0)).toEqual({ connected: false, error: message, problem });
   });
 
+  it('names a WebSocket that never opened, or that the helper closed, with its reason', async () => {
+    noteSocketClosed(1006, '', false);
+    expect(await daemonLinkState(0)).toEqual({ connected: false, error: "The browser could not connect to the helper's background program (code 1006).", problem: 'connection' });
+    noteSocketClosed(1008, 'Unauthorized', true);
+    expect(await daemonLinkState(0)).toEqual({ connected: false, error: "The helper's background program closed the connection (Unauthorized, code 1008).", problem: 'connection' });
+    noteDaemonProblem(new Error('Specified native messaging host not found.'));
+    expect((await daemonLinkState(0)).problem).toBe('missing');
+  });
+
   it('says which side is behind when the link was closed for a version mismatch', async () => {
     noteDaemonClose(1008, EXTENSION_OUTDATED);
+    noteSocketClosed(1008, EXTENSION_OUTDATED, true);
     expect(await daemonLinkState(0)).toEqual({ connected: false, error: EXTENSION_OUTDATED, problem: 'extension-outdated' });
     noteDaemonClose(1008, 'Invalid protocol message');
     expect(await daemonLinkState(0)).toEqual({ connected: false, error: HELPER_OUTDATED, problem: 'helper-outdated' });
@@ -79,7 +91,7 @@ describe('the helper state the panel asks for', () => {
     noteDaemonProblem(new Error('Native host has exited.'));
     setDaemonSocket(openSocket().socket);
     setDaemonSocket(undefined);
-    expect((await daemonLinkState(0)).error).toMatch(/not connected to its helper/);
+    expect(await daemonLinkState(0)).toEqual({ connected: false, problem: 'pending' });
   });
 });
 
