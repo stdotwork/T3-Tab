@@ -1,7 +1,12 @@
 import type { AxNode } from '@t3-tab/protocol';
 
-const MAX_NAME = 300;
+/** Longest name kept for one node. The reader cuts what it prints; `find` searches all of this. */
+const MAX_NAME = 8_000;
+/** Once a page has sent this much name text, further names keep only `MIN_NAME` characters. */
+const MAX_PAGE_TEXT = 2_000_000;
+const MIN_NAME = 300;
 const MAX_VALUE = 200;
+const MAX_URL = 500;
 const MAX_NODES = 60_000;
 /** The only accessibility properties the reader prints. */
 const KEPT_PROPS = new Set([
@@ -14,6 +19,7 @@ const KEPT_PROPS = new Set([
   'readonly',
   'invalid',
   'level',
+  'url',
 ]);
 
 /** What the browser says about one frame of the page. */
@@ -117,6 +123,7 @@ function originLabel(origin: string | undefined): string {
 export function slimAxNodes(raw: unknown): AxNode[] {
   if (!Array.isArray(raw)) return [];
   const nodes: AxNode[] = [];
+  let textLeft = MAX_PAGE_TEXT;
   for (const item of raw.slice(0, MAX_NODES)) {
     if (typeof item !== 'object' || item === null) continue;
     const node = item as Record<string, unknown>;
@@ -128,20 +135,30 @@ export function slimAxNodes(raw: unknown): AxNode[] {
       nodes.push({ id: node.nodeId, role: '', name: '', ignored: true, children });
       continue;
     }
-    const slim: AxNode = {
-      id: node.nodeId,
-      role: axString(node.role),
-      name: axString(node.name).slice(0, MAX_NAME),
-      children,
-    };
-    const value = axString(node.value).slice(0, MAX_VALUE);
+    const role = axString(node.role);
+    // The same text again, split at line wraps; the reader never prints these.
+    if (role === 'InlineTextBox') continue;
+    const name = cut(axString(node.name), Math.max(MIN_NAME, Math.min(MAX_NAME, textLeft)));
+    textLeft -= name.length;
+    const slim: AxNode = { id: node.nodeId, role, name, children };
+    const value = cut(axString(node.value), MAX_VALUE);
     if (value !== '') slim.value = value;
     if (typeof node.backendDOMNodeId === 'number') slim.backendId = node.backendDOMNodeId;
     const props = slimProps(node.properties);
-    if (props !== undefined) slim.props = props;
+    if (props !== undefined) {
+      // Only a link's address is printed, and it is cut like any other text.
+      if (role.toLowerCase() !== 'link') delete props.url;
+      else if (typeof props.url === 'string') props.url = cut(props.url, MAX_URL);
+      if (Object.keys(props).length > 0) slim.props = props;
+    }
     nodes.push(slim);
   }
   return nodes;
+}
+
+/** Text at most `max` characters long, its last one a mark when anything was cut. */
+function cut(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
 function axString(value: unknown): string {

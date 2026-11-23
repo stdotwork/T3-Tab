@@ -1,7 +1,7 @@
 import type { PageReadResult } from '@t3-tab/protocol';
 
 import { findLines } from './find.js';
-import { RefGoneError, renderTree, truncate } from './format.js';
+import { MORE_INSIDE, RefGoneError, renderTree, truncate } from './format.js';
 import { RefTable } from './refs.js';
 import { createSmartDiff } from './smart-diff.js';
 
@@ -14,6 +14,7 @@ const MAX_TITLE = 80;
 const MAX_URL = 200;
 /** Most lines of new plain text added to a reply about changed elements. */
 const MAX_NEW_TEXT_LINES = 10;
+const DEPTH_NOTE = '(… = more inside: read that ref)';
 
 export interface ReadOptions {
   all?: boolean | undefined;
@@ -116,7 +117,15 @@ export async function formatRead(
   const all = options.all ?? find !== undefined;
   let lines: string[];
   try {
-    lines = renderTree(page.nodes, state.refTable, { all, target, depth: options.depth });
+    lines = renderTree(page.nodes, state.refTable, {
+      all,
+      target,
+      depth: options.depth,
+      uncut: find !== undefined,
+      // A search shows every link's address. Otherwise only where a name is ambiguous, or the link asked about.
+      linkAddresses: find !== undefined ? 'all' : 'ambiguous',
+      pageUrl: page.url,
+    });
   } catch (error) {
     if (error instanceof RefGoneError) {
       throw new Error(`${options.ref ?? 'The ref'} is no longer on the page. Read the page again.`);
@@ -129,7 +138,7 @@ export async function formatRead(
     return limit(`${header}\n${found.text}`);
   }
 
-  const text = lines.join('\n');
+  const text = lines.join('\n') + (lines.some((line) => line.endsWith(MORE_INSIDE)) ? `\n${DEPTH_NOTE}` : '');
   const key = `${all ? 'all' : 'interactive'}|${options.ref ?? ''}|${options.depth ?? ''}`;
   const previous = state.baseline(session, key);
   state.setBaseline(session, key, text);

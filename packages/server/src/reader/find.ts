@@ -4,12 +4,23 @@ const CONTEXT_LINES = 1;
 const MAX_MATCHES = 20;
 export const MAX_QUERY_LENGTH = 200;
 const REGEX_TIMEOUT_MS = 500;
+/** Characters of a long line kept on each side of its match. */
+const MATCH_WINDOW = 120;
+/** Longest line printed whole; a context line beyond it keeps its start. */
+const MAX_LINE = 320;
 
 export interface FindOptions {
   /** Opt in to a regular expression. The default is a literal, case-insensitive search. */
   regex?: boolean | undefined;
   /** Bound for one regular-expression search. */
   timeoutMs?: number | undefined;
+}
+
+/** Where a line first matched. */
+interface LineMatch {
+  line: number;
+  start: number;
+  length: number;
 }
 
 export interface FindResult {
@@ -32,13 +43,14 @@ export async function findLines(lines: string[], query: string, options: FindOpt
   if (matching.length === 0) return { text: `No matches for ${JSON.stringify(query)}.`, matches: 0 };
 
   const shown = matching.slice(0, MAX_MATCHES);
+  const matchAt = new Map(shown.map((match) => [match.line, match]));
   const out: string[] = [];
   let previousEnd = -1;
-  for (const index of shown) {
+  for (const { line: index } of shown) {
     const start = Math.max(0, index - CONTEXT_LINES);
     const end = Math.min(lines.length - 1, index + CONTEXT_LINES);
     if (previousEnd >= 0 && start > previousEnd + 1) out.push('--');
-    for (let line = Math.max(start, previousEnd + 1); line <= end; line += 1) out.push(lines[line] ?? '');
+    for (let line = Math.max(start, previousEnd + 1); line <= end; line += 1) out.push(clipLine(lines[line] ?? '', matchAt.get(line)));
     previousEnd = Math.max(previousEnd, end);
   }
   if (matching.length > shown.length) {
@@ -47,24 +59,34 @@ export async function findLines(lines: string[], query: string, options: FindOpt
   return { text: out.join('\n'), matches: matching.length };
 }
 
-function literalMatches(lines: string[], query: string): number[] {
+/** A line short enough to print: around its match, or from its start for a context line. Every cut is marked. */
+function clipLine(line: string, match: LineMatch | undefined): string {
+  if (line.length <= MAX_LINE) return line;
+  const indent = line.length - line.trimStart().length;
+  const from = match === undefined ? indent : Math.max(indent, match.start - MATCH_WINDOW);
+  const to = match === undefined ? indent + MAX_LINE : Math.min(line.length, match.start + match.length + MATCH_WINDOW);
+  return `${line.slice(0, indent)}${from > indent ? '…' : ''}${line.slice(from, to)}${to < line.length ? '…' : ''}`;
+}
+
+function literalMatches(lines: string[], query: string): LineMatch[] {
   const needle = query.toLowerCase();
-  const matching: number[] = [];
+  const matching: LineMatch[] = [];
   lines.forEach((line, index) => {
-    if (line.toLowerCase().includes(needle)) matching.push(index);
+    const start = line.toLowerCase().indexOf(needle);
+    if (start >= 0) matching.push({ line: index, start, length: needle.length });
   });
   return matching;
 }
 
-async function regexMatches(lines: string[], query: string, timeoutMs: number): Promise<number[]> {
+async function regexMatches(lines: string[], query: string, timeoutMs: number): Promise<LineMatch[]> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('The regex timeout must be positive');
   const worker = new Worker(REGEX_WORKER_SOURCE, {
     eval: true,
     workerData: { lines, query },
   });
-  return await new Promise<number[]>((resolve, reject) => {
+  return await new Promise<LineMatch[]>((resolve, reject) => {
     let settled = false;
-    const finish = (error: Error | undefined, matches?: number[]): void => {
+    const finish = (error: Error | undefined, matches?: LineMatch[]): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -85,7 +107,7 @@ async function regexMatches(lines: string[], query: string, timeoutMs: number): 
         (value as { ok?: unknown }).ok === true &&
         Array.isArray((value as { matches?: unknown }).matches)
       ) {
-        finish(undefined, (value as { matches: number[] }).matches);
+        finish(undefined, (value as { matches: LineMatch[] }).matches);
         return;
       }
       const error = (value as { error?: unknown } | null)?.error;
@@ -104,7 +126,8 @@ try {
   const pattern = new RegExp(workerData.query, 'i');
   const matches = [];
   workerData.lines.forEach((line, index) => {
-    if (pattern.test(line)) matches.push(index);
+    const found = pattern.exec(line);
+    if (found !== null) matches.push({ line: index, start: found.index, length: found[0].length });
   });
   parentPort.postMessage({ ok: true, matches });
 } catch (error) {

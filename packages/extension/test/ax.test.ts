@@ -46,9 +46,32 @@ describe('slimming the accessibility tree', () => {
       { role: { value: 'button' } },
       { nodeId: '1', role: { value: 'textbox' }, name: { value: 'n'.repeat(1_000) }, value: { value: 'v'.repeat(1_000) } },
     ]);
-    expect(node?.name).toHaveLength(300);
+    // A name this long is kept whole, so `find` can reach all of it.
+    expect(node?.name).toHaveLength(1_000);
     expect(node?.value).toHaveLength(200);
+    expect(node?.value?.endsWith('…')).toBe(true);
     expect(slimAxNodes('not a list')).toEqual([]);
+  });
+
+  it('marks a name it cuts, and stops keeping long names once a page has sent a lot of text', () => {
+    const long = { value: 'n'.repeat(9_000) };
+    const nodes = slimAxNodes(Array.from({ length: 260 }, (_, index) => ({ nodeId: String(index), role: { value: 'StaticText' }, name: long })));
+    expect(nodes[0]?.name).toHaveLength(8_000);
+    expect(nodes[0]?.name.endsWith('…')).toBe(true);
+    expect(nodes.at(-1)?.name).toHaveLength(300);
+    expect(nodes.at(-1)?.name.endsWith('…')).toBe(true);
+  });
+
+  it('keeps the address of a link only, and drops the line-wrap boxes the reader never prints', () => {
+    const url = { name: 'url', value: { type: 'url', value: 'https://a.test/x' } };
+    const nodes = slimAxNodes([
+      { nodeId: '1', role: { value: 'link' }, name: { value: 'Go' }, properties: [url] },
+      { nodeId: '2', role: { value: 'image' }, name: { value: 'Pic' }, properties: [url] },
+      { nodeId: '3', role: { value: 'InlineTextBox' }, name: { value: 'Go' } },
+    ]);
+    expect(nodes.map((node) => node.id)).toEqual(['1', '2']);
+    expect(nodes[0]?.props?.url).toBe('https://a.test/x');
+    expect(nodes[1]?.props).toBeUndefined();
   });
 });
 

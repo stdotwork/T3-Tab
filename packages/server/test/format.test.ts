@@ -104,7 +104,8 @@ describe('tree to text', () => {
 
   it('limits nesting by depth, counting shown nodes only', () => {
     const lines = renderTree(signInPage(), new RefTable(), { all: false, depth: 0 });
-    expect(lines).toEqual(['# Sign in', 'e1 form "Login"']);
+    expect(lines).toEqual(['# Sign in', 'e1 form "Login" …']);
+    expect(renderTree(signInPage(), new RefTable(), { all: false, depth: 1 })).not.toContainEqual(expect.stringContaining('…'));
   });
 
   it('renders only the subtree of a target element, and reports one that is gone', () => {
