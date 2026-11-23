@@ -1,9 +1,10 @@
 import { PROTOCOL_VERSION } from '@t3-tab/protocol';
 
 import { ClaimStore } from './claims';
-import { sendPromptNotice } from './daemon-link';
+import { askDaemon, sendPromptNotice } from './daemon-link';
 import { ChromeSitePermissionStore, PermissionPrompts, type PermissionPrompt } from './permissions';
 import { SessionStore } from './sessions';
+import { t3FullAccess } from './t3-full-access';
 
 export const sessionStore = new SessionStore();
 export const siteStore = new ChromeSitePermissionStore();
@@ -22,7 +23,10 @@ export const permissionPrompts = new PermissionPrompts(siteStore, {
   onOpen: ({ id, origin, tool, session, tab }) =>
     sendPromptNotice({ type: 'browser.promptOpened', protocolVersion: PROTOCOL_VERSION, session, prompt: { id, origin, tool, tab } }),
   onClose: (promptId) => sendPromptNotice({ type: 'browser.promptClosed', protocolVersion: PROTOCOL_VERSION, promptId }),
-  fullAccess: async (sessionId) => await claimStore.isFullAccess(sessionId),
+  fullAccess: t3FullAccess(
+    async (sessionId) => await claimStore.t3ThreadsOf(sessionId),
+    async (threadId) => (await askDaemon('t3.threadMode', { threadId })).runtimeMode,
+  ),
 });
 
 async function updatePermissionBadge(pending: PermissionPrompt[]): Promise<void> {

@@ -23,6 +23,15 @@ type Screen =
   | { name: 'threads' }
   | { name: 'settings'; tab: SettingsTab };
 
+const withdrawClaim = async (code: string): Promise<void> => {
+  await panel({ type: 'panel.t3ClaimRevoke', code }).catch(() => undefined);
+};
+
+/** Ties a claim to the thread that carries it. If that fails the thread still runs, without the tabs. */
+const bindClaim = async (code: string, threadId: string): Promise<void> => {
+  await panel({ type: 'panel.t3ClaimBind', code, threadId }).catch(async () => await withdrawClaim(code));
+};
+
 const useT3 = (): T3State => useSyncExternalStore(t3.subscribe, t3.snapshot);
 
 function ProjectPicker({
@@ -224,19 +233,20 @@ function Home({ live, state, onOpen, onNav }: { live: LiveState; state: T3State;
         let code: string | undefined;
         let note = '';
         if (shareTab && shareable) {
-          const claim = await panel<{ code: string; note: string }>({ type: 'panel.t3Claim', tabId: tab.id, fullAccess: runtimeMode === 'full-access' });
+          const claim = await panel<{ code: string; note: string }>({ type: 'panel.t3Claim', tabId: tab.id });
           code = claim.code;
           note = claim.note;
         }
+        let threadId: string;
         try {
-          const threadId = await t3.launchThread({ projectId: project.id, model: selectionFor(choice), runtimeMode, text: `${message}${note}` });
-          if (code !== undefined) await panel({ type: 'panel.t3ClaimBind', code, threadId });
-          setText('');
-          onOpen({ name: 'thread', id: threadId, source: 't3' });
+          threadId = await t3.launchThread({ projectId: project.id, model: selectionFor(choice), runtimeMode, text: `${message}${note}` });
         } catch (failure) {
-          if (code !== undefined) await panel({ type: 'panel.t3ClaimRevoke', code }).catch(() => undefined);
+          if (code !== undefined) await withdrawClaim(code);
           throw failure;
         }
+        if (code !== undefined) await bindClaim(code, threadId);
+        setText('');
+        onOpen({ name: 'thread', id: threadId, source: 't3' });
       } else {
         const { conversation } = await panel<{ conversation: AgentConversation }>({
           type: 'panel.agentStart',
@@ -357,18 +367,18 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
         let note = '';
         let code: string | undefined;
         if (shareTab && shareable) {
-          const claim = await panel<{ code: string; note: string }>({ type: 'panel.t3Claim', tabId: tab.id, fullAccess: view.runtimeMode === 'full-access' });
+          const claim = await panel<{ code: string; note: string }>({ type: 'panel.t3Claim', tabId: tab.id });
           code = claim.code;
           note = claim.note;
         }
         try {
           await t3.sendMessage(screen.id, `${message}${note}`, view.running);
-          if (code !== undefined) await panel({ type: 'panel.t3ClaimBind', code, threadId: screen.id });
-          setShareTab(false);
         } catch (failure) {
-          if (code !== undefined) await panel({ type: 'panel.t3ClaimRevoke', code }).catch(() => undefined);
+          if (code !== undefined) await withdrawClaim(code);
           throw failure;
         }
+        if (code !== undefined) await bindClaim(code, screen.id);
+        setShareTab(false);
       } else {
         await panel({ type: 'panel.agentSend', id: screen.id, message });
         await refreshConversations();
@@ -480,7 +490,6 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
               onChange={(mode) =>
                 void guard(async () => {
                   await t3.setRuntimeMode(screen.id, mode);
-                  await panel({ type: 'panel.t3SetFullAccess', threadId: screen.id, fullAccess: mode === 'full-access' });
                 })
               }
             />
@@ -573,17 +582,6 @@ export function App(): ReactNode {
     void t3.start();
   }, []);
   useEffect(() => syncT3Theme(state.defaultTheme, state.defaultAppearance, state.themes), [state.defaultTheme, state.defaultAppearance, state.themes]);
-
-  // Full access answers browser requests only while T3 says the thread has it, wherever its mode was changed.
-  const threadModes = useRef(new Map<string, string>());
-  useEffect(() => {
-    if (state.status !== 'ready') return;
-    for (const thread of state.threads) {
-      if (thread.runtimeMode === undefined || threadModes.current.get(thread.id) === thread.runtimeMode) continue;
-      threadModes.current.set(thread.id, thread.runtimeMode);
-      void panel({ type: 'panel.t3SetFullAccess', threadId: thread.id, fullAccess: thread.runtimeMode === 'full-access' }).catch(() => undefined);
-    }
-  }, [state.status, state.threads]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {

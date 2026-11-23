@@ -112,6 +112,8 @@ interface Watch {
 
 const EMPTY: T3State = { status: 'off', providers: [], projects: [], threads: [], defaultTheme: '', defaultAppearance: '', themes: [], threadStop: false };
 
+const SUBSCRIBE_TIMEOUT_MS = 15_000;
+
 const upsert = <T extends { id: string }>(list: readonly T[], value: T): T[] => {
   const index = list.findIndex((entry) => entry.id === value.id);
   if (index === -1) return [...list, value];
@@ -190,6 +192,9 @@ export class T3Client {
   private retry: ReturnType<typeof setTimeout> | undefined;
   private attempts = 0;
   private stopped = false;
+  /** Bumped when the session changes, so whatever an older connection attempt finishes with is ignored. */
+  private generation = 0;
+  private connecting: Promise<void> | undefined;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -210,17 +215,17 @@ export class T3Client {
   }
 
   async pair(): Promise<void> {
+    const session = await pairWithT3();
     this.stopped = false;
-    this.session = await pairWithT3();
+    this.supersede();
+    this.session = session;
     await this.connect();
   }
 
   /** Drops this panel's session. The helper revokes it in T3 too. */
   async disconnect(revoke: () => Promise<unknown>): Promise<void> {
     this.stopped = true;
-    if (this.retry !== undefined) clearTimeout(this.retry);
-    this.socket?.close();
-    this.socket = undefined;
+    this.supersede();
     this.session = undefined;
     await forgetSession();
     await revoke().catch(() => undefined);
@@ -228,28 +233,65 @@ export class T3Client {
     for (const listener of this.listeners) listener();
   }
 
-  private async connect(): Promise<void> {
+  /** Ends the current socket and any attempt in flight; neither can change the state after this. */
+  private supersede(): void {
+    this.generation += 1;
+    this.connecting = undefined;
+    if (this.retry !== undefined) clearTimeout(this.retry);
+    this.retry = undefined;
+    const socket = this.socket;
+    this.socket = undefined;
+    for (const watch of this.watches.values()) delete watch.stop;
+    socket?.close();
+  }
+
+  /** One attempt at a time: a caller during an attempt shares it. */
+  private connect(): Promise<void> {
+    if (this.connecting !== undefined) return this.connecting;
+    const attempt: Promise<void> = this.openConnection(this.generation).finally(() => {
+      if (this.connecting === attempt) this.connecting = undefined;
+    });
+    this.connecting = attempt;
+    return attempt;
+  }
+
+  private async openConnection(generation: number): Promise<void> {
     const session = this.session;
     if (session === undefined) return;
-    this.stopped = false;
-    this.set({ status: 'connecting', origin: session.origin });
-    delete this.current.error;
+    const superseded = (): boolean => generation !== this.generation;
+    const { error: _cleared, ...rest } = this.current;
+    this.current = { ...rest, status: 'connecting', origin: session.origin };
+    for (const listener of this.listeners) listener();
+    let socket: RpcSocket | undefined;
     try {
       const opened = await socketUrl(session);
+      if (superseded()) return;
       this.session = opened.session;
-      let opening: RpcSocket | undefined;
-      const socket = await RpcSocket.open(opened.url, () => {
-        if (opening !== undefined) this.onClosed(opening);
+      socket = await RpcSocket.open(opened.url, () => {
+        if (socket !== undefined) this.onClosed(socket);
       });
-      opening = socket;
+      if (superseded()) {
+        socket.close();
+        return;
+      }
       this.socket = socket;
       await this.subscribeAll(socket);
       this.attempts = 0;
     } catch (error) {
+      // A later attempt owns the state now, or this socket's close already scheduled the retry.
+      if (superseded() || (socket !== undefined && this.socket !== socket)) {
+        socket?.close();
+        return;
+      }
+      if (socket !== undefined) {
+        this.socket = undefined;
+        socket.close();
+      }
       if (error instanceof SessionRefused && error.status === 401) {
+        this.generation += 1;
         await forgetSession();
         this.session = undefined;
-        this.current = { ...EMPTY, error: 'T3 ended this session. Connect again.' };
+        this.current = { ...EMPTY, error: error.message };
         for (const listener of this.listeners) listener();
         return;
       }
@@ -272,49 +314,56 @@ export class T3Client {
     if (this.retry !== undefined) clearTimeout(this.retry);
     const delay = Math.min(15_000, 500 * 2 ** Math.min(this.attempts, 5));
     this.attempts += 1;
-    this.retry = setTimeout(() => void this.connect(), delay);
+    this.retry = setTimeout(() => {
+      this.retry = undefined;
+      void this.connect();
+    }, delay);
   }
 
   private async subscribeAll(socket: RpcSocket): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       let config = false;
       let shell = false;
+      const timer = setTimeout(() => reject(new Error('T3 Code did not answer.')), SUBSCRIBE_TIMEOUT_MS);
       const ready = (): void => {
-        if (config && shell) resolve();
+        if (!config || !shell) return;
+        clearTimeout(timer);
+        resolve();
+      };
+      const ended = (error?: Error): void => {
+        clearTimeout(timer);
+        reject(error ?? new Error('T3 Code ended the connection.'));
       };
       socket.stream(
         'subscribeServerConfig',
         { environmentThemes: true },
         (value) => {
+          if (this.socket !== socket) return;
           this.onConfig(value as ConfigEvent);
           if ((value as ConfigEvent).type === 'snapshot') {
             config = true;
             ready();
           }
         },
-        (error) => {
-          if (error !== undefined) reject(error);
-        },
+        ended,
       );
       socket.stream(
         'orchestration.subscribeShell',
         {},
         (value) => {
+          if (this.socket !== socket) return;
           this.onShell(value as ShellItem);
           if ((value as ShellItem).kind === 'snapshot') {
             shell = true;
             ready();
           }
         },
-        (error) => {
-          if (error !== undefined) reject(error);
-        },
+        ended,
       );
     });
-    const patch: Partial<T3State> = { status: 'ready' };
-    this.set(patch);
+    if (this.socket !== socket) return;
     const { error: _cleared, ...rest } = this.current;
-    this.current = rest;
+    this.current = { ...rest, status: 'ready' };
     for (const listener of this.listeners) listener();
     for (const [id, watch] of this.watches) this.openWatch(id, watch);
   }
@@ -366,6 +415,7 @@ export class T3Client {
     if (socket === undefined) return;
     watch.stop?.();
     watch.stop = socket.stream('orchestration.subscribeThread', { threadId: id }, (value) => {
+      if (this.socket !== socket) return;
       const item = value as ThreadItem;
       if (item.kind === 'snapshot') watch.projection = (item as Extract<ThreadItem, { kind: 'snapshot' }>).projection;
       else if (item.kind === 'event' && watch.projection !== undefined) {

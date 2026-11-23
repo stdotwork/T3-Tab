@@ -1,17 +1,15 @@
 /**
- * The panel's own T3 client session, like the one T3's phone app holds: a pairing credential the helper minted is
- * exchanged for a DPoP-bound access token. The private key is created non-extractable and stays in this extension's
- * IndexedDB, so the stored token is useless without it. T3 renews such a session for up to 30 days.
+ * The panel's own T3 client session, like the one T3's phone app holds. The helper mints a pairing credential and spends
+ * it on a connection it checked is T3's; the panel only signs the DPoP proofs. The private key is created non-extractable
+ * and stays in this extension's IndexedDB, so the stored token is useless without it. T3 renews such a session for up to
+ * 30 days. The WebSocket is the one connection the helper cannot check, because the browser opens it.
  */
+import type { T3Pairing, T3SessionReply } from '@t3-tab/protocol';
+
 import { panel, readStored, removeStored, writeStored } from './api';
 
 const SESSION_KEY = 't3.session';
-const TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange';
-const ACCESS_TOKEN = 'urn:ietf:params:oauth:token-type:access_token';
-const BOOTSTRAP_TOKEN = 'urn:t3:params:oauth:token-type:environment-bootstrap';
 const RENEW_BEFORE_MS = 10 * 60_000;
-
-export const CLIENT_LABEL = 'T3-Tab panel';
 
 export interface T3Session {
   origin: string;
@@ -72,18 +70,7 @@ async function proof(keys: CryptoKeyPair, method: string, url: string, boundToke
   return `${signingInput}.${base64url(signature)}`;
 }
 
-async function exchange(origin: string, form: Record<string, string>, keys: CryptoKeyPair): Promise<T3Session> {
-  const url = `${origin}/oauth/token`;
-  const response = await fetch(url, {
-    method: 'POST',
-    credentials: 'omit',
-    redirect: 'error',
-    headers: { 'content-type': 'application/x-www-form-urlencoded', dpop: await proof(keys, 'POST', url) },
-    body: new URLSearchParams(form),
-  });
-  if (!response.ok) throw new SessionRefused(`T3 refused the sign-in (HTTP ${response.status}).`, response.status);
-  const body = (await response.json()) as { access_token: string; expires_in: number };
-  const session = { origin, accessToken: body.access_token, expiresAt: Date.now() + body.expires_in * 1000 };
+async function keep(session: T3Session): Promise<T3Session> {
   await writeStored(SESSION_KEY, session);
   return session;
 }
@@ -101,23 +88,15 @@ export async function storedSession(): Promise<T3Session | undefined> {
   return await readStored<T3Session>(SESSION_KEY);
 }
 
-/** One click: the helper mints a pairing credential and this panel becomes a T3 client. */
+/** One click: the helper pairs with T3 and this panel becomes a T3 client. */
 export async function pairWithT3(): Promise<T3Session> {
-  const { origin, credential } = await panel<{ origin: string; credential: string }>({ type: 'panel.t3Pair' });
+  const { t3 } = await panel<{ t3: { origin?: string } }>({ type: 'panel.setup', refresh: true });
+  if (t3.origin === undefined) throw new Error('T3 Code is not running.');
   const keys = await proofKeys(true);
   if (keys === undefined) throw new Error('Could not create the session key');
-  return await exchange(
-    origin,
-    {
-      grant_type: TOKEN_EXCHANGE,
-      subject_token: credential,
-      subject_token_type: BOOTSTRAP_TOKEN,
-      requested_token_type: ACCESS_TOKEN,
-      client_label: CLIENT_LABEL,
-      client_device_type: 'desktop',
-    },
-    keys,
-  );
+  const dpop = await proof(keys, 'POST', `${t3.origin}/oauth/token`);
+  const paired = await panel<T3Pairing>({ type: 'panel.t3Pair', origin: t3.origin, dpop });
+  return await keep({ origin: paired.origin, accessToken: paired.accessToken, expiresAt: Date.now() + paired.expiresIn * 1000 });
 }
 
 export async function forgetSession(): Promise<void> {
@@ -125,38 +104,43 @@ export async function forgetSession(): Promise<void> {
   await withKeys('readwrite', (store) => store.delete('dpop')).catch(() => undefined);
 }
 
+function refusal(reply: Extract<T3SessionReply, { outcome: 'refused' | 'moved' }>): SessionRefused {
+  if (reply.outcome === 'moved') return new SessionRefused('T3 Code moved to another address. Connect again.', 401);
+  return new SessionRefused(reply.status === 401 ? 'T3 ended this session. Connect again.' : `T3 refused the connection (HTTP ${reply.status}).`, reply.status);
+}
+
 async function fresh(session: T3Session, keys: CryptoKeyPair): Promise<T3Session> {
   if (session.expiresAt - Date.now() > RENEW_BEFORE_MS) return session;
-  return await exchange(
-    session.origin,
-    {
-      grant_type: TOKEN_EXCHANGE,
-      subject_token: session.accessToken,
-      subject_token_type: ACCESS_TOKEN,
-      requested_token_type: ACCESS_TOKEN,
-    },
-    keys,
-  );
+  const reply = await panel<T3SessionReply>({
+    type: 'panel.t3Session',
+    kind: 'renew',
+    origin: session.origin,
+    accessToken: session.accessToken,
+    dpop: await proof(keys, 'POST', `${session.origin}/oauth/token`),
+  });
+  if (reply.outcome === 'refused' || reply.outcome === 'moved') throw refusal(reply);
+  if (reply.outcome !== 'token') throw new Error('T3 sent no new session.');
+  return await keep({ origin: session.origin, accessToken: reply.accessToken, expiresAt: Date.now() + reply.expiresIn * 1000 });
 }
 
 /** A one-use WebSocket address for T3's RPC endpoint, renewing the session first when it is close to expiry. */
 export async function socketUrl(current: T3Session): Promise<{ url: string; session: T3Session }> {
   const keys = await proofKeys(false);
-  if (keys === undefined) throw new SessionRefused('The session key is gone.', 401);
+  if (keys === undefined) throw new SessionRefused('The session key is gone. Connect again.', 401);
   const session = await fresh(current, keys);
-  const ticketUrl = `${session.origin}/api/auth/websocket-ticket/rpc`;
-  const response = await fetch(ticketUrl, {
-    method: 'POST',
-    credentials: 'omit',
-    redirect: 'error',
-    headers: { authorization: `DPoP ${session.accessToken}`, dpop: await proof(keys, 'POST', ticketUrl, session.accessToken) },
+  const reply = await panel<T3SessionReply>({
+    type: 'panel.t3Session',
+    kind: 'ticket',
+    origin: session.origin,
+    accessToken: session.accessToken,
+    dpop: await proof(keys, 'POST', `${session.origin}/api/auth/websocket-ticket/rpc`, session.accessToken),
   });
-  if (!response.ok) throw new SessionRefused(`T3 refused the connection (HTTP ${response.status}).`, response.status);
-  const { ticket } = (await response.json()) as { ticket: string };
+  if (reply.outcome === 'refused' || reply.outcome === 'moved') throw refusal(reply);
+  if (reply.outcome !== 'ticket') throw new Error('T3 sent no connection ticket.');
   const socket = new URL(`${session.origin.replace(/^http/, 'ws')}/ws`);
-  socket.searchParams.set('wsTicket', ticket);
+  socket.searchParams.set('wsTicket', reply.ticket);
   socket.searchParams.set('orchestrationProtocol', '2');
   socket.searchParams.set('clientSurface', 'web');
-  socket.searchParams.set('dpop', await proof(keys, 'GET', `${session.origin}/ws`, ticket));
+  socket.searchParams.set('dpop', await proof(keys, 'GET', `${session.origin}/ws`, reply.ticket));
   return { url: socket.href, session };
 }

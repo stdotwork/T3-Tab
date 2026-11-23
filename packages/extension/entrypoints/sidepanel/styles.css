@@ -303,7 +303,8 @@ ul { list-style: none; margin: 0; padding: 0; }
 .theme-orb.empty { background: transparent; border-style: dashed; }
 .theme-card-name { display: flex; flex-direction: column; min-width: 0; font-weight: 500; font-size: 13.5px; }
 .theme-card-name small { color: var(--muted-fg); font-weight: 400; }
-.theme-card-tools { display: inline-flex; flex: none; }
+.theme-card-tools { display: inline-flex; align-items: center; flex: none; }
+.theme-card-check { margin-right: 6px; }
 .theme-card-tools .icon-btn { width: 26px; height: 26px; }
 .site-list { display: flex; flex-direction: column; gap: 8px; }
 .site-list li { display: flex; flex-direction: column; gap: 2px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); overflow-wrap: anywhere; }

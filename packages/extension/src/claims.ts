@@ -41,17 +41,21 @@ interface StoredGrant {
   route: ClaimRoute;
   /** The code the grant was first issued with, so the panel can bind a thread to it after the code was redeemed. */
   code?: string;
-  /**
-   * True while the thread this grant belongs to runs with full access in T3 Code, which counts as yes for its
-   * sessions' permission prompts. The panel sets it from T3's own state and clears it when T3 says that changed.
-   */
-  fullAccess: boolean;
+}
+
+/** A tab a session holds only through a grant that was withdrawn. */
+export interface RevokedShare {
+  sessionId: string;
+  tabId: number;
 }
 
 interface ClaimState {
   claims: Record<string, StoredClaim>;
   grants: Record<string, StoredGrant>;
 }
+
+/** A panel-launched T3 thread's conversation key is this prefix and the thread id. */
+export const T3_CONVERSATION_PREFIX = 't3:';
 
 const CLAIMS_KEY = 'claims';
 const GRANTS_KEY = 'claimGrants';
@@ -100,12 +104,12 @@ function entries(value: unknown): Array<[string, Record<string, unknown>]> {
  */
 export class ClaimStore {
   /** Issues a code and returns the id of the new grant it belongs to. */
-  async issue(code: string, tabs: ClaimTab[], options: { route?: ClaimRoute; fullAccess?: boolean } = {}): Promise<string> {
+  async issue(code: string, tabs: ClaimTab[], options: { route?: ClaimRoute } = {}): Promise<string> {
     const route = options.route ?? 'message';
     const grant = crypto.randomUUID();
     await this.mutate((state) => {
       const now = Date.now();
-      state.grants[grant] = { tabs, sessionIds: [], createdAt: now, route, code, fullAccess: options.fullAccess === true };
+      state.grants[grant] = { tabs, sessionIds: [], createdAt: now, route, code };
       const ttl = route === 'launch' ? LAUNCH_CLAIM_TTL_MS : MESSAGE_CLAIM_TTL_MS;
       state.claims[code] = { tabs, createdAt: now, expiresAt: now + ttl, route, grant };
       newest(state.claims);
@@ -132,24 +136,21 @@ export class ClaimStore {
     });
   }
 
-  /** Sets whether the sessions of a conversation's grants have full access. Returns how many grants it changed. */
-  async setFullAccess(conversationId: string, fullAccess: boolean): Promise<number> {
-    return await this.mutate((state) => {
-      let changed = 0;
-      for (const grant of Object.values(state.grants)) {
-        if (grant.conversationId !== conversationId) continue;
-        grant.fullAccess = fullAccess;
-        changed += 1;
-      }
-      return changed;
-    });
-  }
-
-  /** True when a session redeemed a code of a grant that is marked full access. */
-  async isFullAccess(sessionId: string): Promise<boolean> {
+  /**
+   * The T3 threads whose grants this session holds. Undefined unless every grant it holds is bound to a T3 thread, so
+   * a code the panel has not bound yet, or a direct run's, never counts toward Full access.
+   */
+  async t3ThreadsOf(sessionId: string): Promise<string[] | undefined> {
     await mutation;
     const { grants } = await this.read();
-    return Object.values(grants).some((grant) => grant.fullAccess && grant.sessionIds.includes(sessionId));
+    const held = Object.values(grants).filter((grant) => grant.sessionIds.includes(sessionId));
+    if (held.length === 0) return undefined;
+    const threads = new Set<string>();
+    for (const { conversationId } of held) {
+      if (conversationId?.startsWith(T3_CONVERSATION_PREFIX) !== true) return undefined;
+      threads.add(conversationId.slice(T3_CONVERSATION_PREFIX.length));
+    }
+    return [...threads];
   }
 
   /**
@@ -167,9 +168,25 @@ export class ClaimStore {
     });
   }
 
-  async revoke(code: string): Promise<void> {
-    await this.mutate((state) => {
+  /**
+   * Withdraws a code. A grant no thread was ever bound to goes with it, even if an agent already redeemed the code,
+   * and the shares that only it gave are returned for the caller to take back.
+   */
+  async revoke(code: string): Promise<RevokedShare[]> {
+    return await this.mutate((state) => {
+      const grantId = state.claims[code]?.grant ?? Object.entries(state.grants).find(([, grant]) => grant.code === code)?.[0];
       delete state.claims[code];
+      if (grantId === undefined) return [];
+      const grant = state.grants[grantId];
+      if (grant === undefined || grant.conversationId !== undefined) return [];
+      delete state.grants[grantId];
+      for (const [other, claim] of Object.entries(state.claims)) if (claim.grant === grantId) delete state.claims[other];
+      const others = Object.values(state.grants);
+      return grant.sessionIds.flatMap((sessionId) =>
+        grant.tabs
+          .filter(({ tabId }) => !others.some((entry) => entry.sessionIds.includes(sessionId) && entry.tabs.some((tab) => tab.tabId === tabId)))
+          .map(({ tabId }) => ({ sessionId, tabId })),
+      );
     });
   }
 
@@ -305,7 +322,6 @@ export class ClaimStore {
         sessionIds: sessionIds.filter((value): value is string => typeof value === 'string'),
         createdAt,
         route: route === 'message' ? 'message' : 'launch',
-        fullAccess: candidate.fullAccess === true,
         ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
         ...(typeof conversationId === 'string' ? { conversationId } : {}),
       };

@@ -7,9 +7,11 @@ import {
   type SetupStatus,
   type T3Access,
   type T3Pairing,
+  type T3SessionParams,
+  type T3SessionReply,
 } from '@t3-tab/protocol';
 
-import { newClaimCode, removeConversationTab, type ClaimTab } from './claims';
+import { newClaimCode, removeConversationTab, T3_CONVERSATION_PREFIX, type ClaimTab } from './claims';
 import { askDaemon, daemonLinkState, type HelperState } from './daemon-link';
 import {
   isOriginKey,
@@ -68,14 +70,14 @@ export type PanelRequest =
   | { type: 'panel.helper' }
   | { type: 'panel.setup'; refresh?: boolean }
   | { type: 'panel.addAgent'; agent: SetupAgent }
-  | { type: 'panel.t3Pair' }
+  | { type: 'panel.t3Pair'; origin: string; dpop: string }
+  | ({ type: 'panel.t3Session' } & T3SessionParams)
   | { type: 'panel.t3Unpair' }
   | { type: 'panel.agentGet'; id: string }
   | { type: 'panel.agentStop'; id: string }
-  | { type: 'panel.t3Claim'; tabId?: number; fullAccess: boolean }
+  | { type: 'panel.t3Claim'; tabId?: number }
   | { type: 'panel.t3ClaimBind'; code: string; threadId: string }
   | { type: 'panel.t3ClaimRevoke'; code: string }
-  | { type: 'panel.t3SetFullAccess'; threadId: string; fullAccess: boolean }
   | { type: 'panel.agents'; refresh?: boolean; tabId?: number }
   | AgentStartRequest
   | { type: 'panel.agentSend'; id: string; message: string }
@@ -100,6 +102,7 @@ export async function handlePanelRequest(
   | HelperState
   | SetupStatus
   | T3Pairing
+  | T3SessionReply
   | T3ClaimResult
   | { revoked: number }
   | { ok: true }
@@ -109,21 +112,21 @@ export async function handlePanelRequest(
   if (request.type === 'panel.helper') return await daemonLinkState();
   if (request.type === 'panel.setup') return await askDaemon('setup.status', request.refresh === true ? { refresh: true } : {});
   if (request.type === 'panel.addAgent') return await askDaemon('setup.addAgent', { agent: request.agent });
-  if (request.type === 'panel.t3Pair') return await askDaemon('t3.pair', {});
+  if (request.type === 'panel.t3Pair') return await askDaemon('t3.pair', { origin: request.origin, dpop: request.dpop });
+  if (request.type === 'panel.t3Session') {
+    const { kind, origin, accessToken, dpop } = request;
+    return await askDaemon('t3.session', { kind, origin, accessToken, dpop });
+  }
   if (request.type === 'panel.t3Unpair') return await askDaemon('t3.unpair', {});
   if (request.type === 'panel.agentGet') return await askDaemon('agents.get', { id: request.id });
   if (request.type === 'panel.agentStop') return await askDaemon('agents.stop', { id: request.id });
-  if (request.type === 'panel.t3Claim') return await issueT3Claim(request.tabId, request.fullAccess);
+  if (request.type === 'panel.t3Claim') return await issueT3Claim(request.tabId);
   if (request.type === 'panel.t3ClaimBind') {
     if (!(await claimStore.bindByCode(request.code, t3ConversationKey(request.threadId)))) throw new Error('Unknown claim code');
     return { ok: true };
   }
   if (request.type === 'panel.t3ClaimRevoke') {
-    await claimStore.revoke(request.code);
-    return { ok: true };
-  }
-  if (request.type === 'panel.t3SetFullAccess') {
-    await claimStore.setFullAccess(t3ConversationKey(request.threadId), request.fullAccess);
+    await revokeClaim(request.code);
     return { ok: true };
   }
   if (request.type === 'panel.agents') return await agentPanelState(request.refresh === true, request.tabId);
@@ -227,7 +230,7 @@ async function startAgent(request: AgentStartRequest): Promise<{ conversation: A
     await claimStore.bindConversation(grant, started.conversation.id);
     return started;
   } catch (error) {
-    await claimStore.revoke(claim);
+    await revokeClaim(claim);
     throw error;
   }
 }
@@ -242,23 +245,27 @@ export interface T3ClaimResult {
 
 /** The key a claim's grant uses for a T3 thread the panel started itself. */
 function t3ConversationKey(threadId: string): string {
-  return `t3:${threadId}`;
+  return `${T3_CONVERSATION_PREFIX}${threadId}`;
 }
 
 /**
  * Issues a claim code for the owner's current tab (or its group, by the rule `startAgent` uses) for a thread the panel
- * launches over its own connection to T3. `fullAccess` says the thread runs with full access in T3 Code, which counts as
- * yes for the permission prompts of the session that redeems the code.
+ * launches over its own connection to T3. Whether the thread has Full access is asked of T3 when a request needs it.
  */
-async function issueT3Claim(tabId: number | undefined, fullAccess: boolean): Promise<T3ClaimResult> {
+async function issueT3Claim(tabId: number | undefined): Promise<T3ClaimResult> {
   const tabs = await shareTargets(tabId);
   const claimTabs: ClaimTab[] = tabs.map((tab) => {
     const origin = originOf(tab.url);
     return origin === undefined ? { tabId: tab.id } : { tabId: tab.id, origin };
   });
   const code = newClaimCode();
-  await claimStore.issue(code, claimTabs, { route: 'message', fullAccess });
+  await claimStore.issue(code, claimTabs, { route: 'message' });
   return { code, note: claimNote(code), tabs };
+}
+
+/** Withdraws a code, and takes back any tab an agent got through it if no thread was ever bound to it. */
+async function revokeClaim(code: string): Promise<void> {
+  for (const { sessionId, tabId } of await claimStore.revoke(code)) await sessionStore.dropShare([sessionId], tabId);
 }
 
 /** Each turn of a direct run is a new process and session, so it gets a new code for the tabs still shared. */
@@ -268,7 +275,7 @@ async function sendToAgent(id: string, message: string): Promise<{ conversation:
   try {
     return await askDaemon('agents.send', { id, message, ...(renewed ? { claim } : {}) });
   } catch (error) {
-    if (renewed) await claimStore.revoke(claim);
+    if (renewed) await revokeClaim(claim);
     throw error;
   }
 }
@@ -338,7 +345,19 @@ function parsePanelRequest(value: unknown): PanelRequest {
   }
   if (candidate.type === 'panel.conversationTabs' && typeof candidate.id === 'string') return { type: 'panel.conversationTabs', id: candidate.id };
   if (candidate.type === 'panel.t3SignIn' || candidate.type === 'panel.t3SignOut') return { type: candidate.type };
-  if (candidate.type === 'panel.helper' || candidate.type === 'panel.t3Pair' || candidate.type === 'panel.t3Unpair') {
+  if (candidate.type === 'panel.t3Pair' && typeof candidate.origin === 'string' && typeof candidate.dpop === 'string') {
+    return { type: 'panel.t3Pair', origin: candidate.origin, dpop: candidate.dpop };
+  }
+  if (
+    candidate.type === 'panel.t3Session' &&
+    (candidate.kind === 'renew' || candidate.kind === 'ticket') &&
+    typeof candidate.origin === 'string' &&
+    typeof candidate.accessToken === 'string' &&
+    typeof candidate.dpop === 'string'
+  ) {
+    return { type: 'panel.t3Session', kind: candidate.kind, origin: candidate.origin, accessToken: candidate.accessToken, dpop: candidate.dpop };
+  }
+  if (candidate.type === 'panel.helper' || candidate.type === 'panel.t3Unpair') {
     return { type: candidate.type };
   }
   if (candidate.type === 'panel.setup') return { type: 'panel.setup', refresh: candidate.refresh === true };
@@ -348,18 +367,13 @@ function parsePanelRequest(value: unknown): PanelRequest {
   if ((candidate.type === 'panel.agentGet' || candidate.type === 'panel.agentStop') && typeof candidate.id === 'string') {
     return { type: candidate.type, id: candidate.id };
   }
-  if (candidate.type === 'panel.t3Claim' && typeof candidate.fullAccess === 'boolean') {
-    return Number.isInteger(candidate.tabId)
-      ? { type: 'panel.t3Claim', tabId: candidate.tabId as number, fullAccess: candidate.fullAccess }
-      : { type: 'panel.t3Claim', fullAccess: candidate.fullAccess };
+  if (candidate.type === 'panel.t3Claim') {
+    return Number.isInteger(candidate.tabId) ? { type: 'panel.t3Claim', tabId: candidate.tabId as number } : { type: 'panel.t3Claim' };
   }
   if (candidate.type === 'panel.t3ClaimBind' && typeof candidate.code === 'string' && typeof candidate.threadId === 'string' && candidate.threadId !== '') {
     return { type: 'panel.t3ClaimBind', code: candidate.code, threadId: candidate.threadId };
   }
   if (candidate.type === 'panel.t3ClaimRevoke' && typeof candidate.code === 'string') return { type: 'panel.t3ClaimRevoke', code: candidate.code };
-  if (candidate.type === 'panel.t3SetFullAccess' && typeof candidate.threadId === 'string' && candidate.threadId !== '' && typeof candidate.fullAccess === 'boolean') {
-    return { type: 'panel.t3SetFullAccess', threadId: candidate.threadId, fullAccess: candidate.fullAccess };
-  }
   if (candidate.type === 'panel.agentSend' && typeof candidate.id === 'string' && typeof candidate.message === 'string') {
     return { type: 'panel.agentSend', id: candidate.id, message: candidate.message };
   }

@@ -340,12 +340,29 @@ export interface SetupStatus {
   };
 }
 
-/** A one-time pairing credential for T3 Code. It reaches only the panel, which uses it once and drops it. */
+/** The panel's new T3 session. The pairing credential behind it stays in the background program. */
 export interface T3Pairing {
   origin: string;
-  credential: string;
-  /** ISO time T3 ends the pairing credential. */
-  expiresAt: string;
+  accessToken: string;
+  /** Seconds until T3 ends this access token. */
+  expiresIn: number;
+}
+
+/** What T3 answered to a session request the background program sent on a connection it checked. */
+export type T3SessionReply =
+  | { outcome: 'token'; accessToken: string; expiresIn: number }
+  | { outcome: 'ticket'; ticket: string }
+  /** T3 answered with this HTTP error. */
+  | { outcome: 'refused'; status: number }
+  /** T3 now runs at another address, so nothing was sent. */
+  | { outcome: 'moved' };
+
+export interface T3SessionParams {
+  kind: 'renew' | 'ticket';
+  origin: string;
+  accessToken: string;
+  /** A DPoP proof the panel signed for this request's method and address. */
+  dpop: string;
 }
 
 /** The label T3-Tab's panel gives T3 for its pairing and for the session it opens, so a sign-out finds exactly those. */
@@ -434,8 +451,12 @@ export interface DaemonMethods {
   'setup.status': { params: { refresh?: boolean }; result: SetupStatus };
   /** Registers T3-Tab's MCP server in one agent's user config, as `t3-tab install --claude|--codex` does. */
   'setup.addAgent': { params: { agent: SetupAgent }; result: SetupStatus };
-  /** Asks T3 Code for a five-minute pairing credential, for the panel's own connection to T3. */
-  't3.pair': { params: Record<string, never>; result: T3Pairing };
+  /** Mints a pairing credential and exchanges it with the panel's proof on a connection checked to be T3's. */
+  't3.pair': { params: { origin: string; dpop: string }; result: T3Pairing };
+  /** Renews the panel's session or gets its WebSocket ticket, on a connection checked to be T3's. */
+  't3.session': { params: T3SessionParams; result: T3SessionReply };
+  /** The thread's runtime mode, as T3 reports it now. */
+  't3.threadMode': { params: { threadId: string }; result: { runtimeMode: string } };
   /** Ends every T3 session the panel opened (those labelled `T3_PANEL_CLIENT_LABEL`). */
   't3.unpair': { params: Record<string, never>; result: { revoked: number } };
   /** One conversation, with its thread view. */

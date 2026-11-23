@@ -226,6 +226,7 @@ function Appearance({ state }: { state: T3State }): ReactNode {
                 <span className="theme-card-name">{theme.label}</span>
               </button>
               <span className="theme-card-tools">
+                {active ? <Check size={15} className="theme-card-check" aria-hidden="true" /> : null}
                 <IconButton label={`Duplicate ${theme.label}`} onClick={() => setSheet({ kind: 'create', from: theme })}>
                   <Copy size={14} />
                 </IconButton>

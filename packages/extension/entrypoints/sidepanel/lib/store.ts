@@ -69,17 +69,28 @@ async function refreshPanelState(): Promise<void> {
 
 export const refreshPanel = refreshPanelState;
 
+let latestSetup = 0;
+let setupsRunning = 0;
+
+/** A timed poll waits its turn; an explicit refresh supersedes it, and only the latest reply is applied. */
 export async function refreshSetup(refresh = false): Promise<void> {
+  if (!refresh && setupsRunning > 0) return;
+  latestSetup += 1;
+  const request = latestSetup;
+  setupsRunning += 1;
   try {
     const helper = await panel<HelperState>({ type: 'panel.helper' });
+    if (request !== latestSetup) return;
     if (!helper.connected) {
       merge({ helper, loaded: true });
       return;
     }
     const setup = await panel<SetupState>({ type: 'panel.setup', refresh });
-    merge({ helper, setup, loaded: true });
+    if (request === latestSetup) merge({ helper, setup, loaded: true });
   } catch (error) {
-    merge({ helper: { connected: false, error: error instanceof Error ? error.message : String(error) }, loaded: true });
+    if (request === latestSetup) merge({ helper: { connected: false, error: error instanceof Error ? error.message : String(error) }, loaded: true });
+  } finally {
+    setupsRunning -= 1;
   }
 }
 

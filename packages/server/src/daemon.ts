@@ -256,8 +256,8 @@ function handleBrowserMessage(
 
 /**
  * A side-panel request the extension passed on: start, continue, stop, read or list the panel's agent conversations,
- * set up an agent, sign in to T3 for its lists, or pair the panel with T3. Only a pairing reply carries a T3 credential,
- * and that one is T3's own one-time pairing token for the panel; T3Access errors name what failed, not what was sent.
+ * set up an agent, sign in to T3 for its lists, run the panel's T3 session requests, or report a thread's mode. Pairing
+ * and session replies carry the panel's own T3 token and nothing else; errors name what failed, not what was sent.
  */
 async function answerDaemonRequest(
   webSocket: WebSocket,
@@ -279,7 +279,9 @@ async function answerDaemonRequest(
     else if (message.method === 'agents.stop') result = { conversation: await agents.stop(params.id) };
     else if (message.method === 'setup.status') result = await setup.status(params.refresh === true);
     else if (message.method === 'setup.addAgent') result = await setup.addAgent(params.agent);
-    else if (message.method === 't3.pair') result = await pairing.pair();
+    else if (message.method === 't3.pair') result = await pairing.pair(params);
+    else if (message.method === 't3.session') result = await pairing.session(params);
+    else if (message.method === 't3.threadMode') result = await pairing.threadMode(params.threadId);
     else if (message.method === 't3.unpair') result = await pairing.unpair();
     else throw new Error(`Unknown method: ${String((message as { method?: unknown }).method)}`);
     reply = { type: 'daemon.reply', protocolVersion: PROTOCOL_VERSION, requestId: message.requestId, ok: true, result };
