@@ -39,6 +39,13 @@ interface StoredGrant {
   createdAt: number;
   /** A `launch` grant is a direct run's, whose later turns get new codes. A T3 thread's session keeps its tabs. */
   route: ClaimRoute;
+  /** The code the grant was first issued with, so the panel can bind a thread to it after the code was redeemed. */
+  code?: string;
+  /**
+   * True while the thread this grant belongs to runs with full access in T3 Code, which counts as yes for its
+   * sessions' permission prompts. The panel sets it from T3's own state and clears it when T3 says that changed.
+   */
+  fullAccess: boolean;
 }
 
 interface ClaimState {
@@ -93,12 +100,12 @@ function entries(value: unknown): Array<[string, Record<string, unknown>]> {
  */
 export class ClaimStore {
   /** Issues a code and returns the id of the new grant it belongs to. */
-  async issue(code: string, tabs: ClaimTab[], options: { route?: ClaimRoute } = {}): Promise<string> {
+  async issue(code: string, tabs: ClaimTab[], options: { route?: ClaimRoute; fullAccess?: boolean } = {}): Promise<string> {
     const route = options.route ?? 'message';
     const grant = crypto.randomUUID();
     await this.mutate((state) => {
       const now = Date.now();
-      state.grants[grant] = { tabs, sessionIds: [], createdAt: now, route };
+      state.grants[grant] = { tabs, sessionIds: [], createdAt: now, route, code, fullAccess: options.fullAccess === true };
       const ttl = route === 'launch' ? LAUNCH_CLAIM_TTL_MS : MESSAGE_CLAIM_TTL_MS;
       state.claims[code] = { tabs, createdAt: now, expiresAt: now + ttl, route, grant };
       newest(state.claims);
@@ -113,6 +120,36 @@ export class ClaimStore {
       const record = state.grants[grant];
       if (record !== undefined) record.conversationId = conversationId;
     });
+  }
+
+  /** Binds the grant a code was issued for to a conversation, also after the code was redeemed. False when no grant has the code. */
+  async bindByCode(code: string, conversationId: string): Promise<boolean> {
+    return await this.mutate((state) => {
+      const record = Object.values(state.grants).find((grant) => grant.code === code);
+      if (record === undefined) return false;
+      record.conversationId = conversationId;
+      return true;
+    });
+  }
+
+  /** Sets whether the sessions of a conversation's grants have full access. Returns how many grants it changed. */
+  async setFullAccess(conversationId: string, fullAccess: boolean): Promise<number> {
+    return await this.mutate((state) => {
+      let changed = 0;
+      for (const grant of Object.values(state.grants)) {
+        if (grant.conversationId !== conversationId) continue;
+        grant.fullAccess = fullAccess;
+        changed += 1;
+      }
+      return changed;
+    });
+  }
+
+  /** True when a session redeemed a code of a grant that is marked full access. */
+  async isFullAccess(sessionId: string): Promise<boolean> {
+    await mutation;
+    const { grants } = await this.read();
+    return Object.values(grants).some((grant) => grant.fullAccess && grant.sessionIds.includes(sessionId));
   }
 
   /**
@@ -265,6 +302,8 @@ export class ClaimStore {
         sessionIds: sessionIds.filter((value): value is string => typeof value === 'string'),
         createdAt,
         route: route === 'message' ? 'message' : 'launch',
+        fullAccess: candidate.fullAccess === true,
+        ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
         ...(typeof conversationId === 'string' ? { conversationId } : {}),
       };
     }

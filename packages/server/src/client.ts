@@ -8,8 +8,10 @@ import {
   PROTOCOL_VERSION,
   type BrowserStatus,
   type ClaimFileProblem,
+  type ControlEvent,
   type ControlRequest,
   type ControlResponse,
+  type ElicitedDecision,
   type ToolContent,
   type ToolMethod,
   type ToolSession,
@@ -75,6 +77,7 @@ export class DaemonSession {
   private terminal = false;
   private readonly pending = new Map<string, PendingControl>();
   private clientName = 'MCP client';
+  private eventListener: ((event: ControlEvent) => void) | undefined;
 
   /**
    * `claim` is the side-panel code a direct run's MCP server read from its private file; `claimFileProblem` says
@@ -85,6 +88,21 @@ export class DaemonSession {
     private readonly claim?: string,
     private readonly claimFileProblem?: { file: string; problem: ClaimFileProblem },
   ) {}
+
+  /** Called with what the daemon tells this session unasked: its permission prompts opening and closing. */
+  onEvent(listener: (event: ControlEvent) => void): void {
+    this.eventListener = listener;
+  }
+
+  /** Answers one of this session's own permission prompts from its thread. The daemon refuses another session's. */
+  async answerPrompt(promptId: string, decision: ElicitedDecision): Promise<void> {
+    await this.register();
+    const response = await this.request(
+      { type: 'control.request', protocolVersion: PROTOCOL_VERSION, requestId: randomUUID(), method: 'prompt.answer', promptId, decision },
+      CONTROL_TIMEOUT_MS,
+    );
+    if (!response.ok) throw new Error(response.error);
+  }
 
   setClientName(name: string | undefined): void {
     if (name !== undefined && name !== '') this.clientName = name;
@@ -187,6 +205,11 @@ export class DaemonSession {
       response = JSON.parse(data.toString()) as ControlResponse;
     } catch {
       this.failAll(new Error('T3-Tab daemon returned invalid JSON'));
+      return;
+    }
+    const event = response as unknown as ControlEvent;
+    if (event.type === 'control.event' && event.protocolVersion === PROTOCOL_VERSION) {
+      if (event.event === 'prompt.opened' || event.event === 'prompt.closed') this.eventListener?.(event);
       return;
     }
     if (response.type !== 'control.response' || typeof response.requestId !== 'string') return;

@@ -38,6 +38,15 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
       return {
         shared: await claimTabs(claimStore, sessionStore, session.id, request.params.code, request.params.route),
       } satisfies BrowserMethods['session.claim']['result'];
+    case 'prompt.decide': {
+      // An agent can answer only a prompt of its own session, and only once or by declining: never a lasting setting.
+      const { promptId, decision } = request.params;
+      if (decision !== 'allow-once' && decision !== 'decline') throw new Error('Invalid answer');
+      const prompt = permissionPrompts.list().find((waiting) => waiting.id === promptId);
+      if (prompt === undefined || prompt.session.id !== session.id) throw new Error('No such permission request for this session');
+      await permissionPrompts.decide(promptId, decision);
+      return { decided: true } satisfies BrowserMethods['prompt.decide']['result'];
+    }
     case 'tabs.list':
       return { tabs: await listTabs(session, siteSetting) } satisfies BrowserMethods['tabs.list']['result'];
     case 'tabs.open':

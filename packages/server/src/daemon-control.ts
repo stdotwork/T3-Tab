@@ -19,6 +19,7 @@ import {
   sendControlError,
   validSession,
 } from './daemon-messages.js';
+import { answerPrompt, type TrackedPrompt } from './daemon-prompts.js';
 import { runTool } from './tools.js';
 
 const TOOL_METHODS: ReadonlySet<string> = new Set<ToolMethod>(['tabs', 'read', 'screenshot', 'act', 'run_js']);
@@ -31,6 +32,8 @@ export interface ControlState {
   claims: Map<WebSocket, string>;
   /** The redemption running for a connection, so simultaneous first tool calls share it. */
   redeeming: Map<WebSocket, Promise<void>>;
+  /** Permission prompts told to a session, by prompt id, so only that session can answer them. */
+  prompts: Map<string, TrackedPrompt>;
 }
 
 export function handleControlMessage(
@@ -94,6 +97,10 @@ export function handleControlMessage(
       result: { browsers: [...browsers.values()].map((connection) => connection.status) },
     };
     webSocket.send(JSON.stringify(response));
+    return;
+  }
+  if (request.method === 'prompt.answer') {
+    void answerPrompt(webSocket, browsers, control, request);
     return;
   }
   if (!TOOL_METHODS.has(request.method)) {

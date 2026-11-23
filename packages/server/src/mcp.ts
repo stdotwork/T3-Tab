@@ -4,6 +4,7 @@ import type { BrowserStatus, ToolContent, ToolMethod } from '@t3-tab/protocol';
 
 import { claimFileNotice, takeClaimFile } from './agents/claim-file.js';
 import { DaemonSession, getStatus } from './client.js';
+import { ThreadPrompts } from './prompt-elicitation.js';
 import { actShape, readShape, runJsShape, screenshotShape, tabsShape } from './tool-schemas.js';
 
 /**
@@ -95,6 +96,9 @@ export async function runMcpServer(options: { claimFile?: string } = {}): Promis
       browserTool('run_js'),
     ),
   );
+  // A permission prompt for this session is also put to the agent's own thread (see `prompt-elicitation.ts`).
+  const threadPrompts = new ThreadPrompts(server.server, async (promptId, decision) => await control.answerPrompt(promptId, decision));
+  control.onEvent((event) => threadPrompts.handle(event));
   server.server.oninitialized = () => {
     control.setClientName(server.server.getClientVersion()?.name);
     void control.register().catch(() => undefined);

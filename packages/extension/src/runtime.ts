@@ -1,4 +1,7 @@
+import { PROTOCOL_VERSION } from '@t3-tab/protocol';
+
 import { ClaimStore } from './claims';
+import { sendPromptNotice } from './daemon-link';
 import { ChromeSitePermissionStore, PermissionPrompts, type PermissionPrompt } from './permissions';
 import { SessionStore } from './sessions';
 
@@ -15,6 +18,11 @@ export const permissionPrompts = new PermissionPrompts(siteStore, {
     return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_PERMISSION_TIMEOUT_MS;
   },
   onChange: (pending) => void updatePermissionBadge(pending).catch(() => undefined),
+  // The agent's own thread can show the prompt too; the background program tells the session that asked.
+  onOpen: ({ id, origin, tool, session, tab }) =>
+    sendPromptNotice({ type: 'browser.promptOpened', protocolVersion: PROTOCOL_VERSION, session, prompt: { id, origin, tool, tab } }),
+  onClose: (promptId) => sendPromptNotice({ type: 'browser.promptClosed', protocolVersion: PROTOCOL_VERSION, promptId }),
+  fullAccess: async (sessionId) => await claimStore.isFullAccess(sessionId),
 });
 
 async function updatePermissionBadge(pending: PermissionPrompt[]): Promise<void> {

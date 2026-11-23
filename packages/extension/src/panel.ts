@@ -1,9 +1,19 @@
-import type { AgentConversation, AgentsStatus, AgentVia, T3Access } from '@t3-tab/protocol';
+import {
+  claimNote,
+  type AgentConversation,
+  type AgentsStatus,
+  type AgentVia,
+  type SetupAgent,
+  type SetupStatus,
+  type T3Access,
+  type T3Pairing,
+} from '@t3-tab/protocol';
 
 import { newClaimCode, removeConversationTab, type ClaimTab } from './claims';
-import { askDaemon } from './daemon-link';
+import { askDaemon, daemonLinkState, type HelperState } from './daemon-link';
 import {
   isOriginKey,
+  type AutoAllowed,
   originOf,
   type PermissionDecision,
   type PermissionPrompt,
@@ -24,6 +34,8 @@ export interface PanelState {
   currentTab: PanelTab | undefined;
   pending: PermissionPrompt[];
   sites: StoredSitePermission[];
+  /** The last requests let through without a prompt because the thread has full access in T3 Code. */
+  autoAllowed: AutoAllowed[];
 }
 
 /**
@@ -51,6 +63,17 @@ export interface AgentStartRequest {
 
 export type PanelRequest =
   | { type: 'panel.state'; tabId?: number }
+  | { type: 'panel.helper' }
+  | { type: 'panel.setup'; refresh?: boolean }
+  | { type: 'panel.addAgent'; agent: SetupAgent }
+  | { type: 'panel.t3Pair' }
+  | { type: 'panel.t3Unpair' }
+  | { type: 'panel.agentGet'; id: string }
+  | { type: 'panel.agentStop'; id: string }
+  | { type: 'panel.t3Claim'; tabId?: number; fullAccess: boolean }
+  | { type: 'panel.t3ClaimBind'; code: string; threadId: string }
+  | { type: 'panel.t3ClaimRevoke'; code: string }
+  | { type: 'panel.t3SetFullAccess'; threadId: string; fullAccess: boolean }
   | { type: 'panel.agents'; refresh?: boolean; tabId?: number }
   | AgentStartRequest
   | { type: 'panel.agentSend'; id: string; message: string }
@@ -65,9 +88,40 @@ export type PanelRequest =
 /** The extension API the side panel uses; the end-to-end harness calls the same messages. */
 export async function handlePanelRequest(
   value: unknown,
-): Promise<PanelState | AgentPanelState | { conversation: AgentConversation } | T3Access | { ok: true }> {
+): Promise<
+  | PanelState
+  | AgentPanelState
+  | { conversation: AgentConversation }
+  | T3Access
+  | HelperState
+  | SetupStatus
+  | T3Pairing
+  | T3ClaimResult
+  | { revoked: number }
+  | { ok: true }
+> {
   const request = parsePanelRequest(value);
   if (request.type === 'panel.state') return await panelState(request.tabId);
+  if (request.type === 'panel.helper') return await daemonLinkState();
+  if (request.type === 'panel.setup') return await askDaemon('setup.status', request.refresh === true ? { refresh: true } : {});
+  if (request.type === 'panel.addAgent') return await askDaemon('setup.addAgent', { agent: request.agent });
+  if (request.type === 'panel.t3Pair') return await askDaemon('t3.pair', {});
+  if (request.type === 'panel.t3Unpair') return await askDaemon('t3.unpair', {});
+  if (request.type === 'panel.agentGet') return await askDaemon('agents.get', { id: request.id });
+  if (request.type === 'panel.agentStop') return await askDaemon('agents.stop', { id: request.id });
+  if (request.type === 'panel.t3Claim') return await issueT3Claim(request.tabId, request.fullAccess);
+  if (request.type === 'panel.t3ClaimBind') {
+    if (!(await claimStore.bindByCode(request.code, t3ConversationKey(request.threadId)))) throw new Error('Unknown claim code');
+    return { ok: true };
+  }
+  if (request.type === 'panel.t3ClaimRevoke') {
+    await claimStore.revoke(request.code);
+    return { ok: true };
+  }
+  if (request.type === 'panel.t3SetFullAccess') {
+    await claimStore.setFullAccess(t3ConversationKey(request.threadId), request.fullAccess);
+    return { ok: true };
+  }
   if (request.type === 'panel.agents') return await agentPanelState(request.refresh === true, request.tabId);
   if (request.type === 'panel.agentStart') return await startAgent(request);
   if (request.type === 'panel.agentSend') return await sendToAgent(request.id, request.message);
@@ -111,7 +165,7 @@ async function panelState(tabId: number | undefined): Promise<PanelState> {
       visibleSites = [...sites, currentSite].sort((left, right) => left.origin.localeCompare(right.origin));
     }
   }
-  return { sessions, pending, sites: visibleSites, currentTab };
+  return { sessions, pending, sites: visibleSites, currentTab, autoAllowed: permissionPrompts.autoAllowed() };
 }
 
 async function agentPanelState(refresh: boolean, tabId: number | undefined): Promise<AgentPanelState> {
@@ -167,6 +221,35 @@ async function startAgent(request: AgentStartRequest): Promise<{ conversation: A
     await claimStore.revoke(claim);
     throw error;
   }
+}
+
+/** What the panel needs to start a T3 thread that shares the owner's tabs. */
+export interface T3ClaimResult {
+  code: string;
+  /** The line to add to the thread's first message: the agent reads the code from it and claims the tabs. */
+  note: string;
+  tabs: PanelTab[];
+}
+
+/** The key a claim's grant uses for a T3 thread the panel started itself. */
+function t3ConversationKey(threadId: string): string {
+  return `t3:${threadId}`;
+}
+
+/**
+ * Issues a claim code for the owner's current tab (or its group, by the rule `startAgent` uses) for a thread the panel
+ * launches over its own connection to T3. `fullAccess` says the thread runs with full access in T3 Code, which counts as
+ * yes for the permission prompts of the session that redeems the code.
+ */
+async function issueT3Claim(tabId: number | undefined, fullAccess: boolean): Promise<T3ClaimResult> {
+  const tabs = await shareTargets(tabId);
+  const claimTabs: ClaimTab[] = tabs.map((tab) => {
+    const origin = originOf(tab.url);
+    return origin === undefined ? { tabId: tab.id } : { tabId: tab.id, origin };
+  });
+  const code = newClaimCode();
+  await claimStore.issue(code, claimTabs, { route: 'message', fullAccess });
+  return { code, note: claimNote(code), tabs };
 }
 
 /** Each turn of a direct run is a new process and session, so it gets a new code for the tabs still shared. */
@@ -244,6 +327,28 @@ function parsePanelRequest(value: unknown): PanelRequest {
     return request;
   }
   if (candidate.type === 'panel.t3SignIn' || candidate.type === 'panel.t3SignOut') return { type: candidate.type };
+  if (candidate.type === 'panel.helper' || candidate.type === 'panel.t3Pair' || candidate.type === 'panel.t3Unpair') {
+    return { type: candidate.type };
+  }
+  if (candidate.type === 'panel.setup') return { type: 'panel.setup', refresh: candidate.refresh === true };
+  if (candidate.type === 'panel.addAgent' && (candidate.agent === 'claude' || candidate.agent === 'codex')) {
+    return { type: 'panel.addAgent', agent: candidate.agent };
+  }
+  if ((candidate.type === 'panel.agentGet' || candidate.type === 'panel.agentStop') && typeof candidate.id === 'string') {
+    return { type: candidate.type, id: candidate.id };
+  }
+  if (candidate.type === 'panel.t3Claim' && typeof candidate.fullAccess === 'boolean') {
+    return Number.isInteger(candidate.tabId)
+      ? { type: 'panel.t3Claim', tabId: candidate.tabId as number, fullAccess: candidate.fullAccess }
+      : { type: 'panel.t3Claim', fullAccess: candidate.fullAccess };
+  }
+  if (candidate.type === 'panel.t3ClaimBind' && typeof candidate.code === 'string' && typeof candidate.threadId === 'string' && candidate.threadId !== '') {
+    return { type: 'panel.t3ClaimBind', code: candidate.code, threadId: candidate.threadId };
+  }
+  if (candidate.type === 'panel.t3ClaimRevoke' && typeof candidate.code === 'string') return { type: 'panel.t3ClaimRevoke', code: candidate.code };
+  if (candidate.type === 'panel.t3SetFullAccess' && typeof candidate.threadId === 'string' && candidate.threadId !== '' && typeof candidate.fullAccess === 'boolean') {
+    return { type: 'panel.t3SetFullAccess', threadId: candidate.threadId, fullAccess: candidate.fullAccess };
+  }
   if (candidate.type === 'panel.agentSend' && typeof candidate.id === 'string' && typeof candidate.message === 'string') {
     return { type: 'panel.agentSend', id: candidate.id, message: candidate.message };
   }

@@ -2,6 +2,8 @@ import {
   PROTOCOL_MISMATCH,
   PROTOCOL_VERSION,
   type BrowserDaemonRequestMessage,
+  type BrowserPromptClosedMessage,
+  type BrowserPromptOpenedMessage,
   type DaemonMethod,
   type DaemonMethods,
   type DaemonReplyMessage,
@@ -22,10 +24,17 @@ let connect: (() => void) | undefined;
 /** Set when the background program closed the link because it speaks another protocol version. */
 let versionProblem = false;
 const pending = new Map<string, Pending>();
+/** Why the last attempt to reach the background program failed, for the panel's "install the helper" step. */
+let lastProblem: string | undefined;
+
+const NOT_CONNECTED = 'T3-Tab is not connected to its background program. Run `t3-tab install`, then reopen the browser.';
 
 /** The service worker's current link to the background program, set when it opens and cleared when it closes. */
 export function setDaemonSocket(current: WebSocket | undefined): void {
-  if (current !== undefined) versionProblem = false;
+  if (current !== undefined) {
+    versionProblem = false;
+    lastProblem = undefined;
+  }
   if (socket !== undefined && socket !== current) {
     failAll(new Error(versionProblem ? PROTOCOL_MISMATCH : 'The connection to the T3-Tab background program closed'));
   }
@@ -38,6 +47,40 @@ export function setDaemonSocket(current: WebSocket | undefined): void {
  */
 export function noteDaemonClose(code: number, reason: string): void {
   versionProblem = code === 1008 && (reason === 'Invalid protocol message' || reason === PROTOCOL_MISMATCH);
+}
+
+/** Records why the worker could not reach the background program, such as a native host that is not installed. */
+export function noteDaemonProblem(error: unknown): void {
+  lastProblem = error instanceof Error ? error.message : String(error);
+}
+
+/** Tells the background program a permission prompt opened or closed. Nothing is sent when the link is down. */
+export function sendPromptNotice(message: BrowserPromptOpenedMessage | BrowserPromptClosedMessage): void {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+}
+
+export interface HelperState {
+  connected: boolean;
+  error?: string;
+  protocolMismatch?: boolean;
+}
+
+/**
+ * Whether the worker has a link to the background program, and if not, why. Answers when nothing is reachable: it
+ * tries to connect, waits a moment, and reports what it found.
+ */
+export async function daemonLinkState(waitMs = 1_500): Promise<HelperState> {
+  const deadline = Date.now() + waitMs;
+  if (socket?.readyState !== WebSocket.OPEN) connect?.();
+  while (socket?.readyState !== WebSocket.OPEN && !versionProblem && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (socket?.readyState === WebSocket.OPEN) return { connected: true };
+  if (versionProblem) return { connected: false, error: PROTOCOL_MISMATCH, protocolMismatch: true };
+  if (lastProblem === PROTOCOL_MISMATCH || lastProblem === 'Native host protocol mismatch') {
+    return { connected: false, error: PROTOCOL_MISMATCH, protocolMismatch: true };
+  }
+  return { connected: false, error: lastProblem ?? NOT_CONNECTED };
 }
 
 /** Called when a request finds no open link, so the worker tries to connect again. */
@@ -83,7 +126,7 @@ async function openSocket(): Promise<WebSocket> {
   while (socket?.readyState !== WebSocket.OPEN) {
     if (versionProblem) throw new Error(PROTOCOL_MISMATCH);
     if (Date.now() >= deadline) {
-      throw new Error('T3-Tab is not connected to its background program. Run `t3-tab install`, then reopen the browser.');
+      throw new Error(NOT_CONNECTED);
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }

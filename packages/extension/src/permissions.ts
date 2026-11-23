@@ -39,13 +39,32 @@ interface Pending extends PermissionPrompt {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** A request let through without a prompt because the session's thread has full access in T3 Code. */
+export interface AutoAllowed {
+  tool: PromptKind;
+  origin: string;
+  tabId: number;
+  tabTitle: string;
+  /** Milliseconds since the epoch. */
+  at: number;
+}
+
 export interface PermissionPromptsOptions {
   timeoutMs?: number | (() => number | Promise<number>);
   onChange?: (pending: PermissionPrompt[]) => void;
+  /** Called once when a prompt starts waiting, and once when it ends, however it ends. */
+  onOpen?: (prompt: PermissionPrompt) => void;
+  onClose?: (promptId: string) => void;
+  /**
+   * Whether a session's thread has full access in T3 Code, which counts as yes for a request the site's setting does
+   * not cover. It never changes a site's setting and every other check still runs.
+   */
+  fullAccess?: (sessionId: string) => Promise<boolean>;
   makeId?: () => string;
 }
 
 const MAX_PENDING_PER_SESSION = 3;
+const MAX_AUTO_ALLOWED = 20;
 
 /** Whether a site's setting lets a tool call through without a prompt. A read grant never covers more than reading. */
 function settingCovers(setting: SitePermission | undefined, tool: PromptKind): boolean {
@@ -62,6 +81,8 @@ export class PermissionPrompts {
   private readonly timeoutMs: number | (() => number | Promise<number>);
   private readonly onChange: (pending: PermissionPrompt[]) => void;
   private readonly makeId: () => string;
+  private readonly autoAllowedLog: AutoAllowed[] = [];
+  private readonly options: PermissionPromptsOptions;
 
   constructor(
     private readonly store: SitePermissionStore,
@@ -70,11 +91,22 @@ export class PermissionPrompts {
     this.timeoutMs = options.timeoutMs ?? 60_000;
     this.onChange = options.onChange ?? (() => undefined);
     this.makeId = options.makeId ?? (() => crypto.randomUUID());
+    this.options = options;
+  }
+
+  /** The last requests a full-access thread had allowed without a prompt, oldest first. Kept in memory only. */
+  autoAllowed(): AutoAllowed[] {
+    return [...this.autoAllowedLog];
   }
 
   async authorize(origin: string, tool: PromptKind, session: ToolSession, tab: PromptTab): Promise<void> {
     const setting = await this.store.get(origin);
     if (settingCovers(setting, tool)) return;
+    if ((await this.options.fullAccess?.(session.id)) === true) {
+      this.autoAllowedLog.push({ tool, origin, tabId: tab.id, tabTitle: tab.title, at: Date.now() });
+      if (this.autoAllowedLog.length > MAX_AUTO_ALLOWED) this.autoAllowedLog.splice(0, this.autoAllowedLog.length - MAX_AUTO_ALLOWED);
+      return;
+    }
     if (this.pendingFor(session.id).length >= MAX_PENDING_PER_SESSION) {
       throw new Error(`Too many permission requests for this session (maximum ${MAX_PENDING_PER_SESSION}). Decide one first.`);
     }
@@ -90,6 +122,7 @@ export class PermissionPrompts {
       }, timeoutMs);
       this.pending.set(id, { id, origin, tool, session, tab, resolve, reject, timer });
       this.emit();
+      this.notify(() => this.options.onOpen?.({ id, origin, tool, session, tab }));
     });
   }
 
@@ -144,11 +177,21 @@ export class PermissionPrompts {
     clearTimeout(prompt.timer);
     this.pending.delete(id);
     this.emit();
+    this.notify(() => this.options.onClose?.(id));
     return prompt;
   }
 
   private pendingFor(sessionId: string): Pending[] {
     return [...this.pending.values()].filter((prompt) => prompt.session.id === sessionId);
+  }
+
+  /** A hook that fails must not fail the prompt it reports on. */
+  private notify(hook: () => void): void {
+    try {
+      hook();
+    } catch {
+      // The prompt still works in the side panel.
+    }
   }
 
   private emit(): void {

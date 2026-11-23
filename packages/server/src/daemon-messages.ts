@@ -29,6 +29,8 @@ export function isBrowserMessage(value: unknown): value is BrowserMessage {
       candidate.type === 'browser.pong' ||
       candidate.type === 'browser.tabCount' ||
       candidate.type === 'browser.tabClosed' ||
+      candidate.type === 'browser.promptOpened' ||
+      candidate.type === 'browser.promptClosed' ||
       (candidate.type === 'browser.daemonRequest' && typeof candidate.requestId === 'string' && typeof candidate.method === 'string') ||
       (candidate.type === 'browser.response' && typeof candidate.requestId === 'string' && typeof candidate.ok === 'boolean'))
   );
@@ -50,6 +52,8 @@ export function isControlRequest(value: unknown): value is {
   claimFileProblem?: unknown;
   session?: unknown;
   params?: unknown;
+  promptId?: unknown;
+  decision?: unknown;
 } {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;

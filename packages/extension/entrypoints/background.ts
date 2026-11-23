@@ -13,7 +13,7 @@ import {
 import { defineBackground } from 'wxt/utils/define-background';
 
 import { initCdp } from '../src/cdp';
-import { handleDaemonReply, noteDaemonClose, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
+import { handleDaemonReply, noteDaemonClose, noteDaemonProblem, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
 import { handlePanelRequest } from '../src/panel';
 import { isSidePanelSender } from '../src/panel-security';
 import { originOf } from '../src/permissions';
@@ -123,7 +123,8 @@ export default defineBackground(() => {
       current.addEventListener('error', () => {
         if (socket === current) current.close();
       });
-    } catch {
+    } catch (error) {
+      noteDaemonProblem(error);
       scheduleReconnect();
     } finally {
       connecting = false;

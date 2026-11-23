@@ -62,6 +62,50 @@ describe('origin and restricted-page policy', () => {
   });
 });
 
+describe('prompt hooks and full access', () => {
+  it('reports a prompt when it opens and when it ends, and a hook that throws does not fail the prompt', async () => {
+    const events: string[] = [];
+    const prompts = new PermissionPrompts(new MemorySites(), {
+      makeId: () => 'p1',
+      onOpen: ({ id, tool }) => {
+        events.push(`open ${id} ${tool}`);
+        throw new Error('link is down');
+      },
+      onClose: (id) => void events.push(`close ${id}`),
+    });
+    const waiting = prompts.authorize('https://example.com', 'read', session, tab);
+    await until(() => prompts.list().length === 1);
+    await prompts.decide('p1', 'decline');
+    await expect(waiting).rejects.toThrow('declined');
+    expect(events).toEqual(['open p1 read', 'close p1']);
+  });
+
+  it('asks as usual when the session has no full access, and when the hook says no', async () => {
+    const asked: string[] = [];
+    const prompts = new PermissionPrompts(new MemorySites(), {
+      makeId: () => 'p1',
+      fullAccess: async (id) => (asked.push(id), false),
+    });
+    const waiting = prompts.authorize('https://example.com', 'act', session, tab);
+    await until(() => prompts.list().length === 1);
+    expect(asked).toEqual(['session-a']);
+    expect(prompts.autoAllowed()).toEqual([]);
+    await prompts.decide('p1', 'allow-once');
+    await waiting;
+  });
+
+  it('lets a full-access session through without a prompt or a site setting, and remembers each request', async () => {
+    const store = new MemorySites();
+    const prompts = new PermissionPrompts(store, { fullAccess: async () => true });
+    await prompts.authorize('https://example.com', 'run_js', session, tab);
+    expect(prompts.list()).toEqual([]);
+    expect(store.sites.size).toBe(0);
+    expect(prompts.autoAllowed()).toEqual([
+      { tool: 'run_js', origin: 'https://example.com', tabId: 7, tabTitle: 'Test tab', at: expect.any(Number) as number },
+    ]);
+  });
+});
+
 describe('per-site permission prompts', () => {
   it('defaults a new origin to ask, records it, and allows one call', async () => {
     const store = new MemorySites();
