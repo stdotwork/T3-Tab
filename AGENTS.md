@@ -202,12 +202,13 @@ T3's Full access counts as yes for a browser request only while T3 itself confir
 needs a prompt, the extension asks the daemon, which runs `t3 thread show --json --messages 0 <threadId>` for the thread the
 session's claim is bound to; that works with the side panel closed. If every grant the session holds is bound to a T3 thread
 and each thread reports `full-access`, the request goes through with no card, writes no site setting and is listed in
-`autoAllowed`. A yes counts for two seconds from when its read started, and a request is allowed only at a moment when every
+`autoAllowed`. A yes counts for two seconds on a monotonic clock from when its read started, and a request is allowed only at a moment when every
 thread the session holds has such a yes; a thread that lapsed while another answered is read again. So after any of its
 threads leaves Full access, a session's request can pass for at most two seconds, and a late answer never allows the request
 waiting on it. A request waits at most five seconds for all of them to be live together, then prompts. Requests share one
 read per thread until that read is five seconds old; after that the next request starts a fresh `t3` command, and an
-abandoned read that answers later cannot overwrite a newer answer. A pass from
+abandoned read that answers later cannot overwrite a newer answer. The daemon ends a stuck command after 30 seconds, so a
+hung T3 can hold about seven of them per thread while requests keep arriving. A pass from
 Full access records no origin approval, so reads, screenshots and the title in `tabs` follow the live mode too, and the tab
 shows `[needs approval]` again once the thread leaves it. An Allow once still records its approval for the tab. An unbound
 claim, a direct run's claim, another mode, a stopped T3 or no answer within five seconds all mean a normal prompt. Every

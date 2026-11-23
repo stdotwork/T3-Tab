@@ -128,8 +128,8 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **T3's Full access counts as yes for browser requests, while T3 confirms it.** A Full access thread can already run
   any command as the owner, so asking again adds nothing. The extension asks T3 for the thread's mode with
   `t3 thread show --json --messages 0 <threadId>` when a request needs a prompt, rather than trusting a flag the panel set,
-  so it holds with the panel closed and fails to a normal prompt when T3 cannot answer. A yes counts for two seconds from
-  when its read started, and a request passes only at a moment when all the session's threads have a live yes, so two
+  so it holds with the panel closed and fails to a normal prompt when T3 cannot answer. A yes counts for two seconds, on a monotonic
+  clock, from when its read started, and a request passes only at a moment when all the session's threads have a live yes, so two
   seconds is the longest a request can pass after any of them leaves Full access. A request waits at most five seconds
   for that, then prompts, and a read stuck for five seconds no longer blocks a fresh one. A pass records no
   origin approval, so reads and tab titles follow the live mode as well. Other requests show in both the side panel and the agent's thread, and the first answer
