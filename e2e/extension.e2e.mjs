@@ -47,7 +47,7 @@ try {
   await checkInstallCommand({ cliPath, tempHome, childEnv });
   // After the install check, which uses the real agent CLIs: from here on the daemon finds the fakes first.
   const fakes = await installFakeAgents(home);
-  // A fake T3 environment (OAuth and /mcp) recorded under the temporary T3 home; the real T3 is never reached.
+  // A running-T3 record under the temporary T3 home, with a stub address; the real T3 is never reached.
   fakeT3 = await startFakeT3Environment(home);
   // The install check's `mcp list` started a daemon without the fakes on its PATH; the next client starts another.
   await stopDaemon(statePath);
@@ -153,7 +153,6 @@ try {
     panelPage,
     siteUrl,
     fakes,
-    fakeT3,
     home,
     mcpClient,
     screenshotPath: process.env.T3_TAB_E2E_SCREENSHOT,

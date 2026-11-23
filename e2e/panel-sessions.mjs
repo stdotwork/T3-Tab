@@ -1,12 +1,10 @@
 // Side-panel sessions (slice 8): the panel starts a T3 thread, or a direct Claude Code or Codex run, with the
 // owner's current tab, follows its replies and continues it. `t3`, `claude` and `codex` are fakes from
 // e2e/fakes on the daemon's PATH, inside the temporary HOME; they drive the real `t3-tab mcp` server.
-import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { join, relative, dirname } from 'node:path';
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 
-import { startFakeT3 } from './fakes/t3-server.mjs';
 import { createServer } from 'node:http';
 
 import { assert, closeServer, connectMcp, listen, panelRequest, rootDir, sleep, text } from './harness.mjs';
@@ -43,22 +41,25 @@ export async function installFakeAgents(home) {
 }
 
 /**
- * Starts the fake T3 environment (OAuth and `/mcp`) and records it the way a running T3 server does, in
- * `<T3 home>/userdata/server-runtime.json` under the temporary HOME, with this process as its live pid.
+ * Records a T3 server the way a running one does, in `<T3 home>/userdata/server-runtime.json` under the temporary HOME,
+ * with this process as its live pid and a loopback address that answers nothing. Nothing in the run talks to T3 over
+ * HTTP: `t3` is the fake command, and the record only lets the daemon find a running T3.
  */
 export async function startFakeT3Environment(home) {
-  const fake = await startFakeT3();
+  const server = createServer((_request, response) => response.writeHead(404).end());
+  await listen(server);
+  const port = server.address().port;
+  const origin = `http://127.0.0.1:${port}`;
   const userdata = join(home.tempHome, '.t3', 'userdata');
   await mkdir(userdata, { recursive: true });
-  const port = Number(new URL(fake.origin).port);
   await writeFile(
     join(userdata, 'server-runtime.json'),
-    JSON.stringify({ version: 1, pid: process.pid, port, origin: fake.origin, startedAt: new Date().toISOString() }),
+    JSON.stringify({ version: 1, pid: process.pid, port, origin, startedAt: new Date().toISOString() }),
   );
-  return fake;
+  return { origin, close: async () => await closeServer(server) };
 }
 
-export async function checkPanelSessions({ browserContext, serviceWorker, panelPage, siteUrl, fakes, fakeT3, home, mcpClient, screenshotPath }) {
+export async function checkPanelSessions({ browserContext, serviceWorker, panelPage, siteUrl, fakes, home, mcpClient, screenshotPath }) {
   const ownerPage = await browserContext.newPage();
   await ownerPage.goto(`${siteUrl}/?agent=1`);
   await ownerPage.getByRole('heading', { name: 'T3-Tab E2E' }).waitFor();
@@ -113,8 +114,6 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   const showCall = (await calls(fakes)).find((call) => call.name === 't3' && call.args[1] === 'show' && call.args.includes('20'));
   assert(JSON.stringify(showCall?.args) === JSON.stringify(['thread', 'show', '--json', '--messages', '20', thread.threadId]), `t3 thread show: ${JSON.stringify(showCall?.args)}`);
   console.log('Panel T3 thread: continued with t3 thread send; the same session read the tab again');
-
-  await checkT3SignIn({ browserContext, serviceWorker, fakes, fakeT3, home, tabId });
 
   // A claim code the panel never issued shares nothing.
   const bogus = await mcpClient.callTool({ name: 'tabs', arguments: { claim: 'not-a-real-claim-code-0000' } });
@@ -292,111 +291,6 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
 }
 
 /**
- * The panel's read-only sign-in to T3 Code (the fake one): a broader grant is refused, a forged answer is ignored, a
- * read-only grant is stored in a 0600 file and gives the panel T3's project and model lists, a thread starts with a
- * listed project and model, and sign-out deletes the file. The token never shows up anywhere but that file.
- */
-async function checkT3SignIn({ browserContext, serviceWorker, fakes, fakeT3, home, tabId }) {
-  const credentialFile = join(home.stateDir, 't3-credential.json');
-  const replies = [];
-  const ask = async (request) => {
-    const reply = await panelRequest(serviceWorker, request);
-    replies.push(JSON.stringify(reply));
-    return reply;
-  };
-  let state = await ask({ type: 'panel.agents', refresh: true, tabId });
-  assert(state.t3Access.state === 'signed-out' && state.t3Access.catalog === undefined, `Before sign-in: ${JSON.stringify(state.t3Access)}`);
-  console.log('T3 sign-in: signed out, no lists');
-
-  // First approval grants more than read-only: T3-Tab keeps nothing.
-  let approval = await openSignIn(browserContext, serviceWorker, fakeT3);
-  const redirectUri = new URL(approval.url()).searchParams.get('redirect_uri');
-  assert(/^http:\/\/127\.0\.0\.1:\d+\/callback$/.test(redirectUri ?? ''), `The sign-in returns to ${redirectUri}`);
-  await approval.getByText('T3-Tab wants access').waitFor();
-  const forged = new URL(redirectUri);
-  forged.searchParams.set('code', 'forged');
-  forged.searchParams.set('state', 'forged');
-  const forgedAnswer = await fetch(forged);
-  assert(forgedAnswer.status === 400, `A forged answer got ${forgedAnswer.status}`);
-  state = await ask({ type: 'panel.agents', tabId });
-  assert(state.t3Access.state === 'signing-in', `After a forged answer: ${JSON.stringify(state.t3Access)}`);
-  await approval.getByRole('button', { name: 'Approve: Full access' }).click();
-  await approval.getByText('granted more than read-only access').waitFor();
-  state = await ask({ type: 'panel.agents', tabId });
-  assert(state.t3Access.state === 'signed-out' && state.t3Access.detail.includes('choose Read only'), `After a full-access grant: ${JSON.stringify(state.t3Access)}`);
-  assert(!(await exists(credentialFile)), 'A full-access token was stored');
-  await approval.close();
-  console.log(`T3 sign-in: a forged answer was refused (HTTP 400); a full-access grant was not kept: ${state.t3Access.detail}`);
-
-  // Read only: stored, listed.
-  approval = await openSignIn(browserContext, serviceWorker, fakeT3);
-  await approval.getByRole('button', { name: 'Approve: Read only' }).click();
-  await approval.getByText('Signed in to T3 Code with read-only access').waitFor();
-  await approval.waitForURL((url) => url.pathname === '/done');
-  assert(!approval.url().includes('code='), `The sign-in tab still shows the code: ${approval.url()}`);
-  await approval.close();
-  const mode = (await stat(credentialFile)).mode & 0o777;
-  assert(mode === 0o600, `The credential file has mode ${mode.toString(8)}`);
-  state = await ask({ type: 'panel.agents', tabId });
-  const catalog = state.t3Access.catalog;
-  assert(state.t3Access.state === 'signed-in' && state.t3Access.environment === fakeT3.origin, `Signed in: ${JSON.stringify(state.t3Access)}`);
-  assert(JSON.stringify(catalog?.projects.map((project) => project.id)) === JSON.stringify(['proj-demo', 'proj-docs', 'proj-api']), `Projects: ${JSON.stringify(catalog)}`);
-  assert(catalog.providers.find((provider) => provider.instanceId === 'opencode')?.unavailable === 'Provider executable is not installed.', 'The unavailable provider is not marked');
-  console.log(`T3 sign-in: read-only grant stored in ${relative(home.tempHome, credentialFile)} (mode 0${mode.toString(8)}); lists: ${catalog.projects.length} projects, ${catalog.providers.length} providers`);
-
-  // A thread started with a listed project and model; it still runs through `t3 thread start`.
-  const claudeProvider = catalog.providers.find((provider) => provider.instanceId === 'claudeAgent');
-  const started = await ask({
-    type: 'panel.agentStart',
-    via: 't3',
-    project: catalog.projects[0].id,
-    provider: claudeProvider.instanceId,
-    model: claudeProvider.models[1].id,
-    message: 'Summarise with a listed model',
-    tabId,
-  });
-  await waitForConversation(serviceWorker, started.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 2);
-  const startCall = (await calls(fakes)).filter((call) => call.name === 't3' && call.args[1] === 'start').at(-1);
-  assert(
-    JSON.stringify(startCall?.args) === JSON.stringify(['thread', 'start', '--json', '--provider', 'claudeAgent', '--model', 'claude-haiku-5-5', 'proj-demo', '-']),
-    `t3 thread start with listed values: ${JSON.stringify(startCall?.args)}`,
-  );
-  console.log(`T3 sign-in: a thread started with listed values: t3 ${startCall.args.join(' ')}`);
-
-  // Where the token went: only to /mcp, only for the two listing tools, and stored only in the credential file.
-  const tokens = fakeT3.issued();
-  assert(tokens.length === 2, `The fake issued ${tokens.length} tokens`);
-  const log = fakeT3.log();
-  assert(log.filter((entry) => tokens.includes(entry.bearer)).every((entry) => entry.path === '/mcp'), 'A token was sent somewhere other than /mcp');
-  const tools = [...new Set(log.flatMap((entry) => (entry.tool === undefined ? [] : [entry.tool])))];
-  assert(JSON.stringify(tools) === JSON.stringify(['t3_project_list', 'orchestrator_capabilities']), `T3 tools called: ${JSON.stringify(tools)}`);
-  const holders = await filesContaining(home.tempHome, tokens);
-  assert(JSON.stringify(holders) === JSON.stringify([{ file: relative(home.tempHome, credentialFile), token: 1 }]), `Files holding a token: ${JSON.stringify(holders)}`);
-  assert(!replies.some((reply) => tokens.some((token) => reply.includes(token))), 'A panel reply carried a token');
-  const tokenHashes = tokens.map((token) => createHash('sha256').update(token).digest('hex'));
-  const leakingCall = (await calls(fakes)).find(
-    (call) =>
-      (call.envHashes ?? []).some((hash) => tokenHashes.includes(hash)) ||
-      tokens.some((token) => JSON.stringify([call.args, call.input]).includes(token)),
-  );
-  assert(leakingCall === undefined, `A command the daemon started got a token: ${leakingCall?.name}`);
-  const daemonPid = JSON.parse(await readFile(home.statePath, 'utf8')).pid;
-  for (const part of ['cmdline', 'environ']) {
-    const source = await readFile(`/proc/${daemonPid}/${part}`, 'utf8').catch(() => undefined);
-    assert(source === undefined || !tokens.some((token) => source.includes(token)), `The daemon's ${part} holds a token`);
-  }
-  console.log(`T3 sign-in: the tokens reached only /mcp and ${relative(home.tempHome, credentialFile)}; no panel reply, file, command argument or environment held one`);
-
-  // Sign out deletes the file.
-  const signedOut = await ask({ type: 'panel.t3SignOut' });
-  assert(signedOut.state === 'signed-out' && signedOut.detail.includes('Settings → Sharing & access'), `Sign out: ${JSON.stringify(signedOut)}`);
-  assert(!(await exists(credentialFile)), 'Sign out left the credential file');
-  state = await ask({ type: 'panel.agents', tabId });
-  assert(state.t3Access.state === 'signed-out' && state.t3Access.catalog === undefined, `After sign-out: ${JSON.stringify(state.t3Access)}`);
-  console.log(`T3 sign-in: signed out and the file was deleted: ${signedOut.detail}`);
-}
-
-/**
  * A second panel page for the owner's view of a conversation. Pages in a tab are refused by the worker's sender
  * check, so the harness carries the page's requests to the same handler (as e2e/panel-flow.mjs does); `setup.done`
  * is set first so the page skips the setup screen, and it runs its normal poll.
@@ -414,40 +308,6 @@ async function openLivePanel(browserContext, serviceWorker, tabId) {
   });
   await page.goto(`chrome-extension://${new URL(serviceWorker.url()).host}/sidepanel.html?tabId=${tabId}`);
   return page;
-}
-
-async function openSignIn(browserContext, serviceWorker, fakeT3) {
-  const opened = browserContext.waitForEvent('page', { predicate: (page) => page.url().startsWith(fakeT3.origin) || page.url() === 'about:blank' });
-  await panelRequest(serviceWorker, { type: 'panel.t3SignIn' });
-  const page = await opened;
-  await page.waitForURL((url) => url.origin === fakeT3.origin && url.pathname === '/connect-agent');
-  return page;
-}
-
-async function exists(path) {
-  return await stat(path).then(
-    () => true,
-    () => false,
-  );
-}
-
-/** Every regular file under `root` that holds one of the tokens, with the index of the token it holds. */
-async function filesContaining(root, tokens) {
-  const found = [];
-  const walk = async (directory) => {
-    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) await walk(path);
-      else if (entry.isFile()) {
-        const content = await readFile(path).catch(() => undefined);
-        if (content === undefined) continue;
-        const index = tokens.findIndex((token) => content.includes(token));
-        if (index !== -1) found.push({ file: relative(root, path), token: index });
-      }
-    }
-  };
-  await walk(root);
-  return found;
 }
 
 function claimFileOf(args) {
@@ -536,7 +396,7 @@ async function checkFullAccessConfirmed({ serviceWorker, fakes, home, tabId }) {
     await sleep(2_100);
     // Passing through Full access left no approval behind: the same tab's read now follows the lowered mode.
     const listed = text(await first.client.callTool({ name: 'tabs', arguments: {} }));
-    assert(listed.includes(`${openedTab}`) && new RegExp(`^${openedTab}( \\[front\\])? \\[needs approval\\]`, 'm').test(listed), `The tab did not go back to needing approval:\n${listed}`);
+    assert(listed.includes(`${openedTab}`) && new RegExp(`^${openedTab}( \\[current\\])? \\[needs approval\\]`, 'm').test(listed), `The tab did not go back to needing approval:\n${listed}`);
     const readCall = first.client.callTool({ name: 'read', arguments: { tab: openedTab } });
     let readPrompt;
     for (let attempt = 0; attempt < 100 && readPrompt === undefined; attempt += 1) {

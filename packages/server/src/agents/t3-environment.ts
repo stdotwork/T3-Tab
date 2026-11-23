@@ -7,8 +7,6 @@ import { confirmedFetch, type T3Fetch, type T3Process } from './t3-connection.js
 export interface T3Environment {
   /** Such as `http://127.0.0.1:3773`. */
   origin: string;
-  /** `<origin>/mcp`, the only address T3-Tab sends its T3 credential to. */
-  resource: string;
   /** Sends a request only on a connection the recorded T3 process accepted. Every request to T3 goes through it. */
   fetch: T3Fetch;
 }
@@ -59,7 +57,7 @@ export async function recordedT3Process(env: NodeJS.ProcessEnv): Promise<T3Proce
 }
 
 export function t3EnvironmentAt(origin: string, owner: T3Process): T3Environment {
-  return { origin, resource: `${origin}/mcp`, fetch: confirmedFetch(origin, owner) };
+  return { origin, fetch: confirmedFetch(origin, owner) };
 }
 
 function processIsAlive(pid: number): boolean {

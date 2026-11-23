@@ -22,12 +22,12 @@ export async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   // tabs: list, open, switch, close.
   const listed = await call(mcpClient, 'tabs', {});
   show('tabs list', listed);
-  assert(/^\d+ \[front\] T3-Tab E2E — http:\/\/127\.0\.0\.1:\d+\/?$/m.test(text(listed)), `tabs list does not show the front test tab:\n${text(listed)}`);
-  const frontId = Number(/^(\d+) \[front\]/m.exec(text(listed))?.[1]);
+  assert(/^\d+ \[current\] T3-Tab E2E — http:\/\/127\.0\.0\.1:\d+\/?$/m.test(text(listed)), `tabs list does not show the front test tab:\n${text(listed)}`);
+  const frontId = Number(/^(\d+) \[current\]/m.exec(text(listed))?.[1]);
 
   const opened = await call(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/about` });
   show('tabs open', opened);
-  assert(/^Opened tab \d+ \[front\] About — /.test(text(opened)), `tabs open: ${text(opened)}`);
+  assert(/^Opened tab \d+ \[current\] About — /.test(text(opened)), `tabs open: ${text(opened)}`);
   const aboutId = Number(/^Opened tab (\d+)/.exec(text(opened))?.[1]);
   const refusedOpen = await call(mcpClient, 'tabs', { action: 'open', url: 'chrome://settings' });
   assert(refusedOpen.isError === true && /restricted/.test(text(refusedOpen)), `tabs open chrome://: ${text(refusedOpen)}`);
@@ -114,7 +114,7 @@ export async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   show(`read (ref ${formRef})`, subtree);
   assert(text(subtree).includes('textbox "Email"') && !text(subtree).includes('link "About"'), 'A ref reads only that element');
   const shallow = await call(mcpClient, 'read', { ref: formRef, depth: 0 });
-  assert(text(shallow).split('\n').length === 2, `depth 0 shows only the element:\n${text(shallow)}`);
+  assert(text(shallow).split('\n').length === 3 && text(shallow).includes('more inside'), `depth 0 shows only the element:\n${text(shallow)}`);
 
   // Navigation: the refs held for the page are void, and the next read is the whole new page.
   await page.goto(`${siteUrl}/about`);
