@@ -114,7 +114,7 @@ async function runAgentInstall(args: string[], cliPath: string): Promise<void> {
     if (agents.length === 0) process.stdout.write('No Claude Code or Codex installation found.\n');
     for (const agent of agents) {
       const method = await agentInstallMethod(agent, process.env);
-      const configPath = agentConfigPath(agent, home);
+      const configPath = agentConfigPath(agent, home, process.env);
       const action = method === 'cli' ? `${agent} mcp add` : 'file edit';
       process.stdout.write(
         `${agentName(agent)}: would register t3-tab in ${configPath} with ${action} (${server.command} ${server.args.join(' ')})\n`,

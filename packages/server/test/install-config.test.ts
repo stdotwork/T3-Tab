@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   addClaudeServer,
   addCodexServer,
+  ensureCodexToolTimeout,
   removeClaudeServer,
   removeCodexServer,
   type McpCommand,
@@ -22,6 +23,7 @@ const claudeFixture = await readFile(new URL('./fixtures/claude-config.json', im
 const codexEntry = `[mcp_servers.t3-tab]
 command = "/home/owner/.nvm/versions/node/v26.13.1/bin/node"
 args = ["/home/owner/src/t3-tab/packages/server/dist/cli.js", "mcp"]
+tool_timeout_sec = 330
 `;
 
 describe('Claude Code config editing', () => {
@@ -131,8 +133,32 @@ value = 2
         't3-tab': {
           command: '/path/with\u007fdel/node',
           args: ['/path/with\u007fdel/cli.js', 'mcp'],
+          tool_timeout_sec: 330,
         },
       },
     });
+  });
+});
+
+describe('the timeout key after `codex mcp add`', () => {
+  const added = '# keep\nmodel = "x"\n\n[mcp_servers.t3-tab]\ncommand = "/h/t3-tab"\nargs = ["mcp"]\n\n[ui]\nshow_tooltips = true\n';
+
+  it('goes in after the last key of the table and leaves every other byte', () => {
+    expect(ensureCodexToolTimeout(added)).toBe(added.replace('args = ["mcp"]\n', 'args = ["mcp"]\ntool_timeout_sec = 330\n'));
+    expect(parseToml(ensureCodexToolTimeout(added)).mcp_servers).toEqual({ 't3-tab': { command: '/h/t3-tab', args: ['mcp'], tool_timeout_sec: 330 } });
+  });
+
+  it('is a no-op when the key is there, the table is missing, or another table has the key', () => {
+    const has = added.replace('args = ["mcp"]\n', 'args = ["mcp"]\ntool_timeout_sec = 90\n');
+    expect(ensureCodexToolTimeout(has)).toBe(has);
+    expect(ensureCodexToolTimeout(ensureCodexToolTimeout(added))).toBe(ensureCodexToolTimeout(added));
+    expect(ensureCodexToolTimeout('[mcp_servers.other]\ncommand = "o"\n')).toBe('[mcp_servers.other]\ncommand = "o"\n');
+    const elsewhere = '[mcp_servers.other]\ntool_timeout_sec = 5\n\n[mcp_servers.t3-tab]\ncommand = "c"';
+    expect(ensureCodexToolTimeout(elsewhere)).toBe('[mcp_servers.other]\ntool_timeout_sec = 5\n\n[mcp_servers.t3-tab]\ncommand = "c"\ntool_timeout_sec = 330\n');
+  });
+
+  it('stays out of a nested table and a multi-line value', () => {
+    const nested = '[mcp_servers.t3-tab]\ncommand = "c"\nargs = [\n  "mcp",\n]\n[mcp_servers.t3-tab.env]\nA = "1"\n';
+    expect(ensureCodexToolTimeout(nested)).toBe('[mcp_servers.t3-tab]\ncommand = "c"\nargs = [\n  "mcp",\n]\ntool_timeout_sec = 330\n[mcp_servers.t3-tab.env]\nA = "1"\n');
   });
 });

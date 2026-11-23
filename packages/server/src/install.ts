@@ -17,6 +17,7 @@ import {
   CODEX_SERVER_NAME,
   addClaudeServer,
   addCodexServer,
+  ensureCodexToolTimeout,
   findCodexServerRange,
   isRecord,
   parseClaudeConfig,
@@ -56,7 +57,7 @@ export interface AgentUninstallResult {
 
 const AGENTS: readonly Agent[] = ['claude', 'codex'];
 export async function installAgent(options: InstallAgentOptions): Promise<AgentInstallResult> {
-  const configPath = agentConfigPath(options.agent, options.home);
+  const configPath = agentConfigPath(options.agent, options.home, options.env);
   const executable = await executableOnPath(options.agent, options.env);
   if (executable === undefined) {
     await editAgentConfig(options.agent, configPath, options.server, 'install');
@@ -70,11 +71,12 @@ export async function installAgent(options: InstallAgentOptions): Promise<AgentI
   if (!(await hasAgentServer(options.agent, configPath))) {
     throw new Error(`${agentName(options.agent)} did not write t3-tab to ${configPath}`);
   }
+  if (options.agent === 'codex') await setCodexToolTimeout(configPath);
   return { agent: options.agent, configPath, method: 'cli' };
 }
 
 export async function uninstallAgent(options: UninstallAgentOptions): Promise<AgentUninstallResult> {
-  const configPath = agentConfigPath(options.agent, options.home);
+  const configPath = agentConfigPath(options.agent, options.home, options.env);
   const executable = await executableOnPath(options.agent, options.env);
   const present = await hasAgentServer(options.agent, configPath);
   if (executable !== undefined) {
@@ -86,8 +88,11 @@ export async function uninstallAgent(options: UninstallAgentOptions): Promise<Ag
   return { agent: options.agent, configPath, method: 'file', removed };
 }
 
-export function agentConfigPath(agent: Agent, home: string): string {
-  return agent === 'claude' ? join(home, '.claude.json') : join(home, '.codex', 'config.toml');
+/** Where the agent keeps its user config. Codex keeps it in `CODEX_HOME` when that is set and not empty, else in `~/.codex`. */
+export function agentConfigPath(agent: Agent, home: string, env: NodeJS.ProcessEnv): string {
+  if (agent === 'claude') return join(home, '.claude.json');
+  const codexHome = env.CODEX_HOME?.trim();
+  return join(codexHome === undefined || codexHome === '' ? join(home, '.codex') : codexHome, 'config.toml');
 }
 
 export function agentName(agent: Agent): string {
@@ -104,7 +109,7 @@ export async function agentInstallMethod(
 export async function findAgents(home: string, env: NodeJS.ProcessEnv): Promise<Agent[]> {
   const found: Agent[] = [];
   for (const agent of AGENTS) {
-    if ((await executableOnPath(agent, env)) !== undefined || (await fileExists(agentConfigPath(agent, home)))) {
+    if ((await executableOnPath(agent, env)) !== undefined || (await fileExists(agentConfigPath(agent, home, env)))) {
       found.push(agent);
     }
   }
@@ -145,6 +150,14 @@ export async function hasAgentServer(agent: Agent, configPath: string): Promise<
     return isRecord(config.mcpServers) && Object.hasOwn(config.mcpServers, CLAUDE_SERVER_NAME);
   }
   return findCodexServerRange(source) !== undefined;
+}
+
+/** `codex mcp add` takes no timeout option, so the key goes into the table it wrote, and nothing else in the file changes. */
+async function setCodexToolTimeout(configPath: string): Promise<void> {
+  const source = await readOptional(configPath);
+  if (source === undefined) return;
+  const updated = ensureCodexToolTimeout(source);
+  if (updated !== source) await writeConfig(configPath, updated);
 }
 
 async function addAgentWithCli(

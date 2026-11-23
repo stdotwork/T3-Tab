@@ -40,7 +40,7 @@ export class Setup {
           id,
           found: (await this.find(id, env)) !== undefined,
           // A config that cannot be read or parsed has no entry T3-Tab could rely on.
-          registered: await hasAgentServer(id, agentConfigPath(id, home)).catch(() => false),
+          registered: await hasAgentServer(id, agentConfigPath(id, home, env)).catch(() => false),
         })),
       ),
       this.options.agents.status(refresh).then(async ({ t3: state }): Promise<SetupStatus['t3']> => {
