@@ -9,6 +9,8 @@ export interface StoredSession extends ToolSession {
   approvedOrigins: Record<string, string[]>;
   /** Last origin observed for each tab. A different origin invalidates its approvals. */
   currentOrigins: Record<string, string>;
+  /** The T3 thread the daemon showed this session's process runs for. Its mode is still asked of T3 per request. */
+  t3ThreadId?: string;
 }
 
 /** What one `shareAll` added for a tab, so a failed redemption can take back exactly that. */
@@ -94,16 +96,14 @@ export class SessionStore {
     return (await this.all())[id];
   }
 
-  async register(session: ToolSession): Promise<StoredSession> {
+  async register(session: ToolSession, t3ThreadId?: string): Promise<StoredSession> {
     return await this.mutate((sessions) => {
-      const existing = sessions[session.id];
-      if (existing !== undefined) {
-        existing.name = session.name;
-        return existing;
-      }
-      const created: StoredSession = { ...session, sharedTabIds: [], approvedOrigins: {}, currentOrigins: {} };
-      sessions[session.id] = created;
-      return created;
+      const record = sessions[session.id] ?? { ...session, sharedTabIds: [], approvedOrigins: {}, currentOrigins: {} };
+      record.name = session.name;
+      if (typeof t3ThreadId === 'string' && t3ThreadId !== '') record.t3ThreadId = t3ThreadId;
+      else delete record.t3ThreadId;
+      sessions[session.id] = record;
+      return record;
     });
   }
 
@@ -267,6 +267,7 @@ export class SessionStore {
         currentOrigins: parseCurrentOrigins(record.currentOrigins),
       };
       if (typeof record.groupId === 'number') session.groupId = record.groupId;
+      if (typeof record.t3ThreadId === 'string') session.t3ThreadId = record.t3ThreadId;
       sessions[id] = session;
     }
     return sessions;

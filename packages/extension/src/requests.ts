@@ -37,7 +37,7 @@ async function recordApproval(pass: AuthorizeResult, sessionId: string, tabId: n
 /** Runs one request from the background program and returns its result. Throws a readable message on failure. */
 export async function handleRequest(request: BrowserRequestMessage): Promise<unknown> {
   if (request.method === 'session.register') {
-    await sessionStore.register(request.session);
+    await sessionStore.register(request.session, request.params.t3ThreadId);
     return { registered: true } satisfies BrowserMethods['session.register']['result'];
   }
   if (request.method === 'session.unregister') {

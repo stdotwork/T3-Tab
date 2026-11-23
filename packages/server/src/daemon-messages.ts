@@ -55,6 +55,7 @@ export function isControlRequest(value: unknown): value is {
   clientName?: unknown;
   claim?: unknown;
   claimFileProblem?: unknown;
+  pid?: unknown;
   session?: unknown;
   params?: unknown;
   promptId?: unknown;

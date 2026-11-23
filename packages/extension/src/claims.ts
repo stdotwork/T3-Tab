@@ -137,20 +137,21 @@ export class ClaimStore {
   }
 
   /**
-   * The T3 threads whose grants this session holds. Undefined unless every grant it holds is bound to a T3 thread, so
-   * a code the panel has not bound yet, or a direct run's, never counts toward Full access.
+   * The T3 threads whose Full access this session needs: `proven`, the thread the daemon showed its process runs for,
+   * and every thread its grants are bound to. Undefined when it has neither, and for any grant of a direct run. A code
+   * the panel has not bound yet names no thread, so it counts against a session only when nothing proves its thread.
    */
-  async t3ThreadsOf(sessionId: string): Promise<string[] | undefined> {
+  async t3ThreadsOf(sessionId: string, proven?: string): Promise<string[] | undefined> {
     await mutation;
     const { grants } = await this.read();
     const held = Object.values(grants).filter((grant) => grant.sessionIds.includes(sessionId));
-    if (held.length === 0) return undefined;
-    const threads = new Set<string>();
+    const threads = new Set<string>(proven === undefined ? [] : [proven]);
     for (const { conversationId } of held) {
+      if (conversationId === undefined && proven !== undefined) continue;
       if (conversationId?.startsWith(T3_CONVERSATION_PREFIX) !== true) return undefined;
       threads.add(conversationId.slice(T3_CONVERSATION_PREFIX.length));
     }
-    return [...threads];
+    return threads.size === 0 ? undefined : [...threads];
   }
 
   /**

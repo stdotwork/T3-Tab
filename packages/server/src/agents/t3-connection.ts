@@ -156,7 +156,19 @@ function procAddress(hex: string): string | undefined {
   return mapped ? bytes.slice(12).join('.') : undefined;
 }
 
-async function processHoldsSocket(pid: number, inode: string): Promise<boolean> {
+/** The inode of a client's end of a loopback connection to this process, or undefined when it has none. */
+export async function peerSocketInode(
+  peer: { address: string | undefined; port: number | undefined },
+  local: { address: string | undefined; port: number | undefined },
+): Promise<string | undefined> {
+  const peerEnd = endpoint(peer.address, peer.port);
+  const localEnd = endpoint(local.address, local.port);
+  if (peerEnd === undefined || localEnd === undefined || !isLoopback(peerEnd.address)) return undefined;
+  const inode = await serverSocketInode(peerEnd, localEnd);
+  return inode === '0' ? undefined : inode;
+}
+
+export async function processHoldsSocket(pid: number, inode: string): Promise<boolean> {
   const directory = `/proc/${pid}/fd`;
   const expected = `socket:[${inode}]`;
   for (const entry of await readdir(directory)) {
@@ -175,7 +187,7 @@ async function processHoldsSocket(pid: number, inode: string): Promise<boolean> 
  * processes look as if they started earlier, so a process that reused T3's recorded pid could pass this check; it still
  * has to hold the accepted connection, and programs running as the owner are outside T3-Tab's trust model anyway.
  */
-async function processStartMs(pid: number): Promise<number> {
+export async function processStartMs(pid: number): Promise<number> {
   const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
   // The command name, field 2, may hold spaces and brackets; field 22 is the start time in ticks after boot.
   const ticks = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);

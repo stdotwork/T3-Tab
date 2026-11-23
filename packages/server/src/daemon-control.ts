@@ -10,6 +10,7 @@ import { WebSocket, type RawData } from 'ws';
 
 import { CLAIM_CODE } from './agents/claim-file.js';
 import type { Agents } from './agents/conversations.js';
+import { t3ThreadOfPeer, type ControlPeer } from './agents/t3-thread-identity.js';
 import type { BrowserConnection } from './browser-link.js';
 import {
   isControlRequest,
@@ -34,7 +35,14 @@ export interface ControlState {
   redeeming: Map<WebSocket, Promise<void>>;
   /** Permission prompts told to a session, by prompt id, so only that session can answer them. */
   prompts: Map<string, TrackedPrompt>;
+  /** Both ends of each control connection, from the socket the daemon accepted. */
+  peers: Map<WebSocket, ControlPeer>;
+  /** The T3 thread each connection's process was shown to run for, settled once per connection. */
+  t3Threads: Map<WebSocket, Promise<string | undefined>>;
 }
+
+/** What the extension is told about a session: its T3 thread, only when the daemon proved it. */
+const registerParams = (t3ThreadId: string | undefined): { t3ThreadId?: string } => (t3ThreadId === undefined ? {} : { t3ThreadId });
 
 export function handleControlMessage(
   webSocket: WebSocket,
@@ -75,8 +83,16 @@ export function handleControlMessage(
     if (claimFileProblem !== undefined) agents.claimFileFailed(claimFileProblem.file, claimFileProblem.problem);
     // Applied with the session's first tool call, once a browser is sure to have registered it.
     if (typeof request.claim === 'string') control.claims.set(webSocket, request.claim);
+    const peer = control.peers.get(webSocket);
+    const thread =
+      peer !== undefined && Number.isInteger(request.pid)
+        ? t3ThreadOfPeer(request.pid as number, peer, process.env).catch(() => undefined)
+        : Promise.resolve(undefined);
+    control.t3Threads.set(webSocket, thread);
     const connection = [...browsers.values()].at(-1);
-    if (connection !== undefined) void connection.request(session, 'session.register', {}).catch(() => undefined);
+    if (connection !== undefined) {
+      void thread.then(async (t3ThreadId) => await connection.request(session, 'session.register', registerParams(t3ThreadId))).catch(() => undefined);
+    }
     webSocket.send(
       JSON.stringify({
         type: 'control.response',
@@ -131,7 +147,7 @@ async function answerTool(
     const connection = [...browsers.values()].at(-1);
     if (connection === undefined) throw new Error('No browser is connected. Open the browser with the T3-Tab extension.');
     // Register only the session making this request. A new extension connection never learns other sessions.
-    await connection.request(registered, 'session.register', {});
+    await connection.request(registered, 'session.register', registerParams(await control.t3Threads.get(webSocket)));
     await redeemClaim(webSocket, connection, registered, control, agents);
     const content = await runTool(connection, registered, request.method as ToolMethod, request.params as Record<string, unknown>);
     if (webSocket.readyState !== WebSocket.OPEN) return;

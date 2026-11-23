@@ -159,6 +159,7 @@ export class DaemonSession {
           requestId: randomUUID(),
           method: 'session.register',
           clientName: this.clientName,
+          pid: process.pid,
           ...(this.claim === undefined ? {} : { claim: this.claim }),
           ...(this.claimFileProblem === undefined ? {} : { claimFileProblem: this.claimFileProblem }),
         },
