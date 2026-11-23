@@ -80,7 +80,19 @@ function ThemeEditor({ start, onClose }: { start: ThemeDefinition | undefined; o
         </label>
         <div className="segmented wide" role="radiogroup" aria-label="Appearance">
           {(['light', 'dark'] as const).map((value) => (
-            <button type="button" role="radio" aria-checked={appearance === value} key={value} className={appearance === value ? 'active' : ''} onClick={() => setAppearance(value)}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={appearance === value}
+              key={value}
+              className={appearance === value ? 'active' : ''}
+              onClick={() => {
+                setAppearance(value);
+                // T3's generator takes light or dark from the canvas, so the canvas has to change with the toggle.
+                const seed = (start === undefined ? undefined : getThemeColorsForMode(start, value)) ?? getThemeColorsForMode(STOCK_THEME, value);
+                if (seed !== null) setCanvas(themeColorToHex(seed.canvas) ?? canvas);
+              }}
+            >
               {value === 'light' ? <Sun size={13} /> : <Moon size={13} />} {value === 'light' ? 'Light' : 'Dark'}
             </button>
           ))}

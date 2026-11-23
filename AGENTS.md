@@ -52,7 +52,7 @@ real `t3-tab mcp` server: a T3 thread started with project, provider and model c
 reads it, is continued with `t3 thread send` and polled with `t3 thread show`; the sign-in to a fake T3
 environment (`e2e/fakes/t3-server.mjs`, T3's OAuth and `/mcp` answers, recorded in the temporary T3 home's
 `server-runtime.json`) refuses a forged answer and a full-access grant, keeps a read-only one in a 0600 file,
-lists T3's projects and models in the panel, starts a thread with listed values and signs out, and no file,
+lists T3's projects and models through the panel's request API, starts a thread with listed values and signs out, and no file,
 panel reply, command argument or environment but the credential file holds a token; a made-up claim code and a
 used one are refused; T3 stopped and T3 missing are reported; direct Claude Code and Codex runs start with
 their isolating flags, read the tab, and are resumed with the session id they printed and a new claim code;

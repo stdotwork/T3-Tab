@@ -207,6 +207,8 @@ async function runT3Flow() {
     await panelPage.locator('.runtime-btn').click();
     await panelPage.getByRole('menuitemradio', { name: /Supervised/ }).click();
     await pickModel(panelPage, MODEL);
+    // No browser work here, so no tab goes with it and the agent has no claim to make.
+    await panelPage.getByRole('button', { name: "Don't share this tab" }).click();
     await send(panelPage, 'Create a file named notes.txt in this folder containing exactly one line: hello. Then reply with the word done.');
     await panelPage.locator('.approval-card').waitFor({ timeout: 120_000 });
     await shot('10-approval');
@@ -217,6 +219,8 @@ async function runT3Flow() {
 
     await panelPage.getByRole('button', { name: 'New thread' }).click();
     await pickModel(panelPage, MODEL);
+    // No browser work here, so no tab goes with it and the agent has no claim to make.
+    await panelPage.getByRole('button', { name: "Don't share this tab" }).click();
     await send(panelPage, 'Before anything else, use your AskUserQuestion tool to ask me one multiple-choice question with two options: bullets or prose. After my answer, reply with just the option I picked.');
     await panelPage.locator('.question-card').waitFor({ timeout: 120_000 });
     await shot('11-question');
@@ -320,6 +324,13 @@ async function runT3Flow() {
     await shot('15-theme-create');
     await panelPage.locator('.sheet').getByRole('radio', { name: 'Dark' }).click();
     await sleep(320);
+    const darkDraft = await panelPage.evaluate(() => {
+      const paint = document.createElement('canvas').getContext('2d');
+      paint.fillStyle = getComputedStyle(document.querySelector('.sheet')).backgroundColor;
+      paint.fillRect(0, 0, 1, 1);
+      return [...paint.getImageData(0, 0, 1, 1).data].slice(0, 3);
+    });
+    check('the theme editor previews a dark theme', darkDraft.every((channel) => channel < 60), darkDraft.join(','));
     await panelPage.screenshot({ path: join(shotsDir, 't3-15-theme-create-dark.png') });
     await panelPage.getByRole('button', { name: 'Close', exact: true }).click();
     await panelPage.getByRole('button', { name: 'Add theme' }).click();
