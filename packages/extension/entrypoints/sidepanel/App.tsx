@@ -574,6 +574,17 @@ export function App(): ReactNode {
   }, []);
   useEffect(() => syncT3Theme(state.defaultTheme, state.defaultAppearance, state.themes), [state.defaultTheme, state.defaultAppearance, state.themes]);
 
+  // Full access answers browser requests only while T3 says the thread has it, wherever its mode was changed.
+  const threadModes = useRef(new Map<string, string>());
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    for (const thread of state.threads) {
+      if (thread.runtimeMode === undefined || threadModes.current.get(thread.id) === thread.runtimeMode) continue;
+      threadModes.current.set(thread.id, thread.runtimeMode);
+      void panel({ type: 'panel.t3SetFullAccess', threadId: thread.id, fullAccess: thread.runtimeMode === 'full-access' }).catch(() => undefined);
+    }
+  }, [state.status, state.threads]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;

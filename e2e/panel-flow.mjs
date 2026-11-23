@@ -303,6 +303,19 @@ async function runT3Flow() {
     await finished(panelPage);
     const after = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
     check('Full access answered yes for the browser', (after.autoAllowed ?? []).length > before && after.pending.length === 0, `${(after.autoAllowed ?? []).length - before} auto-allowed`);
+    // Lowering the mode outside the panel's menu, as T3's own app would, ends the automatic yes.
+    const fullThread = await panelPage.locator('.screen[data-thread-id]').getAttribute('data-thread-id');
+    const grantFlags = async () => await serviceWorker.evaluate(async (key) => {
+      const { claimGrants } = await chrome.storage.session.get('claimGrants');
+      return Object.values(claimGrants ?? {}).filter((grant) => grant.conversationId === key).map((grant) => grant.fullAccess);
+    }, `t3:${fullThread}`);
+    const beforeLower = await until('the thread grant', async () => {
+      const flags = await grantFlags();
+      return flags.length > 0 ? flags : undefined;
+    }, 5_000);
+    await panelPage.evaluate(async (id) => await window.__t3tabT3.setRuntimeMode(id, 'approval-required'), fullThread);
+    const lowered = await until('the grant to lose Full access', async () => (await grantFlags()).every((flag) => flag === false), 8_000).catch(() => false);
+    check('lowering Full access in T3 ends the automatic yes', beforeLower.every(Boolean) && lowered === true, `${beforeLower.join(',')} -> ${(await grantFlags()).join(',')}`);
 
     await panelPage.getByRole('button', { name: 'New thread' }).click();
     await pickModel(panelPage, MODEL);
