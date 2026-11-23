@@ -112,6 +112,16 @@ export async function checkProductInstall() {
     await entryClient.client.close();
     console.log('Product install: Add for Claude Code wrote an entry for the installed launcher; its `mcp` server sees the browser');
 
+    // 4b. `uninstall --claude` takes out that agent's entry and nothing else: helper, browser link, state and daemon stay.
+    const daemonBefore = JSON.parse(await readFile(home.statePath, 'utf8'));
+    const partial = await run(join(root, 't3-tab'), ['uninstall', '--claude']);
+    assert(/Kept the helper/.test(partial), `uninstall --claude did not say what it kept:\n${partial}`);
+    assert(JSON.parse(await readFile(claudeConfig, 'utf8')).mcpServers?.['t3-tab'] === undefined, 'uninstall --claude left the Claude Code entry');
+    for (const path of [root, join(root, 'cli.js'), manifest, home.statePath]) assert(await exists(path), `uninstall --claude removed ${path}`);
+    assert(isAlive(daemonBefore.pid), 'uninstall --claude stopped the daemon');
+    await panelRequest(serviceWorker, { type: 'panel.addAgent', agent: 'claude' });
+    console.log('Product install: uninstall --claude removed only the Claude Code entry; the helper, browser link, state and daemon stayed');
+
     // 5. An update: a daemon of another version is stopped by setup and the browser reconnects to a new one.
     const stateFile = home.statePath;
     const old = JSON.parse(await readFile(stateFile, 'utf8'));

@@ -226,4 +226,29 @@ describe('setup and uninstall on Linux (run in a temporary home)', () => {
     await expect(stat(stateDir)).rejects.toThrow();
     expect(await readFile(neighbour, 'utf8')).toContain('com.other.host');
   });
+
+  it('uninstall with agents named removes only their entries and keeps the helper, state, browser links and daemon', async () => {
+    await setupHelper(options());
+    const host = currentHost({ HOME: home }, 'linux');
+    const layout = helperLayout(host);
+    const stateDir = join(home, '.local', 'state', 't3-tab');
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, 'daemon.json'), '{}');
+    const removedFrom: string[] = [];
+    lines.length = 0;
+    await uninstallHelper({
+      host,
+      stateDir,
+      agents: ['codex'],
+      say: (line) => void lines.push(line),
+      processDeps: noProcesses,
+      removeAgent: async (agent) => (removedFrom.push(agent), `removed ${agent}`),
+    });
+    expect(removedFrom).toEqual(['codex']);
+    expect((await readdir(layout.root)).sort()).toEqual(['cli.js', 'install.json', 'native-host', 't3-tab']);
+    await stat(join(home, '.config/chromium/NativeMessagingHosts/com.t3tab.native.json'));
+    await stat(join(home, 'elsewhere/NativeMessagingHosts/com.t3tab.native.json'));
+    await stat(join(stateDir, 'daemon.json'));
+    expect(lines).toEqual(['removed codex', 'Kept the helper, the browser link and the background program; only the Codex entry was removed.']);
+  });
 });

@@ -144,11 +144,21 @@ export interface UninstallOptions {
   removeAgent(agent: Agent): Promise<string>;
 }
 
-/** Removes everything setup (or the developer `install`) added: agent entries, browser registrations, the program, and its state. */
+/**
+ * Removes everything setup (or the developer `install`) added: agent entries, browser registrations, the program, and its
+ * state. With agents named it removes only their entries: the helper, state, browser links and daemon stay, because the
+ * other agent's entry, and the browser, still use them.
+ */
 export async function uninstallHelper(options: UninstallOptions): Promise<void> {
   const { host, say } = options;
   const layout = helperLayout(host);
   const p = pathsOf(host);
+
+  if (options.agents !== undefined && options.agents.length > 0) {
+    for (const agent of options.agents) say(await options.removeAgent(agent));
+    say(`Kept the helper, the browser link and the background program; only the ${options.agents.map(agentName).join(' and ')} ${options.agents.length === 1 ? 'entry was' : 'entries were'} removed.`);
+    return;
+  }
 
   if (await stopDaemon(options.stateDir)) say('Stopped the background program.');
 
