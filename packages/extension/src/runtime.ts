@@ -24,7 +24,7 @@ export const permissionPrompts = new PermissionPrompts(siteStore, {
     sendPromptNotice({ type: 'browser.promptOpened', protocolVersion: PROTOCOL_VERSION, session, prompt: { id, origin, tool, tab } }),
   onClose: (promptId) => sendPromptNotice({ type: 'browser.promptClosed', protocolVersion: PROTOCOL_VERSION, promptId }),
   fullAccess: t3FullAccess(
-    async (sessionId) => await claimStore.t3ThreadsOf(sessionId),
+    async (sessionId) => await claimStore.t3ThreadsOf(sessionId, (await sessionStore.get(sessionId))?.t3ThreadId),
     async (threadId) => (await askDaemon('t3.threadMode', { threadId })).runtimeMode,
   ),
 });

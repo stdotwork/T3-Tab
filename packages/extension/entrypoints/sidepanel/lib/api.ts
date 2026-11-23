@@ -32,3 +32,13 @@ export async function writeStored(key: string, value: unknown): Promise<void> {
 export async function removeStored(key: string): Promise<void> {
   await chrome.storage.local.remove(key);
 }
+
+/** What one tab's panel keeps. Session storage, so it ends with the browser. */
+export async function readTabStored<T>(key: string): Promise<T | undefined> {
+  const stored = await chrome.storage.session.get(key);
+  return stored[key] as T | undefined;
+}
+
+export async function writeTabStored(key: string, value: unknown): Promise<void> {
+  await chrome.storage.session.set({ [key]: value });
+}

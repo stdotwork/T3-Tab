@@ -66,7 +66,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const roles = new WeakMap<IncomingMessage, ConnectionRole>();
   const browsers = new Map<WebSocket, BrowserConnection>();
   const sessions = new Map<WebSocket, ToolSession>();
-  const control: ControlState = { sessions, claims: new Map(), redeeming: new Map(), prompts: new Map() };
+  const control: ControlState = { sessions, claims: new Map(), redeeming: new Map(), prompts: new Map(), peers: new Map(), t3Threads: new Map() };
   const server = runningMcpCommand();
   const agents = options.agents ?? new Agents({ env: process.env, stateDir, server });
   const t3Access = options.t3Access ?? new T3Access({ env: process.env, stateDir });
@@ -117,6 +117,9 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     if (role === 'extension') {
       connection = new BrowserConnection(webSocket);
       browsers.set(webSocket, connection);
+    } else {
+      const { remoteAddress, remotePort, localAddress, localPort } = request.socket;
+      control.peers.set(webSocket, { address: remoteAddress, port: remotePort, localAddress, localPort });
     }
 
     webSocket.on('message', (data) => {
@@ -130,6 +133,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
       const session = sessions.get(webSocket);
       sessions.delete(webSocket);
       control.claims.delete(webSocket);
+      control.peers.delete(webSocket);
+      control.t3Threads.delete(webSocket);
       if (session !== undefined) {
         const live = [...browsers.values()].at(-1);
         if (live !== undefined) void live.request(session, 'session.unregister', {}).catch(() => undefined);

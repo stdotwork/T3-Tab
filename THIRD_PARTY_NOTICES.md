@@ -30,11 +30,17 @@ T3-Tab is Apache-2.0 licensed. Files copied or adapted from another project are 
 - Licence: MIT, Copyright (c) 2026 T3 Tools Inc. (noted at the top of each copied file)
 - Local files: `packages/extension/src/t3/theme-palettes.ts` (`packages/shared/src/themePalettes.ts`),
   `theme-css-rules.ts` (`packages/shared/src/themeCss.ts`), `theme-css.ts` (`apps/web/src/themeCss.ts`) and
-  `theme-palette.ts` (the colour, parsing and file functions of `apps/web/src/themePalette.ts`); the Claude and OpenAI
-  marks in `packages/extension/entrypoints/sidepanel/ui.tsx` (`apps/web/src/components/Icons.tsx`)
+  `theme-palette.ts` (the colour, parsing and file functions of `apps/web/src/themePalette.ts`); `packages/extension/entrypoints/sidepanel/lib/model-short-name.ts`
+  (`packages/provider-core/src/modelShortName.ts`); the provider logos in
+  `packages/extension/entrypoints/sidepanel/lib/provider-logos.ts` (the packaged icons of the cursor, grok, fx, opencode,
+  kiro, muse and pi clients, `openRouterIcon` in `packages/client-runtime/src/providerClients.ts`, and the bundled marks
+  in `apps/web/src/components/Icons.tsx`, with their colours from `apps/web/src/components/chat/ProviderInstanceIcon.tsx`)
 - Changes: import paths; message formatting without `gt-react`; `pipe` without Effect; the stored-theme and Atom code is
   left out. The panel's components, styles and WebSocket client are T3-Tab's own, written against T3 Code's public
-  protocol and modelled on its interface.
+  protocol and modelled on its interface. The provider logos are gathered into one data file, with the path data copied
+  unchanged (the kiro mark's path is the join of four of T3's constants). `Icons.tsx` labels its brand marks from Simple
+  Icons (CC0) with a comment above its OpenRouter, Ollama and Anthropic marks; the Ollama and Anthropic logos here come
+  from that group, and the OpenRouter logo here comes from `providerClients.ts` instead.
 
 ## Lucide
 

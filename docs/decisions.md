@@ -181,6 +181,17 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   for that, then prompts, and a read stuck for five seconds no longer blocks a fresh one. A pass records no
   origin approval, so reads and tab titles follow the live mode as well. Other requests show in both the side panel and the agent's thread, and the first answer
   counts.
+- **Full access covers every T3 thread, identified by its process.** A thread the owner runs in T3 should not get browser
+  prompts just because the panel did not start it. T3 puts `T3CODE_THREAD_ID` in the environment of a thread's provider
+  processes. The daemon believes it only when the process holding the control socket carries one valid id and its parent
+  chain reaches the recorded T3 server, avoids the daemon, and names no other thread. Tradeoff: an agent started by hand in
+  a T3 terminal counts as that terminal's thread, and a program running as the owner could still forge its environment.
+  Such a program is already outside the trust model. The live per-request mode check is unchanged.
+- **The side panel stays on the tab it was opened on.** A window-wide panel followed the owner to every tab and made "this
+  tab" ambiguous. Each tab now opens its own panel and keeps its own draft, project and screen. A thread keeps running when
+  the owner moves away; other tabs' new-thread screens list it, and permission cards from other tabs say so.
+- **A new tab starts in no project.** That is T3's Scratch project. The default can be changed in Settings to the last used
+  project or a fixed one. A pick made on a tab holds for that tab only.
 - **T3 credentials travel on checked connections.** The daemon spends the pairing credential and sends token renewals
   and WebSocket ticket requests through its process check. The panel signs their proofs, so its key stays in the
   browser. The WebSocket itself is opened by the browser and cannot be checked, which is an accepted gap.

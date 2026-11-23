@@ -16,6 +16,7 @@ import { initCdp } from '../src/cdp';
 import { handleDaemonReply, noteDaemonClose, noteDaemonProblem, noteSocketClosed, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
 import { handlePanelRequest } from '../src/panel';
 import { isSidePanelSender } from '../src/panel-security';
+import { forgetPanelTab, keepPanelOnItsTab, openPanelOn } from '../src/panel-tab';
 import { originOf } from '../src/permissions';
 import { handleRequest } from '../src/requests';
 import { sessionStore } from '../src/runtime';
@@ -141,7 +142,10 @@ export default defineBackground(() => {
   // The headless harness cannot open a real side panel; it calls the same panel function from the worker.
   (globalThis as typeof globalThis & { __t3tabHandlePanelRequest?: typeof handlePanelRequest }).__t3tabHandlePanelRequest =
     handlePanelRequest;
-  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
+  void keepPanelOnItsTab().catch(() => undefined);
+  chrome.action.onClicked.addListener((tab) => {
+    if (tab.id !== undefined) void openPanelOn(tab.id).catch(() => undefined);
+  });
   chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
     if (!isSidePanelSender(sender, chrome.runtime.id)) {
       sendResponse({ ok: false, error: 'Forbidden' });
@@ -153,9 +157,6 @@ export default defineBackground(() => {
         sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }),
       );
     return true;
-  });
-  chrome.runtime.onInstalled.addListener(() => {
-    void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
   });
   chrome.tabs.onCreated.addListener(() => reportTabCount());
   // The browser names the tab a new tab was opened from; only that tab's session may adopt it.
@@ -169,6 +170,7 @@ export default defineBackground(() => {
   chrome.tabs.onRemoved.addListener(reportTabCount);
   chrome.tabs.onRemoved.addListener(reportTabClosed);
   chrome.tabs.onRemoved.addListener((tabId) => void sessionStore.forgetTab(tabId));
+  chrome.tabs.onRemoved.addListener((tabId) => void forgetPanelTab(tabId).catch(() => undefined));
   chrome.tabs.onReplaced.addListener(reportTabCount);
   chrome.tabs.onAttached.addListener(reportTabCount);
   chrome.tabs.onDetached.addListener(reportTabCount);

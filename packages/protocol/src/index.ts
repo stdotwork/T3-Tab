@@ -208,7 +208,8 @@ export type ClaimFileProblem = 'missing' | 'not-private' | 'wrong-owner' | 'not-
 
 /** Requests the background program sends to the extension, with their params and results. */
 export interface BrowserMethods {
-  'session.register': { params: Record<string, never>; result: { registered: true } };
+  /** `t3ThreadId` is set only when the daemon proved which T3 thread the session's process runs for. */
+  'session.register': { params: { t3ThreadId?: string }; result: { registered: true } };
   /**
    * Shares with the calling session the tabs the owner picked in the side panel when it started an agent. The
    * extension issued `code` and holds the tabs it names; the daemon only passes it on. `route` says how the code
@@ -528,6 +529,8 @@ export interface ControlSessionRegisterRequest {
   claim?: string;
   /** Set instead of `claim` when the MCP process was given a claim file and could not use it. */
   claimFileProblem?: { file: string; problem: ClaimFileProblem };
+  /** The MCP process's pid. The daemon believes it only if that process holds this connection's socket. */
+  pid?: number;
 }
 
 export interface ControlStatusRequest {

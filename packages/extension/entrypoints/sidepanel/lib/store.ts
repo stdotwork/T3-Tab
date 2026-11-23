@@ -3,10 +3,11 @@ import type { AgentConversation, T3State as T3RunState } from '@t3-tab/protocol'
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import type { PermissionPrompt, StoredSitePermission } from '../../../src/permissions';
-import type { PanelTab } from '../../../src/panel';
+import type { PanelTab, TabThread } from '../../../src/panel';
 import type { StoredSession } from '../../../src/sessions';
 import { BUILD_ID } from '../../../src/build-id';
-import { errorText, panel, readStored, removeStored, writeStored } from './api';
+import { panelTabKey } from '../../../src/panel-tab';
+import { errorText, panel, readStored, readTabStored, removeStored, writeStored, writeTabStored } from './api';
 import type { SetupAgent } from './catalog';
 
 export type { HelperProblem, HelperState } from '../../../src/daemon-link';
@@ -34,6 +35,10 @@ export interface LiveState {
   helper: HelperState;
   setup?: SetupState;
   currentTab?: PanelTab;
+  /** The thread that holds this panel's tab, if any, so opening the panel there shows it. */
+  tabThread?: TabThread;
+  /** The first answer about this tab has arrived. */
+  tabLoaded?: boolean;
   prompts: PermissionPrompt[];
   sites: StoredSitePermission[];
   sessions: StoredSession[];
@@ -57,12 +62,13 @@ export const headlessRender = params.get('headless') === '1';
 
 async function refreshPanelState(): Promise<void> {
   try {
-    const state = await panel<{ currentTab?: PanelTab; pending: PermissionPrompt[]; sites: StoredSitePermission[]; sessions?: StoredSession[]; autoAllowed?: AutoAllowed[] }>({
+    const state = await panel<{ currentTab?: PanelTab; tabThread?: TabThread; pending: PermissionPrompt[]; sites: StoredSitePermission[]; sessions?: StoredSession[]; autoAllowed?: AutoAllowed[] }>({
       type: 'panel.state',
       ...(fixedTabId === undefined ? {} : { tabId: fixedTabId }),
     });
-    const next: Partial<LiveState> = { prompts: state.pending, sites: state.sites, sessions: state.sessions ?? [], autoAllowed: state.autoAllowed ?? [] };
+    const next: Partial<LiveState> = { prompts: state.pending, sites: state.sites, sessions: state.sessions ?? [], autoAllowed: state.autoAllowed ?? [], tabLoaded: true };
     if (state.currentTab !== undefined) next.currentTab = state.currentTab;
+    if (state.tabThread !== undefined) next.tabThread = state.tabThread;
     merge(next);
   } catch {
     // The worker can be restarting. The next poll tries again.
@@ -163,7 +169,7 @@ export function startPolling(): void {
 }
 
 export function applyHeadlessState(state: { currentTab?: PanelTab; pending: PermissionPrompt[]; sites: StoredSitePermission[]; sessions?: StoredSession[]; autoAllowed?: AutoAllowed[] }): void {
-  const next: Partial<LiveState> = { prompts: state.pending, sites: state.sites, sessions: state.sessions ?? [], autoAllowed: state.autoAllowed ?? [], loaded: true };
+  const next: Partial<LiveState> = { prompts: state.pending, sites: state.sites, sessions: state.sessions ?? [], autoAllowed: state.autoAllowed ?? [], loaded: true, tabLoaded: true };
   if (state.currentTab !== undefined) next.currentTab = state.currentTab;
   merge(next);
 }
@@ -176,6 +182,34 @@ export function useLive(): LiveState {
     },
     () => live,
   );
+}
+
+/** A value this tab's panel keeps for itself, so the panel comes back as it was when the owner returns to the tab. */
+export function useTabStored<T>(name: string, fallback: T): [T, (value: T) => void, boolean] {
+  const key = panelTabKey(fixedTabId, name);
+  const [value, setValue] = useState<T>(fallback);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let current = true;
+    void readTabStored<T>(key)
+      .then((stored) => {
+        if (current && stored !== undefined) setValue(stored);
+      })
+      .finally(() => {
+        if (current) setReady(true);
+      });
+    return () => {
+      current = false;
+    };
+  }, [key]);
+  return [
+    value,
+    (next) => {
+      setValue(next);
+      void writeTabStored(key, next).catch(() => undefined);
+    },
+    ready,
+  ];
 }
 
 /** A value kept in the extension's local storage. `undefined` until it has loaded. */

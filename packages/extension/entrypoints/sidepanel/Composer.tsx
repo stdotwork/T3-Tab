@@ -2,6 +2,7 @@ import { ArrowUp, Check, ChevronDown, Globe, Search, ShieldCheck, ShieldOff, Squ
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 
 import { choiceLabel, reasoningOption, RUNTIME_MODES, type Choice, type PickerProvider } from './lib/catalog';
+import { compactModelName } from './lib/model-short-name';
 import { ProviderIcon, useDismiss } from './ui';
 
 export function ModelPicker({
@@ -54,7 +55,7 @@ export function ModelPicker({
                   className={entry.id === provider?.id ? 'rail-btn active' : 'rail-btn'}
                   onClick={() => setRail(entry.id)}
                 >
-                  <ProviderIcon driver={entry.driver} size={18} />
+                  <ProviderIcon driver={entry.driver} name={entry.name} size={18} />
                 </button>
               ))}
             </div>
@@ -72,14 +73,15 @@ export function ModelPicker({
                       type="button"
                       key={model.slug || 'default'}
                       className={active ? 'model-row active' : 'model-row'}
+                      title={model.name}
                       onClick={() => {
                         if (provider === undefined) return;
                         onChoice({ provider: provider.id, model: model.slug, options: active ? (choice?.options ?? {}) : {} });
                         if (reasoningOption(model) === undefined) setOpen(false);
                       }}
                     >
-                      <ProviderIcon driver={provider?.driver} size={15} />
-                      <span>{model.name}</span>
+                      <ProviderIcon driver={provider?.driver} name={provider?.name} size={15} />
+                      <span>{compactModelName(model, provider?.driver)}</span>
                       {active ? <Check size={14} className="row-check" aria-hidden="true" /> : null}
                     </button>
                   );
