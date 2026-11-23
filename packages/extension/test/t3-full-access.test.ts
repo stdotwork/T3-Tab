@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { FULL_ACCESS_CONFIRMED_MS, t3FullAccess } from '../src/t3-full-access';
+import { FULL_ACCESS_CONFIRMED_MS, FULL_ACCESS_WAIT_MS, t3FullAccess } from '../src/t3-full-access';
 
 let clock: number;
 const now = (): number => clock;
@@ -144,6 +144,137 @@ describe('Full access, as T3 confirms it', () => {
     expect(asks).toBe(2);
     answers[1]?.('approval-required');
     await expect(second).resolves.toBe(false);
+  });
+
+  describe('with answers T3 gives on a schedule', () => {
+    const tick = async (ms: number): Promise<void> => {
+      clock += ms;
+      await vi.advanceTimersByTimeAsync(ms);
+    };
+    /** Each ask waits for the test to answer it. */
+    function scripted(threads: string[]) {
+      const asks: Array<{ threadId: string; answer: (mode: string) => void }> = [];
+      const check = t3FullAccess(
+        async () => threads,
+        async (threadId) => await new Promise<string>((resolve) => asks.push({ threadId, answer: resolve })),
+        now,
+      );
+      const pendingFor = (threadId: string) => asks.filter((ask) => ask.threadId === threadId).at(-1);
+      const asked = (threadId: string): number => asks.filter((ask) => ask.threadId === threadId).length;
+      return { check, pendingFor, asked };
+    }
+
+    it('does not let a live yes ride out a slow sibling: the reviewer\'s timing is asked again and prompts', async () => {
+      const threads = { a: ['a'], both: ['a', 'b'] } as const;
+      const asks: Array<{ threadId: string; answer: (mode: string) => void }> = [];
+      const check = t3FullAccess(
+        async (sessionId) => [...threads[sessionId as keyof typeof threads]],
+        async (threadId) => await new Promise<string>((resolve) => asks.push({ threadId, answer: resolve })),
+        now,
+      );
+      const pendingFor = (threadId: string) => asks.filter((ask) => ask.threadId === threadId).at(-1);
+      // A answers yes at t=0, so its cache runs to 2000. T3 records A leaving Full access just after.
+      const seeded = check('a');
+      await tick(0);
+      pendingFor('a')?.answer('full-access');
+      await expect(seeded).resolves.toBe(true);
+
+      // A request starts at 1999 with A still live, and B's read takes until 3998.
+      await tick(1_999);
+      const request = check('both');
+      await tick(0);
+      expect(asks.filter((ask) => ask.threadId === 'a')).toHaveLength(1);
+      await tick(1_999);
+      pendingFor('b')?.answer('full-access');
+      await tick(0);
+      // B's yes is in, but A's has lapsed, so A is read again rather than accepted.
+      expect(asks.filter((ask) => ask.threadId === 'a')).toHaveLength(2);
+      pendingFor('a')?.answer('approval-required');
+      await expect(request).resolves.toBe(false);
+    });
+
+    it('allows only when every yes is live at the same moment, re-reading until they are', async () => {
+      const { check, pendingFor, asked } = scripted(['a', 'b']);
+      const request = check('s');
+      await tick(0);
+      // A answers at once; B takes 2.5 s, so A lapses and B's own yes arrives already lapsed too.
+      pendingFor('a')?.answer('full-access');
+      await tick(2_500);
+      pendingFor('b')?.answer('full-access');
+      await tick(0);
+      expect(asked('a')).toBe(2);
+      expect(asked('b')).toBe(2);
+      pendingFor('a')?.answer('full-access');
+      pendingFor('b')?.answer('full-access');
+      await expect(request).resolves.toBe(true);
+    });
+
+    it('prompts when the threads cannot all be live together within the wait limit', async () => {
+      const { check, pendingFor } = scripted(['a', 'b']);
+      const request = check('s');
+      let settled: boolean | undefined;
+      void request.then((value) => (settled = value));
+      await tick(0);
+      for (let step = 0; step < 3 && settled === undefined; step += 1) {
+        pendingFor('a')?.answer('full-access');
+        await tick(FULL_ACCESS_CONFIRMED_MS + 100);
+        pendingFor('b')?.answer('full-access');
+        await tick(0);
+      }
+      await tick(FULL_ACCESS_WAIT_MS);
+      await expect(request).resolves.toBe(false);
+    });
+
+    it('lets the next request start a fresh read once a stuck one has used the wait limit', async () => {
+      const { check, pendingFor, asked } = scripted(['a']);
+      const stuck = check('s');
+      await tick(0);
+      const stuckAsk = pendingFor('a');
+      await tick(FULL_ACCESS_WAIT_MS);
+      await expect(stuck).resolves.toBe(false);
+
+      const next = check('s');
+      await tick(0);
+      expect(asked('a')).toBe(2);
+      pendingFor('a')?.answer('approval-required');
+      await expect(next).resolves.toBe(false);
+
+      // The stuck read finally says yes. It is older than the newest answer, so it changes nothing.
+      stuckAsk?.answer('full-access');
+      await tick(0);
+      const after = check('s');
+      await tick(0);
+      expect(asked('a')).toBe(3);
+      pendingFor('a')?.answer('approval-required');
+      await expect(after).resolves.toBe(false);
+    });
+
+    it('moves a request that joined a stuck read onto a fresh one when that read hits the limit', async () => {
+      const { check, pendingFor, asked } = scripted(['a']);
+      const first = check('s');
+      await tick(0);
+      await tick(4_000);
+      const joined = check('s');
+      await tick(0);
+      expect(asked('a')).toBe(1);
+      await tick(1_000);
+      await expect(first).resolves.toBe(false);
+      expect(asked('a')).toBe(2);
+      pendingFor('a')?.answer('full-access');
+      await expect(joined).resolves.toBe(true);
+    });
+
+    it('does not let a late yes allow the request waiting on it', async () => {
+      const { check, pendingFor, asked } = scripted(['a']);
+      const request = check('s');
+      await tick(0);
+      await tick(FULL_ACCESS_CONFIRMED_MS);
+      pendingFor('a')?.answer('full-access');
+      await tick(0);
+      expect(asked('a')).toBe(2);
+      pendingFor('a')?.answer('approval-required');
+      await expect(request).resolves.toBe(false);
+    });
   });
 
   it('needs every thread of the session to be full access', async () => {
