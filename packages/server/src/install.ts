@@ -129,6 +129,20 @@ export async function findBrowsers(home: string, env: NodeJS.ProcessEnv): Promis
   return found;
 }
 
+/**
+ * The browsers `native-host install` serves: the one asked for, else every Chromium, Chrome or Brave installation found.
+ * When none is found it keeps the old default, Chromium, so the command still installs something.
+ */
+export async function nativeHostBrowsers(
+  requested: SupportedBrowser | undefined,
+  home: string,
+  env: NodeJS.ProcessEnv,
+): Promise<{ browsers: SupportedBrowser[]; found: boolean }> {
+  if (requested !== undefined) return { browsers: [requested], found: true };
+  const found = await findBrowsers(home, env);
+  return found.length === 0 ? { browsers: ['chromium'], found: false } : { browsers: found, found: true };
+}
+
 async function editAgentConfig(
   agent: Agent,
   configPath: string,
@@ -154,7 +168,8 @@ async function editAgentConfig(
   return action === 'uninstall';
 }
 
-async function hasAgentServer(agent: Agent, configPath: string): Promise<boolean> {
+/** True when the agent's user config already holds the `t3-tab` MCP entry. It reads the file; it starts no agent command. */
+export async function hasAgentServer(agent: Agent, configPath: string): Promise<boolean> {
   const source = await readOptional(configPath);
   if (source === undefined) return false;
   if (agent === 'claude') {

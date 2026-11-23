@@ -10,6 +10,7 @@ import {
   findAgents,
   findBrowsers,
   installAgent,
+  nativeHostBrowsers,
   uninstallAgent,
   type Agent,
 } from './install.js';
@@ -192,7 +193,7 @@ function homeDirectory(): string {
 }
 
 async function runInstall(args: string[]): Promise<void> {
-  let browser: SupportedBrowser = 'chromium';
+  let browser: SupportedBrowser | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--browser') {
@@ -211,8 +212,12 @@ async function runInstall(args: string[]): Promise<void> {
 
   const home = process.env.HOME?.trim();
   if (home === undefined || home === '') throw new Error('HOME is not set');
-  const manifestPath = await installNativeHost({ browser, home, cliPath });
-  process.stdout.write(`${manifestPath}\n`);
+  // Without --browser, every browser found gets the native host.
+  const { browsers, found } = await nativeHostBrowsers(browser, home, process.env);
+  if (!found) process.stderr.write('No Chromium, Chrome or Brave installation found; installing for Chromium. Use --browser to choose another.\n');
+  for (const target of browsers) {
+    process.stdout.write(`${await installNativeHost({ browser: target, home, cliPath })}\n`);
+  }
 }
 
 /** The port the user asked for with --port or T3_TAB_PORT, or undefined when neither was given. */
