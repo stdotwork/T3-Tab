@@ -396,7 +396,7 @@ async function checkFullAccessConfirmed({ serviceWorker, fakes, home, tabId }) {
     await sleep(2_100);
     // Passing through Full access left no approval behind: the same tab's read now follows the lowered mode.
     const listed = text(await first.client.callTool({ name: 'tabs', arguments: {} }));
-    assert(listed.includes(`${openedTab}`) && new RegExp(`^${openedTab}( \\[front\\])? \\[needs approval\\]`, 'm').test(listed), `The tab did not go back to needing approval:\n${listed}`);
+    assert(listed.includes(`${openedTab}`) && new RegExp(`^${openedTab}( \\[current\\])? \\[needs approval\\]`, 'm').test(listed), `The tab did not go back to needing approval:\n${listed}`);
     const readCall = first.client.callTool({ name: 'read', arguments: { tab: openedTab } });
     let readPrompt;
     for (let attempt = 0; attempt < 100 && readPrompt === undefined; attempt += 1) {

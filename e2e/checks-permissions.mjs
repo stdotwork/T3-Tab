@@ -227,7 +227,7 @@ export async function checkPermissions({ mcpClient, mcpClientB, page, serviceWor
   const listWithPopup = text(await rawCall(mcpClient, 'tabs', {}));
   const popupLine = listWithPopup.split('\n').find((line) => line.startsWith(`${popupTab.id} `));
   assert(
-    new RegExp(`^${popupTab.id}( \\[front\\])? \\[needs approval\\] ${escapeRegExp(siteUrl)}$`).test(popupLine ?? ''),
+    new RegExp(`^${popupTab.id}( \\[current\\])? \\[needs approval\\] ${escapeRegExp(siteUrl)}$`).test(popupLine ?? ''),
     `An unapproved member tab shows more than its origin: ${popupLine}\n${listWithPopup}`,
   );
   const approvedLine = listWithPopup.split('\n').find((line) => line.startsWith(`${tabA} `));
@@ -448,7 +448,7 @@ async function waitForTabGroup(serviceWorker, tabId, groupId, label) {
 
 /** A page with a cross-origin iframe: read names the origin it left out and does not return its text. */
 export async function checkFrames({ mcpClient, siteUrl, otherSiteUrl }) {
-  const frontId = Number(/^(\d+) \[front\]/m.exec(text(await call(mcpClient, 'tabs', {})))?.[1]);
+  const frontId = Number(/^(\d+) \[current\]/m.exec(text(await call(mcpClient, 'tabs', {})))?.[1]);
   assert(Number.isInteger(frontId), 'The session has no front tab before the frames check');
   const opened = await call(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/frames` });
   const tabId = Number(/^Opened tab (\d+)/.exec(text(opened))?.[1]);
