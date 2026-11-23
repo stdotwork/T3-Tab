@@ -91,10 +91,10 @@ describe('tree to text', () => {
     expect(renderTree(nodes, new RefTable(), { all: true })).toEqual(['e1 textbox "Name" value="Ada"']);
   });
 
-  it('names images and other named nodes in all mode only', () => {
-    const nodes = [ax(1, 'RootWebArea', '', [2]), ax(2, 'image', 'A cat')];
+  it('shows images in all mode only, each with a ref so it can be hovered or clicked', () => {
+    const nodes = [ax(1, 'RootWebArea', '', [2, 3]), ax(2, 'image', 'A cat'), ax(3, 'image', '')];
     expect(renderTree(nodes, new RefTable(), { all: false })).toEqual([]);
-    expect(renderTree(nodes, new RefTable(), { all: true })).toEqual(['img "A cat"']);
+    expect(renderTree(nodes, new RefTable(), { all: true })).toEqual(['e1 img "A cat"', 'e2 img']);
   });
 
   it('keeps unnamed interactive elements and always shows dialogs', () => {

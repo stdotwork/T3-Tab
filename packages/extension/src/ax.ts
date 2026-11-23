@@ -19,6 +19,7 @@ const KEPT_PROPS = new Set([
 /** What the browser says about one frame of the page. */
 export interface FrameInfo {
   origin: string | undefined;
+  loaderId?: string | undefined;
 }
 
 export interface FramePolicy {
