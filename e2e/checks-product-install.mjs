@@ -160,19 +160,22 @@ export async function checkProductInstall() {
     await context.close();
     context = undefined;
 
-    // 8. A browser started with its own profile folder reads that folder, not ~/.config/chromium.
+    // 8. A browser started with its own profile folder reads that folder, not ~/.config/chromium. This one is headless in a
+    // temporary folder, which setup leaves alone on its own, so the folder is named with --user-data-dir.
     const custom = { ...home, profileDir: join(home.tempHome, 'my-test-profile', 'chromium-data') };
     await mkdir(custom.profileDir, { recursive: true });
     context = await launchBrowser(custom);
     const second = await extensionWorker(context);
     await waitForHelper(second.serviceWorker, false, 5_000);
-    await run(join(nodeDir, 'npx'), ['--yes', `--package=${tarball}`, 't3-tab', 'setup']);
     const customManifest = join(custom.profileDir, 'NativeMessagingHosts', 'com.t3tab.native.json');
-    assert(await exists(customManifest), 'setup did not register in the running browser\'s own profile folder');
+    await run(join(nodeDir, 'npx'), ['--yes', `--package=${tarball}`, 't3-tab', 'setup']);
+    assert(!(await exists(customManifest)), 'setup wrote into the profile folder of a headless browser in a temporary folder');
+    await run(join(nodeDir, 'npx'), ['--yes', `--package=${tarball}`, 't3-tab', 'setup', '--user-data-dir', custom.profileDir]);
+    assert(await exists(customManifest), 'setup --user-data-dir did not register in the named profile folder');
     await waitForHelper(second.serviceWorker, true);
     await run(join(root, 't3-tab'), ['uninstall']);
     assert(!(await exists(customManifest)), 'Uninstall left the manifest in the custom profile folder');
-    console.log('Product install: a browser with its own --user-data-dir found the helper too, and uninstall cleaned that profile');
+    console.log('Product install: a headless test browser is left alone; named with --user-data-dir it found the helper too, and uninstall cleaned that profile');
   } finally {
     await context?.close().catch(() => undefined);
     await stopDaemon(home.statePath);

@@ -17,6 +17,7 @@ import {
   installNativeHost,
   isSupportedBrowser,
   nativeHostBrowsers,
+  installProfiles,
   planRegistrations,
   runningProfiles,
   type SupportedBrowser,
@@ -120,7 +121,7 @@ async function runAgentInstall(args: string[], cliPath: string): Promise<void> {
       );
     }
     if (browsers.length === 0) process.stdout.write('No supported browser installation found.\n');
-    for (const entry of planRegistrations(browsers, host)) {
+    for (const entry of planRegistrations(browsers, host, await installProfiles(browsers, host))) {
       process.stdout.write(`Native host (${entry.browser ?? 'profile'}): would install ${entry.manifestPath}\n`);
     }
     return;
@@ -132,7 +133,7 @@ async function runAgentInstall(args: string[], cliPath: string): Promise<void> {
     process.stdout.write(`${agentName(agent)}: registered t3-tab in ${result.configPath} with ${action}\n`);
   }
   if (browsers.length > 0) {
-    const manifests = await installNativeHost({ browsers, host, cliPath, profiles: await runningProfiles(host) });
+    const manifests = await installNativeHost({ browsers, host, cliPath, profiles: await installProfiles(browsers, host) });
     for (const manifest of manifests) process.stdout.write(`Native host: installed ${manifest}\n`);
   }
   if (agents.length === 0 && browsers.length === 0) {
