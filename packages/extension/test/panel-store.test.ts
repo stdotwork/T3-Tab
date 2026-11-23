@@ -82,11 +82,15 @@ describe('refreshing the setup state', () => {
       if (request.refresh === true) return setupOf('newest');
       return await failing.promise;
     });
+    // A minute on, so this timed poll asks for the setup again and is still waiting for it.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
     const stale = store.refreshSetup();
     await tick();
+    expect(api.panel).toHaveBeenCalledWith({ type: 'panel.setup', refresh: false });
     await store.refreshSetup(true);
     failing.resolve(Promise.reject(new Error('worker restarting')));
     await stale;
+    clock.mockRestore();
     expect(store.useLive().helper).toEqual({ connected: true });
   });
 
