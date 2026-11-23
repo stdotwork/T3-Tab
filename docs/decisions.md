@@ -141,6 +141,15 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   machines. It does **not** protect the browser from programs running as the same OS user (including
   coding agents), which can already read the user's home folder, browser profile, T3 data and `0600`
   state files (`daemon.json`, `extension.json`, `t3-credential.json`) or run `t3-tab native-host`.
+- **`scripting` and `<all_urls>` to survive other extensions' frames.** Chromium detaches
+  `chrome.debugger` from a tab as soon as a frame of another extension starts loading in it, and no
+  DevTools setting stops that, so a password manager's autofill menu made login pages unusable.
+  T3-Tab asks for `scripting` with host access and uses it for one fixed function that points those
+  frames at `about:blank`, which also blanks that extension's menu on a tab an agent is using.
+  `debugger` already reaches every page, so this adds no reach, but it is a wider declared permission.
+- **Dialogs are answered through `act`.** Enter accepts, Escape dismisses and `type` fills a prompt,
+  so the tool schema did not grow. A dialog from a frame of another origin shows no text and can
+  only be dismissed.
 - **Socket-bound sessions and tab groups.** The daemon issues each session id and binds it to the
   control socket that registered it; requests on another socket or with another id are refused.
   Tabs a session opens go into its own Chromium tab group. A session can list and use only tabs in
