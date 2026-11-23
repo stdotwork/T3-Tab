@@ -176,6 +176,22 @@ export async function checkProductInstall() {
     await run(join(root, 't3-tab'), ['uninstall']);
     assert(!(await exists(customManifest)), 'Uninstall left the manifest in the custom profile folder');
     console.log('Product install: a headless test browser is left alone; named with --user-data-dir it found the helper too, and uninstall cleaned that profile');
+
+    // 9. Help is for people who type it: stdout, exit 0. With no browser anywhere, setup says what to do and exits non-zero.
+    const bundle = join(home.rootDir, 'packages', 'helper', 'dist', 'cli.js');
+    const bare = join(home.tempHome, 'no-browser');
+    const bareEnv = cleanEnv({ HOME: bare, XDG_CONFIG_HOME: join(bare, '.config'), XDG_STATE_HOME: join(bare, '.state'), XDG_DATA_HOME: join(bare, '.share'), PATH: nodeDir });
+    await mkdir(bare, { recursive: true });
+    const attempt = (args) => execFileAsync(process.execPath, [bundle, ...args], { cwd: runDir, env: bareEnv, timeout: 60_000 }).then((r) => ({ code: 0, ...r }), (e) => ({ code: e.code, stdout: e.stdout ?? '', stderr: e.stderr ?? '' }));
+    for (const args of [['--help'], ['-h'], ['help'], ['setup', '--help'], ['uninstall', '--help']]) {
+      const out = await attempt(args);
+      assert(out.code === 0 && out.stdout.startsWith(args[0] === 'setup' || args[0] === 'uninstall' ? `Usage: t3-tab ${args[0]}` : 't3-tab:'), `t3-tab ${args.join(' ')} exited ${out.code}:\n${out.stdout}${out.stderr}`);
+    }
+    const none = await attempt(['setup']);
+    assert(none.code === 1 && none.stdout.includes('--browser <chromium|chrome|brave|edge|vivaldi>') && none.stdout.includes('--user-data-dir <folder>'), `setup with no browser exited ${none.code}:\n${none.stdout}${none.stderr}`);
+    const printOnly = await attempt(['setup', '--print']);
+    assert(printOnly.code === 0, `setup --print with no browser exited ${printOnly.code}`);
+    console.log('Product install: --help prints usage and exits 0; setup with no browser names --browser and --user-data-dir and exits 1; setup --print exits 0');
   } finally {
     await context?.close().catch(() => undefined);
     await stopDaemon(home.statePath);

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { startDaemon } from './daemon.js';
 import { currentHost } from './helper-layout.js';
+import { helpFor } from './help.js';
 import { setupHelper, uninstallHelper } from './helper-setup.js';
 import {
   agentConfigPath,
@@ -32,6 +33,11 @@ const cliPath = runningCliPath();
 
 export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
   const [command, ...rest] = args;
+  const help = helpFor(args);
+  if (help !== undefined) {
+    process.stdout.write(help);
+    return;
+  }
   switch (command) {
     case 'daemon':
       await runDaemon(rest);
@@ -62,7 +68,7 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       process.stdout.write(`${HELPER_VERSION ?? 'development build'}\n`);
       return;
     default:
-      throw new UsageError('Usage: t3-tab <setup|uninstall|daemon|native-host|mcp|version>   (developers also: install)');
+      throw new UsageError('Usage: t3-tab <setup|uninstall|daemon|native-host|mcp|version>   (developers also: install)\nRun `t3-tab --help` for what each does.');
   }
 }
 
@@ -208,6 +214,8 @@ async function runSetup(args: string[]): Promise<void> {
     stateDir: stateDirectory(),
     say,
   });
+  // The helper is installed either way, but with no browser link written the browser cannot find it: that is a failure.
+  if (!parsed.print && result.registrations.length === 0) process.exitCode = 1;
   if (!parsed.print && result.registrations.length > 0) {
     say('Done. Open the T3-Tab side panel in your browser: it finds the helper by itself, with no reload.');
     if (!parsed.agents) say('Add Claude Code or Codex from the panel, or run this again with --agents.');
