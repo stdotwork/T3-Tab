@@ -26,7 +26,10 @@ export interface PermissionPrompt {
   origin: string;
   tool: PromptKind;
   session: ToolSession;
-  tab: PromptTab;
+  /** The tab it concerns. A page being opened has none until the owner says yes. */
+  tab?: PromptTab;
+  /** The address being opened or gone to. */
+  url?: string;
 }
 
 export interface SitePermissionStore {
@@ -110,11 +113,11 @@ export class PermissionPrompts {
    * Lets a request through or throws. `full-access` holds for this one request: the caller must not record an origin
    * approval for it, so later requests on the origin follow T3's live mode.
    */
-  async authorize(origin: string, tool: PromptKind, session: ToolSession, tab: PromptTab): Promise<AuthorizeResult> {
+  async authorize(origin: string, tool: PromptKind, session: ToolSession, tab: PromptTab | undefined, url?: string): Promise<AuthorizeResult> {
     const setting = await this.store.get(origin);
     if (settingCovers(setting, tool)) return 'approved';
     if (await this.hasFullAccess(session.id)) {
-      this.autoAllowedLog.push({ tool, origin, tabId: tab.id, tabTitle: tab.title, at: Date.now() });
+      this.autoAllowedLog.push({ tool, origin, tabId: tab?.id ?? -1, tabTitle: tab?.title ?? url ?? origin, at: Date.now() });
       if (this.autoAllowedLog.length > MAX_AUTO_ALLOWED) this.autoAllowedLog.splice(0, this.autoAllowedLog.length - MAX_AUTO_ALLOWED);
       return 'full-access';
     }
@@ -131,9 +134,10 @@ export class PermissionPrompts {
         this.settle(id);
         reject(new Error(`Permission for ${origin} timed out and was declined.`));
       }, timeoutMs);
-      this.pending.set(id, { id, origin, tool, session, tab, resolve, reject, timer });
+      const target = { ...(tab === undefined ? {} : { tab }), ...(url === undefined ? {} : { url }) };
+      this.pending.set(id, { id, origin, tool, session, ...target, resolve, reject, timer });
       this.emit();
-      this.notify(() => this.options.onOpen?.({ id, origin, tool, session, tab }));
+      this.notify(() => this.options.onOpen?.({ id, origin, tool, session, ...target }));
     });
     return 'approved';
   }
@@ -173,7 +177,14 @@ export class PermissionPrompts {
 
   list(): PermissionPrompt[] {
     return [...this.pending.values()]
-      .map(({ id, origin, tool, session, tab }) => ({ id, origin, tool, session, tab }));
+      .map(({ id, origin, tool, session, tab, url }) => ({
+        id,
+        origin,
+        tool,
+        session,
+        ...(tab === undefined ? {} : { tab }),
+        ...(url === undefined ? {} : { url }),
+      }));
   }
 
   private settle(id: string, allowed?: boolean): void {
@@ -291,6 +302,15 @@ export function originOf(value: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+const MAX_PROMPT_ADDRESS = 300;
+
+/** An address as a prompt shows it: no credentials, which could pose as another site's name, and no fragment. */
+export function promptAddress(value: string): string {
+  const url = new URL(value);
+  const address = `${url.origin}${url.pathname}${url.search}`;
+  return address.length <= MAX_PROMPT_ADDRESS ? address : `${address.slice(0, MAX_PROMPT_ADDRESS - 1)}…`;
 }
 
 /** A page no T3-Tab tool may read or act on. */

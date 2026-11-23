@@ -1,9 +1,8 @@
-import { documentEpoch, networkRevision, openDialog, sendCommand } from './cdp';
+import { documentEpoch, forgetPrivateWorld, networkRevision, openDialog, privateWorld, sendCommand } from './cdp';
 
 const QUIET_MS = 150;
 const POLL_MS = 50;
 const MAX_SETTLE_MS = 4_000;
-const OBSERVER_KEY = '__t3TabSettle';
 
 export interface SettleSnapshot {
   ready: boolean;
@@ -86,9 +85,12 @@ export async function settlePage(tabId: number): Promise<SettleResult> {
 
 async function probePage(tabId: number): Promise<PageProbe> {
   try {
+    // In T3-Tab's own world: the observer and its counter must not be something a site can find.
+    const contextId = await privateWorld(tabId);
     const evaluated = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.evaluate', {
+      contextId,
       expression: `(() => {
-        const state = globalThis[${JSON.stringify(OBSERVER_KEY)}] ||= { revision: 0, observer: null };
+        const state = globalThis.settleState ||= { revision: 0, observer: null };
         if (state.observer === null && document.documentElement) {
           state.observer = new MutationObserver(() => { state.revision += 1; });
           state.observer.observe(document.documentElement, {
@@ -121,6 +123,7 @@ async function probePage(tabId: number): Promise<PageProbe> {
     };
   } catch {
     // A navigation can destroy the execution context between two probes.
+    forgetPrivateWorld(tabId);
     return emptyProbe();
   }
 }

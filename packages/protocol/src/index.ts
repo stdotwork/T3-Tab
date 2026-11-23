@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 4 as const;
+export const PROTOCOL_VERSION = 5 as const;
 /** Shown when the extension and the background program speak different protocol versions. It is also a WebSocket close reason, so at most 123 bytes. */
 export const PROTOCOL_MISMATCH = 'The T3-Tab extension and helper are different versions.';
 /** The close reason and error text that say which side is behind. Each fits a WebSocket close reason. */
@@ -86,7 +86,7 @@ export interface TabInfo {
   id: number;
   title: string;
   url: string;
-  /** True for the tab the browser has in front: the default target of `read` and `screenshot`. */
+  /** True for the session's current tab, the default target of the page tools: the last it opened or switched to. */
   active: boolean;
   /** Chromium's tab group id, when the tab is grouped. */
   groupId?: number;
@@ -105,7 +105,7 @@ export interface AxNode {
   name: string;
   value?: string;
   ignored?: true;
-  /** Flags the reader prints, such as `checked`, `disabled`, `expanded`, `level`. */
+  /** Flags the reader prints, such as `checked`, `disabled`, `expanded`, `level`, and a link's `url`. */
   props?: Record<string, string | number | boolean>;
   children: string[];
   /** Stable for the life of one document; the key of a ref. */
@@ -208,6 +208,9 @@ export type ClaimRoute = 'launch' | 'message';
 /** Why an MCP server could not take the claim code from the private file a direct run named. */
 export type ClaimFileProblem = 'missing' | 'not-private' | 'wrong-owner' | 'not-a-file' | 'invalid' | 'unreadable';
 
+/** Moves an existing tab: to an address, through its history, or by loading its page again. */
+export type TabNavigation = 'goto' | 'back' | 'forward' | 'reload';
+
 /** Requests the background program sends to the extension, with their params and results. */
 export interface BrowserMethods {
   /** `t3ThreadId` is set only when the daemon proved which T3 thread the session's process runs for. */
@@ -220,7 +223,12 @@ export interface BrowserMethods {
   'session.claim': { params: { code: string; route: ClaimRoute }; result: { shared: number[] } };
   'session.unregister': { params: Record<string, never>; result: { unregistered: true } };
   'tabs.list': { params: Record<string, never>; result: { tabs: TabInfo[] } };
-  'tabs.open': { params: { url: string }; result: { tab: TabInfo } };
+  /** `redirectedFrom` is the origin asked for, set when the page ended up on another one. */
+  'tabs.open': { params: { url: string }; result: { tab: TabInfo; redirectedFrom?: string } };
+  'tabs.navigate': {
+    params: { tab?: number; action: TabNavigation; url?: string };
+    result: { tab: TabInfo; redirectedFrom?: string };
+  };
   'tabs.switch': { params: { tab: number }; result: { tab: TabInfo } };
   'tabs.close': { params: { tab: number }; result: { closed: number } };
   'page.read': { params: { tab?: number }; result: PageReadResult };
@@ -246,7 +254,10 @@ export interface PromptNotice {
   /** What the agent asked to do: the same four kinds the side panel's prompt names. */
   tool: 'read' | 'act' | 'run_js' | 'open';
   origin: string;
-  tab: { id: number; title: string };
+  /** The tab it concerns. A page being opened has none until the owner says yes. */
+  tab?: { id: number; title: string };
+  /** The address being opened or gone to, without credentials or fragment. */
+  url?: string;
 }
 
 export type BrowserMethod = keyof BrowserMethods;

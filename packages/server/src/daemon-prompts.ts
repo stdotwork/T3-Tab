@@ -16,6 +16,7 @@ import { sendControlError, validSession } from './daemon-messages.js';
 const PROMPT_TOOLS: ReadonlySet<string> = new Set(['read', 'act', 'run_js', 'open']);
 const MAX_TITLE_CHARS = 300;
 const MAX_ORIGIN_CHARS = 2_048;
+const MAX_URL_CHARS = 300;
 
 /** A permission prompt the daemon told a session about, and the browser connection that holds it. */
 export interface TrackedPrompt {
@@ -34,14 +35,17 @@ export function isPromptClosedMessage(value: unknown): value is BrowserPromptClo
 /** Checks a prompt notice the browser sent. A page controls its own title, so the title is cut to a fixed length. */
 export function parsePromptNotice(value: unknown): PromptNotice | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
-  const { id, tool, origin, tab } = value as Record<string, unknown>;
+  const { id, tool, origin, tab, url } = value as Record<string, unknown>;
   if (typeof id !== 'string' || id === '' || id.length > 128) return undefined;
   if (typeof tool !== 'string' || !PROMPT_TOOLS.has(tool)) return undefined;
   if (typeof origin !== 'string' || origin === '' || origin.length > MAX_ORIGIN_CHARS) return undefined;
+  if (url !== undefined && (typeof url !== 'string' || url === '' || url.length > MAX_URL_CHARS)) return undefined;
+  const notice: PromptNotice = { id, tool: tool as PromptNotice['tool'], origin, ...(url === undefined ? {} : { url }) };
+  if (tab === undefined) return url === undefined ? undefined : notice;
   if (typeof tab !== 'object' || tab === null) return undefined;
   const { id: tabId, title } = tab as Record<string, unknown>;
   if (!Number.isInteger(tabId) || typeof title !== 'string') return undefined;
-  return { id, tool: tool as PromptNotice['tool'], origin, tab: { id: tabId as number, title: title.slice(0, MAX_TITLE_CHARS) } };
+  return { ...notice, tab: { id: tabId as number, title: title.slice(0, MAX_TITLE_CHARS) } };
 }
 
 function sendEvent(webSocket: WebSocket, event: ControlEvent): void {

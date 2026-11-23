@@ -9,6 +9,8 @@ export interface StoredSession extends ToolSession {
   approvedOrigins: Record<string, string[]>;
   /** Last origin observed for each tab. A different origin invalidates its approvals. */
   currentOrigins: Record<string, string>;
+  /** The tab the page tools use when a call names none: the last one this session opened, switched to or was handed. */
+  currentTabId?: number;
   /** The T3 thread the daemon showed this session's process runs for. Its mode is still asked of T3 per request. */
   t3ThreadId?: string;
 }
@@ -62,6 +64,15 @@ export function usableSessionTabs(session: StoredSession, tabs: chrome.tabs.Tab[
       tab.id !== undefined &&
       canSessionUseTab(session, tab) &&
       restrictedPageReason(tab.url ?? tab.pendingUrl ?? '') === undefined,
+  );
+}
+
+/** The tab a call that names none is about: the session's current tab, else the one in front, else its first. */
+export function currentSessionTab(session: StoredSession, usable: chrome.tabs.Tab[], frontId: number | undefined): chrome.tabs.Tab | undefined {
+  return (
+    usable.find((tab) => tab.id === session.currentTabId) ??
+    usable.find((tab) => tab.id === frontId) ??
+    usable[0]
   );
 }
 
@@ -128,6 +139,7 @@ export class SessionStore {
       if (session === undefined) throw new Error('Session is not registered');
       if (!session.sharedTabIds.includes(tabId)) session.sharedTabIds.push(tabId);
       if (origin !== undefined) approve(session, tabId, origin);
+      session.currentTabId = tabId;
       return session;
     });
   }
@@ -137,6 +149,7 @@ export class SessionStore {
     return await this.mutate((sessions) => {
       const session = sessions[id];
       if (session === undefined) throw new Error('Session is not registered');
+      let handedOver = false;
       return tabs.map(({ tabId, origin }) => {
         const key = String(tabId);
         const undo: ShareUndo = {
@@ -145,7 +158,12 @@ export class SessionStore {
           addedOrigin: origin !== undefined && session.approvedOrigins[key]?.includes(origin) !== true ? origin : undefined,
           previousOrigin: session.currentOrigins[key],
         };
-        if (undo.addedShare) session.sharedTabIds.push(tabId);
+        if (undo.addedShare) {
+          session.sharedTabIds.push(tabId);
+          // The owner handed this tab over just now, so it is what the agent should look at next.
+          if (!handedOver) session.currentTabId = tabId;
+          handedOver = true;
+        }
         if (origin !== undefined) approve(session, tabId, origin);
         return undo;
       });
@@ -160,7 +178,10 @@ export class SessionStore {
       if (session === undefined) return;
       for (const undo of undos) {
         const key = String(undo.tabId);
-        if (undo.addedShare) session.sharedTabIds = session.sharedTabIds.filter((value) => value !== undo.tabId);
+        if (undo.addedShare) {
+          session.sharedTabIds = session.sharedTabIds.filter((value) => value !== undo.tabId);
+          if (session.currentTabId === undo.tabId) delete session.currentTabId;
+        }
         if (undo.addedOrigin === undefined) continue;
         const left = (session.approvedOrigins[key] ?? []).filter((origin) => origin !== undo.addedOrigin);
         if (left.length === 0) delete session.approvedOrigins[key];
@@ -183,6 +204,14 @@ export class SessionStore {
         delete session.approvedOrigins[String(tabId)];
         delete session.currentOrigins[String(tabId)];
       }
+    });
+  }
+
+  async setCurrentTab(id: string, tabId: number): Promise<void> {
+    await this.mutate((sessions) => {
+      const session = sessions[id];
+      if (session === undefined) throw new Error('Session is not registered');
+      session.currentTabId = tabId;
     });
   }
 
@@ -218,6 +247,7 @@ export class SessionStore {
     await this.mutate((sessions) => {
       for (const session of Object.values(sessions)) {
         session.sharedTabIds = session.sharedTabIds.filter((value) => value !== tabId);
+        if (session.currentTabId === tabId) delete session.currentTabId;
         delete session.approvedOrigins[String(tabId)];
         delete session.currentOrigins[String(tabId)];
       }
@@ -267,6 +297,7 @@ export class SessionStore {
         currentOrigins: parseCurrentOrigins(record.currentOrigins),
       };
       if (typeof record.groupId === 'number') session.groupId = record.groupId;
+      if (typeof record.currentTabId === 'number') session.currentTabId = record.currentTabId;
       if (typeof record.t3ThreadId === 'string') session.t3ThreadId = record.t3ThreadId;
       sessions[id] = session;
     }

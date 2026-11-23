@@ -20,6 +20,7 @@ import { checkInstallCommand } from './checks-install.mjs';
 import { checkProductInstall } from './checks-product-install.mjs';
 import { checkStaleWorker } from './checks-stale-worker.mjs';
 import { checkRealUse } from './checks-real-use.mjs';
+import { checkAgentTools } from './checks-agent-tools.mjs';
 import { checkFrames, checkPermissions } from './checks-permissions.mjs';
 import { checkActionTools, checkBrowserTools, checkKeepalive, rawCall, setAutoPrompt } from './checks-tools.mjs';
 import { checkPanelSessions, installFakeAgents, startFakeT3Environment } from './panel-sessions.mjs';
@@ -42,6 +43,7 @@ try {
   await checkProductInstall();
   await checkStaleWorker(home.extensionDir);
   await checkRealUse();
+  await checkAgentTools();
   await checkInstallCommand({ cliPath, tempHome, childEnv });
   // After the install check, which uses the real agent CLIs: from here on the daemon finds the fakes first.
   const fakes = await installFakeAgents(home);

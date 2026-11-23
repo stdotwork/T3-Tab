@@ -108,7 +108,7 @@ describe('browser tools through the daemon', () => {
     });
     expect(await control(b.socket, b.session, { method: 'tabs', params: {} })).toMatchObject({
       ok: true,
-      result: { content: [{ type: 'text', text: 'No tabs.' }] },
+      result: { content: [{ type: 'text', text: 'No tabs in this session. Open one with action "open" and a url, or ask the owner to share one from the T3-Tab panel.' }] },
     });
 
     const unregistered = await open(handle);
@@ -170,7 +170,7 @@ describe('browser tools through the daemon', () => {
     const reply = await control(socket, session, { method: 'tabs', params: {} });
     expect(reply).toMatchObject({
       ok: true,
-      result: { content: [{ type: 'text', text: '3 [front] Home — http://localhost/' }] },
+      result: { content: [{ type: 'text', text: '3 [current] Home — http://localhost/' }] },
     });
     const toolCall = seen.find((message) => message.method === 'tabs.list');
     expect(toolCall).toMatchObject({ type: 'browser.request', method: 'tabs.list', session, params: {} });

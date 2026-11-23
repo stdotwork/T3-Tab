@@ -6,28 +6,28 @@ import { z } from 'zod';
 // shapes; a value the shapes let through but the browser cannot use comes back as the browser's error.
 
 const tab = z.number().optional();
-const frontTab = 'Default: front tab.';
+const currentTab = 'Default: current tab.';
 
 export const tabsShape = {
-  action: z.enum(['list', 'open', 'switch', 'close']).optional().describe('Default list.'),
-  url: z.string().optional().describe('URL to open.'),
-  tab: tab.describe('Tab id, for switch and close.'),
+  action: z.enum(['list', 'open', 'goto', 'back', 'forward', 'reload', 'switch', 'close']).optional().describe('Default list.'),
+  url: z.string().optional().describe('For open, goto.'),
+  tab: tab.describe('Default: current.'),
   // No description: only a thread started from the side panel uses it, and its message says what to pass.
   claim: z.string().optional(),
 };
 
 export const readShape = {
-  tab: tab.describe(frontTab),
+  tab: tab.describe(currentTab),
   all: z.boolean().optional().describe('Include all text, not only interactive elements.'),
   find: z.string().max(200).optional().describe('Case-insensitive literal text; returns only matching lines.'),
   regex: z.boolean().optional().describe('find is a regular expression.'),
   ref: z.string().optional().describe("Read only this element's subtree."),
-  depth: z.number().min(0).optional().describe('Deepest nesting to show.'),
+  depth: z.number().min(0).optional().describe('Deepest nesting to show; … marks more inside.'),
   full: z.boolean().optional().describe('Whole page, not only what changed.'),
 };
 
 export const screenshotShape = {
-  tab: tab.describe(frontTab),
+  tab: tab.describe(currentTab),
   maxEdge: z
     .number()
     .min(64)
@@ -127,20 +127,20 @@ export function convertStep(step: FlatStep): ActStep | string {
 }
 
 export const actShape = {
-  tab: tab.describe(frontTab),
+  tab: tab.describe(currentTab),
   steps: z
     .array(actStepSchema)
     .min(1)
     .max(50)
     .describe(
       'Run in order; stops at the first failure. Fields by action: click, hover: ref. type: text, optional ref. ' +
-        'fill, select: ref, text. press: key (Enter, Control+A). scroll: ref, or dx and dy. ' +
+        'fill, select: ref, text. press: key (Enter, F5, Control+A). scroll: ref, or dx and dy. ' +
         `wait: ms (0-${MAX_WAIT_MS}) or text to wait for.`,
     ),
 };
 
 export const runJsShape = {
-  tab: tab.describe(frontTab),
+  tab: tab.describe(currentTab),
   expression: z.string().min(1).describe('Expression or async function body; JSON result.'),
 };
 

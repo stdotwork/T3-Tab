@@ -15,7 +15,7 @@ export async function checkPermissions({ mcpClient, mcpClientB, page, serviceWor
 
   const openA = rawCall(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/perm-a` });
   const openPromptA = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'open');
-  assertPromptTab(openPromptA, 'Permission A');
+  assertOpenPrompt(openPromptA, `${siteUrl}/perm-a`);
   await assertPromptMetadata(serviceWorker, openPromptA);
   await assertPromptUi(panelPage, serviceWorker, openPromptA);
   const badgeWhilePending = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
@@ -26,15 +26,14 @@ export async function checkPermissions({ mcpClient, mcpClientB, page, serviceWor
   assert(openedA.isError !== true, `Session A could not open its tab: ${text(openedA)}`);
   const tabA = Number(/^Opened tab (\d+)/.exec(text(openedA))?.[1]);
   assert(Number.isInteger(tabA), `Session A open reply has no tab id: ${text(openedA)}`);
-  assert(openPromptA.tab.id === tabA, `The open prompt named tab ${openPromptA.tab.id}, opened ${tabA}`);
   const badgeAfterDecision = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
   assert(badgeAfterDecision === '', `The action badge was not cleared: ${badgeAfterDecision}`);
-  console.log(`Open approval named tab ${openPromptA.tab.id} "${openPromptA.tab.title}" at ${openPromptA.origin}`);
+  console.log(`Open approval named ${openPromptA.url}, before any tab existed; it opened tab ${tabA}`);
   await assertPromptRows(panelPage, serviceWorker);
 
   const openB = rawCall(mcpClientB, 'tabs', { action: 'open', url: `${otherSiteUrl}/perm-b` });
   const openPromptB = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionB.id && prompt.tool === 'open');
-  assertPromptTab(openPromptB, 'Permission B');
+  assertOpenPrompt(openPromptB, `${otherSiteUrl}/perm-b`);
   await decidePrompt(serviceWorker, openPromptB.id, 'allow-once');
   const openedB = await openB;
   assert(openedB.isError !== true, `Session B could not open its tab: ${text(openedB)}`);
@@ -547,15 +546,13 @@ async function assertPromptRows(panelPage, serviceWorker) {
 async function assertPromptMetadata(serviceWorker, prompt) {
   const pending = await pendingPrompts(serviceWorker);
   assert(pending[0]?.id === prompt.id, 'The newest prompt is not first in arrival order');
-  assertPromptTab(prompt, 'Permission A');
 }
 
 async function assertPromptUi(panelPage, serviceWorker, prompt) {
   const state = await panelRequest(serviceWorker, { type: 'panel.state' });
   await renderPanelState(panelPage, state);
-  // The prompt names its tab by title and, in a span of the same line, by id, both in the same card.
-  const card = panelPage.locator('li.prompt-card').filter({ hasText: `"${prompt.tab.title}"` });
-  await card.locator('.prompt-tab span').getByText(`tab ${prompt.tab.id}`, { exact: true }).waitFor();
+  // A page being opened has no tab yet: the card names the address it would load.
+  await panelPage.locator('li.prompt-card .prompt-tab').filter({ hasText: prompt.url }).waitFor();
   const allow = panelPage.getByRole('button', { name: 'Allow opening once' });
   await allow.waitFor();
   assert(await allow.isDisabled(), 'New prompt buttons were enabled immediately');
@@ -571,7 +568,7 @@ async function assertPromptUi(panelPage, serviceWorker, prompt) {
     await handle.evaluate((element) => element.isConnected && element.dataset.stabilityCheck === 'kept'),
     'A rendered prompt item was rebuilt instead of kept',
   );
-  console.log(`Prompt UI: tab ${prompt.tab.id} "${prompt.tab.title}", buttons delayed, item kept across rerender`);
+  console.log(`Prompt UI: ${prompt.url}, buttons delayed, item kept across rerender`);
 }
 
 async function renderPanelState(panelPage, state) {
@@ -580,6 +577,11 @@ async function renderPanelState(panelPage, state) {
     if (typeof render !== 'function') throw new Error('Panel renderer is unavailable');
     render(next);
   }, state);
+}
+
+function assertOpenPrompt(prompt, expectedUrl) {
+  assert(prompt.tab === undefined, `An open prompt named a tab before one exists: ${JSON.stringify(prompt)}`);
+  assert(prompt.url === expectedUrl, `The open prompt shows ${prompt.url}, expected ${expectedUrl}`);
 }
 
 function assertPromptTab(prompt, expectedTitle) {

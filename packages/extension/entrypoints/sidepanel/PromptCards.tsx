@@ -82,8 +82,8 @@ function PromptCard({
       <div className="prompt-head">
         <Hand size={15} aria-hidden="true" />
         <span>{here ? 'Permission needed' : 'Permission needed on another tab'}</span>
-        {here ? null : (
-          <button type="button" className="prompt-goto" onClick={() => showTab(prompt.tab.id)}>
+        {here || prompt.tab === undefined ? null : (
+          <button type="button" className="prompt-goto" onClick={() => prompt.tab !== undefined && showTab(prompt.tab.id)}>
             Go to tab <ArrowUpRight size={12} aria-hidden="true" />
           </button>
         )}
@@ -93,9 +93,12 @@ function PromptCard({
           <strong>{plain(asker)}</strong> {heading(prompt)}
         </p>
         <p className="prompt-host">{host}</p>
-        <p className="prompt-tab">
-          "{plain(prompt.tab.title || '(untitled)')}" <span>tab {prompt.tab.id}</span>
-        </p>
+        {prompt.url === undefined ? null : <p className="prompt-tab">{plain(prompt.url)}</p>}
+        {prompt.tab === undefined ? null : (
+          <p className="prompt-tab">
+            "{plain(prompt.tab.title || '(untitled)')}" <span>tab {prompt.tab.id}</span>
+          </p>
+        )}
       </div>
       <div className="prompt-actions">
         {choice(once, 'prompt-btn primary')}
@@ -156,7 +159,7 @@ export function PromptCards({
           key={prompt.id}
           prompt={prompt}
           locked={(locks.current.get(prompt.id) ?? 0) > now}
-          here={currentTabId === undefined || prompt.tool === 'open' || prompt.tab.id === currentTabId}
+          here={currentTabId === undefined || prompt.tab === undefined || prompt.tab.id === currentTabId}
           asker={askerName?.(prompt.session) ?? prompt.session.name}
           onManageSites={onManageSites}
         />

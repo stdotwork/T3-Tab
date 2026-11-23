@@ -203,13 +203,13 @@ export async function checkStaleWorker(builtDir) {
       };
       const panel = await openPanel(context, extensionId);
       // The browser has not been asked to start the real helper yet: the row says it is connecting, never "missing".
-      await useHost({ type: 'native.error', protocolVersion: 4, error: 'The T3-Tab extension is older than the helper.' });
+      await useHost({ type: 'native.error', protocolVersion: 5, error: 'The T3-Tab extension is older than the helper.' });
       await helperRow(panel).getByText('Reload T3-Tab on your browser').waitFor({ timeout: 25_000 });
       await helperRow(panel).getByText('The browser said: The T3-Tab extension is older than the helper.').waitFor();
       assert(!(await helperRow(panel).locator('.command-line').count()) && (await panel.locator('.command-line').count()) === 0, 'A behind extension should not be told to run the command');
       console.log('Helper row: a native.error from the host is shown in words, with the one action (reload the extension) and what the browser said');
 
-      await useHost({ type: 'native.daemon', protocolVersion: 4, port: await closedPort(), token: 'x' });
+      await useHost({ type: 'native.daemon', protocolVersion: 5, port: await closedPort(), token: 'x' });
       await helperRow(panel).getByText('could not connect to it').waitFor({ timeout: 25_000 });
       await helperRow(panel).getByText("The browser said: The browser could not connect to the helper's background program").waitFor();
       assert((await panel.locator('.command-line').count()) === 1, 'A refused connection should offer the command');

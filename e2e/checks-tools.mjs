@@ -33,7 +33,7 @@ export async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   assert(refusedOpen.isError === true && /restricted/.test(text(refusedOpen)), `tabs open chrome://: ${text(refusedOpen)}`);
   const switched = await call(mcpClient, 'tabs', { action: 'switch', tab: frontId });
   show('tabs switch', switched);
-  assert(text(switched).startsWith(`Switched to tab ${frontId} [front] T3-Tab E2E`), `tabs switch: ${text(switched)}`);
+  assert(text(switched).startsWith(`Switched to tab ${frontId} [current] T3-Tab E2E`), `tabs switch: ${text(switched)}`);
   const closed = await call(mcpClient, 'tabs', { action: 'close', tab: aboutId });
   show('tabs close', closed);
   assert(text(closed) === `Closed tab ${aboutId}.`, `tabs close: ${text(closed)}`);

@@ -20,8 +20,8 @@ export const permissionPrompts = new PermissionPrompts(siteStore, {
   },
   onChange: (pending) => void updatePermissionBadge(pending).catch(() => undefined),
   // The agent's own thread can show the prompt too; the background program tells the session that asked.
-  onOpen: ({ id, origin, tool, session, tab }) =>
-    sendPromptNotice({ type: 'browser.promptOpened', protocolVersion: PROTOCOL_VERSION, session, prompt: { id, origin, tool, tab } }),
+  onOpen: ({ session, ...prompt }) =>
+    sendPromptNotice({ type: 'browser.promptOpened', protocolVersion: PROTOCOL_VERSION, session, prompt }),
   onClose: (promptId) => sendPromptNotice({ type: 'browser.promptClosed', protocolVersion: PROTOCOL_VERSION, promptId }),
   fullAccess: t3FullAccess(
     async (sessionId) => await claimStore.t3ThreadsOf(sessionId, (await sessionStore.get(sessionId))?.t3ThreadId),

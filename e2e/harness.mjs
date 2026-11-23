@@ -118,7 +118,7 @@ export async function launchUndrivenBrowser(home, startUrl, extraExtensions = []
       if (response?.ok === false) throw new Error(`${request.type}: ${response.error}`);
       return response;
     };
-    return { panel, close };
+    return { panel, worker: (expression) => evaluateOver(workerUrl, expression), close };
   } catch (error) {
     await close();
     throw error;

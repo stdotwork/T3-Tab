@@ -2,6 +2,7 @@ import {
   actStepRef,
   DEFAULT_SCREENSHOT_MAX_EDGE,
   type TabInfo,
+  type TabNavigation,
   type ToolContent,
   type ToolMethod,
   type ToolSession,
@@ -15,6 +16,8 @@ import { actParams, convertStep, readParams, runJsParams, screenshotParams, tabs
 
 const MAX_TAB_TITLE = 80;
 const MAX_TAB_URL = 150;
+const NO_TABS = 'No tabs in this session. Open one with action "open" and a url, or ask the owner to share one from the T3-Tab panel.';
+const NAVIGATED: Record<TabNavigation, string> = { goto: 'Loaded', back: 'Back in', forward: 'Forward in', reload: 'Reloaded' };
 
 /** Runs one browser tool call and returns what the agent sees. Throws a readable message on a bad call or a failure. */
 export async function runTool(
@@ -44,15 +47,28 @@ async function runTabs(
 ): Promise<string> {
   // The owner's tabs for a thread started from the side panel; its first message carries the code.
   if (params.claim !== undefined) await link.request(session, 'session.claim', { code: params.claim, route: 'message' });
-  switch (params.action ?? 'list') {
+  const action = params.action ?? 'list';
+  switch (action) {
     case 'list': {
       const { tabs } = await link.request(session, 'tabs.list', {});
-      return tabs.length === 0 ? 'No tabs.' : tabs.map(tabLine).join('\n');
+      return tabs.length === 0 ? NO_TABS : tabs.map(tabLine).join('\n');
     }
     case 'open': {
       if (params.url === undefined) throw new Error('open needs a url');
-      const { tab } = await link.request(session, 'tabs.open', { url: params.url });
-      return `Opened tab ${tabLine(tab)}`;
+      const opened = await link.request(session, 'tabs.open', { url: params.url });
+      return `Opened tab ${tabLine(opened.tab)}${redirectNote(opened)}`;
+    }
+    case 'goto':
+    case 'back':
+    case 'forward':
+    case 'reload': {
+      if (action === 'goto' && params.url === undefined) throw new Error('goto needs a url');
+      const moved = await link.request(session, 'tabs.navigate', {
+        action,
+        ...(params.tab === undefined ? {} : { tab: params.tab }),
+        ...(action !== 'goto' || params.url === undefined ? {} : { url: params.url }),
+      });
+      return `${NAVIGATED[action]} tab ${tabLine(moved.tab)}${redirectNote(moved)}`;
     }
     case 'switch': {
       if (params.tab === undefined) throw new Error('switch needs a tab id');
@@ -135,7 +151,7 @@ async function runJs(link: BrowserLink, session: ToolSession, params: z.infer<ty
 async function currentTabId(link: BrowserLink, session: ToolSession): Promise<number> {
   const { tabs } = await link.request(session, 'tabs.list', {});
   const front = tabs.find((tab) => tab.active) ?? tabs[0];
-  if (front === undefined) throw new Error('No tab is open');
+  if (front === undefined) throw new Error(NO_TABS);
   return front.id;
 }
 
@@ -145,9 +161,15 @@ function limitJson(text: string): string {
 }
 
 function tabLine(tab: TabInfo): string {
-  const front = tab.active ? ' [front]' : '';
-  if (tab.needsApproval === true) return `${tab.id}${front} [needs approval] ${truncate(tab.url, MAX_TAB_URL)}`;
-  return `${tab.id}${front} ${truncate(tab.title, MAX_TAB_TITLE)} — ${truncate(tab.url, MAX_TAB_URL)}`;
+  const current = tab.active ? ' [current]' : '';
+  if (tab.needsApproval === true) return `${tab.id}${current} [needs approval] ${truncate(tab.url, MAX_TAB_URL)}`;
+  return `${tab.id}${current} ${truncate(tab.title, MAX_TAB_TITLE)} — ${truncate(tab.url, MAX_TAB_URL)}`;
+}
+
+/** Said only when the agent has to do something about it: a redirect to an origin nobody approved yet. */
+function redirectNote(moved: { tab: TabInfo; redirectedFrom?: string }): string {
+  if (moved.redirectedFrom === undefined || moved.tab.needsApproval !== true) return '';
+  return `\nRedirected from ${moved.redirectedFrom}. read this tab to ask the owner for access.`;
 }
 
 function parse<S extends z.ZodType>(schema: S, params: Record<string, unknown>): z.infer<S> {

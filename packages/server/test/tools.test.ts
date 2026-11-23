@@ -44,7 +44,7 @@ describe('tabs tool', () => {
   it('lists tabs as short lines and marks the front one', async () => {
     const link = fakeBrowser({ 'tabs.list': () => ({ tabs: [first, second] }) });
     expect(await runTool(link, SESSION, 'tabs', {})).toEqual([
-      { type: 'text', text: '4 [front] First — http://localhost/a\n9 Second — http://localhost/b' },
+      { type: 'text', text: '4 [current] First — http://localhost/a\n9 Second — http://localhost/b' },
     ]);
   });
 
@@ -55,10 +55,10 @@ describe('tabs tool', () => {
       'tabs.switch': () => ({ tab: hidden }),
     });
     expect(await runTool(link, SESSION, 'tabs', {})).toEqual([
-      { type: 'text', text: '7 [front] [needs approval] http://mail.test\n9 Second — http://localhost/b' },
+      { type: 'text', text: '7 [current] [needs approval] http://mail.test\n9 Second — http://localhost/b' },
     ]);
     expect(await runTool(link, SESSION, 'tabs', { action: 'switch', tab: 7 })).toEqual([
-      { type: 'text', text: 'Switched to tab 7 [front] [needs approval] http://mail.test' },
+      { type: 'text', text: 'Switched to tab 7 [current] [needs approval] http://mail.test' },
     ]);
   });
 
@@ -72,7 +72,7 @@ describe('tabs tool', () => {
       { type: 'text', text: 'Opened tab 9 Second — http://localhost/b' },
     ]);
     expect(await runTool(link, SESSION, 'tabs', { action: 'switch', tab: 4 })).toEqual([
-      { type: 'text', text: 'Switched to tab 4 [front] First — http://localhost/a' },
+      { type: 'text', text: 'Switched to tab 4 [current] First — http://localhost/a' },
     ]);
     expect(await runTool(link, SESSION, 'tabs', { action: 'close', tab: 9 })).toEqual([{ type: 'text', text: 'Closed tab 9.' }]);
     expect(link.forgotten).toEqual([9]);

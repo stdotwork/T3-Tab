@@ -30,7 +30,7 @@ describe('tabs tool with a claim', () => {
   it('sends session.claim before listing tabs', async () => {
     const browser = link();
     expect(await runTool(browser, SESSION, 'tabs', { claim: 'abcdefghijklmnop1234' })).toEqual([
-      { type: 'text', text: '4 [front] First — http://localhost/a' },
+      { type: 'text', text: '4 [current] First — http://localhost/a' },
     ]);
     expect(browser.calls).toEqual(['session.claim {"code":"abcdefghijklmnop1234","route":"message"}', 'tabs.list {}']);
   });

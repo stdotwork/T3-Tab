@@ -23,8 +23,9 @@ const ACTIONS: Record<PromptNotice['tool'], string> = {
  * need not be the one the owner is looking at.
  */
 export function elicitationMessage(prompt: PromptNotice): string {
-  const title = plainText(prompt.tab.title) || '(untitled)';
-  return `Allow T3-Tab to ${ACTIONS[prompt.tool]} ${plainText(prompt.origin)} in tab "${title}"? Allow covers this one request only.`;
+  const target = plainText(prompt.url ?? prompt.origin);
+  const where = prompt.tab === undefined ? '' : ` in tab "${plainText(prompt.tab.title) || '(untitled)'}"`;
+  return `Allow T3-Tab to ${ACTIONS[prompt.tool]} ${target}${where}? Allow covers this one request only.`;
 }
 
 /**

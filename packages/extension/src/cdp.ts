@@ -60,6 +60,15 @@ const commitsAtDetach = new Map<number, number>();
 const recoveryOrigins = new Map<number, string>();
 /** Per tab: the end of the queue of dialog answers. */
 const dialogAnswers = new Map<number, Promise<unknown>>();
+/** Per tab: the epoch of the last document that finished loading. */
+const loadedEpochs = new Map<number, number>();
+const loadWaiters = new Map<number, Set<{ since: number; wake: () => void }>>();
+/** Per tab: the HTTP method of the document request in flight, by loader, and of the document showing. */
+const pendingMethods = new Map<number, Map<string, string>>();
+const documentMethods = new Map<number, string>();
+const MAX_PENDING_METHODS = 32;
+/** Per tab: T3-Tab's own JavaScript world for the current document, which the page's scripts cannot see. */
+const privateWorlds = new Map<number, { epoch: number; contextId: number }>();
 
 export function documentEpoch(tabId: number): number {
   return epochs.get(tabId) ?? 0;
@@ -101,6 +110,12 @@ export function initCdp(): void {
     if (source.tabId === undefined) return;
     if (method.startsWith('Network.')) {
       networkEvents.set(source.tabId, networkRevision(source.tabId) + 1);
+      if (method === 'Network.requestWillBeSent') trackDocumentRequest(source.tabId, params);
+      return;
+    }
+    if (method === 'Page.loadEventFired') {
+      documentLoaded(source.tabId);
+      return;
     }
     if (method.startsWith('Runtime.executionContext')) {
       trackContext(source.tabId, method, params);
@@ -115,7 +130,8 @@ export function initCdp(): void {
       return;
     }
     if (method !== 'Page.frameNavigated') return;
-    const frame = (params as { frame?: { parentId?: unknown; url?: unknown; loaderId?: unknown } } | undefined)?.frame;
+    const navigated = params as { type?: unknown; frame?: { parentId?: unknown; url?: unknown; loaderId?: unknown } } | undefined;
+    const frame = navigated?.frame;
     // Only the top frame replaces the document the held refs point into.
     if (frame !== undefined && frame.parentId === undefined) {
       bumpEpoch(source.tabId);
@@ -123,6 +139,9 @@ export function initCdp(): void {
       logNavigation(source.tabId, url);
       if (typeof frame.loaderId === 'string') mainDocuments.set(source.tabId, { loaderId: frame.loaderId, url });
       else mainDocuments.delete(source.tabId);
+      commitDocumentMethod(source.tabId, frame.loaderId);
+      // A page restored from the back-forward cache is already loaded and fires no load event.
+      if (navigated?.type === 'BackForwardCacheRestore') documentLoaded(source.tabId);
     }
   });
   chrome.webNavigation.onCommitted.addListener((details) => {
@@ -134,6 +153,11 @@ export function initCdp(): void {
     contexts.delete(source.tabId);
     dialogs.delete(source.tabId);
     focusReleaseDue.delete(source.tabId);
+    privateWorlds.delete(source.tabId);
+    // A document may commit while the debugger is off, so its method is no longer known.
+    pendingMethods.delete(source.tabId);
+    documentMethods.delete(source.tabId);
+    wakeLoadWaiters(source.tabId);
     // The epoch moves on the next attach, and only if a different document is showing by then.
     markDetached(source.tabId);
   });
@@ -152,8 +176,99 @@ export function initCdp(): void {
     commitsAtDetach.delete(tabId);
     recoveryOrigins.delete(tabId);
     dialogAnswers.delete(tabId);
+    loadedEpochs.delete(tabId);
+    pendingMethods.delete(tabId);
+    documentMethods.delete(tabId);
+    privateWorlds.delete(tabId);
+    wakeLoadWaiters(tabId);
     notifyDialogWaiters(tabId);
   });
+}
+
+function trackDocumentRequest(tabId: number, params: unknown): void {
+  const sent = params as { type?: unknown; loaderId?: unknown; request?: { method?: unknown } } | undefined;
+  if (sent?.type !== 'Document' || typeof sent.loaderId !== 'string' || typeof sent.request?.method !== 'string') return;
+  const methods = pendingMethods.get(tabId) ?? new Map<string, string>();
+  // A redirect sends the same loader again: the last method is the one that made the document.
+  methods.delete(sent.loaderId);
+  methods.set(sent.loaderId, sent.request.method);
+  for (const loader of methods.keys()) {
+    if (methods.size <= MAX_PENDING_METHODS) break;
+    methods.delete(loader);
+  }
+  pendingMethods.set(tabId, methods);
+}
+
+function commitDocumentMethod(tabId: number, loaderId: unknown): void {
+  const method = typeof loaderId === 'string' ? pendingMethods.get(tabId)?.get(loaderId) : undefined;
+  pendingMethods.delete(tabId);
+  if (method === undefined) documentMethods.delete(tabId);
+  else documentMethods.set(tabId, method);
+}
+
+/** The HTTP method that fetched the document showing, when the debugger saw it happen. */
+export function documentMethod(tabId: number): string | undefined {
+  return documentMethods.get(tabId);
+}
+
+function documentLoaded(tabId: number): void {
+  const epoch = documentEpoch(tabId);
+  loadedEpochs.set(tabId, epoch);
+  for (const waiter of loadWaiters.get(tabId) ?? []) {
+    if (waiter.since < epoch) waiter.wake();
+  }
+}
+
+function wakeLoadWaiters(tabId: number): void {
+  for (const waiter of loadWaiters.get(tabId) ?? []) waiter.wake();
+}
+
+/**
+ * Resolves when a document newer than epoch `since` has loaded, the tab opens a dialog (which holds the load open
+ * until the agent answers it), the tab or debugger goes away, or the time is up: a slow page is still returned.
+ */
+export async function waitForDocumentLoad(tabId: number, since: number, timeoutMs: number): Promise<void> {
+  if ((loadedEpochs.get(tabId) ?? -1) > since || dialogs.has(tabId)) return;
+  await new Promise<void>((resolve) => {
+    const waiters = loadWaiters.get(tabId) ?? new Set<{ since: number; wake: () => void }>();
+    loadWaiters.set(tabId, waiters);
+    const waiter = {
+      since,
+      wake: (): void => {
+        clearTimeout(timer);
+        stopDialog();
+        waiters.delete(waiter);
+        if (waiters.size === 0 && loadWaiters.get(tabId) === waiters) loadWaiters.delete(tabId);
+        resolve();
+      },
+    };
+    const timer = setTimeout(waiter.wake, timeoutMs);
+    const stopDialog = onDialogOpen(tabId, waiter.wake);
+    waiters.add(waiter);
+  });
+}
+
+/**
+ * An isolated JavaScript world in the tab's main frame, for T3-Tab's own probes: it shares the DOM with the page, but
+ * nothing kept there (a MutationObserver, a counter) is visible to the page's scripts.
+ */
+export async function privateWorld(tabId: number): Promise<number> {
+  await ensureAttached(tabId);
+  const epoch = documentEpoch(tabId);
+  const known = privateWorlds.get(tabId);
+  if (known?.epoch === epoch) return known.contextId;
+  const tree = await sendCommand<{ frameTree?: { frame?: { id?: unknown } } }>(tabId, 'Page.getFrameTree');
+  const frameId = tree.frameTree?.frame?.id;
+  if (typeof frameId !== 'string') throw new Error('The browser did not report the page frame');
+  const world = await sendCommand<{ executionContextId?: unknown }>(tabId, 'Page.createIsolatedWorld', { frameId, worldName: 'probe' });
+  if (typeof world.executionContextId !== 'number') throw new Error('The browser did not create a world');
+  privateWorlds.set(tabId, { epoch, contextId: world.executionContextId });
+  return world.executionContextId;
+}
+
+/** Forgets the private world after a command found it gone (a document replaced it). */
+export function forgetPrivateWorld(tabId: number): void {
+  privateWorlds.delete(tabId);
 }
 
 function trackDialog(tabId: number, params: unknown): void {

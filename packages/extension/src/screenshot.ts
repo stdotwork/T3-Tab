@@ -1,6 +1,6 @@
 import type { ScreenshotResult } from '@t3-tab/protocol';
 
-import { documentEpoch, ensureAttached, sendCommand, setRecoveryOrigin } from './cdp';
+import { documentEpoch, ensureAttached, holdInputFocus, sendCommand, setRecoveryOrigin } from './cdp';
 import { originOf } from './permissions';
 
 const JPEG_QUALITY = 85;
@@ -31,10 +31,14 @@ export async function captureViewport(tabId: number, maxEdge: number, guard: Cap
     throw new Error(`The page moved from ${guard.origin} to ${origin ?? 'an unknown origin'}. Read the new page and approve it before taking a screenshot.`);
   }
   const metrics = await sendCommand<LayoutMetrics>(tabId, 'Page.getLayoutMetrics');
-  const captured = await sendCommand<{ data?: unknown }>(tabId, 'Page.captureScreenshot', {
-    format: 'jpeg',
-    quality: JPEG_QUALITY,
-  });
+  // A hidden tab renders no frames of its own, so it counts as visible for the length of the capture.
+  const release = await holdInputFocus(tabId);
+  let captured: { data?: unknown };
+  try {
+    captured = await sendCommand<{ data?: unknown }>(tabId, 'Page.captureScreenshot', { format: 'jpeg', quality: JPEG_QUALITY });
+  } finally {
+    await release();
+  }
   if (documentEpoch(tabId) !== epoch || (await guard.currentUrl()) !== url) {
     throw new Error('The page changed while the screenshot was being taken, so the image was discarded. Read the page and try again.');
   }
