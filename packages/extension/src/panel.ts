@@ -24,7 +24,7 @@ import {
   type StoredSitePermission,
 } from './permissions';
 import { claimStore, permissionPrompts, sessionStore, siteStore } from './runtime';
-import type { StoredSession } from './sessions';
+import { canSessionUseTab, type StoredSession } from './sessions';
 
 export interface PanelTab {
   id: number;
@@ -32,9 +32,17 @@ export interface PanelTab {
   url: string;
 }
 
+/** A thread of T3 Code or a direct run. */
+export interface TabThread {
+  id: string;
+  source: 't3' | 'direct';
+}
+
 export interface PanelState {
   sessions: StoredSession[];
   currentTab: PanelTab | undefined;
+  /** The thread holding the panel's tab, so opening the panel on that tab shows it. */
+  tabThread?: TabThread;
   pending: PermissionPrompt[];
   sites: StoredSitePermission[];
   /** The last requests let through without a prompt because the thread has full access in T3 Code. */
@@ -181,7 +189,18 @@ async function panelState(tabId: number | undefined): Promise<PanelState> {
       visibleSites = [...sites, currentSite].sort((left, right) => left.origin.localeCompare(right.origin));
     }
   }
-  return { sessions, pending, sites: visibleSites, currentTab, autoAllowed: permissionPrompts.autoAllowed() };
+  const tabThread = currentTab === undefined ? undefined : await threadOnTab(currentTab.id, sessions).catch(() => undefined);
+  return { sessions, pending, sites: visibleSites, currentTab, autoAllowed: permissionPrompts.autoAllowed(), ...(tabThread === undefined ? {} : { tabThread }) };
+}
+
+/** The thread whose session can use this tab, or whose conversation the owner shared it with. */
+async function threadOnTab(tabId: number, sessions: StoredSession[]): Promise<TabThread | undefined> {
+  const tab = await chrome.tabs.get(tabId);
+  const proven = sessions.find((session) => session.t3ThreadId !== undefined && canSessionUseTab(session, tab))?.t3ThreadId;
+  if (proven !== undefined) return { id: proven, source: 't3' };
+  const held = Object.entries(await claimStore.conversationTabs()).find(([, tabs]) => tabs.some((entry) => entry.tabId === tabId))?.[0];
+  if (held === undefined) return undefined;
+  return held.startsWith(T3_CONVERSATION_PREFIX) ? { id: held.slice(T3_CONVERSATION_PREFIX.length), source: 't3' } : { id: held, source: 'direct' };
 }
 
 async function agentPanelState(refresh: boolean, tabId: number | undefined): Promise<AgentPanelState> {

@@ -7,6 +7,8 @@
 // `setup` stops after the three setup screens (helper missing, helper found, all ready) and needs no agent login:
 //   T3_TAB_FLOW_SHOTS=/some/folder T3_TAB_FLOW_T3_HOME=/some/throwaway/t3-home node e2e/panel-flow.mjs setup
 //
+// `thread` runs only the check of a thread started in T3 itself (Full access with no prompt, Supervised with one).
+//
 // Everything runs under a temporary HOME; the browser is headless; the T3 server is started and stopped here.
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -20,7 +22,7 @@ import { connectMcp, createHome, extensionWorker, installNativeHost, launchBrows
 const shotsDir = process.env.T3_TAB_FLOW_SHOTS;
 if (shotsDir === undefined) throw new Error('Set T3_TAB_FLOW_SHOTS to the folder for screenshots');
 const which = process.argv[2] ?? 'all';
-const MODEL = 'Claude Haiku 5.5';
+const MODEL = 'Haiku 5.5';
 const results = [];
 
 const check = (name, ok, detail = '') => {
@@ -132,6 +134,11 @@ async function runT3Command(home, args) {
 
 /** Changes a thread's mode the way T3's own app does, from a client that is not the panel. */
 async function setThreadMode(home, origin, threadId, runtimeMode) {
+  await otherClientRpc(home, origin, 'orchestration.dispatchCommand', { type: 'thread.runtime-mode.set', commandId: crypto.randomUUID(), threadId, runtimeMode });
+}
+
+/** One request to T3 from a client that is not the panel, the way T3's own app makes it. */
+async function otherClientRpc(home, origin, tag, payload) {
   const { credential } = JSON.parse(await runT3Command(home, ['auth', 'pairing', 'create', '--json', '--ttl', '2m', '--label', 'flow-other-client']));
   const token = await fetch(`${origin}/oauth/token`, {
     method: 'POST',
@@ -147,19 +154,117 @@ async function setThreadMode(home, origin, threadId, runtimeMode) {
   const issued = await fetch(`${origin}/api/auth/websocket-ticket/rpc`, { method: 'POST', headers: { authorization: `Bearer ${accessToken}` } });
   const { ticket } = await issued.json();
   const socket = new WebSocket(`${origin.replace('http', 'ws')}/ws?wsTicket=${encodeURIComponent(ticket)}&orchestrationProtocol=2`);
-  await new Promise((resolve, reject) => {
+  const value = await new Promise((resolve, reject) => {
     socket.onerror = () => reject(new Error('The other T3 client could not connect'));
-    socket.onopen = () =>
-      socket.send(JSON.stringify({ _tag: 'Request', id: 1, tag: 'orchestration.dispatchCommand', payload: { type: 'thread.runtime-mode.set', commandId: crypto.randomUUID(), threadId, runtimeMode }, headers: [] }));
+    socket.onopen = () => socket.send(JSON.stringify({ _tag: 'Request', id: 1, tag, payload, headers: [] }));
     socket.onmessage = (event) => {
       for (const frame of [JSON.parse(event.data)].flat()) {
         if (frame._tag !== 'Exit') continue;
-        if (frame.exit._tag === 'Success') resolve();
-        else reject(new Error(`T3 refused the mode change: ${JSON.stringify(frame.exit).slice(0, 200)}`));
+        if (frame.exit._tag === 'Success') resolve(frame.exit.value);
+        else reject(new Error(`T3 refused ${tag}: ${JSON.stringify(frame.exit).slice(0, 200)}`));
       }
     };
   });
   socket.close();
+  return value;
+}
+
+/**
+ * A thread started in T3 itself, with no claim from the panel: in Full access its browser requests pass with no prompt,
+ * and the same thread back in Supervised is asked.
+ */
+async function checkThreadFromT3({ home, t3, panelPage, serviceWorker, tabId, extraSites, shot }) {
+  const panelState = async () => await panelRequest(serviceWorker, { type: 'panel.state', tabId });
+  const { projectId, instanceId, model } = await panelPage.evaluate(() => {
+    const state = window.__t3tabT3.snapshot();
+    const claude = state.providers.find((provider) => provider.driver === 'claudeAgent');
+    return {
+      projectId: state.projects.find((project) => project.title === 'demo-project')?.id,
+      instanceId: claude?.instanceId,
+      model: claude?.models.find((entry) => /Haiku/.test(entry.name))?.slug,
+    };
+  });
+  const view = async (id) =>
+    await panelPage.evaluate(
+      async (threadId) =>
+        await new Promise((resolve) => {
+          let stop;
+          stop = window.__t3tabT3.watchThread(threadId, (current) => {
+            resolve({ running: current.running, approval: current.approval ?? null });
+            setTimeout(() => stop?.(), 0);
+          });
+        }),
+      id,
+    );
+  const fullSite = await startSite();
+  const askedSite = await startSite();
+  extraSites.push(fullSite, askedSite);
+  const before = ((await panelState()).autoAllowed ?? []).length;
+  const { threadId } = await otherClientRpc(home, t3.origin, 'orchestration.launchThread', {
+    commandId: crypto.randomUUID(),
+    creationSource: 'web',
+    projectId,
+    title: 'Started in T3',
+    generateTitle: false,
+    modelSelection: { instanceId, model },
+    runtimeMode: 'full-access',
+    interactionMode: 'default',
+    workspaceStrategy: { type: 'root' },
+    initialMessage: { messageId: crypto.randomUUID(), text: `Use the t3-tab browser tools to open ${fullSite.url} in a new tab and read it. Reply with the h1 text only.`, attachments: [] },
+  });
+  await panelPage.locator('#btn-threads').click();
+  await panelPage.locator('.thread-row').filter({ hasText: 'Started in T3' }).click();
+  await panelPage.locator(`.screen[data-thread-id="${threadId}"]`).waitFor();
+  await shot('19-thread-from-t3-running');
+  let promptedInFull = false;
+  await until('the T3 thread to use the browser', async () => {
+    const state = await panelState();
+    if (state.pending.some((prompt) => prompt.origin === new URL(fullSite.url).origin)) promptedInFull = true;
+    return (state.autoAllowed ?? []).slice(before).some((entry) => entry.origin === new URL(fullSite.url).origin);
+  }, 150_000);
+  await until('the T3 thread to finish', async () => !(await view(threadId)).running, 120_000);
+  const session = (await panelState()).sessions.find((entry) => entry.t3ThreadId === threadId);
+  check('a thread started in T3 is known by its process, with no claim', session !== undefined, session?.name ?? 'no session');
+  check('that thread in Full access used the browser with no prompt', !promptedInFull && (await panelState()).pending.length === 0);
+  const sites = (await panelState()).sites.filter((site) => site.origin === new URL(fullSite.url).origin && site.setting !== 'ask');
+  check('the Full access pass left no site setting', sites.length === 0, JSON.stringify(sites));
+
+  await setThreadMode(home, t3.origin, threadId, 'approval-required');
+  await sleep(2_100);
+  await otherClientRpc(home, t3.origin, 'orchestration.dispatchCommand', {
+    type: 'message.dispatch',
+    commandId: crypto.randomUUID(),
+    createdBy: 'user',
+    creationSource: 'web',
+    threadId,
+    messageId: crypto.randomUUID(),
+    text: `Use the t3-tab browser tools to open ${askedSite.url} in a new tab. If it is declined, reply with the word declined.`,
+    attachments: [],
+    dispatchMode: { type: 'start_immediately' },
+  });
+  const asked = await until('the Supervised thread to be asked', async () => {
+    const prompt = (await panelState()).pending.find((entry) => entry.origin === new URL(askedSite.url).origin);
+    if (prompt !== undefined) return prompt;
+    const { approval } = await view(threadId);
+    if (approval !== null && approval.kind !== 'mcp-elicitation') {
+      await panelPage.evaluate(async ({ id, requestId }) => await window.__t3tabT3.respond(id, requestId, { decision: 'accept' }), { id: threadId, requestId: approval.requestId });
+    }
+    return undefined;
+  }, 150_000).catch(() => undefined);
+  check('the same thread back in Supervised gets a prompt', asked !== undefined, asked === undefined ? 'no prompt' : `${asked.tool} on ${asked.origin}`);
+  if (asked !== undefined) {
+    // Past the panel's one-second poll and the card's 500 ms button lock, so it shows as the owner can use it.
+    await sleep(1_700);
+    await shot('20-thread-from-t3-permission');
+    const card = panelPage.locator(`.prompt-card[data-prompt-id="${asked.id}"]`);
+    check('the card names the thread', (await card.locator('.prompt-who').innerText()).includes('Started in T3'));
+    await panelRequest(serviceWorker, { type: 'panel.decide', promptId: asked.id, decision: 'decline' });
+  }
+  await until('the Supervised turn to end', async () => {
+    const { running, approval } = await view(threadId);
+    if (approval !== null) await panelPage.evaluate(async ({ id, requestId }) => await window.__t3tabT3.respond(id, requestId, { decision: 'decline' }), { id: threadId, requestId: approval.requestId }).catch(() => undefined);
+    return !running;
+  }, 120_000).catch(() => undefined);
 }
 
 async function checkClosedPanelFullAccess({ home, t3, serviceWorker, tabId, threadId, extraSites }) {
@@ -293,6 +398,11 @@ async function runT3Flow() {
     await panelPage.locator('.model-popover').waitFor();
     await shot('06-model-picker');
     await panelPage.keyboard.press('Escape');
+    if (which === 'thread') {
+      await checkThreadFromT3({ home, t3, panelPage, serviceWorker, tabId, extraSites, shot });
+      await panelRequest(serviceWorker, { type: 'panel.t3Unpair' }).catch(() => undefined);
+      return;
+    }
     await pickModel(panelPage, MODEL);
 
     // 3. A real thread in Full access, reading the shared tab with no prompt.
@@ -418,6 +528,7 @@ async function runT3Flow() {
     const after = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
     check('Full access answered yes for the browser', (after.autoAllowed ?? []).length > before && after.pending.length === 0, `${(after.autoAllowed ?? []).length - before} auto-allowed`);
     const fullThread = await panelPage.locator('.screen[data-thread-id]').getAttribute('data-thread-id');
+    await checkThreadFromT3({ home, t3, panelPage, serviceWorker, tabId, extraSites, shot });
 
     await panelPage.getByRole('button', { name: 'New thread' }).click();
     await pickModel(panelPage, MODEL);
@@ -482,7 +593,8 @@ async function runT3Flow() {
     await shot('16b-theme-follows-t3');
     await panelPage.locator('.settings-tabs').getByRole('button', { name: 'Sites' }).click();
     await shot('17-settings-sites');
-    await panelPage.locator('.settings-tabs').getByRole('button', { name: 'Connections' }).click();
+    await panelPage.locator('.settings-tabs').getByRole('button', { name: 'General' }).click();
+    await panelPage.getByRole('button', { name: /^Connections/ }).click();
     await shot('18-settings-connections');
     await panelPage.getByRole('button', { name: 'Disconnect from T3 Code' }).click();
     await panelPage.locator('.setup-row').filter({ hasText: 'T3 Code' }).getByRole('button', { name: 'Connect' }).waitFor({ timeout: 15_000 });
@@ -597,7 +709,7 @@ async function runDirectFlow() {
 await mkdir(shotsDir, { recursive: true });
 let failure;
 try {
-  if (which === 't3' || which === 'setup' || which === 'all') await runT3Flow();
+  if (which === 't3' || which === 'thread' || which === 'setup' || which === 'all') await runT3Flow();
   if (which === 'direct' || which === 'all') await runDirectFlow();
 } catch (error) {
   failure = error;

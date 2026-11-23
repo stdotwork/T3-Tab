@@ -81,10 +81,12 @@ export interface T3State {
   defaultAppearance: string;
   themes: EnvironmentTheme[];
   threadStop: boolean;
+  /** The folder of T3's Scratch project, which is what "no project" runs in. Unset when this T3 offers none. */
+  scratchRoot?: string;
 }
 
 type ConfigEvent =
-  | { type: 'snapshot'; config: { providers: Provider[]; settings: { defaultTheme?: string; defaultAppearance?: string }; environment?: { capabilities?: { threadStop?: boolean } } } }
+  | { type: 'snapshot'; config: { providers: Provider[]; scratchWorkspaceRoot?: string; settings: { defaultTheme?: string; defaultAppearance?: string }; environment?: { capabilities?: { threadStop?: boolean } } } }
   | { type: 'providerStatuses'; payload: { providers: Provider[] } }
   | { type: 'settingsUpdated'; payload: { settings: { defaultTheme?: string; defaultAppearance?: string } } }
   | { type: 'environmentThemesUpdated'; payload: { themes: EnvironmentTheme[] } }
@@ -376,6 +378,7 @@ export class T3Client {
         defaultTheme: config.settings.defaultTheme ?? '',
         defaultAppearance: config.settings.defaultAppearance ?? '',
         threadStop: config.environment?.capabilities?.threadStop === true,
+        ...(config.scratchWorkspaceRoot === undefined ? {} : { scratchRoot: config.scratchWorkspaceRoot }),
       });
     } else if (event.type === 'providerStatuses') {
       this.set({ providers: (event as Extract<ConfigEvent, { type: 'providerStatuses' }>).payload.providers });
@@ -483,6 +486,11 @@ export class T3Client {
 
   async setRuntimeMode(threadId: string, runtimeMode: string): Promise<void> {
     await this.rpc('orchestration.dispatchCommand', { type: 'thread.runtime-mode.set', commandId: crypto.randomUUID(), threadId, runtimeMode });
+  }
+
+  /** Finds or creates T3's Scratch project, where a thread with no project runs. */
+  async ensureScratchProject(): Promise<string> {
+    return (await this.rpc<{ projectId: string }>('projects.ensureScratch', {})).projectId;
   }
 
   async createProject(workspaceRoot: string): Promise<string> {

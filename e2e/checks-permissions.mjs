@@ -479,11 +479,11 @@ async function assertPromptRows(panelPage, serviceWorker) {
   const show = async (pending, sites = base.sites) => await renderPanelState(panelPage, { ...base, pending, sites });
   const row = (title) => panelPage.locator('li.prompt-card').filter({ hasText: title });
   const disabledStates = async (title) => {
-    const states = await row(title).locator('button').evaluateAll((buttons) => buttons.map((button) => button.disabled));
+    const states = await row(title).locator('.prompt-btn').evaluateAll((buttons) => buttons.map((button) => button.disabled));
     assert(states.length === 3, `Row "${title}" shows ${states.length} buttons, expected 3`);
     return states;
   };
-  const labels = async (title) => await row(title).locator('button').allTextContents();
+  const labels = async (title) => await row(title).locator('.prompt-btn-label').allTextContents();
   const allDisabled = async (title) => (await disabledStates(title)).every(Boolean);
   const allEnabled = async (title) => (await disabledStates(title)).every((disabled) => !disabled);
   const settle = async () => await sleep(650);
@@ -495,9 +495,11 @@ async function assertPromptRows(panelPage, serviceWorker) {
   const actLabels = await labels('Row two');
   assert(JSON.stringify(readLabels) === JSON.stringify(['Allow reading once', 'Decline', 'Always allow reading on this site']), `Read prompt buttons: ${JSON.stringify(readLabels)}`);
   assert(
-    JSON.stringify(actLabels) === JSON.stringify(['Allow acting once', 'Decline', 'Always allow everything on this site (reading, opening, acting, JavaScript)']),
+    JSON.stringify(actLabels) === JSON.stringify(['Allow acting once', 'Decline', 'Always allow everything on this site']),
     `Act prompt buttons: ${JSON.stringify(actLabels)}`,
   );
+  await row('Row one').getByText('Opening, acting and JavaScript still ask').waitFor();
+  await row('Row two').getByText('Reading, opening, acting and JavaScript').waitFor();
   await settle();
   assert((await allEnabled('Row one')) && (await allEnabled('Row two')), 'Prompt buttons did not enable after the delay');
 
@@ -531,8 +533,11 @@ async function assertPromptRows(panelPage, serviceWorker) {
   await panelPage.locator('.settings-tabs').getByRole('button', { name: 'Sites', exact: true }).click();
   const readSite = panelPage.locator('#site-permissions li').filter({ hasText: 'http://read.test' });
   await readSite.getByText('Reading allowed; opening, acting and JavaScript ask').waitFor();
-  const readSiteButtons = await readSite.locator('button').allTextContents();
-  assert(JSON.stringify(readSiteButtons) === JSON.stringify(['Ask every time', 'Always allow everything']), `Read-only site buttons: ${JSON.stringify(readSiteButtons)}`);
+  const readSiteChoices = await readSite.getByRole('radio').evaluateAll((radios) => radios.map((radio) => [radio.getAttribute('aria-label'), radio.getAttribute('aria-checked')]));
+  assert(
+    JSON.stringify(readSiteChoices) === JSON.stringify([['Ask every time', 'false'], ['Always allow reading', 'true'], ['Always allow everything', 'false']]),
+    `Read-only site choices: ${JSON.stringify(readSiteChoices)}`,
+  );
   await panelPage.locator('#site-permissions li').filter({ hasText: 'http://all.test' }).getByText('Everything allowed: reading, opening, acting, JavaScript').waitFor();
   console.log('Site list: a read-only grant is shown as "Reading allowed; opening, acting and JavaScript ask"');
   await panelPage.locator('#btn-settings-back').click();

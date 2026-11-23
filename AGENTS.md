@@ -264,20 +264,47 @@ steps is refused until its new origin is approved. Site setting writes are seria
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
 `view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel lives in
-`packages/extension/entrypoints/sidepanel` (React: first-run setup, a new-thread home, the thread view, and the
+`packages/extension/entrypoints/sidepanel` (React: first-run setup, a new-thread screen, the thread view, and the
 thread list and settings behind icons, coloured only from T3's theme roles); its sharing and prompt calls live in
 `packages/extension/src/panel.ts`, and the policy is in `permissions.ts`, `sessions.ts` and `tabs.ts`.
+
+The panel belongs to the tab it was opened on (`panel-tab.ts`). The worker turns the manifest's window-wide panel off, and
+the toolbar button calls `chrome.sidePanel.setOptions({ tabId, path: 'sidepanel.html?tabId=<id>', enabled: true })` and
+`open` for that tab, so other tabs show no panel until the owner opens one there. The tab chip is always that tab. Each
+tab's panel keeps its draft, its project and the screen it was on in session storage, removed when the tab closes.
+Opened on a tab a thread holds, the panel shows that thread. Opened on any other tab it shows a new thread, with the
+threads working elsewhere listed above the composer; a permission card for another tab says so and has a Go to tab button.
+
+A new tab's thread starts in no project, which is T3's Scratch project (`projects.ensureScratch`), and Settings can change
+that default to the last used project or a fixed one. Settings has two pages: General (default project, Connections
+folded away, appearance) and Sites. Sites lists this tab's site and the sites with a grant, since a site left on `ask`
+is the same as one never seen, and the last requests Full access let through.
 
 A permission prompt shows as a card in the side panel and, when the agent's client supports MCP form elicitation,
 in the thread the agent runs in. The first answer counts and closes the other. An accepted question allows that one
 request; site-wide grants are made only in the side panel. `claude -p` and `codex exec` cancel these questions, so a
 direct run asks in the side panel only.
 
-T3's Full access counts as yes for a browser request only while T3 itself confirms it (`t3-full-access.ts`). When a request
-needs a prompt, the extension asks the daemon, which runs `t3 thread show --json --messages 0 <threadId>` for the thread the
-session's claim is bound to; that works with the side panel closed. If every grant the session holds is bound to a T3 thread
-and each thread reports `full-access`, the request goes through with no card, writes no site setting and is listed in
-`autoAllowed`. A yes counts for two seconds on a monotonic clock from when its read started, and a request is allowed only at a moment when every
+T3's Full access counts as yes for a browser request only while T3 itself confirms it (`t3-full-access.ts`), for any T3
+thread, started from the panel or not. T3 sets `T3CODE_THREAD_ID` for the provider processes of a thread, and the MCP
+servers they start inherit it. When an MCP server registers it sends its pid, and the daemon accepts its thread
+(`agents/t3-thread-identity.ts`) only if that process holds the connection's socket, carries exactly one valid id, and its
+parent chain reaches the T3 server recorded in `server-runtime.json` (not started after its record) without passing through
+the daemon and without any process naming a different thread. A process with no id does not break the chain, because
+Codex's shared app-server has none. So a command an agent starts with another thread's id is refused, since its own shell
+names the real one, and a direct run from the panel never counts. Anything else, and every platform but Linux, means no
+thread and normal prompts.
+
+This widens what Full access reaches. A process in a T3 terminal also carries that thread's id, so an agent the owner
+starts there counts as that thread. The check stops a mislabelled command, not a program running as the owner that rewrites
+its own environment, which is outside T3-Tab's trust model as before. It names the thread only; the mode is still T3's
+answer per request.
+
+When a request needs a prompt, the extension asks the daemon, which runs `t3 thread show --json --messages 0 <threadId>` for
+the session's proven thread and every thread its claims are bound to; that works with the side panel closed. If each of them
+reports `full-access`, the request goes through with no card, writes no site setting and is listed in
+`autoAllowed`. A session holding a direct run's grant never counts, and a claim not bound yet counts only alongside a proven
+thread. A yes counts for two seconds on a monotonic clock from when its read started, and a request is allowed only at a moment when every
 thread the session holds has such a yes; a thread that lapsed while another answered is read again. So after any of its
 threads leaves Full access, a session's request can pass for at most two seconds, and a late answer never allows the request
 waiting on it. A request waits at most five seconds for all of them to be live together, then prompts. Requests share one
@@ -285,8 +312,8 @@ read per thread until that read is five seconds old; after that the next request
 abandoned read that answers later cannot overwrite a newer answer. The daemon ends a stuck command after 30 seconds, so a
 hung T3 can hold about seven of them per thread while requests keep arriving. A pass from
 Full access records no origin approval, so reads, screenshots and the title in `tabs` follow the live mode too, and the tab
-shows `[needs approval]` again once the thread leaves it. An Allow once still records its approval for the tab. An unbound
-claim, a direct run's claim, another mode, a stopped T3 or no answer within five seconds all mean a normal prompt. Every
+shows `[needs approval]` again once the thread leaves it. An Allow once still records its approval for the tab. No proven
+thread and no bound claim, a direct run's claim, another mode, a stopped T3 or no answer within five seconds all mean a normal prompt. Every
 other check still runs. Withdrawing a claim no thread was bound to also takes back the tabs an agent got through it.
 
 ## Side panel sessions

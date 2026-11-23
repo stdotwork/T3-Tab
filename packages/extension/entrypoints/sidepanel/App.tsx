@@ -1,303 +1,26 @@
 import type { AgentConversation } from '@t3-tab/protocol';
-import { AlertCircle, Check, ChevronDown, FolderPlus, History, Plus, Search, Settings as SettingsIcon, SquarePen } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { History, Plus, Search } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
-import type { PanelTab } from '../../src/panel';
+import type { PanelTab, TabThread } from '../../src/panel';
 
 import { ApprovalCard, QuestionCard, Timeline } from './Thread';
-import { Composer, ModelPicker, RuntimeMenu, TabChip } from './Composer';
+import { Composer, RuntimeMenu, TabChip } from './Composer';
+import { askerName, Banner, bindClaim, isRunningStatus, TopBar, useCatalog, useT3, withdrawClaim, type Screen } from './Frame';
+import { NewThread } from './NewThread';
 import { PromptCards } from './PromptCards';
-import { Settings, type SettingsTab } from './Settings';
-import { Setup, helperNote } from './Setup';
+import { Settings } from './Settings';
+import { Setup } from './Setup';
 import { errorText, panel } from './lib/api';
-import { choiceLabel, directProviders, resolveChoice, selectionFor, t3Providers, type Choice, type PickerProvider } from './lib/catalog';
-import { headlessRender, refreshConversations, startPolling, useLive, useStored, type LiveState } from './lib/store';
+import { choiceLabel } from './lib/catalog';
+import { headlessRender, refreshConversations, startPolling, useLive, useStored, useTabStored, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
 import { syncT3Theme } from './lib/theme';
 import { directThreadView, type ThreadView } from './lib/thread-model';
-import { IconButton, ProviderIcon, timeAgo, useDismiss } from './ui';
+import { IconButton, ProviderIcon, timeAgo } from './ui';
 
-type Screen =
-  | { name: 'home' }
-  | { name: 'thread'; id: string; source: 't3' | 'direct' }
-  | { name: 'threads' }
-  | { name: 'settings'; tab: SettingsTab };
-
-const withdrawClaim = async (code: string): Promise<void> => {
-  await panel({ type: 'panel.t3ClaimRevoke', code }).catch(() => undefined);
-};
-
-/** Ties a claim to the thread that carries it. If that fails the thread still runs, without the tabs. */
-const bindClaim = async (code: string, threadId: string): Promise<void> => {
-  await panel({ type: 'panel.t3ClaimBind', code, threadId }).catch(async () => await withdrawClaim(code));
-};
-
-const useT3 = (): T3State => useSyncExternalStore(t3.subscribe, t3.snapshot);
-
-function ProjectPicker({
-  state,
-  value,
-  onChange,
-}: {
-  state: T3State;
-  value: string | undefined;
-  onChange: (id: string) => void;
-}): ReactNode {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const [adding, setAdding] = useState(false);
-  const [folder, setFolder] = useState('');
-  const [error, setError] = useState<string>();
-  const box = useRef<HTMLDivElement>(null);
-  useDismiss(box, open, () => setOpen(false));
-  const current = state.projects.find((project) => project.id === value);
-  const needle = query.trim().toLowerCase();
-  const projects = state.projects.filter((project) => needle === '' || project.title.toLowerCase().includes(needle) || project.workspaceRoot.toLowerCase().includes(needle));
-  const add = async (): Promise<void> => {
-    setError(undefined);
-    try {
-      onChange(await t3.createProject(folder.trim()));
-      setAdding(false);
-      setFolder('');
-      setOpen(false);
-    } catch (failure) {
-      setError(errorText(failure));
-    }
-  };
-  return (
-    <div className="picker hero-picker" ref={box}>
-      <button type="button" className="project-btn" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(!open)}>
-        {current?.title ?? 'Choose a project'}
-        <ChevronDown size={14} aria-hidden="true" />
-      </button>
-      {open ? (
-        <div className="popover project-popover">
-          <label className="model-search">
-            <Search size={14} aria-hidden="true" />
-            <input autoFocus placeholder="Search projects…" value={query} onChange={(event) => setQuery(event.target.value)} />
-          </label>
-          <div className="project-list" role="listbox" aria-label="Projects">
-            {projects.map((project) => (
-              <button
-                type="button"
-                role="option"
-                aria-selected={project.id === value}
-                key={project.id}
-                className="model-row"
-                onClick={() => {
-                  onChange(project.id);
-                  setOpen(false);
-                }}
-              >
-                <span className="project-badge">{project.title.slice(0, 2).toUpperCase()}</span>
-                <span className="project-name">{project.title}</span>
-                {project.id === value ? <Check size={14} className="row-check" aria-hidden="true" /> : null}
-              </button>
-            ))}
-            {projects.length === 0 ? <p className="model-note">No projects found.</p> : null}
-          </div>
-          {adding ? (
-            <form
-              className="project-add"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (folder.trim() !== '') void add();
-              }}
-            >
-              <input autoFocus placeholder="/path/to/folder" value={folder} onChange={(event) => setFolder(event.target.value)} />
-              <button type="submit" className="row-btn" disabled={folder.trim() === ''}>
-                Add
-              </button>
-            </form>
-          ) : (
-            <button type="button" className="model-row add" onClick={() => setAdding(true)}>
-              <FolderPlus size={15} aria-hidden="true" />
-              Add a project
-            </button>
-          )}
-          {error === undefined ? null : <p className="error-line">{error}</p>}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function FolderPicker({ value, onChange }: { value: string; onChange: (folder: string) => void }): ReactNode {
-  const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(value);
-  const box = useRef<HTMLDivElement>(null);
-  useDismiss(box, open, () => setOpen(false));
-  return (
-    <div className="picker hero-picker" ref={box}>
-      <button
-        type="button"
-        className="project-btn"
-        aria-expanded={open}
-        onClick={() => {
-          setDraft(value);
-          setOpen(!open);
-        }}
-      >
-        {value === '' ? 'Home folder' : (value.replace(/\/+$/, '').split('/').at(-1) ?? value)}
-        <ChevronDown size={14} aria-hidden="true" />
-      </button>
-      {open ? (
-        <form
-          className="popover project-popover project-add"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onChange(draft.trim());
-            setOpen(false);
-          }}
-        >
-          <input autoFocus placeholder="/path/to/folder (blank for home)" value={draft} onChange={(event) => setDraft(event.target.value)} />
-          <button type="submit" className="row-btn">
-            Use
-          </button>
-        </form>
-      ) : null}
-    </div>
-  );
-}
-
-function TopBar({ title, onThreads, onNew, onSettings }: { title: ReactNode; onThreads: () => void; onNew?: () => void; onSettings: () => void }): ReactNode {
-  return (
-    <header className="topbar" data-chat-header>
-      <IconButton label="Threads" id="btn-threads" onClick={onThreads}>
-        <History size={16} />
-      </IconButton>
-      <span className="crumbs">{title}</span>
-      <span className="topbar-spacer" />
-      <IconButton label="New thread" id="btn-new" disabled={onNew === undefined} onClick={onNew}>
-        <SquarePen size={16} />
-      </IconButton>
-      <IconButton label="Settings" id="btn-settings" onClick={onSettings}>
-        <SettingsIcon size={16} />
-      </IconButton>
-    </header>
-  );
-}
-
-function Banner({ live, state, onConnections }: { live: LiveState; state: T3State; onConnections: () => void }): ReactNode {
-  let text: string | undefined;
-  if (live.build === 'stuck') text = 'This extension is still an old build. Reload it on the extensions page.';
-  else if (!live.helper.connected) text = `The T3-Tab helper is not connected: ${helperNote(live).short}.`;
-  else if (state.status === 'lost') text = 'Reconnecting to T3 Code…';
-  if (text === undefined) return null;
-  return (
-    <button type="button" className="banner" onClick={onConnections}>
-      <AlertCircle size={13} aria-hidden="true" />
-      {text}
-    </button>
-  );
-}
-
-interface Catalog {
-  source: 't3' | 'direct';
-  providers: PickerProvider[];
-}
-
-function useCatalog(live: LiveState, state: T3State): Catalog {
-  return useMemo(() => {
-    if (state.status === 'ready') {
-      const providers = t3Providers(state);
-      if (providers.length > 0) return { source: 't3', providers };
-    }
-    return { source: 'direct', providers: directProviders(live.setup?.agents ?? []) };
-  }, [state, live.setup]);
-}
-
-function Home({ live, state, onOpen, onNav }: { live: LiveState; state: T3State; onOpen: (screen: Screen) => void; onNav: (screen: Screen) => void }): ReactNode {
-  const catalog = useCatalog(live, state);
-  const [text, setText] = useStored('composer.draft', '');
-  const [savedChoice, setSavedChoice] = useStored<Choice | undefined>(`composer.choice.${catalog.source}`, undefined);
-  const [projectId, setProjectId] = useStored<string | undefined>('composer.project', undefined);
-  const [folder, setFolder] = useStored('composer.folder', '');
-  const [runtimeMode, setRuntimeMode] = useStored('composer.runtime', 'full-access');
-  const [shareTab, setShareTab] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const choice = resolveChoice(catalog.providers, savedChoice);
-  const project = state.projects.find((entry) => entry.id === projectId) ?? state.projects[0];
-  const provider = catalog.providers.find((entry) => entry.id === choice?.provider);
-  const tab = live.currentTab;
-  const shareable = tab !== undefined && /^https?:/.test(tab.url);
-
-  const send = async (): Promise<void> => {
-    if (choice === undefined) return;
-    setBusy(true);
-    setError(undefined);
-    const message = text.trim();
-    try {
-      if (catalog.source === 't3') {
-        if (project === undefined) throw new Error('Choose a project first.');
-        let code: string | undefined;
-        let note = '';
-        if (shareTab && shareable) {
-          const claim = await panel<{ code: string; note: string }>({ type: 'panel.t3Claim', tabId: tab.id });
-          code = claim.code;
-          note = claim.note;
-        }
-        let threadId: string;
-        try {
-          threadId = await t3.launchThread({ projectId: project.id, model: selectionFor(choice), runtimeMode, text: `${message}${note}` });
-        } catch (failure) {
-          if (code !== undefined) await withdrawClaim(code);
-          throw failure;
-        }
-        if (code !== undefined) await bindClaim(code, threadId);
-        setText('');
-        onOpen({ name: 'thread', id: threadId, source: 't3' });
-      } else {
-        const { conversation } = await panel<{ conversation: AgentConversation }>({
-          type: 'panel.agentStart',
-          via: choice.provider,
-          message,
-          ...(folder === '' ? {} : { project: folder }),
-          ...(choice.model === '' ? {} : { model: choice.model }),
-          ...(tab === undefined ? {} : { tabId: tab.id }),
-          ...(shareTab && shareable ? {} : { noTabs: true }),
-        });
-        setText('');
-        await refreshConversations();
-        onOpen({ name: 'thread', id: conversation.id, source: 'direct' });
-      }
-    } catch (failure) {
-      setError(errorText(failure));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="screen">
-      <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'appearance' })} />
-      <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'connections' })} />
-      <main className="home">
-        <div className="hero">
-          <h1>What should we build?</h1>
-          {catalog.source === 't3' ? <ProjectPicker state={state} value={project?.id} onChange={setProjectId} /> : <FolderPicker value={folder} onChange={setFolder} />}
-        </div>
-        <PromptCards prompts={live.prompts} currentTabId={tab?.id} />
-        <Composer
-          value={text}
-          onChange={setText}
-          onSend={() => void send()}
-          running={false}
-          busy={busy || choice === undefined}
-          autoFocus
-          placeholder="Ask anything"
-          chip={shareable ? <TabChip title={tab.title} shared={shareTab} onToggle={() => setShareTab(!shareTab)} /> : null}
-          picker={<ModelPicker providers={catalog.providers} choice={choice} onChoice={setSavedChoice} />}
-        />
-        <div className="under-composer">
-          {error === undefined ? <span /> : <p className="error-line">{error}</p>}
-          {catalog.source === 't3' ? <RuntimeMenu value={runtimeMode} modes={provider?.runtimeModes} onChange={setRuntimeMode} /> : null}
-        </div>
-      </main>
-    </div>
-  );
-}
+/** What this tab's panel was showing, so it comes back the same when the owner returns to the tab. */
+type TabScreen = { name: 'home' } | ({ name: 'thread' } & TabThread);
 
 function useThreadView(screen: Extract<Screen, { name: 'thread' }>): ThreadView | undefined {
   const [t3View, setT3View] = useState<ThreadView>();
@@ -420,12 +143,12 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
         }
         onThreads={() => onNav({ name: 'threads' })}
         onNew={() => onNav({ name: 'home' })}
-        onSettings={() => onNav({ name: 'settings', tab: 'appearance' })}
+        onSettings={() => onNav({ name: 'settings', tab: 'general' })}
       />
-      <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'connections' })} />
+      <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />
       {view === undefined ? <div className="timeline" /> : <Timeline view={view} />}
       <div className="dock">
-        <PromptCards prompts={live.prompts} currentTabId={tab?.id} />
+        <PromptCards prompts={live.prompts} currentTabId={tab?.id} askerName={askerName(live, state)} onManageSites={() => onNav({ name: 'settings', tab: 'sites' })} />
         {showApproval && view?.approval !== undefined ? (
           <ApprovalCard
             approval={view.approval}
@@ -509,13 +232,13 @@ function ThreadList({ live, state, onOpen, onClose }: { live: LiveState; state: 
   const rows = [
     ...state.threads.map((thread) => {
       const project = projects.get(thread.projectId);
-      const running = thread.status !== undefined && ['preparing', 'queued', 'starting', 'running'].includes(thread.status);
+      const running = isRunningStatus(thread.status);
       const pendingKind = thread.pendingRuntimeRequest?.kind;
       return {
         key: `t3:${thread.id}`,
         screen: { name: 'thread', id: thread.id, source: 't3' } as Screen,
         title: thread.title,
-        project: project?.title ?? 'T3 Code',
+        project: project !== undefined && project.workspaceRoot === state.scratchRoot ? 'No project' : (project?.title ?? 'T3 Code'),
         driver: providers.get(thread.modelSelection?.instanceId ?? thread.providerInstanceId ?? '')?.driver,
         at: Date.parse(thread.latestUserMessageAt ?? thread.updatedAt ?? ''),
         badge: pendingKind === undefined ? undefined : pendingKind === 'user_input' ? 'Input' : 'Approval',
@@ -576,7 +299,36 @@ export function App(): ReactNode {
   const state = useT3();
   const [setupDone, setSetupDone, setupLoaded] = useStored('setup.done', false);
   const [screen, setScreen] = useState<Screen>({ name: 'home' });
+  const [tabScreen, setTabScreen, tabScreenReady] = useTabStored<TabScreen | undefined>('screen', undefined);
   const backRef = useRef<Screen>({ name: 'home' });
+  const restored = useRef(headlessRender);
+  const restoredT3Thread = useRef<string>(undefined);
+
+  /** Shows a screen and, for a thread or the new-thread screen, remembers it for this tab. */
+  const show = (next: Screen): void => {
+    setScreen(next);
+    if (next.name === 'home') setTabScreen({ name: 'home' });
+    else if (next.name === 'thread') setTabScreen({ name: 'thread', id: next.id, source: next.source });
+  };
+
+  // Once per panel: back to what this tab was showing, or to the thread that holds this tab.
+  useEffect(() => {
+    if (restored.current || !tabScreenReady || live.tabLoaded !== true) return;
+    restored.current = true;
+    const target = tabScreen === undefined ? live.tabThread : tabScreen.name === 'thread' ? tabScreen : undefined;
+    if (target === undefined) return;
+    setScreen({ name: 'thread', id: target.id, source: target.source });
+    if (target.source === 't3') restoredT3Thread.current = target.id;
+    else void panel({ type: 'panel.agentGet', id: target.id }).catch(() => show({ name: 'home' }));
+  }, [tabScreenReady, live.tabLoaded]);
+
+  // A remembered T3 thread that T3 no longer lists falls back to a new thread.
+  useEffect(() => {
+    const id = restoredT3Thread.current;
+    if (id === undefined || state.status !== 'ready') return;
+    restoredT3Thread.current = undefined;
+    if (screen.name === 'thread' && screen.id === id && !state.threads.some((thread) => thread.id === id)) show({ name: 'home' });
+  }, [state.status, state.threads]);
 
   useEffect(() => {
     startPolling();
@@ -600,10 +352,12 @@ export function App(): ReactNode {
     if (next.name === 'settings' || next.name === 'threads') {
       if (screen.name !== 'settings' && screen.name !== 'threads') backRef.current = screen;
     }
-    setScreen(next);
+    show(next);
   };
-  if (screen.name === 'settings') return <Settings live={live} state={state} tab={screen.tab} onTab={(tab) => setScreen({ name: 'settings', tab })} onClose={() => setScreen(backRef.current)} />;
-  if (screen.name === 'threads') return <ThreadList live={live} state={state} onOpen={setScreen} onClose={() => setScreen(backRef.current)} />;
+  if (screen.name === 'settings') {
+    return <Settings live={live} state={state} tab={screen.tab} connections={screen.connections} onTab={(tab) => setScreen({ name: 'settings', tab })} onClose={() => setScreen(backRef.current)} />;
+  }
+  if (screen.name === 'threads') return <ThreadList live={live} state={state} onOpen={show} onClose={() => setScreen(backRef.current)} />;
   if (screen.name === 'thread') return <ThreadScreen key={screen.id} screen={screen} live={live} state={state} onNav={nav} />;
-  return <Home live={live} state={state} onOpen={setScreen} onNav={nav} />;
+  return <NewThread live={live} state={state} onOpen={show} onNav={nav} />;
 }

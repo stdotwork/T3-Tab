@@ -1,14 +1,16 @@
 /*
  * The browser permission card. Safeguards kept from T3-Tab's permission policy: the button labels say exactly what
  * they grant (`promptChoices`), buttons stay disabled for 500 ms when a card appears and whenever rows shift
- * (`rowsShifted`), cards are keyed so they never swap under the pointer, and a card never takes focus.
+ * (`rowsShifted`), cards are keyed so they never swap under the pointer, and a card never takes focus, so no key press
+ * meant for the composer can answer it.
  */
-import { Hand } from 'lucide-react';
+import type { ToolSession } from '@t3-tab/protocol';
+import { ArrowUpRight, Hand } from 'lucide-react';
 import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 
 import type { PermissionDecision, PermissionPrompt } from '../../src/permissions';
 import { errorText, panel } from './lib/api';
-import { promptChoices, rowsShifted } from './prompt-choices';
+import { promptChoices, rowsShifted, type PromptChoice } from './prompt-choices';
 
 export const BUTTON_DELAY_MS = 500;
 
@@ -21,7 +23,28 @@ const heading = (prompt: PermissionPrompt): string => {
   return 'wants to act on';
 };
 
-function PromptCard({ prompt, locked, here }: { prompt: PermissionPrompt; locked: boolean; here: boolean }): ReactNode {
+const showTab = (tabId: number): void => {
+  void chrome.tabs
+    .update(tabId, { active: true })
+    .then(async (tab) => {
+      if (tab?.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+    })
+    .catch(() => undefined);
+};
+
+function PromptCard({
+  prompt,
+  locked,
+  here,
+  asker,
+  onManageSites,
+}: {
+  prompt: PermissionPrompt;
+  locked: boolean;
+  here: boolean;
+  asker: string;
+  onManageSites?: (() => void) | undefined;
+}): ReactNode {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const disabled = locked || submitting;
@@ -47,10 +70,11 @@ function PromptCard({ prompt, locked, here }: { prompt: PermissionPrompt; locked
   const once = choices.find((choice) => choice.decision === 'allow-once');
   const decline = choices.find((choice) => choice.decision === 'decline');
   const always = choices.find((choice) => choice.decision !== 'allow-once' && choice.decision !== 'decline');
-  const choice = (entry: (typeof choices)[number] | undefined, className: string): ReactNode =>
+  const choice = (entry: PromptChoice | undefined, className: string): ReactNode =>
     entry === undefined ? null : (
       <button type="button" className={className} disabled={disabled} onClick={() => void decide(entry.decision)}>
-        {entry.label}
+        <span className="prompt-btn-label">{entry.label}</span>
+        {entry.detail === undefined ? null : <small>{entry.detail}</small>}
       </button>
     );
   return (
@@ -58,10 +82,15 @@ function PromptCard({ prompt, locked, here }: { prompt: PermissionPrompt; locked
       <div className="prompt-head">
         <Hand size={15} aria-hidden="true" />
         <span>{here ? 'Permission needed' : 'Permission needed on another tab'}</span>
+        {here ? null : (
+          <button type="button" className="prompt-goto" onClick={() => showTab(prompt.tab.id)}>
+            Go to tab <ArrowUpRight size={12} aria-hidden="true" />
+          </button>
+        )}
       </div>
       <div className="prompt-body">
         <p className="prompt-who">
-          {plain(prompt.session.name)} {heading(prompt)}
+          <strong>{plain(asker)}</strong> {heading(prompt)}
         </p>
         <p className="prompt-host">{host}</p>
         <p className="prompt-tab">
@@ -71,14 +100,35 @@ function PromptCard({ prompt, locked, here }: { prompt: PermissionPrompt; locked
       <div className="prompt-actions">
         {choice(once, 'prompt-btn primary')}
         {choice(decline, 'prompt-btn')}
-        {choice(always, 'prompt-btn subtle')}
       </div>
-      {error === undefined ? null : <p className="error-line">{error}</p>}
+      <div className="prompt-always">{choice(always, 'prompt-btn')}</div>
+      {error === undefined ? null : <p className="error-line prompt-error">{error}</p>}
+      <p className="prompt-foot">
+        T3 threads in Full access are not asked.
+        {onManageSites === undefined ? null : (
+          <>
+            {' '}
+            <button type="button" className="prompt-link" onClick={onManageSites}>
+              Manage sites
+            </button>
+          </>
+        )}
+      </p>
     </li>
   );
 }
 
-export function PromptCards({ prompts, currentTabId }: { prompts: PermissionPrompt[]; currentTabId?: number | undefined }): ReactNode {
+export function PromptCards({
+  prompts,
+  currentTabId,
+  askerName,
+  onManageSites,
+}: {
+  prompts: PermissionPrompt[];
+  currentTabId?: number | undefined;
+  askerName?: ((session: ToolSession) => string) | undefined;
+  onManageSites?: (() => void) | undefined;
+}): ReactNode {
   const locks = useRef(new Map<string, number>());
   const shown = useRef<string[]>([]);
   const [, redraw] = useReducer((tick: number) => tick + 1, 0);
@@ -107,6 +157,8 @@ export function PromptCards({ prompts, currentTabId }: { prompts: PermissionProm
           prompt={prompt}
           locked={(locks.current.get(prompt.id) ?? 0) > now}
           here={currentTabId === undefined || prompt.tool === 'open' || prompt.tab.id === currentTabId}
+          asker={askerName?.(prompt.session) ?? prompt.session.name}
+          onManageSites={onManageSites}
         />
       ))}
     </ul>

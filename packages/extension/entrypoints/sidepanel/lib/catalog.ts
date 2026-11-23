@@ -1,4 +1,5 @@
 /** What the pickers offer: T3's providers and models when T3 is connected, otherwise the agents on this machine. */
+import { compactModelName } from './model-short-name';
 import type { ModelOption, ModelSelection, Provider, T3State } from './t3-client';
 
 export interface PickerModel {
@@ -109,7 +110,7 @@ export function choiceLabel(providers: readonly PickerProvider[], choice: Choice
   if (choice === undefined) return { name: 'No model' };
   const provider = providers.find((entry) => entry.id === choice.provider);
   const model = provider?.models.find((entry) => entry.slug === choice.model);
-  const name = model?.shortName ?? model?.name.replace(/^Claude /, '') ?? (choice.model.replace(/^claude-/, '').replaceAll('-', ' ') || 'Default');
+  const name = model === undefined ? choice.model.replace(/^claude-/, '').replaceAll('-', ' ') || 'Default' : compactModelName(model, provider?.driver);
   const reasoning = reasoningOption(model);
   const value = reasoning === undefined ? undefined : (choice.options[reasoning.id] ?? reasoning.currentValue ?? reasoning.options?.find((option) => option.isDefault === true)?.id);
   const effort = reasoning?.options?.find((option) => option.id === value)?.label;

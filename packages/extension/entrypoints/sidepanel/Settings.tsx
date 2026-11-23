@@ -1,4 +1,4 @@
-import { Check, Copy, Download, Moon, Paintbrush, Plus, Sun, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, Download, Moon, Paintbrush, Plus, Sun, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { SitePermission } from '../../src/permissions';
@@ -16,14 +16,15 @@ import {
   type ThemeDefinition,
 } from '../../src/t3/theme-palette';
 import { errorText, panel } from './lib/api';
-import { refreshPanel, type LiveState } from './lib/store';
+import { DEFAULT_PROJECT_KEY, LAST_PROJECT, NO_PROJECT, pickableProjects } from './lib/new-thread';
+import { refreshPanel, useStored, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
 import { previewTheme, removeCustomTheme, saveCustomTheme, setScheme, setTheme, STOCK_THEME, useAppearance, type SchemeChoice } from './lib/theme';
-import { siteChoices, siteStatus } from './prompt-choices';
+import { SITE_CHOICES, siteStatus } from './prompt-choices';
 import { AgentRow, HelperStep, T3Row } from './Setup';
-import { IconButton } from './ui';
+import { IconButton, timeAgo, useDismiss } from './ui';
 
-export type SettingsTab = 'appearance' | 'sites' | 'connections';
+export type SettingsTab = 'general' | 'sites';
 
 function Orb({ colors }: { colors: ThemeColors | null }): ReactNode {
   if (colors === null) return <span className="theme-orb empty" />;
@@ -259,37 +260,87 @@ function Appearance({ state }: { state: T3State }): ReactNode {
   );
 }
 
+const hostOf = (origin: string): string => {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return origin;
+  }
+};
+
+const TOOL_WORDS: Record<string, string> = { read: 'Read', open: 'Opened', act: 'Acted on', run_js: 'Ran JavaScript on' };
+
 function Sites({ live }: { live: LiveState }): ReactNode {
   const [error, setError] = useState<string>();
   const set = async (origin: string, setting: SitePermission): Promise<void> => {
     setError(undefined);
     try {
       await panel({ type: 'panel.setSite', origin, setting });
+      await refreshPanel();
     } catch (failure) {
       setError(errorText(failure));
     }
   };
+  const currentOrigin = (() => {
+    try {
+      return live.currentTab === undefined ? undefined : new URL(live.currentTab.url).origin;
+    } catch {
+      return undefined;
+    }
+  })();
+  // A site left on "ask" is the same as one never seen, so only this tab's site and real grants are listed.
+  const rows = live.sites
+    .filter((site) => site.setting !== 'ask' || site.origin === currentOrigin)
+    .sort((left, right) => Number(right.origin === currentOrigin) - Number(left.origin === currentOrigin));
+  const recent = [...live.autoAllowed].reverse().slice(0, 5);
   return (
     <div className="settings-page">
-      <h3>Sites</h3>
-      <p className="muted-line">What agents may do on each site.</p>
+      <h3>Site permissions</h3>
+      <p className="muted-line">T3 threads in Full access are not asked. Everyone else asks first, unless a site is set here.</p>
       {error === undefined ? null : <p className="error-line">{error}</p>}
       <ul id="site-permissions" className="site-list">
-        {live.sites.map((site) => (
+        {rows.map((site) => (
           <li key={site.origin}>
-            <strong>{site.origin}</strong>
+            <span className="site-name">
+              <strong>{site.origin}</strong>
+              {site.origin === currentOrigin ? <span className="site-here">This tab</span> : null}
+            </span>
             <small>{siteStatus(site.setting)}</small>
-            <span className="site-actions">
-              {siteChoices(site.setting).map((choice) => (
-                <button type="button" className="row-btn" key={choice.setting} onClick={() => void set(site.origin, choice.setting)}>
-                  {choice.label}
+            <div className="segmented wide" role="radiogroup" aria-label={`What agents may do on ${site.origin}`}>
+              {SITE_CHOICES.map((choice) => (
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={site.setting === choice.setting}
+                  aria-label={choice.label}
+                  title={choice.label}
+                  key={choice.setting}
+                  className={site.setting === choice.setting ? 'active' : ''}
+                  onClick={() => void set(site.origin, choice.setting)}
+                >
+                  {choice.short}
                 </button>
               ))}
-            </span>
+            </div>
           </li>
         ))}
-        {live.sites.length === 0 ? <li className="muted-line">No sites yet. They appear here when an agent asks.</li> : null}
+        {rows.length === 0 ? <li className="muted-line">No sites set. They appear here when you allow one.</li> : null}
       </ul>
+      {recent.length === 0 ? null : (
+        <>
+          <h3>Recently allowed by Full access</h3>
+          <ul className="auto-list">
+            {recent.map((entry) => (
+              <li key={`${entry.at}-${entry.tabId}-${entry.tool}`}>
+                <span>
+                  {TOOL_WORDS[entry.tool] ?? entry.tool} <strong>{hostOf(entry.origin)}</strong>
+                </span>
+                <time>{timeAgo(entry.at)}</time>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </div>
   );
 }
@@ -335,40 +386,113 @@ function Sessions({ live }: { live: LiveState }): ReactNode {
   );
 }
 
-function Connections({ live, state }: { live: LiveState; state: T3State }): ReactNode {
+function Connections({ live, state, startOpen }: { live: LiveState; state: T3State; startOpen: boolean }): ReactNode {
+  const [open, setOpen] = useState(startOpen);
+  const summary = `${live.helper.connected ? 'Helper connected' : 'Helper not connected'} · ${state.status === 'ready' ? 'T3 Code connected' : 'T3 Code not connected'}`;
   return (
-    <div className="settings-page">
-      <h3>Helper</h3>
-      <HelperStep live={live} icon={false} />
-      <h3>Agents</h3>
-      <AgentRow id="claude" live={live} />
-      <AgentRow id="codex" live={live} />
-      <h3>T3 Code</h3>
-      <T3Row live={live} state={state} />
-      {state.status === 'off' ? null : (
-        <button type="button" className="link-btn danger" onClick={() => void t3.disconnect(() => panel({ type: 'panel.t3Unpair' }))}>
-          Disconnect from T3 Code
+    <section className="disclosure">
+      <button type="button" className="disclosure-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span>
+          Connections
+          <small>{summary}</small>
+        </span>
+        <ChevronDown size={15} className={open ? 'disclosure-chev open' : 'disclosure-chev'} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="disclosure-body">
+          <h3>Helper</h3>
+          <HelperStep live={live} icon={false} />
+          <h3>Agents</h3>
+          <AgentRow id="claude" live={live} />
+          <AgentRow id="codex" live={live} />
+          <h3>T3 Code</h3>
+          <T3Row live={live} state={state} />
+          {state.status === 'off' ? null : (
+            <button type="button" className="link-btn danger" onClick={() => void t3.disconnect(() => panel({ type: 'panel.t3Unpair' }))}>
+              Disconnect from T3 Code
+            </button>
+          )}
+          <Sessions live={live} />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function DefaultProject({ state }: { state: T3State }): ReactNode {
+  const [value, setValue] = useStored<string>(DEFAULT_PROJECT_KEY, NO_PROJECT);
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useDismiss(box, open, () => setOpen(false));
+  const options = [
+    { id: NO_PROJECT, label: 'No project' },
+    { id: LAST_PROJECT, label: 'Last used project' },
+    ...pickableProjects(state.projects, state.scratchRoot).map((project) => ({ id: project.id, label: project.title })),
+  ];
+  const current = options.find((option) => option.id === value) ?? options[0];
+  return (
+    <div className="setting-row">
+      <span className="setting-text">
+        Project on a new tab
+        <small>Where a thread starts when you open the panel on a tab</small>
+      </span>
+      <div className="picker" ref={box}>
+        <button type="button" className="row-btn" aria-haspopup="listbox" aria-expanded={open} aria-label="Project on a new tab" onClick={() => setOpen(!open)}>
+          <span className="setting-value">{current?.label}</span>
+          <ChevronDown size={13} aria-hidden="true" />
         </button>
-      )}
-      <Sessions live={live} />
+        {open ? (
+          <div className="popover setting-popover" role="listbox" aria-label="Project on a new tab">
+            {options.map((option, index) => (
+              <div key={option.id}>
+                {index === 2 ? <div className="picker-divider" /> : null}
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={option.id === current?.id}
+                  className={option.id === current?.id ? 'model-row active' : 'model-row'}
+                  onClick={() => {
+                    setValue(option.id);
+                    setOpen(false);
+                  }}
+                >
+                  <span className="project-name">{option.label}</span>
+                  {option.id === current?.id ? <Check size={14} className="row-check" aria-hidden="true" /> : null}
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
-  { id: 'appearance', label: 'Appearance' },
+  { id: 'general', label: 'General' },
   { id: 'sites', label: 'Sites' },
-  { id: 'connections', label: 'Connections' },
 ];
 
-export function Settings({ live, state, tab, onTab, onClose }: { live: LiveState; state: T3State; tab: SettingsTab; onTab: (tab: SettingsTab) => void; onClose: () => void }): ReactNode {
+export function Settings({
+  live,
+  state,
+  tab,
+  connections,
+  onTab,
+  onClose,
+}: {
+  live: LiveState;
+  state: T3State;
+  tab: SettingsTab;
+  connections?: boolean | undefined;
+  onTab: (tab: SettingsTab) => void;
+  onClose: () => void;
+}): ReactNode {
   return (
     <div className="screen">
       <header className="topbar">
         <span className="crumbs">
-          <span>Settings</span>
-          <span className="sep">/</span>
-          <strong>{TABS.find((entry) => entry.id === tab)?.label}</strong>
+          <strong>Settings</strong>
         </span>
         <span className="topbar-spacer" />
         <IconButton label="Close settings" id="btn-settings-back" onClick={onClose}>
@@ -383,9 +507,16 @@ export function Settings({ live, state, tab, onTab, onClose }: { live: LiveState
         ))}
       </nav>
       <div className="settings-scroll" data-settings-page-scroll>
-        {tab === 'appearance' ? <Appearance state={state} /> : null}
+        {tab === 'general' ? (
+          <>
+            <div className="settings-page settings-top">
+              <DefaultProject state={state} />
+              <Connections live={live} state={state} startOpen={connections === true} />
+            </div>
+            <Appearance state={state} />
+          </>
+        ) : null}
         {tab === 'sites' ? <Sites live={live} /> : null}
-        {tab === 'connections' ? <Connections live={live} state={state} /> : null}
       </div>
     </div>
   );
