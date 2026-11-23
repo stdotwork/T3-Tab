@@ -37,7 +37,7 @@ export const CLAIM_FILE_PROBLEMS: ReadonlySet<string> = new Set(Object.keys(PROB
 
 /** The warning in the conversation whose turn could not use its claim file. */
 export function claimFileWarning(problem: ClaimFileProblem): string {
-  return `T3-Tab could not use the private file for this turn's tabs: ${PROBLEM_TEXT[problem]}. The agent has no tabs from you this turn. Share a tab from the session list if it needs one.`;
+  return `T3-Tab could not use the private file for this turn's tabs: ${PROBLEM_TEXT[problem]}. The agent has no tabs from you this turn. Share a tab from Threads in the side panel if it needs one.`;
 }
 
 /** The line the agent's first browser tool reply starts with when its claim file could not be used. */

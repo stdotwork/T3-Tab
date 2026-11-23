@@ -656,7 +656,7 @@ async function runDirectFlow() {
     if (await add.isVisible()) await add.click();
     await claudeRow.getByText('Ready').waitFor({ timeout: 30_000 });
     await panelPage.getByRole('button', { name: 'Start', exact: true }).click();
-    await panelPage.getByText('What should we build?').waitFor();
+    await panelPage.getByText('What should we do in this tab?').waitFor();
     await shot('02-home');
     await panelPage.locator('.model-chip').first().click();
     await panelPage.locator('.model-popover').waitFor();

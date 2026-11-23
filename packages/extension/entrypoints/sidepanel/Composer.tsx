@@ -1,7 +1,7 @@
 import { ArrowUp, Check, ChevronDown, Globe, Search, ShieldCheck, ShieldOff, Square, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 
-import { choiceLabel, reasoningOption, RUNTIME_MODES, type Choice, type PickerProvider } from './lib/catalog';
+import { choiceLabel, isModelName, reasoningOption, RUNTIME_MODES, type Choice, type PickerProvider } from './lib/catalog';
 import { compactModelName } from './lib/model-short-name';
 import { ProviderIcon, useDismiss } from './ui';
 
@@ -32,6 +32,8 @@ export function ModelPicker({
   const selected = provider?.models.find((model) => provider.id === choice?.provider && model.slug === choice.model);
   const reasoning = reasoningOption(selected);
   const reasoningValue = reasoning === undefined ? undefined : (choice?.options[reasoning.id] ?? reasoning.currentValue ?? reasoning.options?.find((option) => option.isDefault === true)?.id);
+  const typed = query.trim();
+  const canUseTyped = provider?.customModels === true && isModelName(typed) && !provider.models.some((model) => model.slug === typed);
 
   return (
     <div className="picker" ref={box}>
@@ -43,26 +45,40 @@ export function ModelPicker({
       {open ? (
         <div className="popover model-popover" role="dialog" aria-label="Choose a model">
           <div className="model-body">
-            <div className="model-rail" role="tablist" aria-label="Providers">
-              {providers.map((entry) => (
-                <button
-                  type="button"
-                  key={entry.id}
-                  role="tab"
-                  aria-selected={entry.id === provider?.id}
-                  aria-label={entry.name}
-                  title={entry.unavailable === undefined ? entry.name : `${entry.name}: ${entry.unavailable}`}
-                  className={entry.id === provider?.id ? 'rail-btn active' : 'rail-btn'}
-                  onClick={() => setRail(entry.id)}
-                >
-                  <ProviderIcon driver={entry.driver} name={entry.name} size={18} />
-                </button>
-              ))}
-            </div>
+            {providers.length < 2 ? null : (
+              <div className="model-rail" role="tablist" aria-label="Providers">
+                {providers.map((entry) => (
+                  <button
+                    type="button"
+                    key={entry.id}
+                    role="tab"
+                    aria-selected={entry.id === provider?.id}
+                    aria-label={entry.name}
+                    title={entry.unavailable === undefined ? entry.name : `${entry.name}: ${entry.unavailable}`}
+                    className={entry.id === provider?.id ? 'rail-btn active' : 'rail-btn'}
+                    onClick={() => setRail(entry.id)}
+                  >
+                    <ProviderIcon driver={entry.driver} name={entry.name} size={18} />
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="model-main">
               <label className="model-search">
                 <Search size={14} aria-hidden="true" />
-                <input autoFocus placeholder="Search models…" value={query} onChange={(event) => setQuery(event.target.value)} />
+                <input
+                  autoFocus
+                  placeholder={provider?.customModels === true ? 'Search or type a model…' : 'Search models…'}
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' || !canUseTyped || provider === undefined || models.length > 0) return;
+                    event.preventDefault();
+                    onChoice({ provider: provider.id, model: typed, options: {} });
+                    setQuery('');
+                    setOpen(false);
+                  }}
+                />
               </label>
               {provider?.unavailable === undefined ? null : <p className="model-note">{provider.unavailable}</p>}
               <div className="model-list">
@@ -86,7 +102,22 @@ export function ModelPicker({
                     </button>
                   );
                 })}
-                {models.length === 0 ? <p className="model-note">No models match.</p> : null}
+                {canUseTyped ? (
+                  <button
+                    type="button"
+                    className="model-row"
+                    onClick={() => {
+                      if (provider === undefined) return;
+                      onChoice({ provider: provider.id, model: typed, options: {} });
+                      setQuery('');
+                      setOpen(false);
+                    }}
+                  >
+                    <ProviderIcon driver={provider?.driver} name={provider?.name} size={15} />
+                    <span className="project-name">Use “{typed}”</span>
+                  </button>
+                ) : null}
+                {models.length === 0 && !canUseTyped ? <p className="model-note">No models match.</p> : null}
               </div>
             </div>
           </div>
@@ -156,20 +187,44 @@ export function RuntimeMenu({ value, modes, onChange }: { value: string; modes?:
   );
 }
 
-export function TabChip({ title, shared, onToggle, removeLabel }: { title: string; shared: boolean; onToggle: () => void; removeLabel?: string }): ReactNode {
-  if (!shared) {
+/** A tab the thread holds, or what the next message would share (a whole group when the owner made one). */
+export function TabChip({
+  title,
+  state,
+  onToggle,
+  removeLabel,
+  tabs,
+  group,
+  nextMessage,
+}: {
+  title: string;
+  state: 'held' | 'pending' | 'off';
+  onToggle: () => void;
+  removeLabel?: string;
+  /** Every tab that goes with it, when that is more than one. */
+  tabs?: readonly { title: string }[] | undefined;
+  group?: string | undefined;
+  /** In a running conversation: say that it goes with the next message, unlike the tabs already shared. */
+  nextMessage?: boolean;
+}): ReactNode {
+  const count = tabs?.length ?? 1;
+  const noun = count > 1 ? `these ${count} tabs` : 'this tab';
+  if (state === 'off') {
     return (
-      <button type="button" className="tab-chip off" onClick={onToggle} title="Share this tab when you send">
+      <button type="button" className="tab-chip off" onClick={onToggle} title={`Share ${noun} when you send`}>
         <Globe size={12} aria-hidden="true" />
-        <span>Share this tab</span>
+        <span>{count > 1 ? `Share ${count} tabs` : 'Share this tab'}</span>
       </button>
     );
   }
+  const name = count > 1 ? `${group ?? 'Tab group'} · ${count} tabs` : title || 'Current tab';
+  const hint = state === 'held' ? `"${title}" is shared with this thread` : count > 1 ? `Shared when you send:\n${(tabs ?? []).map((tab) => tab.title || 'Untitled').join('\n')}` : `"${title}" is shared when you send`;
   return (
-    <span className="tab-chip" title={`"${title}" is shared when you send`}>
+    <span className={state === 'pending' && nextMessage === true ? 'tab-chip pending' : 'tab-chip'} title={hint}>
       <Globe size={12} aria-hidden="true" />
-      <span className="tab-chip-title">{title || 'Current tab'}</span>
-      <button type="button" aria-label={removeLabel ?? "Don't share this tab"} onClick={onToggle}>
+      <span className="tab-chip-title">{name}</span>
+      {state === 'pending' && nextMessage === true ? <small>next message</small> : null}
+      <button type="button" aria-label={removeLabel ?? (count > 1 ? "Don't share these tabs" : "Don't share this tab")} onClick={onToggle}>
         <X size={12} aria-hidden="true" />
       </button>
     </span>
@@ -182,6 +237,7 @@ export function Composer({
   onSend,
   onStop,
   running,
+  canQueue,
   busy,
   placeholder,
   chip,
@@ -193,6 +249,8 @@ export function Composer({
   onSend: () => void;
   onStop?: (() => void) | undefined;
   running: boolean;
+  /** While it runs, a message waits for the turn to end. Without this it cannot be sent until then. */
+  canQueue?: boolean;
   busy?: boolean;
   placeholder: string;
   chip?: ReactNode;
@@ -237,15 +295,16 @@ export function Composer({
       <div className="composer-row">
         {picker}
         <span className="composer-spacer" />
-        {running && value.trim() === '' && onStop !== undefined ? (
-          <button type="button" className="send-btn stop" aria-label="Stop" onClick={onStop}>
+        {running && onStop !== undefined ? (
+          <button type="button" className="send-btn stop" aria-label="Stop" title="Stop" onClick={onStop}>
             <Square size={12} fill="currentColor" aria-hidden="true" />
           </button>
-        ) : (
-          <button type="submit" className="send-btn" aria-label="Send" disabled={!canSend}>
+        ) : null}
+        {!running || onStop === undefined || (canQueue === true && value.trim() !== '') ? (
+          <button type="submit" className="send-btn" aria-label={running ? 'Queue message' : 'Send'} title={running ? 'Queue for when this turn ends' : undefined} disabled={!canSend}>
             <ArrowUp size={16} aria-hidden="true" />
           </button>
-        )}
+        ) : null}
       </div>
     </form>
   );

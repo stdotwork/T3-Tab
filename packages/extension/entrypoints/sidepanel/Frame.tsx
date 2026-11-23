@@ -31,19 +31,28 @@ export const bindClaim = async (code: string, threadId: string): Promise<void> =
   await panel({ type: 'panel.t3ClaimBind', code, threadId }).catch(async () => await withdrawClaim(code));
 };
 
-/** Who a permission card names: the T3 thread's title when the session is known to run for one. */
+const CLIENT_NAMES: Record<string, string> = { 'claude-code': 'Claude Code', 'codex-mcp-client': 'Codex', codex: 'Codex', t3code: 'T3 Code' };
+
+/** An MCP client's name for people: `claude-code · 1e2fb543` is Claude Code. */
+export function clientName(sessionName: string): string {
+  const client = sessionName.split(' · ')[0]?.trim() ?? sessionName;
+  return CLIENT_NAMES[client] ?? client;
+}
+
+/** Who a card or row names: the T3 thread's title when the session is known to run for one, else the agent. */
 export const askerName =
   (live: LiveState, state: T3State) =>
   (session: ToolSession): string => {
     const threadId = live.sessions.find((entry) => entry.id === session.id)?.t3ThreadId;
-    return state.threads.find((thread) => thread.id === threadId)?.title ?? session.name;
+    return state.threads.find((thread) => thread.id === threadId)?.title ?? clientName(session.name);
   };
 
-export function TopBar({ title, onThreads, onNew, onSettings }: { title: ReactNode; onThreads: () => void; onNew?: () => void; onSettings: () => void }): ReactNode {
+export function TopBar({ title, onThreads, onNew, onSettings, sessions = 0 }: { title: ReactNode; onThreads: () => void; onNew?: () => void; onSettings: () => void; sessions?: number }): ReactNode {
   return (
     <header className="topbar" data-chat-header>
-      <IconButton label="Threads" id="btn-threads" onClick={onThreads}>
+      <IconButton label={sessions === 0 ? 'Threads' : `Threads, ${sessions} using the browser`} id="btn-threads" onClick={onThreads}>
         <History size={16} />
+        {sessions === 0 ? null : <span className="session-dot" aria-hidden="true" />}
       </IconButton>
       <span className="crumbs">{title}</span>
       <span className="topbar-spacer" />
@@ -74,6 +83,8 @@ export function Banner({ live, state, onConnections }: { live: LiveState; state:
 export interface Catalog {
   source: 't3' | 'direct';
   providers: PickerProvider[];
+  /** Why threads are not going through T3 Code although it is connected. */
+  note?: string;
 }
 
 export function useCatalog(live: LiveState, state: T3State): Catalog {
@@ -82,6 +93,9 @@ export function useCatalog(live: LiveState, state: T3State): Catalog {
       const providers = t3Providers(state);
       if (providers.length > 0) return { source: 't3', providers };
     }
-    return { source: 'direct', providers: directProviders(live.setup?.agents ?? []) };
+    const providers = directProviders(live.setup?.agents ?? []);
+    if (state.status !== 'ready') return { source: 'direct', providers };
+    const names = providers.map((provider) => provider.name).join(' or ');
+    return { source: 'direct', providers, note: names === '' ? 'T3 Code has no usable provider, and no agent was found on this machine.' : `T3 Code has no usable provider, so threads run with ${names} directly.` };
   }, [state, live.setup]);
 }

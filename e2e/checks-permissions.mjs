@@ -555,7 +555,7 @@ async function assertPromptUi(panelPage, serviceWorker, prompt) {
   await renderPanelState(panelPage, state);
   // The prompt names its tab by title and, in a span of the same line, by id, both in the same card.
   const card = panelPage.locator('li.prompt-card').filter({ hasText: `"${prompt.tab.title}"` });
-  await card.locator('.prompt-tab span').getByText(`tab ${prompt.tab.id}`, { exact: true }).waitFor();
+  assert((await card.getAttribute('data-tab-id')) === String(prompt.tab.id), 'The prompt card is not tied to its tab');
   const allow = panelPage.getByRole('button', { name: 'Allow opening once' });
   await allow.waitFor();
   assert(await allow.isDisabled(), 'New prompt buttons were enabled immediately');

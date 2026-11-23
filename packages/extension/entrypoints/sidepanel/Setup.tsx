@@ -5,10 +5,9 @@ import { HELPER_COMMAND, HELPER_REQUIREMENT } from '../../src/helper-command';
 import { classifyHelperProblem } from '../../src/helper-problem';
 import { errorText, panel } from './lib/api';
 import type { LiveState } from './lib/store';
-import { refreshSetup } from './lib/store';
+import { refreshSetup, useFreshSetup } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
-import { ProviderIcon, Spinner } from './ui';
-
+import { ProviderIcon, Spinner, T3Mark } from './ui';
 
 const Ready = ({ text = 'Ready' }: { text?: string }): ReactNode => (
   <span className="state-ready">
@@ -88,7 +87,8 @@ export function helperNote(live: LiveState): HelperNote {
     case 'unknown':
       return { text: 'The browser reported a problem with the helper. Running this again usually fixes it:', short: detail ?? 'the browser reported a problem', command: true, ...(detail === undefined ? {} : { detail }) };
     default:
-      return { text: `Run this in a terminal, from any folder. ${HELPER_REQUIREMENT}`, short: 'it is not installed', command: true, ...(detail === undefined ? {} : { detail }) };
+      // The usual first run: nothing has failed, so the browser's "host not found" is not worth showing.
+      return { text: `Run this in a terminal, from any folder. ${HELPER_REQUIREMENT}`, short: 'it is not installed', command: true };
   }
 }
 
@@ -109,7 +109,7 @@ export function HelperStep({ live, icon = true }: { live: LiveState; icon?: bool
           <small>{note.text}</small>
           {note.detail === undefined ? null : <small className="helper-detail">The browser said: {note.detail}</small>}
         </span>
-        {ready ? <Ready /> : note.command || note.waiting === true ? <Spinner /> : null}
+        {ready ? <Ready /> : note.waiting === true ? <Spinner /> : null}
       </div>
       {note.command ? <CommandLine /> : null}
     </>
@@ -140,7 +140,7 @@ export function AgentRow({ id, live }: { id: 'claude' | 'codex'; live: LiveState
       </span>
       <span className="setup-text">
         <strong>{name}</strong>
-        <small>{error ?? (agent === undefined ? 'Waiting for the helper' : !agent.found ? 'Not installed' : agent.registered ? 'Has the browser tools' : 'Add the browser tools')}</small>
+        <small>{error ?? (agent === undefined ? 'Waiting for the helper' : !agent.found ? 'Not installed' : agent.registered ? `Sessions you start in ${name} can use this browser` : `Add to use this browser from sessions you start in ${name}`)}</small>
       </span>
       {agent?.registered === true ? (
         <Ready />
@@ -180,10 +180,14 @@ export function T3Row({ live, state }: { live: LiveState; state: T3State }): Rea
           ? 'Installed, not running. Threads use Claude Code or Codex directly.'
           : found === 'missing'
             ? 'Not installed. Threads use Claude Code or Codex directly.'
-            : 'Looking for T3 Code');
+            : live.helper.connected
+              ? 'Looking for T3 Code'
+              : 'Checked once the helper is running');
   return (
     <div className="setup-row">
-      <span className="setup-icon t3-mark">T3</span>
+      <span className="setup-icon">
+        <T3Mark size={20} />
+      </span>
       <span className="setup-text">
         <strong>T3 Code</strong>
         <small>{note}</small>
@@ -200,6 +204,7 @@ export function T3Row({ live, state }: { live: LiveState; state: T3State }): Rea
 }
 
 export function Setup({ live, state, onDone }: { live: LiveState; state: T3State; onDone: () => void }): ReactNode {
+  useFreshSetup();
   const helperReady = live.helper.connected;
   const anyAgent = live.setup?.agents.some((agent) => agent.found) === true || state.status === 'ready';
   return (
@@ -213,7 +218,8 @@ export function Setup({ live, state, onDone }: { live: LiveState; state: T3State
         <HelperStep live={live} />
       </section>
       <section>
-        <h2>Agents</h2>
+        <h2>Your own agents</h2>
+        <p className="setup-hint">Optional. Threads started in this panel work without it.</p>
         <AgentRow id="claude" live={live} />
         <AgentRow id="codex" live={live} />
       </section>

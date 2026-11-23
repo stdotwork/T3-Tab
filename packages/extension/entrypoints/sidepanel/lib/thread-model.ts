@@ -54,6 +54,13 @@ export interface PendingQuestion {
   questions: Question[];
 }
 
+/** A follow-up T3 holds until the current run ends. `held`: T3 will not start it by itself (the run was stopped). */
+export interface QueuedMessage {
+  runId: string;
+  text: string;
+  held: boolean;
+}
+
 export interface ThreadView {
   id: string;
   source: 't3' | 'direct';
@@ -61,6 +68,7 @@ export interface ThreadView {
   running: boolean;
   failed: boolean;
   rows: Row[];
+  queued: QueuedMessage[];
   approval?: PendingApproval;
   question?: PendingQuestion;
   activeRunId?: string;
@@ -71,20 +79,77 @@ export interface ThreadView {
   projectId?: string;
 }
 
-const BROWSER_TOOLS: Record<string, string> = {
-  status: 'Checked the browser',
-  tabs: 'Used browser tabs',
-  read: 'Read page',
-  screenshot: 'Took a screenshot',
-  act: 'Acted on page',
-  run_js: 'Ran JavaScript on page',
+const BROWSER_TOOL_NAMES = new Set(['status', 'tabs', 'read', 'screenshot', 'act', 'run_js']);
+
+/** `mcp__t3-tab__read` and `t3-tab.read` both name T3-Tab's own browser tools. A direct run's parser leaves the bare name. */
+export function browserToolName(name: string): string | undefined {
+  const tool = /^(?:mcp__t3-tab__|t3-tab[.:/])([a-z_]+)$/.exec(name)?.[1] ?? name;
+  return BROWSER_TOOL_NAMES.has(tool) ? tool : undefined;
+}
+
+const hostOf = (url: unknown): string | undefined => {
+  if (typeof url !== 'string') return undefined;
+  try {
+    return new URL(url).host || undefined;
+  } catch {
+    return undefined;
+  }
 };
 
-/** `mcp__t3-tab__read` and `t3-tab.read` both name T3-Tab's own browser tools. */
-export function browserToolLabel(name: string): string | undefined {
-  const match = /^(?:mcp__t3-tab__|t3-tab[.:/])([a-z_]+)$/.exec(name);
-  return match?.[1] === undefined || !Object.hasOwn(BROWSER_TOOLS, match[1]) ? undefined : BROWSER_TOOLS[match[1]];
+/** The site a tool reply is about: every reply about a tab has `<title> — <address>` on its first line. */
+const hostInReply = (output: string | undefined): string | undefined => hostOf(output?.split('\n', 1)[0]?.split(' — ').at(-1)?.trim());
+
+const ACT_WORDS: Record<string, string> = { click: 'Clicked', type: 'Typed', fill: 'Filled a field', select: 'Chose an option', scroll: 'Scrolled', hover: 'Hovered', wait: 'Waited' };
+
+function actWords(steps: unknown): string {
+  if (!Array.isArray(steps) || steps.length === 0) return 'Acted';
+  const words: string[] = [];
+  for (const step of steps as Array<{ action?: unknown; key?: unknown }>) {
+    // What was typed stays out of the label: it can be a password.
+    const word = step.action === 'press' ? (typeof step.key === 'string' ? `Pressed ${step.key.slice(0, 20)}` : 'Pressed a key') : ACT_WORDS[String(step.action)];
+    if (word !== undefined && !words.includes(word)) words.push(word);
+  }
+  if (words.length === 0) return 'Acted';
+  const shown = words.slice(0, 3).map((word, index) => (index === 0 ? word : word[0]?.toLowerCase() + word.slice(1)));
+  return words.length > 3 ? `${shown.join(', ')} and more` : shown.join(', ');
 }
+
+/** One browser step in words, naming the site and what was done, from the tool's arguments and its reply. */
+export function browserStepLabel(tool: string, input: unknown, output?: string): string {
+  const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+  const site = hostInReply(output);
+  const page = site ?? 'the page';
+  switch (tool) {
+    case 'status':
+      return 'Checked the browser';
+    case 'tabs': {
+      if (args.claim !== undefined) return 'Took the shared tabs';
+      if (args.action === 'open') return `Opened ${hostOf(args.url) ?? site ?? 'a tab'}`;
+      if (args.action === 'switch') return `Switched to ${site ?? (args.tab === undefined ? 'a tab' : `tab ${String(args.tab)}`)}`;
+      if (args.action === 'close') return args.tab === undefined ? 'Closed a tab' : `Closed tab ${String(args.tab)}`;
+      return 'Listed tabs';
+    }
+    case 'read':
+      if (typeof args.find === 'string') return `Searched ${page} for "${oneLine(args.find, 60)}"`;
+      return args.ref === undefined ? `Read ${page}` : `Read part of ${page}`;
+    case 'screenshot':
+      return `Took a screenshot of ${page}`;
+    case 'act':
+      return `${actWords(args.steps)} on ${page}`;
+    default:
+      return `Ran JavaScript on ${page}`;
+  }
+}
+
+/** A direct run carries a tool's arguments as one short line of JSON, cut off when long. */
+const parseSummary = (summary: string | undefined): unknown => {
+  if (summary === undefined) return undefined;
+  try {
+    return JSON.parse(summary);
+  } catch {
+    return undefined;
+  }
+};
 
 const oneLine = (text: string, max = 140): string => {
   const line = text.replace(/\s+/g, ' ').trim();
@@ -126,6 +191,7 @@ function withoutCodes(view: ThreadView, known: ReadonlySet<string> = new Set()):
     view.approval.title = clean(view.approval.title);
     if (view.approval.detail !== undefined) view.approval.detail = clean(view.approval.detail);
   }
+  for (const entry of view.queued) entry.text = clean(entry.text);
   return view;
 }
 
@@ -174,13 +240,36 @@ interface T3Item {
   completedAt?: string | null;
   updatedAt?: string;
   message?: string;
+  failure?: { class?: string; message?: string; resetAt?: string | null };
+  retry?: { attempt?: number; maxAttempts?: number };
+  diffStr?: string;
+  changes?: Array<{ path?: string }>;
 }
 
 export interface T3Projection {
   thread: { id: string; title: string; runtimeMode?: string; projectId?: string; providerInstanceId?: string; modelSelection?: { instanceId?: string; model?: string; options?: Array<{ id: string; value: string | boolean }> } };
-  runs: Array<{ id: string; status: string; ordinal?: number; startedAt?: string | null; workStartedAt?: string; requestedAt?: string; completedAt?: string | null }>;
+  runs: Array<{ id: string; status: string; ordinal?: number; startedAt?: string | null; workStartedAt?: string; requestedAt?: string; completedAt?: string | null; userMessageId?: string; queuePosition?: number; queueHeld?: boolean }>;
   runtimeRequests: Array<{ id: string; status: string; kind: string }>;
+  /** The conversation's messages, where a queued follow-up's text is before it has a place in the timeline. */
+  messages?: Array<{ id: string; text?: string; context?: { guest?: { text?: string } } | null }>;
   visibleTurnItems: Array<{ item: T3Item }>;
+}
+
+/** What a failed T3 step says, as T3's own timeline words it. */
+function t3FailureText(item: T3Item): string {
+  const { failure } = item;
+  if (failure?.class === 'usage_limit') {
+    const reset = asTime(failure.resetAt);
+    return reset === undefined ? 'Usage limit reached.' : `Usage limit reached. Resets at ${new Date(reset).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`;
+  }
+  return failure?.message ?? item.message ?? item.text ?? item.title ?? 'The run failed.';
+}
+
+/** Adds the reason a turn failed when nothing after the last message says so already. */
+function noteFailure(rows: Row[], fallback: string): void {
+  const lastUser = rows.findLastIndex((row) => row.kind === 'user');
+  if (rows.slice(lastUser + 1).some((row) => row.kind === 'notice' && row.tone === 'error')) return;
+  rows.push({ kind: 'notice', id: 'notice:failed', tone: 'error', text: fallback });
 }
 
 function t3WorkEntry(item: T3Item): WorkEntry | undefined {
@@ -201,14 +290,17 @@ function t3WorkEntry(item: T3Item): WorkEntry | undefined {
       const name = item.toolName ?? 'Tool';
       // Loading a deferred tool's schema is the agent's bookkeeping, not a step the owner needs to follow.
       if (name === 'ToolSearch') return undefined;
-      const browser = browserToolLabel(name);
-      const label = browser ?? item.title ?? name;
+      const browser = browserToolName(name);
       const output = typeof item.output === 'string' ? item.output : undefined;
+      const label = browser === undefined ? (item.title ?? name) : browserStepLabel(browser, item.input, output);
       return { ...base, icon: browser === undefined ? 'tool' : 'browser', label: oneLine(label), ...(output === undefined ? {} : { detail: output }) };
     }
     case 'file_change': {
       const counts = item.additions === undefined && item.deletions === undefined ? '' : ` +${item.additions ?? 0} −${item.deletions ?? 0}`;
-      return { ...base, icon: 'edit', label: `${item.fileName ?? item.title ?? 'File'}${counts}` };
+      const paths = (item.changes ?? []).flatMap((change) => (change.path === undefined ? [] : [change.path]));
+      const name = paths.length > 1 ? `${paths.length} files` : (item.fileName ?? item.title ?? 'a file');
+      const detail = [paths.length > 1 ? paths.join('\n') : (paths[0] ?? item.fileName), item.diffStr].filter((part) => part !== undefined && part !== '').join('\n\n');
+      return { ...base, icon: 'edit', label: `Changed ${name}${counts}`, ...(detail === '' ? {} : { detail: detail.slice(0, 20_000) }) };
     }
     case 'file_search':
       return { ...base, icon: 'search', label: oneLine(item.pattern ?? item.patterns?.join(', ') ?? item.title ?? 'Searched files') };
@@ -258,8 +350,15 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
     return created;
   };
 
+  const queuedRuns = projection.runs
+    .filter((run) => run.status === 'queued')
+    .sort((a, b) => (a.queuePosition ?? a.ordinal ?? 0) - (b.queuePosition ?? b.ordinal ?? 0) || (a.ordinal ?? 0) - (b.ordinal ?? 0));
+  const queuedIds = new Set(queuedRuns.map((run) => run.id));
+
   for (const { item } of projection.visibleTurnItems) {
     if (item.type === 'user_message') {
+      // A queued follow-up shows above the composer until its run starts.
+      if (item.runId != null && queuedIds.has(item.runId)) continue;
       settle();
       const at = asTime(item.startedAt) ?? asTime(item.updatedAt);
       rows.push({ kind: 'user', id: item.id, text: withoutClaimNote(item.text ?? '').trim(), ...(at === undefined ? {} : { at }) });
@@ -280,7 +379,9 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
       continue;
     }
     if (item.type === 'error') {
-      rows.push({ kind: 'notice', id: item.id, tone: 'error', text: item.message ?? item.text ?? item.title ?? 'The run failed.' });
+      const text = t3FailureText(item);
+      if (item.retry === undefined) rows.push({ kind: 'notice', id: item.id, tone: 'error', text });
+      else rows.push({ kind: 'notice', id: item.id, tone: 'info', text: `Retrying${item.retry.attempt === undefined ? '' : ` (attempt ${item.retry.attempt}${item.retry.maxAttempts === undefined ? '' : ` of ${item.retry.maxAttempts}`})`}: ${text}` });
       continue;
     }
     const entry = t3WorkEntry(item);
@@ -303,6 +404,10 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
     running: false,
     failed: false,
     rows,
+    queued: queuedRuns.map((run) => {
+      const message = projection.messages?.find((entry) => entry.id === run.userMessageId);
+      return { runId: run.id, text: withoutClaimNote(message?.context?.guest?.text ?? message?.text ?? 'Queued message').trim(), held: run.queueHeld === true };
+    }),
   };
   for (const request of pending) {
     const item = itemsByRequest.get(request.id);
@@ -328,6 +433,7 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
     view.activeRunId = active.id;
   }
   view.failed = latest?.status === 'failed';
+  if (view.failed) noteFailure(rows, 'This turn failed. T3 Code gave no reason.');
   // A run that started but has shown no step yet still gets its "Working" line.
   if (active !== undefined && !rows.some((row) => row.kind === 'work' && row.running)) {
     const startedAt = asTime(active.workStartedAt) ?? asTime(active.startedAt) ?? asTime(active.requestedAt);
@@ -345,12 +451,12 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
 }
 
 function directEntry(item: Extract<AgentItem, { kind: 'tool' }>): WorkEntry {
-  // A direct run has T3-Tab's tools and no others, and its parser leaves the bare name.
-  const browser = browserToolLabel(item.name) ?? (Object.hasOwn(BROWSER_TOOLS, item.name) ? BROWSER_TOOLS[item.name] : undefined);
+  // A direct run has T3-Tab's tools and no others.
+  const browser = browserToolName(item.name);
   return {
     id: item.id,
     icon: browser === undefined ? 'tool' : 'browser',
-    label: browser ?? (item.summary === undefined ? item.name : `${item.name} ${oneLine(item.summary, 100)}`),
+    label: browser !== undefined ? oneLine(browserStepLabel(browser, parseSummary(item.summary), item.output)) : item.summary === undefined ? item.name : `${item.name} ${oneLine(item.summary, 100)}`,
     status: item.status === 'running' ? 'running' : item.status === 'failed' ? 'failed' : 'done',
     ...(item.output === undefined ? {} : { detail: item.output }),
   };
@@ -383,10 +489,10 @@ export function directThreadView(conversation: AgentConversation): ThreadView {
     if (item.kind === 'user') {
       work = undefined;
       trailing = [];
-      rows.push({ kind: 'user', id: item.id, text: item.text });
+      rows.push({ kind: 'user', id: item.id, text: item.text, ...(item.at === undefined ? {} : { at: item.at }) });
     } else if (item.kind === 'assistant') {
       if (item.text.trim() === '') return;
-      const row: Extract<Row, { kind: 'assistant' }> = { kind: 'assistant', id: item.id, text: item.text, streaming: item.streaming === true };
+      const row: Extract<Row, { kind: 'assistant' }> = { kind: 'assistant', id: item.id, text: item.text, streaming: item.streaming === true, ...(item.at === undefined ? {} : { at: item.at }) };
       rows.push(row);
       trailing.push(row);
     } else if (item.kind === 'error') {
@@ -413,7 +519,9 @@ export function directThreadView(conversation: AgentConversation): ThreadView {
       ...(conversation.startedAt === undefined ? {} : { startedAt: conversation.startedAt }),
     });
   }
-  const view: ThreadView = { id: conversation.id, source: 'direct', title: conversation.title, running, failed: conversation.status === 'failed', rows };
+  const failed = conversation.status === 'failed';
+  if (failed) noteFailure(rows, conversation.error ?? 'This run failed.');
+  const view: ThreadView = { id: conversation.id, source: 'direct', title: conversation.title, running, failed, rows, queued: [] };
   view.provider = conversation.via;
   if (conversation.model !== undefined) view.model = conversation.model;
   return withoutCodes(view);

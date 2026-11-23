@@ -8,7 +8,7 @@ import { PromptCards } from './PromptCards';
 import { errorText, panel } from './lib/api';
 import { resolveChoice, selectionFor, type Choice } from './lib/catalog';
 import { DEFAULT_PROJECT_KEY, NO_PROJECT, pickableProjects, resolveProject } from './lib/new-thread';
-import { refreshConversations, useStored, useTabStored, type LiveState } from './lib/store';
+import { refreshRunsNow, useShareTargets, useStored, useTabStored, type LiveState } from './lib/store';
 import { t3, type Project, type T3State } from './lib/t3-client';
 import { Spinner, useDismiss } from './ui';
 
@@ -137,7 +137,7 @@ function FolderPicker({ value, onChange }: { value: string; onChange: (folder: s
             setOpen(false);
           }}
         >
-          <input autoFocus placeholder="/path/to/folder (blank for home)" value={draft} onChange={(event) => setDraft(event.target.value)} />
+          <input autoFocus aria-label="Working folder" placeholder="/path/to/folder (blank for home)" value={draft} onChange={(event) => setDraft(event.target.value)} />
           <button type="submit" className="row-btn">
             Use
           </button>
@@ -186,6 +186,9 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
   const provider = catalog.providers.find((entry) => entry.id === choice?.provider);
   const tab = live.currentTab;
   const shareable = tab !== undefined && /^https?:/.test(tab.url);
+  const targets = useShareTargets(tab, live.changes);
+  // A direct agent has only the browser tools, so it is asked about the page rather than about building something.
+  const heading = catalog.source === 't3' ? 'What should we build?' : !shareable || !shareTab ? 'What should we do?' : targets.tabs.length > 1 ? 'What should we do in these tabs?' : 'What should we do in this tab?';
   const chooseProject = (id: string): void => {
     setTabProject(id);
     if (id !== NO_PROJECT) setLastProject(id);
@@ -228,7 +231,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
           ...(shareTab && shareable ? {} : { noTabs: true }),
         });
         setText('');
-        await refreshConversations();
+        await refreshRunsNow();
         onOpen({ name: 'thread', id: conversation.id, source: 'direct' });
       }
     } catch (failure) {
@@ -240,17 +243,18 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
 
   return (
     <div className="screen">
-      <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} />
+      <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} />
       <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />
       <main className="home">
         <div className="hero">
-          <h1>What should we build?</h1>
+          <h1>{heading}</h1>
           {catalog.source === 't3' ? <ProjectPicker projects={projects} value={project} noProject={noProject} onChange={chooseProject} /> : <FolderPicker value={folder} onChange={setFolder} />}
           {catalog.source === 't3' && noProject && project !== undefined ? (
             <button type="button" className="no-project-link" onClick={() => chooseProject(NO_PROJECT)}>
               or start without a project
             </button>
           ) : null}
+          {catalog.note === undefined ? null : <p className="hero-note">{catalog.note}</p>}
         </div>
       </main>
       <div className="dock">
@@ -265,7 +269,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
           busy={busy || choice === undefined}
           autoFocus
           placeholder="Ask anything"
-          chip={shareable ? <TabChip title={tab.title} shared={shareTab} onToggle={() => setShareTab(!shareTab)} /> : null}
+          chip={shareable ? <TabChip title={tab.title} state={shareTab ? 'pending' : 'off'} tabs={targets.tabs} group={targets.groupTitle} onToggle={() => setShareTab(!shareTab)} /> : null}
           picker={<ModelPicker providers={catalog.providers} choice={choice} onChoice={setSavedChoice} />}
         />
         {catalog.source === 't3' ? (

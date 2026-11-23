@@ -9,6 +9,7 @@ import {
   APP_THEME_VARIABLES,
   environmentThemeDefinition,
   getThemeColorsForMode,
+  themeIdFromName,
   type EnvironmentTheme,
   type ThemeAppearance,
   type ThemeColors,
@@ -95,6 +96,14 @@ export async function loadAppearance(): Promise<void> {
     paint();
     notify();
   });
+  // A panel on another tab changed the theme.
+  chrome.storage?.onChanged?.addListener((changes, area) => {
+    const next = changes[KEY]?.newValue as AppearanceState | undefined;
+    if (area !== 'local' || next === undefined || JSON.stringify(next) === JSON.stringify(state)) return;
+    state = { ...state, ...next };
+    paint();
+    notify();
+  });
   paint();
   notify();
 }
@@ -110,8 +119,36 @@ export const setTheme = (theme: string): void => save({ ...state, theme });
 export const setScheme = (scheme: SchemeChoice): void => save({ ...state, scheme });
 
 export function saveCustomTheme(theme: ThemeDefinition, select = true): void {
-  const custom = [...state.custom.filter((entry) => entry.id !== theme.id), theme];
+  const known = state.custom.findIndex((entry) => entry.id === theme.id);
+  // An edit keeps the theme's place in the list.
+  const custom = known === -1 ? [...state.custom, theme] : state.custom.map((entry, index) => (index === known ? theme : entry));
   save({ ...state, custom, theme: select ? theme.id : state.theme });
+}
+
+/**
+ * A name and id no other theme has: `Name`, then `Name 2`, `Name 3`. `keepId` is the theme being edited, which may keep
+ * its own.
+ */
+export function freeThemeName(wanted: string, keepId?: string): { id: string; label: string } {
+  const taken = allThemes().filter((theme) => theme.id !== keepId);
+  const base = wanted.trim().slice(0, 44) || 'My theme';
+  for (let number = 1; ; number += 1) {
+    const label = number === 1 ? base : `${base} ${number}`;
+    const id = keepId ?? `custom-${themeIdFromName(label)}`.slice(0, 48);
+    if (!taken.some((theme) => theme.id === id || theme.label.toLowerCase() === label.toLowerCase())) return { id, label };
+  }
+}
+
+/** Adds a theme from a file. The same file twice is one theme; a different theme under a used name gets a new one. */
+export function importCustomTheme(theme: ThemeDefinition): string {
+  const same = state.custom.find((entry) => entry.label === theme.label && JSON.stringify({ ...entry, id: '' }) === JSON.stringify({ ...theme, id: '' }));
+  if (same !== undefined) {
+    setTheme(same.id);
+    return same.id;
+  }
+  const { id, label } = freeThemeName(theme.label);
+  saveCustomTheme({ ...theme, id, label });
+  return id;
 }
 
 export function removeCustomTheme(id: string): void {

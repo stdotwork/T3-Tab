@@ -95,6 +95,7 @@ export type PanelRequest =
   | { type: 'panel.t3SignOut' }
   | { type: 'panel.agentRemoveTab'; id: string; tabId: number }
   | { type: 'panel.conversationTabs'; id: string }
+  | { type: 'panel.shareTargets'; tabId?: number }
   | { type: 'panel.shareTab'; sessionId: string; tabId?: number }
   | { type: 'panel.unshareTab'; sessionId: string; tabId?: number }
   | { type: 'panel.decide'; promptId: string; decision: PermissionDecision }
@@ -105,7 +106,7 @@ export async function handlePanelRequest(
   value: unknown,
 ): Promise<
   | PanelState
-  | { tabs: PanelTab[] }
+  | { tabs: PanelTab[]; groupTitle?: string }
   | AgentPanelState
   | { conversation: AgentConversation }
   | T3Access
@@ -151,6 +152,7 @@ export async function handlePanelRequest(
     const tabs = await Promise.all(held.map(async ({ tabId }) => await panelTab(tabId).catch(() => undefined)));
     return { tabs: tabs.filter((tab) => tab !== undefined) };
   }
+  if (request.type === 'panel.shareTargets') return await shareView(request.tabId);
   if (request.type === 'panel.agentRemoveTab') {
     await removeConversationTab(claimStore, sessionStore, request.id, request.tabId);
     return { ok: true };
@@ -325,6 +327,15 @@ async function shareTargets(tabId: number | undefined): Promise<PanelTab[]> {
   );
 }
 
+/** What a thread started now would share, for the panel to show before the owner sends. */
+async function shareView(tabId: number | undefined): Promise<{ tabs: PanelTab[]; groupTitle?: string }> {
+  const tabs = await shareTargets(tabId);
+  if (tabs.length < 2) return { tabs };
+  const groupId = (await chrome.tabs.get(tabs[0]!.id)).groupId;
+  const title = groupId === undefined ? undefined : (await chrome.tabGroups.get(groupId).catch(() => undefined))?.title;
+  return title === undefined || title === '' ? { tabs } : { tabs, groupTitle: title };
+}
+
 async function panelTab(tabId: number | undefined): Promise<PanelTab> {
   const tab =
     tabId === undefined
@@ -367,6 +378,9 @@ function parsePanelRequest(value: unknown): PanelRequest {
     return request;
   }
   if (candidate.type === 'panel.conversationTabs' && typeof candidate.id === 'string') return { type: 'panel.conversationTabs', id: candidate.id };
+  if (candidate.type === 'panel.shareTargets') {
+    return Number.isInteger(candidate.tabId) ? { type: 'panel.shareTargets', tabId: candidate.tabId as number } : { type: 'panel.shareTargets' };
+  }
   if (candidate.type === 'panel.t3SignIn' || candidate.type === 'panel.t3SignOut') return { type: candidate.type };
   if (candidate.type === 'panel.t3Pair' && typeof candidate.origin === 'string' && typeof candidate.dpop === 'string') {
     return { type: 'panel.t3Pair', origin: candidate.origin, dpop: candidate.dpop };

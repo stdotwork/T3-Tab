@@ -1,28 +1,34 @@
 import type { AgentConversation } from '@t3-tab/protocol';
 import { History, Plus, Search } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { PanelTab, TabThread } from '../../src/panel';
 
-import { ApprovalCard, QuestionCard, Timeline } from './Thread';
+import { ApprovalCard, QuestionCard, QueuedMessages, Timeline } from './Thread';
 import { Composer, RuntimeMenu, TabChip } from './Composer';
 import { askerName, Banner, bindClaim, isRunningStatus, TopBar, useCatalog, useT3, withdrawClaim, type Screen } from './Frame';
 import { NewThread } from './NewThread';
 import { PromptCards } from './PromptCards';
-import { Settings } from './Settings';
+import { ActiveSessions } from './Sessions';
 import { Setup } from './Setup';
 import { errorText, panel } from './lib/api';
 import { choiceLabel } from './lib/catalog';
-import { headlessRender, refreshConversations, startPolling, useLive, useStored, useTabStored, type LiveState } from './lib/store';
+import { headlessRender, refreshRunsNow, startPolling, useLive, useShareTargets, useStored, useTabStored, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
 import { syncT3Theme } from './lib/theme';
 import { directThreadView, type ThreadView } from './lib/thread-model';
 import { IconButton, ProviderIcon, timeAgo } from './ui';
 
+// Settings holds the theme editor and every site control, which a panel that is just running threads never opens.
+const Settings = lazy(async () => ({ default: (await import('./Settings')).Settings }));
+
 /** What this tab's panel was showing, so it comes back the same when the owner returns to the tab. */
 type TabScreen = { name: 'home' } | ({ name: 'thread' } & TabThread);
 
-function useThreadView(screen: Extract<Screen, { name: 'thread' }>): ThreadView | undefined {
+const DIRECT_RUN_MS = 400;
+const DIRECT_RETRY_MS = 3_000;
+
+function useThreadView(screen: Extract<Screen, { name: 'thread' }>, listedAt: number | undefined): ThreadView | undefined {
   const [t3View, setT3View] = useState<ThreadView>();
   useEffect(() => {
     setT3View(undefined);
@@ -31,29 +37,31 @@ function useThreadView(screen: Extract<Screen, { name: 'thread' }>): ThreadView 
   }, [screen.id, screen.source]);
   // The list poll leaves the steps out to stay small, so the open direct run is fetched on its own.
   const [conversation, setConversation] = useState<AgentConversation>();
+  useEffect(() => setConversation(undefined), [screen.id, screen.source]);
+  // Followed closely only while it runs. A finished run is fetched again when the list says it changed.
   useEffect(() => {
-    setConversation(undefined);
     if (screen.source !== 'direct') return;
     let active = true;
-    const load = (): void => {
-      void panel<{ conversation: AgentConversation }>({ type: 'panel.agentGet', id: screen.id })
-        .then((result) => {
-          if (active) setConversation(result.conversation);
-        })
-        .catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async (): Promise<void> => {
+      const result = await panel<{ conversation: AgentConversation }>({ type: 'panel.agentGet', id: screen.id }).catch(() => undefined);
+      if (!active) return;
+      if (result !== undefined) setConversation(result.conversation);
+      const status = result?.conversation.status;
+      if (result === undefined) timer = setTimeout(() => void load(), DIRECT_RETRY_MS);
+      else if (status === 'running' || status === 'waiting') timer = setTimeout(() => void load(), document.hidden ? DIRECT_RETRY_MS : DIRECT_RUN_MS);
     };
-    load();
-    const timer = setInterval(load, 400);
+    void load();
     return () => {
       active = false;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
-  }, [screen.id, screen.source]);
+  }, [screen.id, screen.source, listedAt]);
   return useMemo(() => (screen.source === 't3' ? t3View : conversation === undefined ? undefined : directThreadView(conversation)), [screen.source, t3View, conversation]);
 }
 
 function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, { name: 'thread' }>; live: LiveState; state: T3State; onNav: (screen: Screen) => void }): ReactNode {
-  const view = useThreadView(screen);
+  const view = useThreadView(screen, screen.source === 'direct' ? live.conversations.find((entry) => entry.id === screen.id)?.updatedAt : undefined);
   const conversationKey = screen.source === 't3' ? `t3:${screen.id}` : screen.id;
   const [heldTabs, setHeldTabs] = useState<PanelTab[]>([]);
   const [text, setText] = useState('');
@@ -68,12 +76,11 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
   }, [conversationKey]);
   useEffect(() => {
     void loadTabs().catch(() => undefined);
-    const timer = setInterval(() => void loadTabs().catch(() => undefined), 1_500);
-    return () => clearInterval(timer);
-  }, [loadTabs]);
+  }, [loadTabs, live.changes]);
   const held = tab !== undefined && heldTabs.some((entry) => entry.id === tab.id);
   // A T3 thread can take another tab with a message; a direct run keeps the tabs it started with.
   const shareable = screen.source === 't3' && tab !== undefined && !held && /^https?:/.test(tab.url);
+  const targets = useShareTargets(shareable ? tab : undefined, live.changes);
   const guard = async (action: () => Promise<unknown>): Promise<void> => {
     setError(undefined);
     try {
@@ -105,7 +112,7 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
         setShareTab(false);
       } else {
         await panel({ type: 'panel.agentSend', id: screen.id, message });
-        await refreshConversations();
+        await refreshRunsNow();
       }
       setText('');
     });
@@ -117,7 +124,7 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
       if (screen.source === 't3') await t3.stop(screen.id, view.activeRunId);
       else {
         await panel({ type: 'panel.agentStop', id: screen.id });
-        await refreshConversations();
+        await refreshRunsNow();
       }
     });
   };
@@ -144,6 +151,7 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
         onThreads={() => onNav({ name: 'threads' })}
         onNew={() => onNav({ name: 'home' })}
         onSettings={() => onNav({ name: 'settings', tab: 'general' })}
+        sessions={live.sessions.length}
       />
       <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />
       {view === undefined ? <div className="timeline" /> : <Timeline view={view} />}
@@ -169,21 +177,30 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
           />
         )}
         {error === undefined ? null : <p className="error-line">{error}</p>}
+        {view === undefined ? null : (
+          <QueuedMessages
+            queued={view.queued}
+            running={view.running}
+            onCancel={(runId) => void guard(async () => await t3.cancelQueued(screen.id, runId))}
+            onStart={(runId) => void guard(async () => await t3.startQueued(screen.id, runId))}
+          />
+        )}
         <Composer
           value={text}
           onChange={setText}
           onSend={() => void send()}
           onStop={stop}
           running={view?.running === true}
+          canQueue={screen.source === 't3'}
           busy={busy || view === undefined || (screen.source === 'direct' && view.running)}
-          placeholder={view?.running === true ? 'Queue a follow-up' : 'Ask anything'}
+          placeholder={view?.running !== true ? 'Ask anything' : screen.source === 't3' ? 'Queue a follow-up' : 'Working. You can reply when this turn ends.'}
           chip={
             <>
               {heldTabs.map((entry) => (
                 <TabChip
                   key={entry.id}
                   title={entry.title}
-                  shared
+                  state="held"
                   removeLabel={`Remove "${entry.title}" from this conversation`}
                   onToggle={() =>
                     void guard(async () => {
@@ -193,7 +210,7 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
                   }
                 />
               ))}
-              {shareable ? <TabChip title={tab.title} shared={shareTab} onToggle={() => setShareTab(!shareTab)} /> : null}
+              {shareable ? <TabChip title={tab.title} state={shareTab ? 'pending' : 'off'} tabs={targets.tabs} group={targets.groupTitle} nextMessage onToggle={() => setShareTab(!shareTab)} /> : null}
               {heldTabs.length === 0 && !shareable ? <span className="tab-chip off static">No tabs shared</span> : null}
             </>
           }
@@ -275,10 +292,10 @@ function ThreadList({ live, state, onOpen, onClose }: { live: LiveState; state: 
         </IconButton>
       </header>
       <div className="thread-list">
+        <ActiveSessions live={live} state={state} onOpen={onOpen} />
         {rows.map((row) => (
           <button type="button" className="thread-row" data-thread-item key={row.key} onClick={() => onOpen(row.screen)}>
             <span className="thread-row-top">
-              <span className="project-badge">{row.project.slice(0, 2).toUpperCase()}</span>
               <span className="thread-project">{row.project}</span>
               {row.badge !== undefined ? <span className={`thread-badge ${row.badge.toLowerCase()}`}>{row.badge}</span> : row.running ? <span className="thread-badge working">Working</span> : <time>{timeAgo(row.at)}</time>}
             </span>
@@ -355,7 +372,11 @@ export function App(): ReactNode {
     show(next);
   };
   if (screen.name === 'settings') {
-    return <Settings live={live} state={state} tab={screen.tab} connections={screen.connections} onTab={(tab) => setScreen({ name: 'settings', tab })} onClose={() => setScreen(backRef.current)} />;
+    return (
+      <Suspense fallback={<div className="screen" />}>
+        <Settings live={live} state={state} tab={screen.tab} connections={screen.connections} onTab={(tab) => setScreen({ name: 'settings', tab })} onClose={() => setScreen(backRef.current)} />
+      </Suspense>
+    );
   }
   if (screen.name === 'threads') return <ThreadList live={live} state={state} onOpen={show} onClose={() => setScreen(backRef.current)} />;
   if (screen.name === 'thread') return <ThreadScreen key={screen.id} screen={screen} live={live} state={state} onNav={nav} />;
