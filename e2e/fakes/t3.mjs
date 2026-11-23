@@ -36,6 +36,7 @@ if (command === 'list') {
     providerInstanceId: valueOf(args, '--provider') ?? 'default',
     model: valueOf(args, '--model') ?? 'default',
     pendingRequestCount: 0,
+    runtimeMode: 'approval-required',
     messages: [{ role: 'user', runId: 'run-1', text: input }],
   });
   const agent = spawn(process.execPath, [join(fileURLToPath(new URL('.', import.meta.url)), 't3-agent.mjs'), id], {

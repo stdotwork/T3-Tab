@@ -56,7 +56,7 @@ lists T3's projects and models through the panel's request API, starts a thread 
 panel reply, command argument or environment but the credential file holds a token; a made-up claim code and a
 used one are refused; T3 stopped and T3 missing are reported; direct Claude Code and Codex runs start with
 their isolating flags, read the tab, and are resumed with the session id they printed and a new claim code;
-a tab the owner unshares during a direct turn is not shared with the next turn, and neither is one removed
+Full access is confirmed with a fake T3 per request with no live panel, and an unbound claim, a lowered mode or a stopped T3 prompts; a tab the owner unshares during a direct turn is not shared with the next turn, and neither is one removed
 between turns with the conversation's Remove button; a missing, world-readable or replaced claim file warns in
 the conversation and in the agent's first tool reply. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
@@ -196,8 +196,15 @@ thread list and settings behind icons, coloured only from T3's theme roles); its
 A permission prompt shows as a card in the side panel and, when the agent's client supports MCP form elicitation,
 in the thread the agent runs in. The first answer counts and closes the other. An accepted question allows that one
 request; site-wide grants are made only in the side panel. `claude -p` and `codex exec` cancel these questions, so a
-direct run asks in the side panel only. A session that claimed tabs for a T3 thread in Full access has its prompts
-answered yes without a card, which writes no site setting and is listed in `autoAllowed`; every other check still runs.
+direct run asks in the side panel only.
+
+T3's Full access counts as yes for a browser request only while T3 itself confirms it (`t3-full-access.ts`). When a request
+needs a prompt, the extension asks the daemon, which runs `t3 thread show --json` for the thread the session's claim is bound
+to; that works with the side panel closed. If every grant the session holds is bound to a T3 thread and each thread reports
+`full-access`, the request goes through with no card, writes no site setting and is listed in `autoAllowed`. T3's answer
+stands for two seconds, so a thread that leaves Full access can have requests auto-allowed for up to two seconds more. An
+unbound claim, a direct run's claim, another mode, a stopped T3 or no answer within five seconds all mean a normal prompt.
+Every other check still runs. Withdrawing a claim no thread was bound to also takes back the tabs an agent got through it.
 
 ## Side panel sessions
 
@@ -205,14 +212,19 @@ The side panel starts and continues agents with the owner's tabs; T3-Tab never r
 connected the panel is a T3 client and T3 starts and runs every thread. When it is not, the picked provider runs
 directly through the daemon and feeds the same thread view.
 
-- **The panel's T3 session.** The Connect button asks the daemon for `t3.pair`, which mints a five-minute pairing
-  credential with `t3 auth pairing create` after checking the recorded T3 process owns the listener. The panel
-  exchanges it at T3's `/oauth/token` for a DPoP-bound session with T3's default client scopes, the same access T3's
-  own apps get. The signing key is non-extractable and stays in the extension's IndexedDB; the token is in
-  `chrome.storage.local`, renewed by T3 for up to 30 days. The panel then holds one WebSocket to T3's `/ws`
-  (`entrypoints/sidepanel/lib/t3-rpc.ts`, `t3-client.ts`). Disconnect drops the session and revokes it through
-  `t3.unpair`. The read-only sign-in and the `t3 thread` polling below remain in the daemon, but the panel no longer
-  uses them.
+- **The panel's T3 session.** Connect signs a DPoP proof and calls the daemon's `t3.pair`. The daemon checks that the
+  recorded T3 process owns the listener, mints a five-minute pairing credential with `t3 auth pairing create`, and spends
+  it at T3's `/oauth/token` itself, so the credential never reaches the extension. The result is a DPoP-bound session with
+  T3's default client scopes, the same access T3's own apps get. The signing key is non-extractable and stays in the
+  extension's IndexedDB; the token is in `chrome.storage.local`, renewed by T3 for up to 30 days. Renewal and WebSocket
+  tickets go through the daemon's `t3.session`, which sends them with `confirmedFetch` and sends nothing when T3 now runs at
+  another address than the stored one; the panel then asks the owner to connect again. Those requests are checked on
+  Linux only, as `confirmedFetch` is, so Connect is unavailable elsewhere.
+- **The WebSocket is not checked.** The browser opens the panel's one socket to T3's `/ws`
+  (`entrypoints/sidepanel/lib/t3-rpc.ts`, `t3-client.ts`), so no process check covers it. A process that took T3's port
+  between the ticket request and the socket could receive that ticket and its one-use proof, and whatever the panel sends
+  on the socket. Disconnect drops the session and revokes it through `t3.unpair`. The read-only sign-in and the `t3 thread`
+  polling below remain in the daemon, but the panel no longer uses them.
 - **Themes.** The panel follows T3's active theme by default. T3 theme files can be imported, and any theme can be
   edited; custom CSS goes through T3's own filter, which removes rules that load remote files.
 
@@ -220,7 +232,7 @@ For direct runs and the older routes, the panel asks the extension's service wor
 its link to the daemon (`browser.daemonRequest`, answered with `daemon.reply`). The daemon keeps those conversations
 in memory (`packages/server/src/agents/`), so they end when it stops.
 
-- **T3 Code threads.** The daemon runs `t3 thread start --json [--provider <instance> --model <slug>]
+- **T3 Code threads through the CLI (older route, not used by the panel).** The daemon runs `t3 thread start --json [--provider <instance> --model <slug>]
   <project> -`, `t3 thread send --json <thread> -` and `t3 thread show --json --messages 20 <thread>`, with
   the message on stdin, and polls `show` every 3 seconds until the run it started reaches a terminal status.
   A run waiting on an answer stays followed, polled less often up to every 30 seconds. `idle` and `completed`
@@ -232,7 +244,7 @@ in memory (`packages/server/src/agents/`), so they end when it stops.
   a T3 project id or a folder inside one; provider and model are optional (both or neither). The `t3` CLI has
   no command that lists projects, providers or models; the panel picks them from lists once T3-Tab is signed
   in to T3 (below), and otherwise takes them as text. Choosing "Type…" in a list brings the text fields back.
-- **Signing in to T3 for the lists.** A one-time "Sign in to T3 Code" in the panel signs the daemon in to the
+- **Signing in to T3 for the lists (older route, no longer shown in the panel).** The `panel.t3SignIn` request signs the daemon in to the
   local T3 environment's `/mcp` endpoint the way T3's outside agents do (`packages/server/src/agents/t3-access.ts`):
   OAuth metadata, dynamic client registration as "T3-Tab", and the authorization code flow with PKCE (S256).
   The address comes from `<T3 home>/userdata/server-runtime.json` (only `origin`, `pid` and `startedAt`; its server

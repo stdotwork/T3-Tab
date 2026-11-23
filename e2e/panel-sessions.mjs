@@ -7,7 +7,9 @@ import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/pr
 import { join, relative, dirname } from 'node:path';
 
 import { startFakeT3 } from './fakes/t3-server.mjs';
-import { assert, panelRequest, rootDir, sleep, text } from './harness.mjs';
+import { createServer } from 'node:http';
+
+import { assert, closeServer, connectMcp, listen, panelRequest, rootDir, sleep, text } from './harness.mjs';
 
 /**
  * Writes the fake commands and puts them first on PATH for everything started from `home.childEnv` afterwards:
@@ -64,6 +66,7 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   assert(Number.isInteger(tabId), 'The owner tab for the panel sessions has no id');
   const readLine = `tab ${tabId}: T3-Tab E2E — ${siteUrl}/?agent=1`;
   await setT3Mode(fakes, 'running');
+  await checkFullAccessConfirmed({ serviceWorker, fakes, home, tabId });
 
   // T3 found and running; Claude Code and Codex found; the start would share the current tab.
   let state = await panelRequest(serviceWorker, { type: 'panel.agents', refresh: true, tabId });
@@ -107,7 +110,7 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   assert(JSON.stringify(sendCall?.args) === JSON.stringify(['thread', 'send', '--json', thread.threadId, '-']) && sendCall.input === 'And again', `t3 thread send: ${JSON.stringify(sendCall)}`);
   thread = await waitForConversation(serviceWorker, t3Id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 4);
   assert(thread.messages[3].text.startsWith('Turn 2. no claim') && thread.messages[3].text.includes(`read: tab ${tabId}`), `The second turn: ${thread.messages[3].text}`);
-  const showCall = (await calls(fakes)).find((call) => call.name === 't3' && call.args[1] === 'show');
+  const showCall = (await calls(fakes)).find((call) => call.name === 't3' && call.args[1] === 'show' && call.args.includes('20'));
   assert(JSON.stringify(showCall?.args) === JSON.stringify(['thread', 'show', '--json', '--messages', '20', thread.threadId]), `t3 thread show: ${JSON.stringify(showCall?.args)}`);
   console.log('Panel T3 thread: continued with t3 thread send; the same session read the tab again');
 
@@ -463,6 +466,95 @@ async function waitForConversation(serviceWorker, id, done) {
     await sleep(100);
   }
   throw new Error(`The conversation did not finish: ${JSON.stringify(last, null, 2)}`);
+}
+
+/**
+ * Full access answers a browser request only while T3 itself says the thread has it. No live panel runs here: the only
+ * panel page is the headless one, which polls nothing, so this is the closed-panel case.
+ */
+async function checkFullAccessConfirmed({ serviceWorker, fakes, home, tabId }) {
+  const threadId = 'thread-fullaccess';
+  const setMode = async (runtimeMode) =>
+    await writeFile(
+      join(fakes.fakeDir, `${threadId}.json`),
+      JSON.stringify({ threadId, title: 'Full access', status: 'idle', latestRunId: 'run-1', providerInstanceId: 'default', model: 'default', pendingRequestCount: 0, runtimeMode, messages: [] }),
+    );
+  const servers = [];
+  const site = async () => {
+    const server = createServer((_request, response) => {
+      response.setHeader('content-type', 'text/html');
+      response.end('<!doctype html><title>Full access site</title><h1>Full access site</h1>');
+    });
+    await listen(server);
+    servers.push(server);
+    return `http://127.0.0.1:${server.address().port}/`;
+  };
+  const pendingFor = async (url) =>
+    (await panelRequest(serviceWorker, { type: 'panel.state', tabId })).pending.find((prompt) => prompt.origin === new URL(url).origin);
+  const first = await connectMcp(home, 'full-access-check');
+  const second = await connectMcp(home, 'full-access-revoke');
+  const open = (client, url) => client.callTool({ name: 'tabs', arguments: { action: 'open', url } });
+  const opensWithoutPrompt = async (url, what) => {
+    const before = (await panelRequest(serviceWorker, { type: 'panel.state', tabId })).autoAllowed.length;
+    const result = await Promise.race([open(first.client, url), sleep(8_000).then(() => ({ timedOut: true }))]);
+    assert(result.timedOut !== true && result.isError !== true, `${what}: the open did not go straight through: ${JSON.stringify(result).slice(0, 200)}`);
+    const after = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
+    assert(after.autoAllowed.length > before && (await pendingFor(url)) === undefined, `${what}: not recorded as allowed by Full access`);
+  };
+  const asksThenDecline = async (url, what) => {
+    const call = open(first.client, url);
+    let prompt;
+    for (let attempt = 0; attempt < 100 && prompt === undefined; attempt += 1) {
+      prompt = await pendingFor(url);
+      if (prompt === undefined) await sleep(100);
+    }
+    assert(prompt !== undefined, `${what}: no prompt appeared`);
+    await panelRequest(serviceWorker, { type: 'panel.decide', promptId: prompt.id, decision: 'decline' });
+    const result = await call;
+    assert(result.isError === true, `${what}: a declined open went through`);
+  };
+  try {
+    await setMode('full-access');
+    const claim = await panelRequest(serviceWorker, { type: 'panel.t3Claim', tabId });
+    await first.client.callTool({ name: 'tabs', arguments: { claim: claim.code } });
+    const unbound = await site();
+    await asksThenDecline(unbound, 'A claim redeemed before it was bound to a thread');
+    await panelRequest(serviceWorker, { type: 'panel.t3ClaimBind', code: claim.code, threadId });
+    await opensWithoutPrompt(unbound, 'A bound thread in Full access');
+
+    await setMode('approval-required');
+    await sleep(2_100);
+    const lowered = await site();
+    await asksThenDecline(lowered, 'A thread that left Full access');
+    await setMode('full-access');
+    await opensWithoutPrompt(lowered, 'A thread back in Full access');
+
+    await setT3Mode(fakes, 'stopped');
+    await sleep(2_100);
+    await asksThenDecline(await site(), 'A thread T3 can no longer confirm');
+    await setT3Mode(fakes, 'running');
+
+    const withdrawn = await panelRequest(serviceWorker, { type: 'panel.t3Claim', tabId });
+    await second.client.callTool({ name: 'tabs', arguments: { claim: withdrawn.code } });
+    const holder = async () => (await panelRequest(serviceWorker, { type: 'panel.state', tabId })).sessions.find((session) => session.name.startsWith('full-access-revoke'));
+    assert((await holder())?.sharedTabIds.includes(tabId) === true, 'The second session did not get the tab');
+    await panelRequest(serviceWorker, { type: 'panel.t3ClaimRevoke', code: withdrawn.code });
+    assert((await holder())?.sharedTabIds.includes(tabId) === false, 'A withdrawn, never-bound claim left its tab shared');
+    console.log('Full access: confirmed by T3 per request with no live panel; unbound, lowered and unconfirmed threads prompt; a withdrawn claim takes its tab back');
+  } finally {
+    await setT3Mode(fakes, 'running');
+    await first.client.close().catch(() => undefined);
+    await second.client.close().catch(() => undefined);
+    const origins = servers.map((server) => `http://127.0.0.1:${server.address().port}/`);
+    await serviceWorker.evaluate(async (urls) => {
+      const tabs = await chrome.tabs.query({});
+      await chrome.tabs.remove(tabs.filter((entry) => urls.some((url) => entry.url?.startsWith(url) || entry.pendingUrl?.startsWith(url))).map((entry) => entry.id));
+    }, origins);
+    for (const server of servers) {
+      server.closeAllConnections();
+      await closeServer(server);
+    }
+  }
 }
 
 async function calls(fakes) {

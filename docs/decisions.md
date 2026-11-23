@@ -125,13 +125,18 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   runs its threads; without T3, the picked provider runs directly and feeds the same thread view. This replaces the
   read-only sign-in as the panel's route to T3 and the `t3 thread` polling below, which stay in the daemon unused by
   the panel. The panel does not load T3's web app: it is its own small client that reuses T3's theme code.
-- **T3's Full access counts as yes for browser requests.** A Full access thread can already run any command as the
-  owner, so asking again adds nothing. Other requests show in both the side panel and the agent's thread, and the
-  first answer counts.
-- **Daemon-mediated state.** The side panel talks only to the extension service worker, which relays
-  requests to the daemon over the existing link; the panel never talks to T3 Code directly.
-  Conversations live in daemon memory and end when the daemon stops.
-- **T3 Code threads via CLI polling.** The daemon starts, continues and follows threads with
+- **T3's Full access counts as yes for browser requests, while T3 confirms it.** A Full access thread can already run
+  any command as the owner, so asking again adds nothing. The extension asks T3 for the thread's mode when a request
+  needs a prompt, rather than trusting a flag the panel set, so it holds with the panel closed and fails to a normal
+  prompt when T3 cannot answer. Other requests show in both the side panel and the agent's thread, and the first answer
+  counts.
+- **T3 credentials travel on checked connections.** The daemon spends the pairing credential and sends token renewals
+  and WebSocket ticket requests through its process check. The panel signs their proofs, so its key stays in the
+  browser. The WebSocket itself is opened by the browser and cannot be checked, which is an accepted gap.
+- **Two routes from the panel.** With T3 connected, the panel talks to T3 directly over its WebSocket. For setup, T3
+  session requests, direct runs and tab sharing it talks to the extension service worker, which relays to the daemon
+  where needed. Direct-run conversations live in daemon memory and end when the daemon stops.
+- **T3 Code threads via CLI polling (older route, unused by the panel).** The daemon starts, continues and follows threads with
   `t3 thread start|send|show --json`, polling `show` every 3 seconds while active and slowing up to
   30 seconds while waiting on an answer (stopping after 6 hours). `t3` is located via `T3_TAB_T3`,
   `PATH` and standard install folders, or T3's runtime launchers and versions directories. Polling
@@ -161,7 +166,7 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
     matching sessions by environment variables because T3 starts MCP servers from its own config
     with no cross-provider env-var hook. The code works once and expires after 10 minutes, so the
     copy left in T3's transcript cannot share tabs again.
-- **Optional read-only OAuth sign-in to T3 `/mcp`.** Because the `t3` CLI has no command to list
+- **Optional read-only OAuth sign-in to T3 `/mcp` (older route, no longer shown in the panel).** Because the `t3` CLI has no command to list
   projects, providers or models, the panel uses typed text fields unless the user signs in once to
   the local T3 server's `/mcp` endpoint via OAuth 2.0 authorization code with Proof Key for Code
   Exchange (`PKCE`, `S256`) and dynamic client registration. T3-Tab stores the token in
