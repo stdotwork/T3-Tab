@@ -115,7 +115,7 @@ describe('per-site permission prompts', () => {
     expect(await store.get('https://example.com')).toBe('ask');
     expect(prompts.list()[0]).toMatchObject({ origin: 'https://example.com', tool: 'act', session });
     await prompts.decide('p1', 'allow-once');
-    await expect(waiting).resolves.toBeUndefined();
+    await expect(waiting).resolves.toBe('approved');
     expect(await store.get('https://example.com')).toBe('ask');
     expect(prompts.list()).toEqual([]);
   });
@@ -124,14 +124,14 @@ describe('per-site permission prompts', () => {
     const store = new MemorySites();
     store.sites.set('https://allowed.test', 'allow');
     const allowed = new PermissionPrompts(store, { makeId: () => 'p1' });
-    await expect(allowed.authorize('https://allowed.test', 'run_js', session, tab)).resolves.toBeUndefined();
+    await expect(allowed.authorize('https://allowed.test', 'run_js', session, tab)).resolves.toBe('approved');
     expect(allowed.list()).toEqual([]);
 
     const prompts = new PermissionPrompts(store, { makeId: () => 'p2' });
     const waiting = prompts.authorize('https://asked.test', 'open', session, tab);
     await until(() => prompts.list().length === 1);
     await prompts.decide('p2', 'always-allow');
-    await expect(waiting).resolves.toBeUndefined();
+    await expect(waiting).resolves.toBe('approved');
     expect(await store.get('https://asked.test')).toBe('allow');
   });
 
@@ -142,11 +142,11 @@ describe('per-site permission prompts', () => {
     const waiting = prompts.authorize(origin, 'read', session, tab);
     await until(() => prompts.list().length === 1);
     await prompts.decide('p1', 'always-allow-read');
-    await expect(waiting).resolves.toBeUndefined();
+    await expect(waiting).resolves.toBe('approved');
     expect(await store.get(origin)).toBe('read');
 
     // Reading is now allowed without a prompt.
-    await expect(prompts.authorize(origin, 'read', session, tab)).resolves.toBeUndefined();
+    await expect(prompts.authorize(origin, 'read', session, tab)).resolves.toBe('approved');
     expect(prompts.list()).toEqual([]);
 
     // Everything else still asks, one prompt each.
@@ -165,7 +165,7 @@ describe('per-site permission prompts', () => {
     store.sites.set('https://full.test', 'allow');
     const prompts = new PermissionPrompts(store, { makeId: () => 'p1' });
     for (const tool of ['read', 'open', 'act', 'run_js'] as const) {
-      await expect(prompts.authorize('https://full.test', tool, session, tab)).resolves.toBeUndefined();
+      await expect(prompts.authorize('https://full.test', tool, session, tab)).resolves.toBe('approved');
     }
     expect(prompts.list()).toEqual([]);
 
@@ -192,7 +192,7 @@ describe('per-site permission prompts', () => {
     await until(() => prompts.list().length === 1);
     store.sites.set('https://raised.test', 'allow');
     await prompts.decide('p1', 'always-allow-read');
-    await expect(reading).resolves.toBeUndefined();
+    await expect(reading).resolves.toBe('approved');
     expect(await store.get('https://raised.test')).toBe('allow');
   });
 
@@ -223,7 +223,7 @@ describe('per-site permission prompts', () => {
       'Too many permission requests for this session (maximum 3)',
     );
     store.sites.set('https://allowed.test', 'allow');
-    await expect(prompts.authorize('https://allowed.test', 'act', session, tab)).resolves.toBeUndefined();
+    await expect(prompts.authorize('https://allowed.test', 'act', session, tab)).resolves.toBe('approved');
     prompts.cancelSession(session.id);
     await Promise.allSettled(waiting);
   });

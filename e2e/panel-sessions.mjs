@@ -500,6 +500,9 @@ async function checkFullAccessConfirmed({ serviceWorker, fakes, home, tabId }) {
     assert(result.timedOut !== true && result.isError !== true, `${what}: the open did not go straight through: ${JSON.stringify(result).slice(0, 200)}`);
     const after = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
     assert(after.autoAllowed.length > before && (await pendingFor(url)) === undefined, `${what}: not recorded as allowed by Full access`);
+    const opened = /^Opened tab (\d+)/.exec(text(result))?.[1];
+    assert(opened !== undefined, `${what}: no tab id in the reply: ${text(result)}`);
+    return Number(opened);
   };
   const asksThenDecline = async (url, what) => {
     const call = open(first.client, url);
@@ -520,10 +523,29 @@ async function checkFullAccessConfirmed({ serviceWorker, fakes, home, tabId }) {
     const unbound = await site();
     await asksThenDecline(unbound, 'A claim redeemed before it was bound to a thread');
     await panelRequest(serviceWorker, { type: 'panel.t3ClaimBind', code: claim.code, threadId });
-    await opensWithoutPrompt(unbound, 'A bound thread in Full access');
+    const openedTab = await opensWithoutPrompt(unbound, 'A bound thread in Full access');
+    const readsWithoutPrompt = async (what) => {
+      const before = (await panelRequest(serviceWorker, { type: 'panel.state', tabId })).autoAllowed.length;
+      const result = await Promise.race([first.client.callTool({ name: 'read', arguments: { tab: openedTab } }), sleep(8_000).then(() => ({ timedOut: true }))]);
+      assert(result.timedOut !== true && result.isError !== true, `${what}: the read did not go straight through`);
+      assert((await panelRequest(serviceWorker, { type: 'panel.state', tabId })).autoAllowed.length > before, `${what}: the read did not ask T3 again`);
+    };
+    await readsWithoutPrompt('A read in Full access');
 
     await setMode('approval-required');
     await sleep(2_100);
+    // Passing through Full access left no approval behind: the same tab's read now follows the lowered mode.
+    const listed = text(await first.client.callTool({ name: 'tabs', arguments: {} }));
+    assert(listed.includes(`${openedTab}`) && new RegExp(`^${openedTab}( \\[front\\])? \\[needs approval\\]`, 'm').test(listed), `The tab did not go back to needing approval:\n${listed}`);
+    const readCall = first.client.callTool({ name: 'read', arguments: { tab: openedTab } });
+    let readPrompt;
+    for (let attempt = 0; attempt < 100 && readPrompt === undefined; attempt += 1) {
+      readPrompt = await pendingFor(unbound);
+      if (readPrompt === undefined) await sleep(100);
+    }
+    assert(readPrompt?.tool === 'read', 'A read after leaving Full access did not prompt');
+    await panelRequest(serviceWorker, { type: 'panel.decide', promptId: readPrompt.id, decision: 'decline' });
+    assert((await readCall).isError === true, 'A declined read after leaving Full access went through');
     const lowered = await site();
     await asksThenDecline(lowered, 'A thread that left Full access');
     await setMode('full-access');
@@ -540,7 +562,7 @@ async function checkFullAccessConfirmed({ serviceWorker, fakes, home, tabId }) {
     assert((await holder())?.sharedTabIds.includes(tabId) === true, 'The second session did not get the tab');
     await panelRequest(serviceWorker, { type: 'panel.t3ClaimRevoke', code: withdrawn.code });
     assert((await holder())?.sharedTabIds.includes(tabId) === false, 'A withdrawn, never-bound claim left its tab shared');
-    console.log('Full access: confirmed by T3 per request with no live panel; unbound, lowered and unconfirmed threads prompt; a withdrawn claim takes its tab back');
+    console.log('Full access: confirmed by T3 per request with no live panel; unbound, lowered and unconfirmed threads prompt, reads included; a withdrawn claim takes its tab back');
   } finally {
     await setT3Mode(fakes, 'running');
     await first.client.close().catch(() => undefined);

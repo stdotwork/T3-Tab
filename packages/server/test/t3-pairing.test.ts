@@ -246,7 +246,7 @@ describe('a thread\'s runtime mode', () => {
   it('runs t3 thread show for that thread only and returns the mode it printed', async () => {
     const log = await fakeT3(`printf '{"thread":{"id":"th1","runtimeMode":"full-access"},"messages":[]}'`);
     expect(await new T3PanelPairing({ env }).threadMode('th1')).toEqual({ runtimeMode: 'full-access' });
-    expect(await calls(log)).toEqual(['thread show --json --messages 1 th1']);
+    expect(await calls(log)).toEqual(['thread show --json --messages 0 th1']);
   });
 
   it('refuses ids that start with a dash or hold a space before running anything', async () => {

@@ -163,6 +163,7 @@ async function checkClosedPanelFullAccess({ home, t3, serviceWorker, tabId, thre
   const allowedCount = async () => ((await panelRequest(serviceWorker, { type: 'panel.state', tabId })).autoAllowed ?? []).length;
   const { client, transport } = await connectMcp(home, 'flow-closed-panel');
   const open = (url) => client.callTool({ name: 'tabs', arguments: { action: 'open', url } });
+  let lastOpened;
   const newSite = async () => {
     const created = await startSite();
     extraSites.push(created);
@@ -171,6 +172,7 @@ async function checkClosedPanelFullAccess({ home, t3, serviceWorker, tabId, thre
   const goesThrough = async (url) => {
     const before = await allowedCount();
     const result = await Promise.race([open(url), sleep(15_000).then(() => ({ isError: true }))]);
+    lastOpened = Number(/^Opened tab (\d+)/.exec(result.content?.[0]?.text ?? '')?.[1]);
     return result.isError !== true && (await allowedCount()) > before;
   };
   const prompts = async (url) => {
@@ -187,9 +189,21 @@ async function checkClosedPanelFullAccess({ home, t3, serviceWorker, tabId, thre
     const claim = await panelRequest(serviceWorker, { type: 'panel.t3Claim', tabId });
     await panelRequest(serviceWorker, { type: 'panel.t3ClaimBind', code: claim.code, threadId });
     await client.callTool({ name: 'tabs', arguments: { claim: claim.code } });
-    check('panel closed: T3 confirms Full access and the request goes through', await goesThrough(await newSite()));
+    const passed = await newSite();
+    check('panel closed: T3 confirms Full access and the request goes through', await goesThrough(passed));
+    const openedInFull = lastOpened;
+    const beforeRead = await allowedCount();
+    const firstRead = await client.callTool({ name: 'read', arguments: { tab: openedInFull } });
+    check('panel closed: a read in Full access asks T3 and goes through', firstRead.isError !== true && (await allowedCount()) > beforeRead);
     await setThreadMode(home, t3.origin, threadId, 'approval-required');
     await sleep(2_100);
+    const listed = (await client.callTool({ name: 'tabs', arguments: {} })).content?.[0]?.text ?? '';
+    check('after lowering, the tab Full access opened needs approval again', new RegExp(`^${openedInFull}( \\[front\\])? \\[needs approval\\]`, 'm').test(listed));
+    const readCall = client.callTool({ name: 'read', arguments: { tab: openedInFull } });
+    const readPrompt = await until('the read to prompt', async () => await pendingAt(passed), 15_000).catch(() => undefined);
+    if (readPrompt !== undefined) await panelRequest(serviceWorker, { type: 'panel.decide', promptId: readPrompt.id, decision: 'decline' });
+    const readResult = await readCall;
+    check('after lowering, a read of that tab is asked', readPrompt?.tool === 'read' && readResult.isError === true);
     const lowered = await newSite();
     check('panel closed: a thread switched to Supervised in T3 is asked', await prompts(lowered));
     await setThreadMode(home, t3.origin, threadId, 'full-access');

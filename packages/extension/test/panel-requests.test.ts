@@ -162,7 +162,7 @@ describe('Full access, as T3 confirms it for each request', () => {
   });
 
   /** Asks to act and expects the owner to be asked; ends the prompt so the test can go on. */
-  async function expectPrompt(authorize: Promise<void>, permissionPrompts: { list: () => unknown[]; cancelSession: (id: string) => void }, sessionId: string): Promise<void> {
+  async function expectPrompt(authorize: Promise<unknown>, permissionPrompts: { list: () => unknown[]; cancelSession: (id: string) => void }, sessionId: string): Promise<void> {
     await vi.waitFor(() => expect(permissionPrompts.list()).toHaveLength(1));
     permissionPrompts.cancelSession(sessionId);
     await expect(authorize).rejects.toThrow('declined');
@@ -224,7 +224,7 @@ describe('Full access, as T3 confirms it for each request', () => {
     // T3 was not even asked: nothing ties the session to a thread.
     expect(modeAsks()).toEqual([]);
     await handlePanelRequest({ type: 'panel.t3ClaimBind', code: claim.code, threadId: 'th1' });
-    await expect(permissionPrompts.authorize('https://shop.test', 'open', alice, tab)).resolves.toBeUndefined();
+    await expect(permissionPrompts.authorize('https://shop.test', 'open', alice, tab)).resolves.toBe('full-access');
     expect(modeAsks()).toEqual(['th1']);
   });
 
@@ -257,7 +257,7 @@ describe('Full access, as T3 confirms it for each request', () => {
     await claimTabs(claimStore, sessionStore, alice.id, second.code, 'message');
     await handlePanelRequest({ type: 'panel.t3ClaimBind', code: second.code, threadId: 'th2' });
     expect((await claimStore.t3ThreadsOf(alice.id))?.sort()).toEqual(['th1', 'th2']);
-    await expect(permissionPrompts.authorize('https://shop.test', 'act', alice, tab)).resolves.toBeUndefined();
+    await expect(permissionPrompts.authorize('https://shop.test', 'act', alice, tab)).resolves.toBe('full-access');
     clock += 60_000;
     threadModes.th2 = 'approval-required';
     await expectPrompt(permissionPrompts.authorize('https://shop.test', 'act', alice, tab), permissionPrompts, alice.id);
@@ -275,7 +275,7 @@ describe('Full access, as T3 confirms it for each request', () => {
     await expectPrompt(permissionPrompts.authorize('https://shop.test', 'act', alice, tab), permissionPrompts, alice.id);
     expect(daemon.askDaemon.mock.calls.every(([method]) => method === 't3.threadMode')).toBe(true);
     threadModes.th1 = 'full-access';
-    await expect(permissionPrompts.authorize('https://shop.test', 'act', alice, tab)).resolves.toBeUndefined();
+    await expect(permissionPrompts.authorize('https://shop.test', 'act', alice, tab)).resolves.toBe('full-access');
   });
 
   it('keeps the confirmed answer for a short time only, so a burst of steps asks T3 once', async () => {
@@ -413,7 +413,7 @@ describe('a prompt in the agent\'s own thread', () => {
     await expect(decide(alice, 'always-allow')).rejects.toThrow('Invalid answer');
     expect(permissionPrompts.list()).toHaveLength(1);
     expect(await decide(alice, 'allow-once')).toEqual({ decided: true });
-    await expect(waiting).resolves.toBeUndefined();
+    await expect(waiting).resolves.toBe('approved');
     await expect(decide(alice, 'allow-once')).rejects.toThrow('No such permission request for this session');
 
     const refused = permissionPrompts.authorize('https://shop.test', 'run_js', alice, tab);

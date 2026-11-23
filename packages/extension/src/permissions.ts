@@ -8,6 +8,8 @@ export type SitePermission = 'ask' | 'read' | 'allow';
 /** `always-allow-read` is offered only on a read prompt and `always-allow` only on the others. */
 export type PermissionDecision = 'allow-once' | 'always-allow-read' | 'always-allow' | 'decline';
 export type PromptKind = 'read' | 'act' | 'run_js' | 'open';
+/** How `authorize` let a request through. */
+export type AuthorizeResult = 'approved' | 'full-access';
 
 export interface StoredSitePermission {
   origin: string;
@@ -99,13 +101,22 @@ export class PermissionPrompts {
     return [...this.autoAllowedLog];
   }
 
-  async authorize(origin: string, tool: PromptKind, session: ToolSession, tab: PromptTab): Promise<void> {
+  /** Whether T3 confirms Full access for this session now. */
+  async hasFullAccess(sessionId: string): Promise<boolean> {
+    return (await this.options.fullAccess?.(sessionId)) === true;
+  }
+
+  /**
+   * Lets a request through or throws. `full-access` holds for this one request: the caller must not record an origin
+   * approval for it, so later requests on the origin follow T3's live mode.
+   */
+  async authorize(origin: string, tool: PromptKind, session: ToolSession, tab: PromptTab): Promise<AuthorizeResult> {
     const setting = await this.store.get(origin);
-    if (settingCovers(setting, tool)) return;
-    if ((await this.options.fullAccess?.(session.id)) === true) {
+    if (settingCovers(setting, tool)) return 'approved';
+    if (await this.hasFullAccess(session.id)) {
       this.autoAllowedLog.push({ tool, origin, tabId: tab.id, tabTitle: tab.title, at: Date.now() });
       if (this.autoAllowedLog.length > MAX_AUTO_ALLOWED) this.autoAllowedLog.splice(0, this.autoAllowedLog.length - MAX_AUTO_ALLOWED);
-      return;
+      return 'full-access';
     }
     if (this.pendingFor(session.id).length >= MAX_PENDING_PER_SESSION) {
       throw new Error(`Too many permission requests for this session (maximum ${MAX_PENDING_PER_SESSION}). Decide one first.`);
@@ -124,6 +135,7 @@ export class PermissionPrompts {
       this.emit();
       this.notify(() => this.options.onOpen?.({ id, origin, tool, session, tab }));
     });
+    return 'approved';
   }
 
   async decide(id: string, decision: PermissionDecision): Promise<void> {

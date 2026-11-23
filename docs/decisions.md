@@ -126,9 +126,11 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   read-only sign-in as the panel's route to T3 and the `t3 thread` polling below, which stay in the daemon unused by
   the panel. The panel does not load T3's web app: it is its own small client that reuses T3's theme code.
 - **T3's Full access counts as yes for browser requests, while T3 confirms it.** A Full access thread can already run
-  any command as the owner, so asking again adds nothing. The extension asks T3 for the thread's mode when a request
-  needs a prompt, rather than trusting a flag the panel set, so it holds with the panel closed and fails to a normal
-  prompt when T3 cannot answer. Other requests show in both the side panel and the agent's thread, and the first answer
+  any command as the owner, so asking again adds nothing. The extension asks T3 for the thread's mode with
+  `t3 thread show --json --messages 0 <threadId>` when a request needs a prompt, rather than trusting a flag the panel set,
+  so it holds with the panel closed and fails to a normal prompt when T3 cannot answer. A yes counts for two seconds from
+  when its read started, which is the longest a request can pass after the thread leaves Full access. A pass records no
+  origin approval, so reads and tab titles follow the live mode as well. Other requests show in both the side panel and the agent's thread, and the first answer
   counts.
 - **T3 credentials travel on checked connections.** The daemon spends the pairing credential and sends token renewals
   and WebSocket ticket requests through its process check. The panel signs their proofs, so its key stays in the

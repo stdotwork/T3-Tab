@@ -59,7 +59,8 @@ if (command === 'list') {
 } else if (command === 'show') {
   const [id] = positional;
   const { messages, ...thread } = readThread(id);
-  print({ thread, messages: messages.slice(-Number(valueOf(args, '--messages') ?? 10)) });
+  const count = Number(valueOf(args, '--messages') ?? 10);
+  print({ thread, messages: count === 0 ? [] : messages.slice(-count) });
 } else {
   fail(`fake t3 does not know thread ${command}`);
 }

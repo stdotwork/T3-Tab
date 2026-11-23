@@ -199,12 +199,15 @@ request; site-wide grants are made only in the side panel. `claude -p` and `code
 direct run asks in the side panel only.
 
 T3's Full access counts as yes for a browser request only while T3 itself confirms it (`t3-full-access.ts`). When a request
-needs a prompt, the extension asks the daemon, which runs `t3 thread show --json` for the thread the session's claim is bound
-to; that works with the side panel closed. If every grant the session holds is bound to a T3 thread and each thread reports
-`full-access`, the request goes through with no card, writes no site setting and is listed in `autoAllowed`. T3's answer
-stands for two seconds, so a thread that leaves Full access can have requests auto-allowed for up to two seconds more. An
-unbound claim, a direct run's claim, another mode, a stopped T3 or no answer within five seconds all mean a normal prompt.
-Every other check still runs. Withdrawing a claim no thread was bound to also takes back the tabs an agent got through it.
+needs a prompt, the extension asks the daemon, which runs `t3 thread show --json --messages 0 <threadId>` for the thread the
+session's claim is bound to; that works with the side panel closed. If every grant the session holds is bound to a T3 thread
+and each thread reports `full-access`, the request goes through with no card, writes no site setting and is listed in
+`autoAllowed`. Each thread has one read in flight at a time, and a yes counts for two seconds from when its read started, so
+a slow answer cannot extend it: after a thread leaves Full access, a request can pass for at most two seconds. A pass from
+Full access records no origin approval, so reads, screenshots and the title in `tabs` follow the live mode too, and the tab
+shows `[needs approval]` again once the thread leaves it. An Allow once still records its approval for the tab. An unbound
+claim, a direct run's claim, another mode, a stopped T3 or no answer within five seconds all mean a normal prompt. Every
+other check still runs. Withdrawing a claim no thread was bound to also takes back the tabs an agent got through it.
 
 ## Side panel sessions
 

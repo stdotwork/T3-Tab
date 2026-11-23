@@ -4,7 +4,7 @@ import { actOnPage } from './actions';
 import { claimTabs } from './claims';
 import { evaluatePage } from './evaluate';
 import { readPage } from './page';
-import { originOf, restrictedPageError, type PromptTab } from './permissions';
+import { originOf, restrictedPageError, type AuthorizeResult, type PromptTab } from './permissions';
 import { claimStore, permissionPrompts, sessionStore, siteStore } from './runtime';
 import { captureViewport } from './screenshot';
 import type { StoredSession } from './sessions';
@@ -16,9 +16,23 @@ import {
   openSessionTab,
   resolveSessionTab,
   switchSessionTab,
+  type SiteSetting,
 } from './tabs';
 
-const siteSetting = async (origin: string) => await siteStore.get(origin);
+/**
+ * What a session may see of a tab it holds no approval for. Full access shows it while T3 confirms the mode, and records
+ * nothing, so the tab goes back to `[needs approval]` when the thread leaves Full access.
+ */
+const tabAccess = (session: ToolSession): SiteSetting => async (origin) => {
+  const setting = await siteStore.get(origin);
+  if (setting === 'read' || setting === 'allow') return setting;
+  return (await permissionPrompts.hasFullAccess(session.id)) ? 'read' : setting;
+};
+
+/** A real approval is kept for the tab. A pass from Full access is not, so later requests ask T3 again. */
+async function recordApproval(pass: AuthorizeResult, sessionId: string, tabId: number, origin: string): Promise<void> {
+  if (pass !== 'full-access') await sessionStore.approveOrigin(sessionId, tabId, origin);
+}
 
 /** Runs one request from the background program and returns its result. Throws a readable message on failure. */
 export async function handleRequest(request: BrowserRequestMessage): Promise<unknown> {
@@ -48,11 +62,11 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
       return { decided: true } satisfies BrowserMethods['prompt.decide']['result'];
     }
     case 'tabs.list':
-      return { tabs: await listTabs(session, siteSetting) } satisfies BrowserMethods['tabs.list']['result'];
+      return { tabs: await listTabs(session, tabAccess(session)) } satisfies BrowserMethods['tabs.list']['result'];
     case 'tabs.open':
       return await openTabForSession(session, request.params.url);
     case 'tabs.switch':
-      return { tab: await switchSessionTab(session, request.params.tab, siteSetting) } satisfies BrowserMethods['tabs.switch']['result'];
+      return { tab: await switchSessionTab(session, request.params.tab, tabAccess(session)) } satisfies BrowserMethods['tabs.switch']['result'];
     case 'tabs.close':
       return { closed: await closeSessionTab(session, request.params.tab) } satisfies BrowserMethods['tabs.close']['result'];
     case 'page.read': {
@@ -76,10 +90,10 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
       let tab = await resolveSessionTab(session, request.params.tab);
       const origin = tabOrigin(tab);
       await sessionStore.observeTabOrigin(tab.id ?? -1, origin);
-      await permissionPrompts.authorize(origin, 'act', session, promptTab(tab));
-      let currentSession = await registeredSession(session);
-      await sessionStore.approveOrigin(session.id, tab.id ?? -1, origin);
-      currentSession = await registeredSession(session);
+      const pass = await permissionPrompts.authorize(origin, 'act', session, promptTab(tab));
+      await registeredSession(session);
+      await recordApproval(pass, session.id, tab.id ?? -1, origin);
+      const currentSession = await registeredSession(session);
       tab = await resolveSessionTab(currentSession, tab.id);
       assertSameOrigin(tab, origin);
       return await actOnPage(
@@ -96,10 +110,10 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
       let tab = await resolveSessionTab(session, request.params.tab);
       const origin = tabOrigin(tab);
       await sessionStore.observeTabOrigin(tab.id ?? -1, origin);
-      await permissionPrompts.authorize(origin, 'run_js', session, promptTab(tab));
-      let currentSession = await registeredSession(session);
-      await sessionStore.approveOrigin(session.id, tab.id ?? -1, origin);
-      currentSession = await registeredSession(session);
+      const pass = await permissionPrompts.authorize(origin, 'run_js', session, promptTab(tab));
+      await registeredSession(session);
+      await recordApproval(pass, session.id, tab.id ?? -1, origin);
+      const currentSession = await registeredSession(session);
       tab = await resolveSessionTab(currentSession, tab.id);
       assertSameOrigin(tab, origin);
       return await evaluatePage(currentSession, tab.id, request.params.expression, origin, async () =>
@@ -127,9 +141,9 @@ async function openTabForSession(
   const opened = await openSessionTab(session, url, sessionStore);
   try {
     await sessionStore.observeTabOrigin(opened.tab.id, opened.origin);
-    await permissionPrompts.authorize(opened.origin, 'open', session, promptTabOf(opened.tab.id, opened.tab.title));
-    await sessionStore.approveOrigin(session.id, opened.tab.id, opened.origin);
-    return { tab: await describeSessionTab(await registeredSession(session), opened.tab.id, siteSetting) };
+    const pass = await permissionPrompts.authorize(opened.origin, 'open', session, promptTabOf(opened.tab.id, opened.tab.title));
+    await recordApproval(pass, session.id, opened.tab.id, opened.origin);
+    return { tab: await describeSessionTab(await registeredSession(session), opened.tab.id, tabAccess(session)) };
   } catch (failure) {
     await chrome.tabs.remove(opened.tab.id).catch(() => undefined);
     throw failure;
@@ -145,10 +159,9 @@ async function authorizeRead(
   const origin = tabOrigin(tab);
   await sessionStore.observeTabOrigin(tabId, origin);
   // A site the owner allows, even for reading only, passes `authorize` without a prompt.
-  if (!(await sessionStore.hasApprovedOrigin(session.id, tabId, origin))) {
-    await permissionPrompts.authorize(origin, 'read', session, promptTab(tab));
-  }
-  await sessionStore.approveOrigin(session.id, tabId, origin);
+  const approved = await sessionStore.hasApprovedOrigin(session.id, tabId, origin);
+  const pass = approved ? 'approved' : await permissionPrompts.authorize(origin, 'read', session, promptTab(tab));
+  await recordApproval(pass, session.id, tabId, origin);
   const currentSession = await registeredSession(session);
   tab = await resolveSessionTab(currentSession, tabId);
   assertSameOrigin(tab, origin);

@@ -86,6 +86,66 @@ describe('Full access, as T3 confirms it', () => {
     expect(await failing.check('s')).toBe(true);
   });
 
+  it('keeps one read per thread, and an older slow yes cannot re-arm it after the switch', async () => {
+    const answers: Array<(mode: string) => void> = [];
+    let asks = 0;
+    const check = t3FullAccess(
+      async () => ['t1'],
+      async () => {
+        asks += 1;
+        return await new Promise<string>((resolve) => answers.push(resolve));
+      },
+      now,
+    );
+    // A starts while the thread is in Full access, and B arrives while A is still out.
+    const first = check('a');
+    await vi.advanceTimersByTimeAsync(0);
+    clock += 1_000;
+    const second = check('b');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asks).toBe(1);
+
+    // A's yes lands after it has lapsed, so both ask again and T3 now says the thread left Full access.
+    clock += FULL_ACCESS_CONFIRMED_MS;
+    answers[0]?.('full-access');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asks).toBe(2);
+    answers[1]?.('approval-required');
+    await expect(first).resolves.toBe(false);
+    await expect(second).resolves.toBe(false);
+
+    // Nothing was cached, so the next request asks T3 again.
+    const third = check('c');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asks).toBe(3);
+    answers[2]?.('approval-required');
+    await expect(third).resolves.toBe(false);
+  });
+
+  it('counts a yes from when its read started, not from when it arrived', async () => {
+    const answers: Array<(mode: string) => void> = [];
+    let asks = 0;
+    const check = t3FullAccess(
+      async () => ['t1'],
+      async () => {
+        asks += 1;
+        return await new Promise<string>((resolve) => answers.push(resolve));
+      },
+      now,
+    );
+    const first = check('a');
+    await vi.advanceTimersByTimeAsync(0);
+    clock += FULL_ACCESS_CONFIRMED_MS - 1;
+    answers[0]?.('full-access');
+    await expect(first).resolves.toBe(true);
+    clock += 1;
+    const second = check('b');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asks).toBe(2);
+    answers[1]?.('approval-required');
+    await expect(second).resolves.toBe(false);
+  });
+
   it('needs every thread of the session to be full access', async () => {
     const both = build({ s: ['t1', 't2'] }, { t1: 'full-access', t2: 'full-access' });
     expect(await both.check('s')).toBe(true);

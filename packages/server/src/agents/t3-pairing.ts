@@ -104,7 +104,7 @@ export class T3PanelPairing {
   async threadMode(threadId: unknown): Promise<{ runtimeMode: string }> {
     if (typeof threadId !== 'string' || !THREAD_ID.test(threadId)) throw new Error('Invalid thread id');
     const t3 = await this.requireT3();
-    const result = await this.runT3(t3, ['thread', 'show', '--json', '--messages', '1', threadId]);
+    const result = await this.runT3(t3, ['thread', 'show', '--json', '--messages', '0', threadId]);
     const thread = parseObject(result.stdout)?.thread;
     const runtimeMode = typeof thread === 'object' && thread !== null ? (thread as { runtimeMode?: unknown }).runtimeMode : undefined;
     if (typeof runtimeMode !== 'string') throw new Error('t3 reported no runtime mode.');
