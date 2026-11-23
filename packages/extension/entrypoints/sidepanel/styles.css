@@ -341,7 +341,7 @@ button.session-text:hover strong { text-decoration: underline; text-underline-of
 .theme-card { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); text-align: left; }
 .theme-card.active { border-color: var(--focus); box-shadow: inset 0 0 0 1px var(--focus); }
 .theme-card.follow:hover { background: var(--hover); }
-.theme-pick { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.theme-pick { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; text-align: left; }
 .theme-orbs { display: inline-flex; flex: none; }
 .theme-orb { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line); display: block; }
 .theme-orb + .theme-orb { margin-left: -8px; }
@@ -381,7 +381,7 @@ button.session-text:hover strong { text-decoration: underline; text-underline-of
 .role-reset { grid-column: 1 / -1; margin-top: 4px; }
 .check-field { display: flex; align-items: center; gap: 7px; color: var(--muted-fg); font-size: 13px; }
 .check-field input { margin: 0; accent-color: var(--action); }
-.disclosure-body code { padding: 1px 4px; border-radius: 4px; background: var(--app-theme-code-background); color: var(--app-theme-code-foreground); font: 11.5px ui-monospace, 'SF Mono', Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.disclosure-body code { white-space: nowrap; padding: 1px 4px; border-radius: 4px; background: var(--app-theme-code-background); color: var(--app-theme-code-foreground); font: 11.5px ui-monospace, 'SF Mono', Menlo, Consolas, monospace; overflow-wrap: anywhere; }
 
 @media (prefers-reduced-motion: reduce) {
   .shimmer { animation: none; background: none; color: var(--muted-fg); }
@@ -403,6 +403,7 @@ button.session-text:hover strong { text-decoration: underline; text-underline-of
 .running-row svg { color: var(--app-theme-accent); flex: none; }
 .running-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .running-row small { color: var(--muted-fg); flex: none; }
+.running-row svg.running-waiting { color: var(--app-theme-warning-foreground); }
 
 /* Provider logos */
 .provider-logo { fill: var(--logo-light); }

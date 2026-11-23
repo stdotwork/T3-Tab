@@ -311,9 +311,9 @@ function t3WorkEntry(item: T3Item): WorkEntry | undefined {
     case 'subagent':
       return { ...base, icon: 'agent', label: oneLine(item.title ?? 'Worker') };
     case 'approval_request':
-      // Once answered, the tool's own row carries the step; the approval row is only for what is still waiting.
+      // Once answered, the tool's own row carries the step. While waiting, the card above the composer shows what is asked.
       if (status === 'done') return undefined;
-      return { ...base, icon: 'approval', label: oneLine(approvalLabel(item.prompt ?? item.title ?? 'Approval')) };
+      return { ...base, icon: 'approval', label: 'Waiting for approval' };
     case 'user_input_request':
       return { ...base, icon: 'ask', label: 'Input requested' };
     default:

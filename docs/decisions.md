@@ -249,17 +249,16 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   endpoint, so Sign out deletes the local file and instructs the user to revoke T3-Tab in T3's
   Settings → Sharing & access.
 
-- **Inbox layout for the panel.** The panel's home lists waiting permission prompts first, across
-  every session, then conversations with their status, the current tab and connected sessions.
-  A conversation, the new-conversation form and settings (T3 sign-in and site permissions) open as
-  their own views. Prompts can come from any MCP session, not only from panel conversations, so a
-  layout built around one open conversation (as in Claude in Chrome) would show them in the wrong
-  place, and a tabbed layout would hide them; both were tried in a prototype and rejected.
-- **One set of design tokens, no UI framework.** All panel styling comes from CSS custom properties
-  in `tokens.css` (light and dark, one accent, a 4 px spacing scale, focus ring, reduced motion),
-  so a theme can later replace the tokens without touching prompt wording or buttons. The panel is
-  plain TypeScript: about 39 KB of script (11 KB gzip), first render with real state in about 6 ms
-  headless. Prompt and site button labels come only from `prompt-choices.ts`.
+- **The panel looks and works like T3 Code.** It has a new-thread screen, a thread view, and a thread list and settings
+  behind icons. It is React, styled only from T3's theme roles, so any T3 theme applies in full. Waiting permission,
+  approval and question cards sit above the composer, because that is where the owner is already looking. Prompts can come
+  from any MCP session, so the Threads screen also lists every connected session, named by its thread.
+- **The panel does little while idle.** Changes reach it through a message from the worker, stored-state events and tab
+  events, and its timers are only a safety net. Markdown and Settings load on first use. It adds nothing a website can
+  see: no content script, no web-accessible resource and no page change.
+- **No Remove button for an agent in the panel.** Removing means editing the owner's Claude Code or Codex configuration, and
+  the helper has no command that does only that. The panel shows each agent's own remove command.
+- **T3-Tab has its own icon.** A browser window with a pointer. T3 Code's mark is used only where the panel names T3 Code.
 
 ## How it is checked
 

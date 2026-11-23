@@ -132,9 +132,11 @@ export function saveCustomTheme(theme: ThemeDefinition, select = true): void {
 export function freeThemeName(wanted: string, keepId?: string): { id: string; label: string } {
   const taken = allThemes().filter((theme) => theme.id !== keepId);
   const base = wanted.trim().slice(0, 44) || 'My theme';
+  // The slug is cut before the number goes on, so a long name still gets a different id each round.
+  const slug = themeIdFromName(base).slice(0, 34);
   for (let number = 1; ; number += 1) {
     const label = number === 1 ? base : `${base} ${number}`;
-    const id = keepId ?? `custom-${themeIdFromName(label)}`.slice(0, 48);
+    const id = keepId ?? (number === 1 ? `custom-${slug}` : `custom-${slug}-${number}`);
     if (!taken.some((theme) => theme.id === id || theme.label.toLowerCase() === label.toLowerCase())) return { id, label };
   }
 }

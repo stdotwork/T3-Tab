@@ -117,7 +117,7 @@ async function pickModel(panelPage, name) {
 }
 
 async function send(panelPage, text) {
-  await panelPage.getByLabel('Message').fill(text);
+  await panelPage.getByLabel('Message', { exact: true }).fill(text);
   await panelPage.getByRole('button', { name: 'Send', exact: true }).click();
 }
 

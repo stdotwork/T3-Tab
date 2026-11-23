@@ -1,5 +1,5 @@
 import type { AgentConversation } from '@t3-tab/protocol';
-import { Check, ChevronDown, CircleDashed, FolderPlus, Search } from 'lucide-react';
+import { Check, ChevronDown, CircleAlert, CircleDashed, FolderPlus, Search } from 'lucide-react';
 import { useRef, useState, type ReactNode } from 'react';
 
 import { Composer, ModelPicker, RuntimeMenu, TabChip } from './Composer';
@@ -150,17 +150,22 @@ function FolderPicker({ value, onChange }: { value: string; onChange: (folder: s
 /** Threads working elsewhere stay one click away from a panel opened on another tab. */
 function RunningThreads({ live, state, onOpen }: { live: LiveState; state: T3State; onOpen: (screen: Screen) => void }): ReactNode {
   const rows = [
-    ...state.threads.filter((thread) => isRunningStatus(thread.status)).map((thread) => ({ id: thread.id, title: thread.title, source: 't3' as const })),
-    ...live.conversations.filter((conversation) => conversation.via !== 't3' && conversation.status === 'running').map((conversation) => ({ id: conversation.id, title: conversation.title, source: 'direct' as const })),
+    ...state.threads
+      .filter((thread) => isRunningStatus(thread.status))
+      .map((thread) => {
+        const waiting = thread.pendingRuntimeRequest?.kind;
+        return { id: thread.id, title: thread.title, source: 't3' as const, note: waiting === undefined ? 'Working' : waiting === 'user_input' ? 'Needs an answer' : 'Needs approval' };
+      }),
+    ...live.conversations.filter((conversation) => conversation.via !== 't3' && conversation.status === 'running').map((conversation) => ({ id: conversation.id, title: conversation.title, source: 'direct' as const, note: 'Working' })),
   ];
   if (rows.length === 0) return null;
   return (
     <div className="running-strip" aria-label="Threads working">
       {rows.slice(0, 3).map((row) => (
         <button type="button" className="running-row" key={row.id} onClick={() => onOpen({ name: 'thread', id: row.id, source: row.source })}>
-          <Spinner size={13} />
+          {row.note === 'Working' ? <Spinner size={13} /> : <CircleAlert size={13} className="running-waiting" aria-hidden="true" />}
           <span className="running-title">{row.title}</span>
-          <small>Working</small>
+          <small>{row.note}</small>
         </button>
       ))}
     </div>

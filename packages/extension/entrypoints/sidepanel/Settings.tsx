@@ -246,7 +246,8 @@ function Appearance({ state }: { state: T3State }): ReactNode {
   const themes = [...appearance.themes].sort((left, right) => Number(custom.has(right.id)) - Number(custom.has(left.id)));
   const activeTheme = appearance.themes.find((theme) => theme.id === appearance.activeId);
   const only = activeTheme === undefined ? null : singleAppearanceOf(activeTheme);
-  const schemeMiss = only !== null && appearance.scheme !== 'system' && appearance.scheme !== only;
+  const wanted = appearance.scheme === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : appearance.scheme;
+  const schemeMiss = !following && only !== null && wanted !== only;
   useEffect(() => {
     if (reveal === undefined) return;
     list.current?.querySelector(`[data-theme-id="${CSS.escape(reveal)}"]`)?.scrollIntoView({ block: 'center' });
@@ -424,6 +425,8 @@ function FreshSetup(): ReactNode {
 
 function Connections({ live, state, startOpen }: { live: LiveState; state: T3State; startOpen: boolean }): ReactNode {
   const [open, setOpen] = useState(startOpen);
+  // Each agent's own command: `t3-tab uninstall` also removes the helper, which the panel needs.
+  const registered = (live.setup?.agents ?? []).filter((agent) => agent.registered).map((agent) => (agent.id === 'claude' ? 'claude mcp remove -s user t3-tab' : 'codex mcp remove t3-tab'));
   const summary = `${live.helper.connected ? 'Helper connected' : 'Helper not connected'} · ${state.status === 'ready' ? 'T3 Code connected' : 'T3 Code not connected'}`;
   return (
     <section className="disclosure">
@@ -442,9 +445,17 @@ function Connections({ live, state, startOpen }: { live: LiveState; state: T3Sta
           <h3>Your own agents</h3>
           <AgentRow id="claude" live={live} />
           <AgentRow id="codex" live={live} />
-          <p className="muted-line">
-            To take the browser tools out of them, run <code>npx t3-tab@latest uninstall</code>.
-          </p>
+          {registered.length === 0 ? null : (
+            <p className="muted-line">
+              To take the browser tools out again, run {registered.map((command, index) => (
+                <span key={command}>
+                  {index === 0 ? '' : ' or '}
+                  <code>{command}</code>
+                </span>
+              ))}
+              .
+            </p>
+          )}
           <h3>T3 Code</h3>
           <T3Row live={live} state={state} />
           {state.status === 'off' ? null : (
