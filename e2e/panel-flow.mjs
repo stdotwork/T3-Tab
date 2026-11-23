@@ -11,7 +11,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 
-import { createHome, extensionWorker, installNativeHost, launchBrowser, listen, panelRequest, requireBuild, sleep } from './harness.mjs';
+import { createHome, extensionWorker, installNativeHost, launchBrowser, listen, panelRequest, requireBuild, sleep, stopDaemon } from './harness.mjs';
 
 const shotsDir = process.env.T3_TAB_FLOW_SHOTS;
 if (shotsDir === undefined) throw new Error('Set T3_TAB_FLOW_SHOTS to the folder for screenshots');
@@ -89,6 +89,16 @@ function shooter(page, prefix) {
   };
 }
 
+/** The panel's background as sRGB, whatever colour syntax the theme stored it in. */
+async function canvasColor(page) {
+  return await page.evaluate(() => {
+    const paint = document.createElement('canvas').getContext('2d');
+    paint.fillStyle = getComputedStyle(document.querySelector('.screen')).backgroundColor;
+    paint.fillRect(0, 0, 1, 1);
+    return [...paint.getImageData(0, 0, 1, 1).data].slice(0, 3).join(',');
+  });
+}
+
 async function siteTabId(serviceWorker, url) {
   return await serviceWorker.evaluate(async (target) => (await chrome.tabs.query({})).find((tab) => tab.url === target)?.id, url);
 }
@@ -117,6 +127,7 @@ async function runT3Flow() {
   const site = await startSite();
   const t3 = await startT3(home, projectDir);
   const context = await launchBrowser(home);
+  const extraSites = [];
   try {
     const { serviceWorker, extensionId } = await extensionWorker(context);
     const tab = await context.newPage();
@@ -176,14 +187,15 @@ async function runT3Flow() {
     // 3. A real thread in Full access, reading the shared tab with no prompt.
     await send(panelPage, 'Use the t3-tab browser tools to read the shared tab, then tell me in one sentence what business the page is for.');
     await panelPage.locator('.user-bubble').waitFor({ timeout: 30_000 });
-    await panelPage.locator('.work-head').first().waitFor({ timeout: 60_000 });
+    await panelPage.locator('.work-entry').nth(1).waitFor({ timeout: 60_000 }).catch(() => undefined);
     await shot('07-thread-working');
     await finished(panelPage);
     const reply = await panelPage.locator('.assistant').last().innerText();
     check('T3 thread read the shared tab and replied', /bakery/i.test(reply), reply.slice(0, 120));
-    check('the claim line is hidden in the thread', !(await panelPage.locator('.timeline').innerText()).includes('claim'));
-    const allowed = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
-    check('Full access answered yes for the browser', (allowed.autoAllowed ?? []).length > 0 && allowed.pending.length === 0, `${(allowed.autoAllowed ?? []).length} auto-allowed`);
+    await panelPage.locator('.work-head.toggle').last().click();
+    const opened = await panelPage.locator('.timeline').innerText();
+    await panelPage.locator('.work-head.toggle').last().click();
+    check('no claim code shows in the thread, work log included', !/[A-Za-z0-9_-]{20,}/.test(opened.replace(/https?:\S+/g, '')), opened.match(/[A-Za-z0-9_-]{20,}/)?.[0]?.slice(0, 6) ?? '');
     await shot('08-thread-finished');
     await panelPage.locator('.work-head.toggle').last().click();
     await shot('09-thread-worklog');
@@ -213,20 +225,86 @@ async function runT3Flow() {
     check('question answered from the panel reached the agent', true);
     await finished(panelPage);
 
+    // A browser request shows in both places. The first answer counts, from either side.
+    const siteB = await startSite();
+    const siteC = await startSite();
+    extraSites.push(siteB, siteC);
     await panelPage.getByRole('button', { name: 'New thread' }).click();
     await pickModel(panelPage, MODEL);
-    await send(panelPage, 'Use the t3-tab browser tools: call tabs to open http://localhost:' + new URL(site.url).port + '/menu , then read it. Reply with the page title only.');
-    await panelPage.locator('.prompt-card').first().waitFor({ timeout: 120_000 });
-    check('browser request shows in the sidebar', true);
+    await send(panelPage, `Use the t3-tab browser tools. Step 1: open ${siteB.url} in a new tab with the tabs tool and read it. Step 2: open ${siteC.url} in a new tab and read it. If a step is declined, stop. Finally reply with the word finished.`);
+    await panelPage.locator('.user-bubble').filter({ hasText: 'Step 1' }).waitFor({ timeout: 30_000 });
+    const threadId = await panelPage.locator('.screen[data-thread-id]').getAttribute('data-thread-id');
+    const threadApproval = async () => await panelPage.evaluate(async (id) => await new Promise((resolve) => {
+      let stop;
+      stop = window.__t3tabT3.watchThread(id, (view) => { resolve(view.approval ?? null); setTimeout(() => stop?.(), 0); });
+    }), threadId);
+    /** Approves T3's ordinary tool cards until a browser request is waiting in the sidebar. */
+    const untilBrowserRequest = async (seen) => await until('a browser request', async () => {
+      const prompts = (await panelRequest(serviceWorker, { type: 'panel.state', tabId })).pending;
+      const fresh = prompts.find((prompt) => !seen.has(prompt.id));
+      if (fresh !== undefined) return fresh;
+      const approval = await threadApproval();
+      if (approval !== null && approval.kind !== 'mcp-elicitation') {
+        await panelPage.evaluate(async ({ id, requestId }) => await window.__t3tabT3.respond(id, requestId, { decision: 'accept' }), { id: threadId, requestId: approval.requestId });
+      }
+      return undefined;
+    }, 150_000);
+    const seen = new Set();
+    const first = await untilBrowserRequest(seen);
+    seen.add(first.id);
+    await panelPage.locator('.prompt-card').first().waitFor();
+    check('browser request shows in the sidebar', true, `${first.tool} on ${first.origin}`);
     await shot('12-permission');
     const inThread = await until('the request in the T3 thread', async () => {
-      return await t3Threads(home, projectDir);
-    }, 30_000).catch(() => undefined);
-    check('browser request also reached the T3 thread as a pending approval', inThread === true);
-    await sleep(600);
-    await panelPage.locator('.prompt-card').first().locator('.prompt-btn.primary').click();
-    await finished(panelPage).catch(() => undefined);
-    check('first answer cleared the request', (await panelRequest(serviceWorker, { type: 'panel.state', tabId })).pending.length === 0);
+      const approval = await threadApproval();
+      return approval?.kind === 'mcp-elicitation' ? approval : undefined;
+    }, 20_000).catch(() => undefined);
+    check('the same request is in the T3 thread as an approval', inThread !== undefined, inThread?.title ?? 'not seen');
+    if (inThread !== undefined) {
+      await panelPage.evaluate(async ({ id, requestId }) => await window.__t3tabT3.respond(id, requestId, { decision: 'accept' }), { id: threadId, requestId: inThread.requestId });
+      await until('the sidebar card to clear', async () => !(await panelRequest(serviceWorker, { type: 'panel.state', tabId })).pending.some((prompt) => prompt.id === first.id), 15_000);
+      check('answering in the T3 thread cleared the sidebar card', true);
+    }
+    const second = await untilBrowserRequest(seen);
+    seen.add(second.id);
+    await until('the second request in the thread', async () => (await threadApproval())?.kind === 'mcp-elicitation', 20_000).catch(() => undefined);
+    await sleep(650);
+    await panelPage.locator(`.prompt-card[data-prompt-id="${second.id}"] .prompt-btn.primary`).click();
+    const cleared = await until('T3 to drop its approval', async () => (await threadApproval())?.requestId === undefined || (await threadApproval())?.kind !== 'mcp-elicitation', 20_000).catch(() => false);
+    check('answering in the sidebar cleared the T3 approval', cleared !== false);
+    for (let round = 0; round < 40; round += 1) {
+      const done = await panelPage.evaluate(async (id) => await new Promise((resolve) => {
+        let stop;
+        stop = window.__t3tabT3.watchThread(id, (view) => { resolve(!view.running); setTimeout(() => stop?.(), 0); });
+      }), threadId);
+      if (done) break;
+      const approval = await threadApproval();
+      if (approval !== null) await panelPage.evaluate(async ({ id, requestId }) => await window.__t3tabT3.respond(id, requestId, { decision: 'accept' }), { id: threadId, requestId: approval.requestId }).catch(() => undefined);
+      const waiting = (await panelRequest(serviceWorker, { type: 'panel.state', tabId })).pending[0];
+      if (waiting !== undefined) await panelRequest(serviceWorker, { type: 'panel.decide', promptId: waiting.id, decision: 'allow-once' }).catch(() => undefined);
+      await sleep(1500);
+    }
+    check('the agent finished after both answers', /finished/i.test(await panelPage.locator('.assistant').last().innerText().catch(() => '')));
+
+    // Full access counts as yes: a site never approved opens with no prompt at all.
+    const siteD = await startSite();
+    extraSites.push(siteD);
+    const before = ((await panelRequest(serviceWorker, { type: 'panel.state', tabId })).autoAllowed ?? []).length;
+    await panelPage.getByRole('button', { name: 'New thread' }).click();
+    await panelPage.locator('.runtime-btn').click();
+    await panelPage.getByRole('menuitemradio', { name: /Full access/ }).click();
+    await pickModel(panelPage, MODEL);
+    await send(panelPage, `Use the t3-tab browser tools to open ${siteD.url} in a new tab and read it. Reply with the h1 text only.`);
+    await finished(panelPage);
+    const after = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
+    check('Full access answered yes for the browser', (after.autoAllowed ?? []).length > before && after.pending.length === 0, `${(after.autoAllowed ?? []).length - before} auto-allowed`);
+
+    await panelPage.getByRole('button', { name: 'New thread' }).click();
+    await pickModel(panelPage, MODEL);
+    await send(panelPage, 'Write a numbered list from 1 to 400, one number per line, with a short word after each number.');
+    await panelPage.getByRole('button', { name: 'Stop', exact: true }).click({ timeout: 60_000 });
+    await panelPage.getByRole('button', { name: 'Send', exact: true }).waitFor({ timeout: 30_000 });
+    check('Stop ended the T3 run', true);
 
     // 5. The thread list and settings sit behind icons.
     await panelPage.locator('#btn-threads').click();
@@ -245,12 +323,30 @@ async function runT3Flow() {
     await panelPage.locator('.sheet textarea').fill(themeFile);
     await panelPage.locator('.sheet').getByRole('button', { name: 'Add theme' }).click();
     const canvas = await until('the imported theme to apply', async () => {
-      const value = await panelPage.evaluate(() => document.documentElement.style.getPropertyValue('--app-theme-canvas'));
-      return value.includes('101820') || value === '#101820' ? value : undefined;
+      const value = await canvasColor(panelPage);
+      return value === '16,24,32' ? value : undefined;
     }, 5_000).catch(() => undefined);
     check('a T3 theme file imports and applies', canvas !== undefined, String(canvas));
     await shot('16-theme-imported');
+    const hostile = JSON.stringify({ version: 1, name: 'Flow CSS', appearance: 'dark', colors: { canvas: '#203040' }, css: '@import url("https://example.invalid/a.css"); .screen { outline: 1px solid red; background-image: url("https://example.invalid/b.png"); }' });
+    await panelPage.getByRole('button', { name: 'Add theme' }).click();
+    await panelPage.locator('.sheet textarea').fill(hostile);
+    await panelPage.locator('.sheet').getByRole('button', { name: 'Add theme' }).click();
+    await until('the CSS theme', async () => (await canvasColor(panelPage)) === '32,48,64', 5_000);
+    const adopted = await panelPage.evaluate(() => [...document.adoptedStyleSheets].flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText)).join(' '));
+    check('custom CSS applied with its remote loads stripped', adopted.includes('outline') && !/url\(|@import/.test(adopted), adopted.slice(0, 90));
     await panelPage.getByRole('button', { name: /Follow T3 Code/ }).click();
+    await new Promise((resolve, reject) => {
+      const child = spawn('t3', ['theme', 'set', 'grove'], { env: home.childEnv, stdio: 'ignore' });
+      child.once('error', reject);
+      child.once('close', resolve);
+    });
+    const groveCanvas = await until('T3 theme to arrive', async () => {
+      const value = await canvasColor(panelPage);
+      return value !== '32,48,64' && (await panelPage.evaluate(() => window.__t3tabT3.snapshot().defaultTheme)) === 'grove' ? value : undefined;
+    }, 8_000).catch(() => undefined);
+    check('the panel follows the theme set in T3', groveCanvas !== undefined, String(groveCanvas));
+    await shot('16b-theme-follows-t3');
     await panelPage.locator('.settings-tabs').getByRole('button', { name: 'Sites' }).click();
     await shot('17-settings-sites');
     await panelPage.locator('.settings-tabs').getByRole('button', { name: 'Connections' }).click();
@@ -258,21 +354,22 @@ async function runT3Flow() {
     await panelPage.getByRole('button', { name: 'Disconnect from T3 Code' }).click();
     await panelPage.locator('.setup-row').filter({ hasText: 'T3 Code' }).getByRole('button', { name: 'Connect' }).waitFor({ timeout: 15_000 });
     check('disconnect ends the panel session', true);
+  } catch (error) {
+    for (const page of context.pages()) {
+      if (!page.url().includes('sidepanel')) continue;
+      await page.screenshot({ path: join(shotsDir, 'failure.png') }).catch(() => undefined);
+      console.log('at failure:', (await page.locator('.timeline').innerText().catch(() => '')).slice(-900));
+      console.log('prompts:', await page.locator('.prompt-card').count());
+    }
+    throw error;
   } finally {
     await context.close().catch(() => undefined);
+    await stopDaemon(home.statePath).catch(() => undefined);
     await stopT3(t3);
     site.server.close();
+    for (const extra of extraSites) extra.server.close();
     if (process.env.T3_TAB_FLOW_KEEP === undefined) await rm(home.tempHome, { recursive: true, force: true }).catch(() => undefined);
   }
-}
-
-/** True when the newest thread in the throwaway T3 is waiting on a request (read with T3's own CLI). */
-async function t3Threads(home, projectDir) {
-  const child = spawn('t3', ['thread', 'list', '--json', '--project', projectDir], { env: home.childEnv, stdio: ['ignore', 'pipe', 'ignore'] });
-  let out = '';
-  child.stdout.on('data', (chunk) => (out += chunk));
-  await once(child, 'close');
-  return /"waiting"|pendingRuntimeRequest"\s*:\s*\{|"pendingApproval"/.test(out);
 }
 
 async function which3() {
@@ -291,6 +388,7 @@ async function runDirectFlow() {
   const site = await startSite();
   await installNativeHost(home);
   const context = await launchBrowser(home);
+  const extraSites = [];
   try {
     const { serviceWorker, extensionId } = await extensionWorker(context);
     const tab = await context.newPage();
@@ -318,7 +416,7 @@ async function runDirectFlow() {
     await pickModel(panelPage, MODEL);
     await send(panelPage, 'Use the t3-tab browser tools to read the shared tab, then tell me in one sentence what business the page is for.');
     await panelPage.locator('.user-bubble').waitFor({ timeout: 30_000 });
-    await panelPage.locator('.work-head').first().waitFor({ timeout: 60_000 });
+    await panelPage.locator('.work-entry').first().waitFor({ timeout: 60_000 }).catch(() => undefined);
     await shot('04-thread-working');
     // The shared tab's origin is approved by the share, so a read runs without a prompt.
     await finished(panelPage);
@@ -327,12 +425,34 @@ async function runDirectFlow() {
     await shot('05-thread-finished');
     await panelPage.locator('.work-head.toggle').last().click();
     await shot('06-thread-worklog');
+    await panelPage.locator('.work-head.toggle').last().click();
+    const siteB = await startSite();
+    extraSites.push(siteB);
+    await panelPage.getByRole('button', { name: 'New thread' }).click();
+    await pickModel(panelPage, MODEL);
+    await send(panelPage, `Use the t3-tab tabs tool to open ${siteB.url} in a new tab, read it, and reply with the h1 text only.`);
+    await panelPage.locator('.prompt-card').first().waitFor({ timeout: 90_000 });
+    check('a direct run asks in the sidebar', true);
+    await shot('08-permission');
+    await sleep(650);
+    await panelPage.locator('.prompt-card .prompt-btn.primary').first().click();
+    await until('the direct reply', async () => /Harbour/i.test(await panelPage.locator('.assistant').last().innerText().catch(() => '')), 90_000);
+    check('the sidebar answer let the direct run continue', true);
+    await finished(panelPage);
+    await panelPage.getByRole('button', { name: 'New thread' }).click();
+    await pickModel(panelPage, MODEL);
+    await send(panelPage, 'Write a numbered list from 1 to 400, one number per line, with a short word after each number.');
+    await panelPage.getByRole('button', { name: 'Stop', exact: true }).click({ timeout: 30_000 });
+    await panelPage.getByText('Stopped.').first().waitFor({ timeout: 20_000 });
+    check('Stop ended the direct run', true);
     await panelPage.locator('#btn-threads').click();
     await panelPage.locator('.thread-row').first().waitFor();
     await shot('07-thread-list');
   } finally {
     await context.close().catch(() => undefined);
+    await stopDaemon(home.statePath).catch(() => undefined);
     site.server.close();
+    for (const extra of extraSites) extra.server.close();
     if (process.env.T3_TAB_FLOW_KEEP === undefined) await rm(home.tempHome, { recursive: true, force: true }).catch(() => undefined);
   }
 }

@@ -233,7 +233,10 @@ export class ClaimStore {
     const { grants } = await this.read();
     const tabs: Record<string, ClaimTab[]> = {};
     for (const grant of Object.values(grants)) {
-      if (grant.conversationId !== undefined && !Object.hasOwn(tabs, grant.conversationId)) tabs[grant.conversationId] = grant.tabs;
+      if (grant.conversationId === undefined) continue;
+      // A T3 thread can hold several grants, one for each message that shared a tab.
+      const held = tabs[grant.conversationId] ?? [];
+      tabs[grant.conversationId] = [...held, ...grant.tabs.filter((tab) => !held.some((entry) => entry.tabId === tab.tabId))];
     }
     return tabs;
   }

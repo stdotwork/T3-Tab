@@ -90,8 +90,8 @@ type ConfigEvent =
   | { type: 'environmentThemesUpdated'; payload: { themes: EnvironmentTheme[] } }
   | { type: string; payload?: unknown };
 
-type ShellItem =
-  | { kind: 'snapshot'; snapshot: { threads: ThreadShell[]; projects: Project[] } }
+export type ShellItem =
+  | { kind: 'snapshot'; snapshot: { threads: ThreadShell[]; projects: Project[] }; resolvedRepositoryIdentityRoots?: string[] }
   | { kind: 'project.updated'; project: Project }
   | { kind: 'project.removed'; projectId: string }
   | { kind: 'thread.updated'; location: 'active' | 'archive'; thread: ThreadShell }
@@ -140,6 +140,45 @@ export function applyThreadEvent(projection: T3Projection, event: { type: string
     return { ...projection, thread: payload as T3Projection['thread'] };
   }
   return projection;
+}
+
+/**
+ * One item of T3's shell stream. A snapshot carrying `resolvedRepositoryIdentityRoots` is a refresh of some projects
+ * with an empty thread list, not a new full list, so it only updates those projects.
+ */
+export function applyShellItem(state: Pick<T3State, 'threads' | 'projects'>, item: ShellItem): Pick<T3State, 'threads' | 'projects'> {
+  const { threads, projects } = state;
+  const withProject = (project: Project): Project[] => {
+    const without = projects.filter((entry) => entry.id !== project.id);
+    return project.archivedAt == null ? [...without, project] : without;
+  };
+  if (item.kind === 'snapshot') {
+    const { snapshot, resolvedRepositoryIdentityRoots } = item as Extract<ShellItem, { kind: 'snapshot' }>;
+    if (resolvedRepositoryIdentityRoots !== undefined) {
+      let next = projects;
+      for (const project of snapshot.projects) {
+        const known = next.findIndex((entry) => entry.id === project.id);
+        if (known !== -1) next = next.map((entry, index) => (index === known ? project : entry));
+      }
+      return { threads, projects: next };
+    }
+    return { threads: [...snapshot.threads], projects: snapshot.projects.filter((project) => project.archivedAt == null) };
+  }
+  if (item.kind === 'project.updated') return { threads, projects: withProject((item as Extract<ShellItem, { kind: 'project.updated' }>).project) };
+  if (item.kind === 'project.removed') {
+    const { projectId } = item as Extract<ShellItem, { kind: 'project.removed' }>;
+    return { threads, projects: projects.filter((entry) => entry.id !== projectId) };
+  }
+  if (item.kind === 'thread.updated') {
+    const { thread, location } = item as Extract<ShellItem, { kind: 'thread.updated' }>;
+    const without = threads.filter((entry) => entry.id !== thread.id);
+    return { threads: location === 'active' ? [thread, ...without] : without, projects };
+  }
+  if (item.kind === 'thread.removed') {
+    const { threadId } = item as Extract<ShellItem, { kind: 'thread.removed' }>;
+    return { threads: threads.filter((entry) => entry.id !== threadId), projects };
+  }
+  return state;
 }
 
 export class T3Client {
@@ -300,24 +339,7 @@ export class T3Client {
   }
 
   private onShell(item: ShellItem): void {
-    if (item.kind === 'snapshot') {
-      const { snapshot } = item as Extract<ShellItem, { kind: 'snapshot' }>;
-      this.set({ threads: [...snapshot.threads], projects: snapshot.projects.filter((project) => project.archivedAt == null) });
-    } else if (item.kind === 'project.updated') {
-      const { project } = item as Extract<ShellItem, { kind: 'project.updated' }>;
-      const without = this.current.projects.filter((entry) => entry.id !== project.id);
-      this.set({ projects: project.archivedAt == null ? [...without, project] : without });
-    } else if (item.kind === 'project.removed') {
-      const { projectId } = item as Extract<ShellItem, { kind: 'project.removed' }>;
-      this.set({ projects: this.current.projects.filter((entry) => entry.id !== projectId) });
-    } else if (item.kind === 'thread.updated') {
-      const { thread, location } = item as Extract<ShellItem, { kind: 'thread.updated' }>;
-      const without = this.current.threads.filter((entry) => entry.id !== thread.id);
-      this.set({ threads: location === 'active' ? [thread, ...without] : without });
-    } else if (item.kind === 'thread.removed') {
-      const { threadId } = item as Extract<ShellItem, { kind: 'thread.removed' }>;
-      this.set({ threads: this.current.threads.filter((entry) => entry.id !== threadId) });
-    }
+    this.set(applyShellItem(this.current, item));
   }
 
   /** Follows one thread until the returned function is called. */

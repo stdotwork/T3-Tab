@@ -6,8 +6,6 @@ import { converter, parse } from "culori/fn";
 import { THEME_CSS_MAX_LENGTH } from "./theme-limits";
 import {
   T3_CHAT_THEME,
-  T3_CODE_DARK_THEME_COLORS,
-  T3_CODE_LIGHT_THEME_COLORS,
   RESERVED_THEME_IDS,
   THEME_COLOR_ROLES,
   type ThemeAppearance,

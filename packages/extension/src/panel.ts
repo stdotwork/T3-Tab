@@ -82,6 +82,7 @@ export type PanelRequest =
   | { type: 'panel.t3SignIn' }
   | { type: 'panel.t3SignOut' }
   | { type: 'panel.agentRemoveTab'; id: string; tabId: number }
+  | { type: 'panel.conversationTabs'; id: string }
   | { type: 'panel.shareTab'; sessionId: string; tabId?: number }
   | { type: 'panel.unshareTab'; sessionId: string; tabId?: number }
   | { type: 'panel.decide'; promptId: string; decision: PermissionDecision }
@@ -92,6 +93,7 @@ export async function handlePanelRequest(
   value: unknown,
 ): Promise<
   | PanelState
+  | { tabs: PanelTab[] }
   | AgentPanelState
   | { conversation: AgentConversation }
   | T3Access
@@ -129,6 +131,11 @@ export async function handlePanelRequest(
   if (request.type === 'panel.agentSend') return await sendToAgent(request.id, request.message);
   if (request.type === 'panel.t3SignIn') return await signInToT3();
   if (request.type === 'panel.t3SignOut') return await askDaemon('t3.signOut', {});
+  if (request.type === 'panel.conversationTabs') {
+    const held = (await claimStore.conversationTabs())[request.id] ?? [];
+    const tabs = await Promise.all(held.map(async ({ tabId }) => await panelTab(tabId).catch(() => undefined)));
+    return { tabs: tabs.filter((tab) => tab !== undefined) };
+  }
   if (request.type === 'panel.agentRemoveTab') {
     await removeConversationTab(claimStore, sessionStore, request.id, request.tabId);
     return { ok: true };
@@ -329,6 +336,7 @@ function parsePanelRequest(value: unknown): PanelRequest {
     if (candidate.noTabs === true) request.noTabs = true;
     return request;
   }
+  if (candidate.type === 'panel.conversationTabs' && typeof candidate.id === 'string') return { type: 'panel.conversationTabs', id: candidate.id };
   if (candidate.type === 'panel.t3SignIn' || candidate.type === 'panel.t3SignOut') return { type: candidate.type };
   if (candidate.type === 'panel.helper' || candidate.type === 'panel.t3Pair' || candidate.type === 'panel.t3Unpair') {
     return { type: candidate.type };

@@ -30,7 +30,7 @@ export function ModelPicker({
   }, [provider, query]);
   const selected = provider?.models.find((model) => provider.id === choice?.provider && model.slug === choice.model);
   const reasoning = reasoningOption(selected);
-  const reasoningValue = reasoning === undefined ? undefined : (choice?.options[reasoning.id] ?? reasoning.options?.find((option) => option.isDefault === true)?.id);
+  const reasoningValue = reasoning === undefined ? undefined : (choice?.options[reasoning.id] ?? reasoning.currentValue ?? reasoning.options?.find((option) => option.isDefault === true)?.id);
 
   return (
     <div className="picker" ref={box}>
@@ -154,7 +154,7 @@ export function RuntimeMenu({ value, modes, onChange }: { value: string; modes?:
   );
 }
 
-export function TabChip({ title, shared, onToggle }: { title: string; shared: boolean; onToggle: () => void }): ReactNode {
+export function TabChip({ title, shared, onToggle, removeLabel }: { title: string; shared: boolean; onToggle: () => void; removeLabel?: string }): ReactNode {
   if (!shared) {
     return (
       <button type="button" className="tab-chip off" onClick={onToggle} title="Share this tab when you send">
@@ -167,7 +167,7 @@ export function TabChip({ title, shared, onToggle }: { title: string; shared: bo
     <span className="tab-chip" title={`"${title}" is shared when you send`}>
       <Globe size={12} aria-hidden="true" />
       <span className="tab-chip-title">{title || 'Current tab'}</span>
-      <button type="button" aria-label="Don't share this tab" onClick={onToggle}>
+      <button type="button" aria-label={removeLabel ?? "Don't share this tab"} onClick={onToggle}>
         <X size={12} aria-hidden="true" />
       </button>
     </span>

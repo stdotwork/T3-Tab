@@ -1,6 +1,8 @@
 import type { AgentConversation } from '@t3-tab/protocol';
 import { AlertCircle, Check, ChevronDown, FolderPlus, History, Plus, Search, Settings as SettingsIcon, SquarePen } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+
+import type { PanelTab } from '../../src/panel';
 
 import { ApprovalCard, QuestionCard, Timeline } from './Thread';
 import { Composer, ModelPicker, RuntimeMenu, TabChip } from './Composer';
@@ -286,7 +288,7 @@ function Home({ live, state, onOpen, onNav }: { live: LiveState; state: T3State;
   );
 }
 
-function useThreadView(screen: Extract<Screen, { name: 'thread' }>, live: LiveState): ThreadView | undefined {
+function useThreadView(screen: Extract<Screen, { name: 'thread' }>): ThreadView | undefined {
   const [t3View, setT3View] = useState<ThreadView>();
   useEffect(() => {
     setT3View(undefined);
@@ -317,14 +319,27 @@ function useThreadView(screen: Extract<Screen, { name: 'thread' }>, live: LiveSt
 }
 
 function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, { name: 'thread' }>; live: LiveState; state: T3State; onNav: (screen: Screen) => void }): ReactNode {
-  const view = useThreadView(screen, live);
+  const view = useThreadView(screen);
+  const conversationKey = screen.source === 't3' ? `t3:${screen.id}` : screen.id;
+  const [heldTabs, setHeldTabs] = useState<PanelTab[]>([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const catalog = useCatalog(live, state);
   const [shareTab, setShareTab] = useState(false);
   const tab = live.currentTab;
-  const shareable = screen.source === 't3' && tab !== undefined && /^https?:/.test(tab.url);
+  const loadTabs = useCallback(async (): Promise<void> => {
+    const { tabs } = await panel<{ tabs: PanelTab[] }>({ type: 'panel.conversationTabs', id: conversationKey });
+    setHeldTabs(tabs);
+  }, [conversationKey]);
+  useEffect(() => {
+    void loadTabs().catch(() => undefined);
+    const timer = setInterval(() => void loadTabs().catch(() => undefined), 1_500);
+    return () => clearInterval(timer);
+  }, [loadTabs]);
+  const held = tab !== undefined && heldTabs.some((entry) => entry.id === tab.id);
+  // A T3 thread can take another tab with a message; a direct run keeps the tabs it started with.
+  const shareable = screen.source === 't3' && tab !== undefined && !held && /^https?:/.test(tab.url);
   const guard = async (action: () => Promise<unknown>): Promise<void> => {
     setError(undefined);
     try {
@@ -379,7 +394,7 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
   const showApproval = view?.approval !== undefined && !(view.approval.kind === 'mcp-elicitation' && live.prompts.length > 0);
   const project = state.projects.find((entry) => entry.id === view?.projectId);
   return (
-    <div className="screen">
+    <div className="screen" data-thread-id={screen.id}>
       <TopBar
         title={
           <>
@@ -428,7 +443,26 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
           running={view?.running === true}
           busy={busy || view === undefined || (screen.source === 'direct' && view.running)}
           placeholder={view?.running === true ? 'Queue a follow-up' : 'Ask anything'}
-          chip={shareable ? <TabChip title={tab.title} shared={shareTab} onToggle={() => setShareTab(!shareTab)} /> : null}
+          chip={
+            <>
+              {heldTabs.map((entry) => (
+                <TabChip
+                  key={entry.id}
+                  title={entry.title}
+                  shared
+                  removeLabel={`Remove "${entry.title}" from this conversation`}
+                  onToggle={() =>
+                    void guard(async () => {
+                      await panel({ type: 'panel.agentRemoveTab', id: conversationKey, tabId: entry.id });
+                      await loadTabs();
+                    })
+                  }
+                />
+              ))}
+              {shareable ? <TabChip title={tab.title} shared={shareTab} onToggle={() => setShareTab(!shareTab)} /> : null}
+              {heldTabs.length === 0 && !shareable ? <span className="tab-chip off static">No tabs shared</span> : null}
+            </>
+          }
           picker={
             <span className="model-chip static">
               <ProviderIcon driver={directDriver} size={15} />

@@ -4,6 +4,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import type { PermissionPrompt, StoredSitePermission } from '../../../src/permissions';
 import type { PanelTab } from '../../../src/panel';
+import type { StoredSession } from '../../../src/sessions';
 import { panel, readStored, writeStored } from './api';
 import type { SetupAgent } from './catalog';
 
@@ -33,11 +34,12 @@ export interface LiveState {
   currentTab?: PanelTab;
   prompts: PermissionPrompt[];
   sites: StoredSitePermission[];
+  sessions: StoredSession[];
   autoAllowed: AutoAllowed[];
   conversations: AgentConversation[];
 }
 
-let live: LiveState = { loaded: false, helper: { connected: false }, prompts: [], sites: [], autoAllowed: [], conversations: [] };
+let live: LiveState = { loaded: false, helper: { connected: false }, prompts: [], sites: [], sessions: [], autoAllowed: [], conversations: [] };
 const listeners = new Set<() => void>();
 
 const merge = (patch: Partial<LiveState>): void => {
@@ -53,17 +55,19 @@ export const headlessRender = params.get('headless') === '1';
 
 async function refreshPanelState(): Promise<void> {
   try {
-    const state = await panel<{ currentTab?: PanelTab; pending: PermissionPrompt[]; sites: StoredSitePermission[]; autoAllowed?: AutoAllowed[] }>({
+    const state = await panel<{ currentTab?: PanelTab; pending: PermissionPrompt[]; sites: StoredSitePermission[]; sessions?: StoredSession[]; autoAllowed?: AutoAllowed[] }>({
       type: 'panel.state',
       ...(fixedTabId === undefined ? {} : { tabId: fixedTabId }),
     });
-    const next: Partial<LiveState> = { prompts: state.pending, sites: state.sites, autoAllowed: state.autoAllowed ?? [] };
+    const next: Partial<LiveState> = { prompts: state.pending, sites: state.sites, sessions: state.sessions ?? [], autoAllowed: state.autoAllowed ?? [] };
     if (state.currentTab !== undefined) next.currentTab = state.currentTab;
     merge(next);
   } catch {
     // The worker can be restarting. The next poll tries again.
   }
 }
+
+export const refreshPanel = refreshPanelState;
 
 export async function refreshSetup(refresh = false): Promise<void> {
   try {
@@ -98,13 +102,13 @@ export function startPolling(): void {
   void refreshSetup(true).then(refreshConversations);
   setInterval(() => void refreshPanelState(), 1_000);
   setInterval(() => void refreshSetup(), 3_000);
-  setInterval(() => void refreshConversations(), 1_000);
+  setInterval(() => void refreshConversations(), 2_000);
   chrome.tabs?.onActivated?.addListener(() => void refreshPanelState());
   chrome.tabs?.onUpdated?.addListener(() => void refreshPanelState());
 }
 
-export function applyHeadlessState(state: { currentTab?: PanelTab; pending: PermissionPrompt[]; sites: StoredSitePermission[]; autoAllowed?: AutoAllowed[] }): void {
-  const next: Partial<LiveState> = { prompts: state.pending, sites: state.sites, autoAllowed: state.autoAllowed ?? [], loaded: true };
+export function applyHeadlessState(state: { currentTab?: PanelTab; pending: PermissionPrompt[]; sites: StoredSitePermission[]; sessions?: StoredSession[]; autoAllowed?: AutoAllowed[] }): void {
+  const next: Partial<LiveState> = { prompts: state.pending, sites: state.sites, sessions: state.sessions ?? [], autoAllowed: state.autoAllowed ?? [], loaded: true };
   if (state.currentTab !== undefined) next.currentTab = state.currentTab;
   merge(next);
 }

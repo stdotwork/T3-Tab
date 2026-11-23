@@ -106,7 +106,7 @@ export function PromptCards({ prompts, currentTabId }: { prompts: PermissionProm
           key={prompt.id}
           prompt={prompt}
           locked={(locks.current.get(prompt.id) ?? 0) > now}
-          here={currentTabId === undefined || prompt.tab.id === currentTabId}
+          here={currentTabId === undefined || prompt.tool === 'open' || prompt.tab.id === currentTabId}
         />
       ))}
     </ul>

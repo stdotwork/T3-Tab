@@ -90,6 +90,52 @@ const oneLine = (text: string, max = 140): string => {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 };
 
+const CLAIM_HIDDEN = '[claim code hidden]';
+
+/** A claim code never reaches the screen, wherever a provider echoes it: tool input, approvals, reasoning or a reply. */
+export function hideClaimCodes(text: string): string {
+  return text
+    .replace(/("?claim"?\s*[:=]\s*\\?")[^"\\\s]+/gi, `$1${CLAIM_HIDDEN}`)
+    .replace(/(call the t3-tab `tabs` tool with )\{[^}]*\}/g, `$1{…}`);
+}
+
+/** The codes this thread's own messages carry, so a provider repeating one bare is caught too. */
+function claimCodesIn(texts: Iterable<string>): Set<string> {
+  const codes = new Set<string>();
+  for (const text of texts) for (const match of text.matchAll(/"claim":\s*"([A-Za-z0-9_-]{16,64})"/g)) if (match[1] !== undefined) codes.add(match[1]);
+  return codes;
+}
+
+function withoutCodes(view: ThreadView, known: ReadonlySet<string> = new Set()): ThreadView {
+  const clean = (text: string): string => {
+    let hidden = hideClaimCodes(text);
+    for (const code of known) hidden = hidden.replaceAll(code, CLAIM_HIDDEN);
+    return hidden;
+  };
+  view.title = clean(view.title);
+  for (const row of view.rows) {
+    if (row.kind === 'work') {
+      for (const entry of row.entries) {
+        entry.label = clean(entry.label);
+        if (entry.detail !== undefined) entry.detail = clean(entry.detail);
+      }
+    } else row.text = clean(row.text);
+  }
+  if (view.approval !== undefined) {
+    view.approval.title = clean(view.approval.title);
+    if (view.approval.detail !== undefined) view.approval.detail = clean(view.approval.detail);
+  }
+  return view;
+}
+
+/** T3 titles a tool approval with the tool's raw name and arguments; a browser tool reads better by what it does. */
+function approvalLabel(prompt: string): string {
+  const match = /^mcp__t3-tab__([a-z_]+)\b/.exec(prompt);
+  if (match?.[1] === undefined) return prompt;
+  const names: Record<string, string> = { status: 'check the browser', tabs: 'use browser tabs', read: 'read a page', screenshot: 'take a screenshot', act: 'act on a page', run_js: 'run JavaScript on a page' };
+  return `Let the agent ${names[match[1]] ?? match[1]}`;
+}
+
 const asTime = (value: unknown): number | undefined => {
   if (typeof value !== 'string') return undefined;
   const time = Date.parse(value);
@@ -145,11 +191,15 @@ function t3WorkEntry(item: T3Item): WorkEntry | undefined {
       return (item.text ?? '').trim() === '' ? undefined : { ...base, icon: 'thinking', label: oneLine(item.text ?? '', 220), detail: item.text ?? '' };
     case 'command_execution': {
       const input = typeof item.input === 'string' ? item.input : (item.title ?? 'Command');
+      // T3's own setup step, which T3's timeline leaves out too.
+      if (input === 'Preparing workspace') return undefined;
       const output = typeof item.output === 'string' ? item.output : undefined;
       return { ...base, icon: 'command', label: oneLine(input), ...(output === undefined ? {} : { detail: output }) };
     }
     case 'dynamic_tool': {
       const name = item.toolName ?? 'Tool';
+      // Loading a deferred tool's schema is the agent's bookkeeping, not a step the owner needs to follow.
+      if (name === 'ToolSearch') return undefined;
       const browser = browserToolLabel(name);
       const label = browser ?? item.title ?? name;
       const output = typeof item.output === 'string' ? item.output : undefined;
@@ -168,7 +218,7 @@ function t3WorkEntry(item: T3Item): WorkEntry | undefined {
     case 'subagent':
       return { ...base, icon: 'agent', label: oneLine(item.title ?? 'Worker') };
     case 'approval_request':
-      return { ...base, icon: 'approval', label: oneLine(item.prompt ?? item.title ?? 'Approval') };
+      return { ...base, icon: 'approval', label: oneLine(approvalLabel(item.prompt ?? item.title ?? 'Approval')) };
     case 'user_input_request':
       return { ...base, icon: 'ask', label: 'Input requested' };
     default:
@@ -259,7 +309,7 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
       view.approval = {
         requestId: request.id,
         kind: item.requestKind ?? request.kind,
-        title: item.prompt ?? item.title ?? 'The agent asks for approval',
+        title: approvalLabel(item.prompt ?? item.title ?? 'The agent asks for approval'),
         ...(item.reason == null ? {} : { detail: item.reason }),
         options: item.options ?? [
           { decision: 'decline', label: 'Decline' },
@@ -286,7 +336,8 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
   const provider = modelSelection?.instanceId ?? providerInstanceId;
   if (provider !== undefined) view.provider = provider;
   if (modelSelection?.model !== undefined) view.model = modelSelection.model;
-  return view;
+  const sources = projection.visibleTurnItems.flatMap(({ item }) => [item.text, item.prompt, typeof item.input === 'string' ? item.input : undefined].filter((text) => text !== undefined));
+  return withoutCodes(view, claimCodesIn(sources));
 }
 
 function directEntry(item: Extract<AgentItem, { kind: 'tool' }>): WorkEntry {
@@ -360,5 +411,5 @@ export function directThreadView(conversation: AgentConversation): ThreadView {
   const view: ThreadView = { id: conversation.id, source: 'direct', title: conversation.title, running, failed: conversation.status === 'failed', rows };
   view.provider = conversation.via;
   if (conversation.model !== undefined) view.model = conversation.model;
-  return view;
+  return withoutCodes(view);
 }

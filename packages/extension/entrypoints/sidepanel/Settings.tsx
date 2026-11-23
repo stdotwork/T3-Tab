@@ -16,7 +16,7 @@ import {
   type ThemeDefinition,
 } from '../../src/t3/theme-palette';
 import { errorText, panel } from './lib/api';
-import type { LiveState } from './lib/store';
+import { refreshPanel, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
 import { previewTheme, removeCustomTheme, saveCustomTheme, setScheme, setTheme, STOCK_THEME, useAppearance, type SchemeChoice } from './lib/theme';
 import { siteChoices, siteStatus } from './prompt-choices';
@@ -51,7 +51,11 @@ function ThemeEditor({ start, onClose }: { start: ThemeDefinition | undefined; o
   const [overrides, setOverrides] = useState<Partial<Record<ThemeColorRole, string>>>({});
   const [css, setCss] = useState(start?.css ?? '');
   const [showAll, setShowAll] = useState(false);
-  const colors = useMemo<ThemeColors>(() => ({ ...createVividThemeColors(appearance, canvas, accent), ...overrides }), [appearance, canvas, accent, overrides]);
+  const colors = useMemo<ThemeColors>(() => {
+    const vivid = createVividThemeColors(appearance, canvas, accent);
+    // The send button and other solid actions follow the accent the owner picked.
+    return { ...vivid, messageAction: vivid.accent, messageActionForeground: vivid.accentForeground, messageActionHover: vivid.accent, ...overrides };
+  }, [appearance, canvas, accent, overrides]);
   useEffect(() => {
     previewTheme({ colors, appearance, ...(css === '' ? {} : { css }) });
   }, [colors, appearance, css]);
@@ -277,6 +281,47 @@ function Sites({ live }: { live: LiveState }): ReactNode {
   );
 }
 
+function Sessions({ live }: { live: LiveState }): ReactNode {
+  const [error, setError] = useState<string>();
+  const tab = live.currentTab;
+  const toggle = async (sessionId: string, shared: boolean): Promise<void> => {
+    if (tab === undefined) return;
+    setError(undefined);
+    try {
+      await panel({ type: shared ? 'panel.unshareTab' : 'panel.shareTab', sessionId, tabId: tab.id });
+      await refreshPanel();
+    } catch (failure) {
+      setError(errorText(failure));
+    }
+  };
+  return (
+    <>
+      <h3>Connected agents</h3>
+      {error === undefined ? null : <p className="error-line">{error}</p>}
+      <ul id="connected-sessions" className="site-list">
+        {live.sessions.map((session) => {
+          const shared = tab !== undefined && session.sharedTabIds.includes(tab.id);
+          const count = session.sharedTabIds.length;
+          return (
+            <li key={session.id}>
+              <strong>{session.name}</strong>
+              <small>{count === 0 ? 'No shared tabs' : count === 1 ? '1 shared tab' : `${count} shared tabs`}</small>
+              {tab === undefined ? null : (
+                <span className="site-actions">
+                  <button type="button" className="row-btn" onClick={() => void toggle(session.id, shared)}>
+                    {shared ? 'Stop sharing this tab' : 'Share this tab'}
+                  </button>
+                </span>
+              )}
+            </li>
+          );
+        })}
+        {live.sessions.length === 0 ? <li className="muted-line">No agents are using the browser.</li> : null}
+      </ul>
+    </>
+  );
+}
+
 function Connections({ live, state }: { live: LiveState; state: T3State }): ReactNode {
   return (
     <div className="settings-page">
@@ -304,6 +349,7 @@ function Connections({ live, state }: { live: LiveState; state: T3State }): Reac
           Disconnect from T3 Code
         </button>
       )}
+      <Sessions live={live} />
     </div>
   );
 }

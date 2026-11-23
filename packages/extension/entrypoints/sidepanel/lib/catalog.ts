@@ -87,7 +87,7 @@ export function directProviders(agents: readonly SetupAgent[]): PickerProvider[]
 }
 
 export function reasoningOption(model: PickerModel | undefined): ModelOption | undefined {
-  return model?.options.find((option) => option.role === 'reasoning' && option.type === 'select');
+  return model?.options.find((option) => option.type === 'select' && (option.role === 'reasoning' || option.id === 'effort' || option.id === 'reasoningEffort'));
 }
 
 /** The saved choice if it still exists, else the first usable provider's default model. */
@@ -109,9 +109,9 @@ export function choiceLabel(providers: readonly PickerProvider[], choice: Choice
   if (choice === undefined) return { name: 'No model' };
   const provider = providers.find((entry) => entry.id === choice.provider);
   const model = provider?.models.find((entry) => entry.slug === choice.model);
-  const name = model?.shortName ?? model?.name ?? (choice.model || 'Default');
+  const name = model?.shortName ?? model?.name.replace(/^Claude /, '') ?? (choice.model || 'Default');
   const reasoning = reasoningOption(model);
-  const value = reasoning === undefined ? undefined : (choice.options[reasoning.id] ?? reasoning.options?.find((option) => option.isDefault === true)?.id);
+  const value = reasoning === undefined ? undefined : (choice.options[reasoning.id] ?? reasoning.currentValue ?? reasoning.options?.find((option) => option.isDefault === true)?.id);
   const effort = reasoning?.options?.find((option) => option.id === value)?.label;
   return { name, ...(effort === undefined ? {} : { effort }), ...(provider === undefined ? {} : { driver: provider.driver }) };
 }
