@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { access, chmod, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, readFile, readdir, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { delimiter } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -126,6 +126,8 @@ export async function removeRegistrations(entries: readonly HostRegistration[], 
     }
     if (await isOurManifest(entry.manifestPath)) {
       await unlink(entry.manifestPath).then(() => (gone = true), () => undefined);
+      // The folder setup may have created; it stays when another product's manifest is in it.
+      await rmdir(directoryOf(entry.manifestPath)).catch(() => undefined);
     }
     if (gone) removed.push(entry);
   }

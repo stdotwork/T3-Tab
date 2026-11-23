@@ -222,6 +222,7 @@ describe('setup and uninstall on Linux (run in a temporary home)', () => {
     await expect(readdir(layout.root)).rejects.toThrow();
     await expect(stat(join(home, 'elsewhere/NativeMessagingHosts/com.t3tab.native.json'))).rejects.toThrow();
     await expect(stat(join(home, '.config/chromium/NativeMessagingHosts/com.t3tab.native.json'))).rejects.toThrow();
+    await expect(stat(join(home, 'elsewhere/NativeMessagingHosts'))).rejects.toThrow();
     await expect(stat(stateDir)).rejects.toThrow();
     expect(await readFile(neighbour, 'utf8')).toContain('com.other.host');
   });
