@@ -207,7 +207,7 @@ describe('parseClaudeLine', () => {
           message: { content: [{ type: 'text', text: 'a' }, { type: 'tool_use' }, { type: 'text', text: 'b' }] },
         }),
       ),
-    ).toEqual({ sessionId: 's1', text: 'a\nb' });
+    ).toMatchObject({ sessionId: 's1', text: 'a\nb' });
     expect(parseClaudeLine('{"type":"result","subtype":"success","result":"done"}')).toEqual({ done: { ok: true, result: 'done' } });
   });
 
@@ -225,8 +225,8 @@ describe('parseClaudeLine', () => {
 describe('parseCodexLine', () => {
   it('reads thread, message and turn events', () => {
     expect(parseCodexLine('{"type":"thread.started","thread_id":"t1"}')).toEqual({ sessionId: 't1' });
-    expect(parseCodexLine('{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}')).toEqual({ text: 'hi' });
-    expect(parseCodexLine('{"type":"item.completed","item":{"type":"reasoning","text":"hm"}}')).toEqual({});
+    expect(parseCodexLine('{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}')).toMatchObject({ text: 'hi' });
+    expect(parseCodexLine('{"type":"item.completed","item":{"type":"reasoning","text":"hm"}}')).not.toHaveProperty('text');
     expect(parseCodexLine('{"type":"turn.completed"}')).toEqual({ done: { ok: true } });
     expect(parseCodexLine('{"type":"turn.failed","error":{"message":"no"}}')).toEqual({ done: { ok: false, error: 'no' } });
     expect(parseCodexLine('{"type":"turn.failed"}')).toEqual({ done: { ok: false, error: 'The turn failed' } });
@@ -246,6 +246,7 @@ describe('direct run isolation', () => {
       '--output-format',
       'stream-json',
       '--verbose',
+      '--include-partial-messages',
       '--restricted',
       '--setting-sources',
       '',

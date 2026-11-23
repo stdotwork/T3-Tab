@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { claimNote, claudeArgs, t3SendArgs, t3ShowArgs, t3StartArgs } from '../src/agents/commands.js';
 import { Agents, parseStartParams } from '../src/agents/conversations.js';
+import { readFileSync } from 'node:fs';
 import { run, stopProcess, type Spawn } from '../src/agents/process.js';
 import { findExecutable } from '../src/agents/locate.js';
 import { t3ShowJson } from './t3-show-fixture.js';
@@ -796,5 +797,168 @@ describe('stopping processes', () => {
     const pids = await pidsFrom(pidsFile);
     await expect(pending).rejects.toThrow('did not finish');
     await waitFor(() => pids.every((pid) => !alive(pid)), 'both processes to die');
+  });
+});
+
+describe('the thread view of a direct run', () => {
+  const fixture = readFileSync(join(import.meta.dirname, 'fixtures', 'claude-stream-partial.ndjson'), 'utf8');
+  const get = (id: string): AgentConversation => {
+    if (agents === undefined) throw new Error('no agents');
+    return agents.get(id);
+  };
+
+  it('fills items from a real Claude Code stream: the message, both tool calls and the streamed reply', async () => {
+    await install('claude');
+    handler = () => ({ stdout: fixture });
+    const before = Date.now();
+    const started = await make().start({ via: 'claude', message: 'Check it', claim: CLAIM });
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+    const conversation = get(started.id);
+    expect(conversation.items.map(({ kind }) => kind)).toEqual(['user', 'tool', 'tool', 'assistant']);
+    expect(conversation.items[0]).toMatchObject({ kind: 'user', text: 'Check it' });
+    expect(conversation.items[1]).toMatchObject({ kind: 'tool', name: 'status', output: 'Browsers: 0', status: 'done' });
+    expect(conversation.items[2]).toMatchObject({ kind: 'tool', name: 'fail', output: 'boom', status: 'failed' });
+    const reply = conversation.items[3];
+    expect(reply).toMatchObject({ kind: 'assistant', text: 'Done: status reported 0 browsers connected, and fail returned the error "boom" as expected.' });
+    expect(reply).not.toHaveProperty('streaming');
+    expect(new Set(conversation.items.map(({ id }) => id)).size).toBe(4);
+    expect(conversation.startedAt).toBeGreaterThanOrEqual(before);
+    expect(conversation.finishedAt).toBeGreaterThanOrEqual(conversation.startedAt ?? Infinity);
+    // The message list keeps working as before.
+    expect(conversation.messages).toEqual([
+      { role: 'user', text: 'Check it' },
+      { role: 'assistant', text: 'Done: status reported 0 browsers connected, and fail returned the error "boom" as expected.' },
+    ]);
+  });
+
+  it('keeps the list light: only `get` carries the items', async () => {
+    await install('claude');
+    handler = () => ({ stdout: fixture });
+    const started = await make().start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+    expect(view(started.id).items).toEqual([]);
+    expect(get(started.id).items.length).toBeGreaterThan(0);
+    expect(() => get('nope')).toThrow('No such conversation');
+  });
+
+  it('settles a block the process never ended and a tool that never reported', async () => {
+    await install('claude');
+    const line = (event: unknown): string => JSON.stringify({ type: 'stream_event', event });
+    handler = () => ({
+      code: 1,
+      stdout:
+        [
+          line({ type: 'message_start', message: { id: 'm' } }),
+          line({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+          line({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'half' } }),
+          line({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'tu', name: 'mcp__t3-tab__act', input: {} } }),
+        ].join('\n') + '\n',
+    });
+    const started = await make().start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    await waitFor(() => view(started.id).status === 'failed', 'failed');
+    const items = get(started.id).items;
+    expect(items.find(({ kind }) => kind === 'assistant')).toMatchObject({ text: 'half' });
+    expect(items.find(({ kind }) => kind === 'assistant')).not.toHaveProperty('streaming');
+    expect(items.find(({ kind }) => kind === 'tool')).toMatchObject({ name: 'act', status: 'failed' });
+    expect(items.at(-1)).toMatchObject({ kind: 'error' });
+  });
+
+  it('keeps the claim code out of every item, even one split across two deltas', async () => {
+    await install('claude');
+    const line = (event: unknown): string => JSON.stringify({ type: 'stream_event', event });
+    const half = Math.floor(CLAIM.length / 2);
+    handler = () => ({
+      stdout:
+        [
+          line({ type: 'message_start', message: { id: 'm' } }),
+          line({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+          line({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `code ${CLAIM.slice(0, half)}` } }),
+          line({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `${CLAIM.slice(half)} end` } }),
+          JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: `out ${CLAIM}` }] } }),
+          JSON.stringify({ type: 'assistant', message: { id: 'm', content: [{ type: 'tool_use', id: 'x', name: 'mcp__t3-tab__tabs', input: { claim: CLAIM } }] } }),
+          line({ type: 'content_block_stop', index: 0 }),
+        ].join('\n') + '\n',
+    });
+    const started = await make().start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+    const text = JSON.stringify(get(started.id).items);
+    expect(text).not.toContain(CLAIM);
+    expect(text).toContain('[claim code hidden]');
+  });
+
+  it('fills items from codex: a tool call that started and completed, and the reply', async () => {
+    await install('codex');
+    handler = () => ({
+      stdout:
+        [
+          '{"type":"thread.started","thread_id":"cx-1"}',
+          '{"type":"item.started","item":{"id":"item_0","type":"mcp_tool_call","server":"t3-tab","tool":"read","arguments":{"tab":1},"status":"in_progress"}}',
+          '{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"t3-tab","tool":"read","arguments":{"tab":1},"result":{"content":[{"type":"text","text":"a page"}]},"status":"completed"}}',
+          '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Read it."}}',
+          '{"type":"turn.completed"}',
+        ].join('\n') + '\n',
+    });
+    const started = await make().start({ via: 'codex', message: 'Hi', claim: CLAIM });
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+    expect(get(started.id).items.map(({ kind }) => kind)).toEqual(['user', 'tool', 'assistant']);
+    expect(get(started.id).items[1]).toMatchObject({ name: 'read', summary: '{"tab":1}', output: 'a page', status: 'done' });
+    expect(get(started.id).items[2]).toMatchObject({ text: 'Read it.' });
+  });
+
+  it('numbers items apart between turns, though codex numbers its own again', async () => {
+    await install('codex');
+    handler = () => ({
+      stdout:
+        ['{"type":"thread.started","thread_id":"cx-1"}', '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"x"}}', '{"type":"turn.completed"}'].join('\n') + '\n',
+    });
+    const started = await make().start({ via: 'codex', message: 'Hi', claim: CLAIM });
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+    await agents?.send(started.id, 'again');
+    await waitFor(() => get(started.id).items.filter(({ kind }) => kind === 'assistant').length === 2, 'the second reply');
+    const ids = get(started.id).items.map(({ id }) => id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('is empty for a T3 thread: its thread is in T3 Code', async () => {
+    await install('t3');
+    handler = ({ args }) => ({ stdout: args[1] === 'start' ? '{"threadId":"th1","runId":"r1"}' : showJson('idle', 'r1', [{ role: 'assistant', text: 'ok' }]) });
+    const started = await make().start({ via: 't3', message: 'Hi', claim: CLAIM, project: '/p' });
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+    expect(get(started.id).items).toEqual([]);
+  });
+});
+
+describe('stopping a direct run from the panel', () => {
+  const spawnReal: Spawn = (command, args, options) => realSpawn(command, args, options);
+
+  async function sleeper(): Promise<void> {
+    const started = JSON.stringify({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu', name: 'mcp__t3-tab__read', input: {} } } });
+    const command = join(bin, 'claude');
+    await writeFile(command, `#!/bin/sh\nprintf '%s\\n' '${started}'\n"${process.execPath}" -e "setTimeout(() => undefined, 30000)"\n`);
+    await chmod(command, 0o755);
+  }
+
+  it('stops the process, goes back to idle, and says it was stopped rather than failed', async () => {
+    await sleeper();
+    agents = new Agents({ env: { PATH: bin, HOME: home }, server: { command: 'node', args: [] }, spawn: spawnReal, graceMs: 500 });
+    const started = await agents.start({ via: 'claude', message: 'Hi', claim: CLAIM });
+    await waitFor(() => agents?.get(started.id).items.some(({ kind }) => kind === 'tool') === true, 'the tool call to appear');
+    const stopped = await agents.stop(started.id);
+    expect([stopped.status, stopped.error]).toEqual(['idle', undefined]);
+    expect(stopped.error).toBeUndefined();
+    expect(stopped.finishedAt).toBeDefined();
+    expect(stopped.items.at(-1)).toMatchObject({ kind: 'error', text: 'Stopped.' });
+    expect(stopped.items.find(({ kind }) => kind === 'tool')).toMatchObject({ status: 'failed' });
+    expect(stopped.messages.at(-1)).toEqual({ role: 'error', text: 'Stopped.' });
+    // The conversation can be continued if the CLI had printed a session id; a stopped run is not broken.
+    await expect(agents.stop(started.id)).resolves.toMatchObject({ status: 'idle' });
+  });
+
+  it('refuses to stop a T3 thread, which is stopped in T3 Code', async () => {
+    await install('t3');
+    handler = () => ({ stdout: '{"threadId":"th1","runId":"r1"}' });
+    const started = await make().start({ via: 't3', message: 'Hi', claim: CLAIM, project: '/p' });
+    await expect(agents?.stop(started.id)).rejects.toThrow('stopped in T3 Code');
+    await expect(agents?.stop('nope')).rejects.toThrow('No such conversation');
   });
 });

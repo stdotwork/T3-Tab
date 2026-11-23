@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline';
 
 import type {
   AgentConversation,
+  AgentItem,
   AgentMessage,
   AgentsStatus,
   AgentStartParams,
@@ -30,6 +31,7 @@ import {
   t3SendArgs,
   t3ShowArgs,
   t3StartArgs,
+  type DirectPart,
   type McpServerCommand,
 } from './commands.js';
 import { findExecutable, findT3 } from './locate.js';
@@ -38,6 +40,7 @@ import { run, STOP_GRACE_MS, stopProcess, type RunResult, type Spawn } from './p
 const MAX_MESSAGE_CHARS = 100_000;
 const MAX_SHOWN_CHARS = 20_000;
 const MAX_MESSAGES = 50;
+const MAX_ITEMS = 300;
 const MAX_CONVERSATIONS = 30;
 const T3_COMMAND_TIMEOUT_MS = 60_000;
 // Every `t3` call signs in to T3 for a moment, so its state is checked at most once a minute unless asked.
@@ -79,6 +82,10 @@ interface Conversation {
   providerWarned?: boolean;
   /** Why T3-Tab stopped the current direct turn. */
   stopReason?: string;
+  /** True once the owner asked to stop the current direct turn. */
+  userStopped?: boolean;
+  /** Direct turns so far, which keeps item ids apart: Codex numbers its items again in every turn. */
+  turns: number;
   poll?: ReturnType<typeof setTimeout>;
   /** The T3 run this conversation waits on; polling stops once the thread shows it finished. */
   expectedRun?: string;
@@ -130,8 +137,34 @@ export class Agents {
     return status;
   }
 
+  /** The conversations without their thread view, so a list stays small; `get` returns one with its items. */
   list(): AgentConversation[] {
-    return [...this.conversations.values()].map((conversation) => conversation.view).sort((a, b) => b.updatedAt - a.updatedAt);
+    return [...this.conversations.values()]
+      .map((conversation) => ({ ...conversation.view, items: [] }))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  get(id: unknown): AgentConversation {
+    return this.require(id).view;
+  }
+
+  /** Stops a direct run's current turn. The conversation goes back to idle and keeps what the agent had done. */
+  async stop(id: unknown): Promise<AgentConversation> {
+    const conversation = this.require(id);
+    if (conversation.view.via === 't3') throw new Error('A T3 thread is stopped in T3 Code.');
+    if (conversation.starting === true) throw new Error('The run is still starting. Try again in a moment.');
+    const child = conversation.child;
+    if (child === undefined) return conversation.view;
+    conversation.userStopped = true;
+    await stopProcess(child, this.graceMs);
+    return conversation.view;
+  }
+
+  private require(id: unknown): Conversation {
+    if (typeof id !== 'string') throw new Error('Invalid conversation id');
+    const conversation = this.conversations.get(id);
+    if (conversation === undefined) throw new Error('No such conversation. The background program may have restarted.');
+    return conversation;
   }
 
   async start(value: unknown): Promise<AgentConversation> {
@@ -142,9 +175,7 @@ export class Agents {
 
   /** `claim` is a fresh code the extension issued for this turn of a direct run. */
   async send(id: unknown, message: unknown, claim?: unknown): Promise<AgentConversation> {
-    if (typeof id !== 'string') throw new Error('Invalid conversation id');
-    const conversation = this.conversations.get(id);
-    if (conversation === undefined) throw new Error('No such conversation. The background program may have restarted.');
+    const conversation = this.require(id);
     const text = parseMessage(message);
     if (claim !== undefined && (typeof claim !== 'string' || !CLAIM_CODE.test(claim))) throw new Error('Invalid claim code');
     if (conversation.view.via === 't3') {
@@ -166,6 +197,7 @@ export class Agents {
       throw new Error('This run printed no session id, so it cannot be continued. Start a new one.');
     }
     this.push(conversation, { role: 'user', text });
+    this.pushItem(conversation, { kind: 'user', text });
     await this.runDirect(conversation, text, conversation.view.threadId, claim);
     return conversation.view;
   }
@@ -232,6 +264,7 @@ export class Agents {
     conversation.cwd = cwd;
     conversation.view.project = cwd;
     this.push(conversation, { role: 'user', text: params.message });
+    this.pushItem(conversation, { kind: 'user', text: params.message });
     try {
       await this.runDirect(conversation, params.message, undefined, params.claim);
     } catch (error) {
@@ -248,13 +281,14 @@ export class Agents {
       title: firstLine(params.message.replaceAll(params.claim, CLAIM_HIDDEN)).slice(0, 80) || 'Untitled',
       status: 'running',
       messages: [],
+      items: [],
       updatedAt: Date.now(),
     };
     if (extra.threadId !== undefined) view.threadId = extra.threadId;
     if (params.project !== undefined) view.project = params.project;
     if (params.provider !== undefined) view.provider = params.provider;
     if (params.model !== undefined) view.model = params.model;
-    const conversation: Conversation = { view, codes: new Set([params.claim]), pollFailures: 0, pollStarted: Date.now(), waitingPolls: 0 };
+    const conversation: Conversation = { view, codes: new Set([params.claim]), turns: 0, pollFailures: 0, pollStarted: Date.now(), waitingPolls: 0 };
     this.conversations.set(view.id, conversation);
     this.prune();
     return conversation;
@@ -274,7 +308,69 @@ export class Agents {
   private push(conversation: Conversation, message: AgentMessage): void {
     conversation.view.messages.push({ role: message.role, text: cap(hideCodes(message.text, conversation.codes)) });
     if (conversation.view.messages.length > MAX_MESSAGES) conversation.view.messages.splice(0, conversation.view.messages.length - MAX_MESSAGES);
+    // A direct run's thread view shows the owner's messages and errors where they happened; the agent's own arrive as parts.
+    if (message.role === 'error' && conversation.view.via !== 't3') this.pushItem(conversation, { kind: 'error', text: message.text });
     conversation.view.updatedAt = Date.now();
+  }
+
+  /** Adds an item to a direct run's thread view and returns it. */
+  private pushItem(conversation: Conversation, item: ItemDraft, id?: string): TextItem {
+    const text = cap(hideCodes(item.text, conversation.codes));
+    const added: TextItem = { id: id ?? `${conversation.turns}:${randomUUID()}`, kind: item.kind, text };
+    conversation.view.items.push(added);
+    if (conversation.view.items.length > MAX_ITEMS) conversation.view.items.splice(0, conversation.view.items.length - MAX_ITEMS);
+    conversation.view.updatedAt = Date.now();
+    return added;
+  }
+
+  /** Applies what the agent's output line changed in the thread view. */
+  private applyParts(conversation: Conversation, turn: Turn, parts: DirectPart[]): void {
+    const { view, codes } = conversation;
+    for (const part of parts) {
+      if (part.op === 'text') {
+        let item = turn.blocks.get(part.key);
+        if (item === undefined) {
+          item = this.pushItem(conversation, { kind: part.kind, text: '' }, `${conversation.turns}:${part.key}`);
+          item.streaming = true;
+          turn.blocks.set(part.key, item);
+        }
+        item.text = cap(hideCodes(part.final ? part.text : `${item.text}${part.text}`, codes));
+        if (part.kind === 'assistant' && part.text.trim() !== '') turn.answered = true;
+      } else if (part.op === 'end') {
+        const item = turn.blocks.get(part.key);
+        if (item === undefined) continue;
+        delete item.streaming;
+        turn.blocks.delete(part.key);
+        // A reasoning block the CLI sent without its text, or an empty reply, leaves nothing to show.
+        const at = view.items.indexOf(item);
+        if (item.text.trim() === '' && at !== -1) view.items.splice(at, 1);
+      } else if (part.op === 'tool') {
+        let item = turn.tools.get(part.id);
+        if (item === undefined) {
+          item = { id: `${conversation.turns}:${part.id}`, kind: 'tool', name: part.name ?? 'tool', status: part.status ?? 'running' };
+          view.items.push(item);
+          if (view.items.length > MAX_ITEMS) view.items.splice(0, view.items.length - MAX_ITEMS);
+          turn.tools.set(part.id, item);
+        }
+        if (part.name !== undefined) item.name = part.name;
+        if (part.summary !== undefined) item.summary = cap(hideCodes(part.summary, codes));
+        if (part.output !== undefined && part.output !== '') item.output = cap(hideCodes(part.output, codes));
+        if (part.status !== undefined) item.status = part.status;
+      } else {
+        this.pushItem(conversation, { kind: 'error', text: part.text });
+      }
+    }
+    view.updatedAt = Date.now();
+  }
+
+  /** The turn is over: whatever was still being written or run is not any more. */
+  private settleItems(conversation: Conversation, turn: Turn, ok: boolean): void {
+    for (const item of turn.blocks.values()) delete item.streaming;
+    turn.blocks.clear();
+    for (const item of turn.tools.values()) {
+      if (item.status === 'running') item.status = ok ? 'done' : 'failed';
+    }
+    conversation.view.items = conversation.view.items.filter((item) => item.kind === 'tool' || item.text.trim() !== '');
   }
 
   private async t3Status(refresh: boolean): Promise<AgentsStatus['t3']> {
@@ -467,9 +563,14 @@ export class Agents {
     }
     conversation.child = child;
     delete conversation.stopReason;
+    delete conversation.userStopped;
     conversation.view.status = 'running';
     delete conversation.view.error;
+    conversation.view.startedAt = Date.now();
+    delete conversation.view.finishedAt;
     conversation.view.updatedAt = Date.now();
+    conversation.turns += 1;
+    const turn: Turn = { blocks: new Map(), tools: new Map(), answered: false };
     const parse = directParser(via);
     let reply: AgentMessage | undefined;
     let finished: { ok: boolean; error?: string; result?: string } | undefined;
@@ -483,6 +584,7 @@ export class Agents {
       createInterface({ input: child.stdout }).on('line', (line) => {
         const event = parse(line);
         if (event.sessionId !== undefined) conversation.view.threadId = event.sessionId;
+        if (event.parts !== undefined) this.applyParts(conversation, turn, event.parts);
         if (event.text !== undefined && event.text.trim() !== '') {
           if (reply === undefined) {
             this.push(conversation, { role: 'assistant', text: event.text });
@@ -503,15 +605,29 @@ export class Agents {
       clearTimeout(timer);
       delete conversation.child;
       void claimFile?.remove().catch(() => undefined);
+      conversation.view.finishedAt = Date.now();
+      if (conversation.userStopped === true && conversation.stopReason === undefined) {
+        delete conversation.userStopped;
+        this.settleItems(conversation, turn, false);
+        this.push(conversation, { role: 'error', text: 'Stopped.' });
+        conversation.view.status = 'idle';
+        delete conversation.view.error;
+        conversation.view.updatedAt = Date.now();
+        return;
+      }
+      delete conversation.userStopped;
       if (conversation.stopReason !== undefined) {
+        this.settleItems(conversation, turn, false);
         this.failConversation(conversation, conversation.stopReason);
         delete conversation.stopReason;
         return;
       }
       if (reply === undefined && finished?.ok === true && finished.result !== undefined && finished.result.trim() !== '') {
         this.push(conversation, { role: 'assistant', text: finished.result });
+        if (!turn.answered) this.pushItem(conversation, { kind: 'assistant', text: finished.result });
       }
       const ok = finished?.ok ?? code === 0;
+      this.settleItems(conversation, turn, ok && code === 0);
       if (ok && code === 0) {
         conversation.view.status = 'idle';
         conversation.view.updatedAt = Date.now();
@@ -525,12 +641,25 @@ export class Agents {
         void claimFile?.remove().catch(() => undefined);
         conversation.view.status = 'failed';
         conversation.view.error = hideCodes(error.message, conversation.codes);
+        conversation.view.finishedAt = Date.now();
         reject(error);
       });
     });
     child.stdin?.on('error', () => undefined);
     child.stdin?.end(message);
   }
+}
+
+type TextItem = Extract<AgentItem, { text: string }>;
+type ToolItem = Extract<AgentItem, { kind: 'tool' }>;
+type ItemDraft = { kind: TextItem['kind']; text: string };
+
+/** What one direct turn has put in the thread view so far, by the agent's own names for the blocks and tool calls. */
+interface Turn {
+  blocks: Map<string, TextItem>;
+  tools: Map<string, ToolItem>;
+  /** True once the agent has written any reply text this turn. */
+  answered: boolean;
 }
 
 interface StartParams {

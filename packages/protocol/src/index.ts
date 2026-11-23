@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
 /** Shown when the extension and the background program speak different protocol versions. It is also a WebSocket close reason, so at most 123 bytes. */
 export const PROTOCOL_MISMATCH = 'T3-Tab extension and background program are different versions. Rebuild, run t3-tab install, reload.';
 export const DEFAULT_DAEMON_PORT = 8765;
@@ -37,6 +37,22 @@ export interface BrowserTabClosedMessage {
   type: 'browser.tabClosed';
   protocolVersion: typeof PROTOCOL_VERSION;
   tabId: number;
+}
+
+/** Sent when a permission prompt opens, so the daemon can show it in the thread of the session that asked. */
+export interface BrowserPromptOpenedMessage {
+  type: 'browser.promptOpened';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  /** The session the prompt belongs to; only that session's control connection is told. */
+  session: ToolSession;
+  prompt: PromptNotice;
+}
+
+/** Sent when a permission prompt is decided, times out or is cancelled, wherever it was answered. */
+export interface BrowserPromptClosedMessage {
+  type: 'browser.promptClosed';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  promptId: string;
 }
 
 export interface ToolSession {
@@ -191,6 +207,23 @@ export interface BrowserMethods {
     result: PageActionResult;
   };
   'page.eval': { params: { tab?: number; expression: string }; result: { value: unknown } };
+  /**
+   * Answers one waiting permission prompt on behalf of the session that owns it, from that session's own thread
+   * (an MCP elicitation). Only these two answers are possible this way: never a lasting site setting.
+   */
+  'prompt.decide': { params: { promptId: string; decision: ElicitedDecision }; result: { decided: true } };
+}
+
+/** What an agent's own thread may answer a permission prompt with. */
+export type ElicitedDecision = 'allow-once' | 'decline';
+
+/** A permission prompt as the daemon and the owning session's MCP server see it. */
+export interface PromptNotice {
+  id: string;
+  /** What the agent asked to do: the same four kinds the side panel's prompt names. */
+  tool: 'read' | 'act' | 'run_js' | 'open';
+  origin: string;
+  tab: { id: number; title: string };
 }
 
 export type BrowserMethod = keyof BrowserMethods;
@@ -234,6 +267,26 @@ export interface AgentMessage {
   text: string;
 }
 
+/** One entry of a conversation's thread view: a message, the agent's reasoning, or a tool call with its result. */
+export type AgentItem =
+  | {
+      id: string;
+      kind: 'user' | 'assistant' | 'reasoning' | 'error';
+      text: string;
+      /** True while the agent is still writing this text. */
+      streaming?: boolean;
+    }
+  | {
+      id: string;
+      kind: 'tool';
+      /** The tool's name without its server prefix, such as `read`, `act` or `status`. */
+      name: string;
+      /** What was asked, in one short line. */
+      summary?: string;
+      output?: string;
+      status: 'running' | 'done' | 'failed';
+    };
+
 /** One conversation the side panel started. The daemon holds it in memory. */
 export interface AgentConversation {
   id: string;
@@ -247,6 +300,15 @@ export interface AgentConversation {
   provider?: string;
   model?: string;
   messages: AgentMessage[];
+  /**
+   * The thread view of a direct run, in order. A T3 thread shows no items: its thread is in T3 Code, which the panel
+   * reads itself.
+   */
+  items: AgentItem[];
+  /** When the current (or last) direct turn started, in milliseconds since the epoch. */
+  startedAt?: number;
+  /** When the last direct turn ended; absent while one is running. */
+  finishedAt?: number;
   error?: string;
   updatedAt: number;
 }
@@ -258,6 +320,51 @@ export interface AgentsStatus {
   /** Paths of the agent CLIs a direct run would use, when found. */
   claude?: string;
   codex?: string;
+}
+
+export type SetupAgent = 'claude' | 'codex';
+
+/** What the panel's setup steps show: which agents are installed and wired to T3-Tab, and whether T3 Code is around. */
+export interface SetupStatus {
+  agents: Array<{
+    id: SetupAgent;
+    /** The agent's command was found on this computer. */
+    found: boolean;
+    /** The `t3-tab` MCP entry is in that agent's user config. */
+    registered: boolean;
+  }>;
+  t3: {
+    state: T3State;
+    /** T3 Code's address, such as `http://127.0.0.1:3773`, when it is running and the address is one T3-Tab can use. */
+    origin?: string;
+  };
+}
+
+/** A one-time pairing credential for T3 Code. It reaches only the panel, which uses it once and drops it. */
+export interface T3Pairing {
+  origin: string;
+  credential: string;
+  /** ISO time T3 ends the pairing credential. */
+  expiresAt: string;
+}
+
+/** The label T3-Tab's panel gives T3 for its pairing and for the session it opens, so a sign-out finds exactly those. */
+export const T3_PANEL_CLIENT_LABEL = 'T3-Tab panel';
+
+const CLAIM_NOTE_MARK = '\n\n[T3-Tab] ';
+
+/**
+ * The line added to a T3 thread's first message. A T3 thread's agent starts its MCP servers from its own
+ * config, so nothing but the message can tell its session which tabs the owner picked.
+ */
+export function claimNote(code: string): string {
+  return `${CLAIM_NOTE_MARK}The owner shared browser tabs with this thread. Before other browser tools, call the t3-tab \`tabs\` tool with {"claim": "${code}"}.`;
+}
+
+/** The message as the owner wrote it, without the claim note. */
+export function withoutClaimNote(text: string): string {
+  const index = text.indexOf(`${CLAIM_NOTE_MARK}The owner shared browser tabs`);
+  return index === -1 ? text : text.slice(0, index);
 }
 
 export interface AgentStartParams {
@@ -323,6 +430,18 @@ export interface DaemonMethods {
   /** Starts a sign-in and returns the T3 page the owner approves it on. */
   't3.signIn': { params: Record<string, never>; result: { url: string } };
   't3.signOut': { params: Record<string, never>; result: T3Access };
+  /** Which agents are installed and wired to T3-Tab, and whether T3 Code is running. */
+  'setup.status': { params: { refresh?: boolean }; result: SetupStatus };
+  /** Registers T3-Tab's MCP server in one agent's user config, as `t3-tab install --claude|--codex` does. */
+  'setup.addAgent': { params: { agent: SetupAgent }; result: SetupStatus };
+  /** Asks T3 Code for a five-minute pairing credential, for the panel's own connection to T3. */
+  't3.pair': { params: Record<string, never>; result: T3Pairing };
+  /** Ends every T3 session the panel opened (those labelled `T3_PANEL_CLIENT_LABEL`). */
+  't3.unpair': { params: Record<string, never>; result: { revoked: number } };
+  /** One conversation, with its thread view. */
+  'agents.get': { params: { id: string }; result: { conversation: AgentConversation } };
+  /** Stops a direct run's current turn; the conversation goes back to idle. */
+  'agents.stop': { params: { id: string }; result: { conversation: AgentConversation } };
 }
 
 export type DaemonMethod = keyof DaemonMethods;
@@ -348,6 +467,8 @@ export type BrowserMessage =
   | BrowserPongMessage
   | BrowserTabCountMessage
   | BrowserTabClosedMessage
+  | BrowserPromptOpenedMessage
+  | BrowserPromptClosedMessage
   | BrowserResponseMessage;
 
 export interface BrowserStatus {
@@ -374,6 +495,21 @@ export interface ControlStatusRequest {
   requestId: string;
   method: 'status';
 }
+
+/** Answers a permission prompt of this connection's own session from its thread. */
+export interface ControlPromptAnswerRequest {
+  type: 'control.request';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  requestId: string;
+  method: 'prompt.answer';
+  promptId: string;
+  decision: ElicitedDecision;
+}
+
+/** Told to a session's MCP server, unasked, about its own permission prompts. */
+export type ControlEvent =
+  | { type: 'control.event'; protocolVersion: typeof PROTOCOL_VERSION; event: 'prompt.opened'; prompt: PromptNotice }
+  | { type: 'control.event'; protocolVersion: typeof PROTOCOL_VERSION; event: 'prompt.closed'; promptId: string };
 
 export type ToolMethod = 'tabs' | 'read' | 'screenshot' | 'act' | 'run_js';
 
@@ -429,8 +565,21 @@ export interface ControlSessionRegisterResponse {
   };
 }
 
-export type ControlRequest = ControlSessionRegisterRequest | ControlStatusRequest | ControlToolRequest;
+export type ControlRequest =
+  | ControlSessionRegisterRequest
+  | ControlStatusRequest
+  | ControlToolRequest
+  | ControlPromptAnswerRequest;
+export interface ControlPromptAnswerResponse {
+  type: 'control.response';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  requestId: string;
+  ok: true;
+  result: { answered: true };
+}
+
 export type ControlResponse =
+  | ControlPromptAnswerResponse
   | ControlSessionRegisterResponse
   | ControlStatusResponse
   | ControlToolResponse
