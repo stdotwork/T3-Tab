@@ -15,7 +15,7 @@ interface ModeRead {
 interface ThreadCheck {
   /** The newest answered read said Full access, and it started less than the confirmed time before this. */
   confirmedUntil: number;
-  /** The read new requests join. A read older than the wait limit gives up the slot. */
+  /** The read new requests join, until it is as old as the wait limit. */
   running?: ModeRead;
   started: number;
   /** The newest read whose answer was applied, so an abandoned read that answers late cannot overwrite it. */
@@ -33,7 +33,8 @@ const TIMED_OUT = Symbol('timed out');
 export function t3FullAccess(
   threadsOf: (sessionId: string) => Promise<string[] | undefined>,
   askMode: (threadId: string) => Promise<string>,
-  now: () => number = Date.now,
+  // Monotonic: a wall-clock step back must not stretch a yes past its two seconds.
+  now: () => number = () => performance.now(),
 ): (sessionId: string) => Promise<boolean> {
   const checks = new Map<string, ThreadCheck>();
 
@@ -86,9 +87,8 @@ export function t3FullAccess(
       ]);
       clearTimeout(timer);
       if (answer !== TIMED_OUT) return answer;
-      // A read that never came back gives up the slot, so the next wait starts a fresh one.
-      if (check.running === read) delete check.running;
-      if (wakeAt >= deadline) return false;
+      if (wakeAt >= deadline || now() < wakeAt) return false;
+      // The read reached the limit without answering, so the next pass starts a fresh one.
     }
   };
 

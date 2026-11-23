@@ -153,6 +153,7 @@ describe('Full access, as T3 confirms it for each request', () => {
   beforeEach(() => {
     clock = 10_000_000;
     vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
     for (const key of Object.keys(threadModes)) delete threadModes[key];
     answerThreadModes();
   });

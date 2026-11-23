@@ -249,6 +249,26 @@ describe('Full access, as T3 confirms it', () => {
       await expect(after).resolves.toBe(false);
     });
 
+    it('keeps a newer yes when an abandoned read answers late', async () => {
+      const { check, pendingFor, asked } = scripted(['a']);
+      const stuck = check('s');
+      await tick(0);
+      const stuckAsk = pendingFor('a');
+      await tick(FULL_ACCESS_WAIT_MS);
+      await expect(stuck).resolves.toBe(false);
+
+      const fresh = check('s');
+      await tick(0);
+      pendingFor('a')?.answer('full-access');
+      await expect(fresh).resolves.toBe(true);
+
+      // The old read says no. The newer yes still stands, so the next request needs no new read.
+      stuckAsk?.answer('approval-required');
+      await tick(0);
+      await expect(check('s')).resolves.toBe(true);
+      expect(asked('a')).toBe(2);
+    });
+
     it('moves a request that joined a stuck read onto a fresh one when that read hits the limit', async () => {
       const { check, pendingFor, asked } = scripted(['a']);
       const first = check('s');
@@ -275,6 +295,27 @@ describe('Full access, as T3 confirms it', () => {
       pendingFor('a')?.answer('approval-required');
       await expect(request).resolves.toBe(false);
     });
+  });
+
+  it('is not stretched by a wall-clock step back', async () => {
+    let monotonic = 5_000;
+    const monotonicNow = vi.spyOn(performance, 'now').mockImplementation(() => monotonic);
+    const wallClock = vi.spyOn(Date, 'now').mockReturnValue(9_000_000);
+    let asks = 0;
+    const check = t3FullAccess(
+      async () => ['t1'],
+      async () => {
+        asks += 1;
+        return 'full-access';
+      },
+    );
+    await expect(check('s')).resolves.toBe(true);
+    wallClock.mockReturnValue(1_000);
+    monotonic += FULL_ACCESS_CONFIRMED_MS;
+    await expect(check('s')).resolves.toBe(true);
+    expect(asks).toBe(2);
+    monotonicNow.mockRestore();
+    wallClock.mockRestore();
   });
 
   it('needs every thread of the session to be full access', async () => {
