@@ -9,6 +9,25 @@ describe('find', () => {
     expect((await findLines(lines, 'row 10')).text).toBe('row 9\nrow 10\nrow 11');
   });
 
+  it('prints a long line around its match and marks both cuts', async () => {
+    const long = `  "${'a'.repeat(900)} needle ${'b'.repeat(900)}"`;
+    for (const options of [{}, { regex: true }]) {
+      const { text } = await findLines([long], 'needle', options);
+      expect(text).toContain(' needle ');
+      expect(text.startsWith('  …')).toBe(true);
+      expect(text.endsWith('…')).toBe(true);
+      expect(text.length).toBeLessThan(260);
+    }
+  });
+
+  it('keeps the start of a long context line, marked', async () => {
+    const { text } = await findLines([`e1 link "${'c'.repeat(900)}"`, 'needle'], 'needle');
+    const [context] = text.split('\n');
+    expect(context?.startsWith('e1 link "ccc')).toBe(true);
+    expect(context?.endsWith('…')).toBe(true);
+    expect(context?.length).toBeLessThanOrEqual(321);
+  });
+
   it('matches literal text by default, including regex punctuation', async () => {
     expect((await findLines(lines, 'row (3|5)$')).text).toBe('No matches for "row (3|5)$".');
     expect((await findLines(['link "About"', 'link "Contact"'], 'link "(about|home)"')).matches).toBe(0);

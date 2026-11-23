@@ -1,3 +1,4 @@
+import type { AxNode } from '@t3-tab/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { RefGoneError, renderTree } from '../src/reader/format.js';
@@ -106,6 +107,30 @@ describe('tree to text', () => {
     const lines = renderTree(signInPage(), new RefTable(), { all: false, depth: 0 });
     expect(lines).toEqual(['# Sign in', 'e1 form "Login" …']);
     expect(renderTree(signInPage(), new RefTable(), { all: false, depth: 1 })).not.toContainEqual(expect.stringContaining('…'));
+  });
+
+  it('shows a link address only where the name does not tell links apart', () => {
+    const link = (id: string, name: string, url: string, backendId: number): AxNode => ({ id, role: 'link', name, children: [], backendId, props: { url } });
+    const nodes: AxNode[] = [
+      { id: 'r', role: 'RootWebArea', name: '', children: ['1', '2', '3', '4', '5', '6'] },
+      link('1', 'Edit', 'https://a.test/items/1?x=1', 11),
+      link('2', 'Edit', 'https://a.test/items/2', 12),
+      link('3', 'About', 'https://a.test/about', 13),
+      link('4', '', 'https://user:pw@b.test/pic', 14),
+      link('5', 'Run', 'javascript:alert(1)', 15),
+      link('6', 'Run', 'https://a.test/run', 16),
+    ];
+    const options = { all: false, linkAddresses: 'ambiguous', pageUrl: 'https://a.test/list' } as const;
+    expect(renderTree(nodes, new RefTable(), options)).toEqual([
+      'e1 link "Edit" → /items/1?x=1',
+      'e2 link "Edit" → /items/2',
+      'e3 link "About"',
+      'e4 link → https://b.test/pic',
+      'e5 link "Run"',
+      'e6 link "Run" → /run',
+    ]);
+    expect(renderTree(nodes, new RefTable(), { ...options, target: 13 })).toEqual(['e1 link "About" → /about']);
+    expect(renderTree(nodes, new RefTable(), { all: false })).not.toContainEqual(expect.stringContaining('→'));
   });
 
   it('renders only the subtree of a target element, and reports one that is gone', () => {

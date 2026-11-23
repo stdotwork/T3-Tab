@@ -223,10 +223,10 @@ function addressRule(nodes: AxNode[], options: RenderOptions): (node: AxNode) =>
   if (options.linkAddresses === 'all') return address;
   const byName = new Map<string, Set<string>>();
   for (const node of nodes) {
-    const shown = node.ignored === true ? undefined : address(node);
-    if (shown === undefined) continue;
+    // By the raw address: a link whose address is not printed still makes its name ambiguous.
+    if (node.ignored === true || node.role.toLowerCase() !== 'link' || typeof node.props?.url !== 'string') continue;
     const name = normalize(node.name);
-    byName.set(name, (byName.get(name) ?? new Set()).add(shown));
+    byName.set(name, (byName.get(name) ?? new Set()).add(node.props.url));
   }
   return (node) => {
     const name = normalize(node.name);

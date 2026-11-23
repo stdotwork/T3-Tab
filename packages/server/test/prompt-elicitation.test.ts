@@ -158,6 +158,9 @@ describe('what the thread is asked', () => {
     expect(elicitationMessage(prompt('x', { tool: 'act' }))).toBe('Allow T3-Tab to act on https://example.com in tab "Example"? Allow covers this one request only.');
     expect(elicitationMessage(prompt('x', { tool: 'run_js' }))).toContain('run JavaScript on https://example.com');
     expect(elicitationMessage(prompt('x', { tool: 'open' }))).toContain('open https://example.com');
+    // A page being opened has no tab yet: the question names the address.
+    const { tab: _none, ...noTab } = prompt('x', { tool: 'open' });
+    expect(elicitationMessage({ ...noTab, url: 'https://example.com/a?b=1' })).toBe('Allow T3-Tab to open https://example.com/a?b=1? Allow covers this one request only.');
   });
 
   it('shows a page\'s own title as one short plain line', () => {
