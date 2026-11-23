@@ -10,7 +10,7 @@ import { PromptCards } from './PromptCards';
 import { Settings, type SettingsTab } from './Settings';
 import { Setup } from './Setup';
 import { errorText, panel } from './lib/api';
-import { directProviders, resolveChoice, selectionFor, t3Providers, type Choice, type PickerProvider } from './lib/catalog';
+import { choiceLabel, directProviders, resolveChoice, selectionFor, t3Providers, type Choice, type PickerProvider } from './lib/catalog';
 import { headlessRender, refreshConversations, startPolling, useLive, useStored, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
 import { syncT3Theme } from './lib/theme';
@@ -151,7 +151,7 @@ function FolderPicker({ value, onChange }: { value: string; onChange: (folder: s
   );
 }
 
-function TopBar({ title, onThreads, onNew, onSettings }: { title: ReactNode; onThreads: () => void; onNew: () => void; onSettings: () => void }): ReactNode {
+function TopBar({ title, onThreads, onNew, onSettings }: { title: ReactNode; onThreads: () => void; onNew?: () => void; onSettings: () => void }): ReactNode {
   return (
     <header className="topbar" data-chat-header>
       <IconButton label="Threads" id="btn-threads" onClick={onThreads}>
@@ -159,7 +159,7 @@ function TopBar({ title, onThreads, onNew, onSettings }: { title: ReactNode; onT
       </IconButton>
       <span className="crumbs">{title}</span>
       <span className="topbar-spacer" />
-      <IconButton label="New thread" id="btn-new" onClick={onNew}>
+      <IconButton label="New thread" id="btn-new" disabled={onNew === undefined} onClick={onNew}>
         <SquarePen size={16} />
       </IconButton>
       <IconButton label="Settings" id="btn-settings" onClick={onSettings}>
@@ -260,7 +260,7 @@ function Home({ live, state, onOpen, onNav }: { live: LiveState; state: T3State;
 
   return (
     <div className="screen">
-      <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onNew={() => undefined} onSettings={() => onNav({ name: 'settings', tab: 'appearance' })} />
+      <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'appearance' })} />
       <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'connections' })} />
       <main className="home">
         <div className="hero">
@@ -388,7 +388,7 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
     });
   };
   const provider = catalog.providers.find((entry) => entry.id === view?.provider);
-  const model = provider?.models.find((entry) => entry.slug === view?.model);
+  const modelLabel = view === undefined ? undefined : choiceLabel(catalog.providers, { provider: view.provider ?? '', model: view.model ?? '', options: view.modelOptions ?? {} });
   const directDriver = view?.provider === 'claude' ? 'claudeAgent' : view?.provider === 'codex' ? 'codex' : provider?.driver;
   // A browser request shows once here: the sidebar's own card carries the choices, and answering it closes T3's.
   const showApproval = view?.approval !== undefined && !(view.approval.kind === 'mcp-elicitation' && live.prompts.length > 0);
@@ -466,7 +466,8 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
           picker={
             <span className="model-chip static">
               <ProviderIcon driver={directDriver} size={15} />
-              <span className="model-chip-name">{model?.shortName ?? model?.name ?? (view?.model || (screen.source === 'direct' ? 'Default' : ''))}</span>
+              <span className="model-chip-name">{modelLabel?.name ?? ''}</span>
+              {modelLabel?.effort === undefined ? null : <span className="model-chip-effort">{modelLabel.effort}</span>}
             </span>
           }
         />

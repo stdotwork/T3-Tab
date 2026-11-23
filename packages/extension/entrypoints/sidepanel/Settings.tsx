@@ -329,7 +329,7 @@ function Connections({ live, state }: { live: LiveState; state: T3State }): Reac
       <div className="setup-row">
         <span className="setup-text">
           <strong>T3-Tab helper</strong>
-          <small>{live.helper.connected ? 'Running' : 'Not connected. Run this once:'}</small>
+          <small>{live.helper.connected ? 'Running' : 'Not connected. Run this once in the T3-Tab folder:'}</small>
         </span>
         {live.helper.connected ? (
           <span className="state-ready">

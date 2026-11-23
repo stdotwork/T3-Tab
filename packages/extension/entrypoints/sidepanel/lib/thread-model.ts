@@ -67,6 +67,7 @@ export interface ThreadView {
   runtimeMode?: string;
   provider?: string;
   model?: string;
+  modelOptions?: Record<string, string | boolean>;
   projectId?: string;
 }
 
@@ -82,7 +83,7 @@ const BROWSER_TOOLS: Record<string, string> = {
 /** `mcp__t3-tab__read` and `t3-tab.read` both name T3-Tab's own browser tools. */
 export function browserToolLabel(name: string): string | undefined {
   const match = /^(?:mcp__t3-tab__|t3-tab[.:/])([a-z_]+)$/.exec(name);
-  return match?.[1] === undefined ? undefined : BROWSER_TOOLS[match[1]];
+  return match?.[1] === undefined || !Object.hasOwn(BROWSER_TOOLS, match[1]) ? undefined : BROWSER_TOOLS[match[1]];
 }
 
 const oneLine = (text: string, max = 140): string => {
@@ -176,7 +177,7 @@ interface T3Item {
 }
 
 export interface T3Projection {
-  thread: { id: string; title: string; runtimeMode?: string; projectId?: string; providerInstanceId?: string; modelSelection?: { instanceId?: string; model?: string } };
+  thread: { id: string; title: string; runtimeMode?: string; projectId?: string; providerInstanceId?: string; modelSelection?: { instanceId?: string; model?: string; options?: Array<{ id: string; value: string | boolean }> } };
   runs: Array<{ id: string; status: string; ordinal?: number; startedAt?: string | null; workStartedAt?: string; requestedAt?: string; completedAt?: string | null }>;
   runtimeRequests: Array<{ id: string; status: string; kind: string }>;
   visibleTurnItems: Array<{ item: T3Item }>;
@@ -336,12 +337,14 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
   const provider = modelSelection?.instanceId ?? providerInstanceId;
   if (provider !== undefined) view.provider = provider;
   if (modelSelection?.model !== undefined) view.model = modelSelection.model;
+  if (modelSelection?.options !== undefined) view.modelOptions = Object.fromEntries(modelSelection.options.map((option) => [option.id, option.value]));
   const sources = projection.visibleTurnItems.flatMap(({ item }) => [item.text, item.prompt, typeof item.input === 'string' ? item.input : undefined].filter((text) => text !== undefined));
   return withoutCodes(view, claimCodesIn(sources));
 }
 
 function directEntry(item: Extract<AgentItem, { kind: 'tool' }>): WorkEntry {
-  const browser = browserToolLabel(item.name);
+  // A direct run has T3-Tab's tools and no others, and its parser leaves the bare name.
+  const browser = browserToolLabel(item.name) ?? (Object.hasOwn(BROWSER_TOOLS, item.name) ? BROWSER_TOOLS[item.name] : undefined);
   return {
     id: item.id,
     icon: browser === undefined ? 'tool' : 'browser',

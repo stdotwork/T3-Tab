@@ -82,7 +82,8 @@ function shooter(page, prefix) {
   return async (name) => {
     for (const scheme of ['light', 'dark']) {
       await page.emulateMedia({ colorScheme: scheme });
-      await sleep(120);
+      // Long enough for colour transitions to finish.
+      await sleep(320);
       await page.screenshot({ path: join(shotsDir, `${prefix}-${name}-${scheme}.png`) });
     }
     await page.emulateMedia({ colorScheme: 'light' });
@@ -317,6 +318,9 @@ async function runT3Flow() {
     await shot('14-settings-appearance');
     await panelPage.getByRole('button', { name: 'Create theme' }).click();
     await shot('15-theme-create');
+    await panelPage.locator('.sheet').getByRole('radio', { name: 'Dark' }).click();
+    await sleep(320);
+    await panelPage.screenshot({ path: join(shotsDir, 't3-15-theme-create-dark.png') });
     await panelPage.getByRole('button', { name: 'Close', exact: true }).click();
     await panelPage.getByRole('button', { name: 'Add theme' }).click();
     const themeFile = JSON.stringify({ version: 1, name: 'Flow Import', appearance: 'dark', colors: { canvas: '#101820', text: '#f2f7fa', accent: '#ff7a59', messageAction: '#ff7a59', messageActionForeground: '#101820' } });

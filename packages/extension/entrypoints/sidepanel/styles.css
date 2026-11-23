@@ -47,7 +47,8 @@ ul { list-style: none; margin: 0; padding: 0; }
 .topbar { display: flex; align-items: center; gap: 4px; height: 48px; flex: none; padding: 0 8px; }
 .topbar-spacer { flex: 1; }
 .icon-btn { display: inline-grid; place-items: center; width: 30px; height: 30px; flex: none; border-radius: var(--radius); color: var(--icon); transition: background 0.12s, color 0.12s; }
-.icon-btn:hover { background: var(--hover); color: var(--fg); }
+.icon-btn:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+.icon-btn:disabled { opacity: 0.35; }
 .crumbs { display: flex; align-items: center; gap: 6px; min-width: 0; padding-left: 4px; font-size: 14.5px; white-space: nowrap; }
 .crumbs strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
 .crumb-muted, .crumbs > span:first-child:not(.sep) { color: var(--muted-fg); flex: none; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }

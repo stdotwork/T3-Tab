@@ -121,6 +121,13 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 
 ## Side-panel sessions
 
+- **The panel is a small T3 client.** With T3 Code present, the panel holds its own client session and T3 starts and
+  runs its threads; without T3, the picked provider runs directly and feeds the same thread view. This replaces the
+  read-only sign-in as the panel's route to T3 and the `t3 thread` polling below, which stay in the daemon unused by
+  the panel. The panel does not load T3's web app: it is its own small client that reuses T3's theme code.
+- **T3's Full access counts as yes for browser requests.** A Full access thread can already run any command as the
+  owner, so asking again adds nothing. Other requests show in both the side panel and the agent's thread, and the
+  first answer counts.
 - **Daemon-mediated state.** The side panel talks only to the extension service worker, which relays
   requests to the daemon over the existing link; the panel never talks to T3 Code directly.
   Conversations live in daemon memory and end when the daemon stops.
@@ -195,12 +202,10 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 
 - Remote machines, and listeners on anything but loopback.
 - Firefox support.
-- T3-Tab plugins, themes, or adopting T3 Code's plugin system.
+- T3-Tab plugins, or adopting T3 Code's plugin system.
 - Direct runners beyond Claude Code and Codex (such as pi).
 - Loading T3 Code's web UI inside the side panel.
-- Streaming or incremental `/mcp` thread reads (v1 polls `t3 thread show`).
 - Persisting side-panel conversation history across daemon restarts.
-- A Stop control for side-panel runs (the daemon has no stop request yet).
 - Per-model tool profiles or on-demand tool packs.
 - Cross-product token benchmarks against Claude in Chrome or the Codex Chrome plugin (v1 benchmarks
   T3-Tab against its own budget).

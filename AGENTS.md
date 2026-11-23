@@ -63,6 +63,10 @@ the conversation and in the agent's first tool reply. It renders the panel from 
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
 variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless.
 
+`e2e/panel-flow.mjs` (not part of `pnpm e2e`, because it needs a real agent login) walks the panel from first open to
+finished threads against a real throwaway T3 and again with T3 absent, and saves each screen at 400 px in light and
+dark to the folder named by `T3_TAB_FLOW_SHOTS`.
+
 `pnpm bench` (after `pnpm build`) measures what an agent is sent, in characters and estimated tokens: the
 `tools/list` payload (total and per tool) and each tool reply on four fixed tasks over three local pages
 (`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link, and search a longer page
@@ -185,17 +189,36 @@ steps is refused until its new origin is approved. Site setting writes are seria
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
 `view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel lives in
-`packages/extension/entrypoints/sidepanel` (inbox layout: Home with waiting prompts in "Needs you",
-conversations, current tab and connected sessions, plus pushed Conversation, New conversation and
-Settings views styled through `tokens.css`); its sharing and prompt calls live in
+`packages/extension/entrypoints/sidepanel` (React: first-run setup, a new-thread home, the thread view, and the
+thread list and settings behind icons, coloured only from T3's theme roles); its sharing and prompt calls live in
 `packages/extension/src/panel.ts`, and the policy is in `permissions.ts`, `sessions.ts` and `tabs.ts`.
+
+A permission prompt shows as a card in the side panel and, when the agent's client supports MCP form elicitation,
+in the thread the agent runs in. The first answer counts and closes the other. An accepted question allows that one
+request; site-wide grants are made only in the side panel. `claude -p` and `codex exec` cancel these questions, so a
+direct run asks in the side panel only. A session that claimed tabs for a T3 thread in Full access has its prompts
+answered yes without a card, which writes no site setting and is listed in `autoAllowed`; every other check still runs.
 
 ## Side panel sessions
 
-The side panel starts and continues agents with the owner's tabs; T3-Tab never runs a model. The panel asks
-the extension's service worker, which passes the request over its link to the daemon
-(`browser.daemonRequest`, answered with `daemon.reply`); the panel never talks to T3 itself. The daemon keeps
-the conversations in memory (`packages/server/src/agents/`), so they end when it stops.
+The side panel starts and continues agents with the owner's tabs; T3-Tab never runs a model. When T3 Code is
+connected the panel is a T3 client and T3 starts and runs every thread. When it is not, the picked provider runs
+directly through the daemon and feeds the same thread view.
+
+- **The panel's T3 session.** The Connect button asks the daemon for `t3.pair`, which mints a five-minute pairing
+  credential with `t3 auth pairing create` after checking the recorded T3 process owns the listener. The panel
+  exchanges it at T3's `/oauth/token` for a DPoP-bound session with T3's default client scopes, the same access T3's
+  own apps get. The signing key is non-extractable and stays in the extension's IndexedDB; the token is in
+  `chrome.storage.local`, renewed by T3 for up to 30 days. The panel then holds one WebSocket to T3's `/ws`
+  (`entrypoints/sidepanel/lib/t3-rpc.ts`, `t3-client.ts`). Disconnect drops the session and revokes it through
+  `t3.unpair`. The read-only sign-in and the `t3 thread` polling below remain in the daemon, but the panel no longer
+  uses them.
+- **Themes.** The panel follows T3's active theme by default. T3 theme files can be imported, and any theme can be
+  edited; custom CSS goes through T3's own filter, which removes rules that load remote files.
+
+For direct runs and the older routes, the panel asks the extension's service worker, which passes the request over
+its link to the daemon (`browser.daemonRequest`, answered with `daemon.reply`). The daemon keeps those conversations
+in memory (`packages/server/src/agents/`), so they end when it stops.
 
 - **T3 Code threads.** The daemon runs `t3 thread start --json [--provider <instance> --model <slug>]
   <project> -`, `t3 thread send --json <thread> -` and `t3 thread show --json --messages 20 <thread>`, with

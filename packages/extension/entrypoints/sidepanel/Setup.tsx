@@ -138,7 +138,7 @@ export function Setup({ live, state, onDone }: { live: LiveState; state: T3State
           </span>
           <span className="setup-text">
             <strong>T3-Tab helper</strong>
-            <small>{helperReady ? 'Running' : live.helper.protocolMismatch === true ? 'Out of date. Run this again, then reload the extension.' : 'Connects this browser to your agents. Run this once:'}</small>
+            <small>{helperReady ? 'Running' : live.helper.protocolMismatch === true ? 'Out of date. Run this again, then reload the extension.' : 'Connects this browser to your agents. Run this once in the T3-Tab folder:'}</small>
           </span>
           {helperReady ? <Ready /> : <Spinner />}
         </div>
