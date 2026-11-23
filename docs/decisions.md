@@ -144,7 +144,7 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **Threat boundary.** T3-Tab protects the browser from websites, other local OS users and remote
   machines. It does **not** protect the browser from programs running as the same OS user (including
   coding agents), which can already read the user's home folder, browser profile, T3 data and `0600`
-  state files (`daemon.json`, `extension.json`, `t3-credential.json`) or run `t3-tab native-host`.
+  state files (`daemon.json`, `extension.json`) or run `t3-tab native-host`.
 - **`scripting` and `<all_urls>` to survive other extensions' frames.** Chromium detaches
   `chrome.debugger` from a tab as soon as a frame of another extension starts loading in it, and no
   DevTools setting stops that, so a password manager's autofill menu made login pages unusable.
@@ -195,7 +195,7 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 
 - **The panel is a small T3 client.** With T3 Code present, the panel holds its own client session and T3 starts and
   runs its threads; without T3, the picked provider runs directly and feeds the same thread view. This replaces the
-  read-only sign-in as the panel's route to T3 and the `t3 thread` polling below, which stay in the daemon unused by
+  older read-only sign-in, which is removed, and the `t3 thread` polling below, which stays in the daemon unused by
   the panel. The panel does not load T3's web app: it is its own small client that reuses T3's theme code.
 - **T3's Full access counts as yes for browser requests, while T3 confirms it.** A Full access thread can already run
   any command as the owner, so asking again adds nothing. The extension asks T3 for the thread's mode with
@@ -253,21 +253,14 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
     matching sessions by environment variables because T3 starts MCP servers from its own config
     with no cross-provider env-var hook. The code works once and expires after 10 minutes, so the
     copy left in T3's transcript cannot share tabs again.
-- **Optional read-only OAuth sign-in to T3 `/mcp` (older route, no longer shown in the panel).** Because the `t3` CLI has no command to list
-  projects, providers or models, the panel uses typed text fields unless the user signs in once to
-  the local T3 server's `/mcp` endpoint via OAuth 2.0 authorization code with Proof Key for Code
-  Exchange (`PKCE`, `S256`) and dynamic client registration. T3-Tab stores the token in
-  `t3-credential.json` (mode `0600`) only when T3 grants exact `orchestration:read` scope,
-  discarding broader grants, and uses it only for `t3_project_list` and `orchestrator_capabilities`.
-  On Linux, every request verifies via `/proc` that the recorded T3 pid owns the accepted loopback
-  socket and started before `startedAt`; platforms without `/proc` send nothing and keep typed
-  fields. T3 issues no refresh tokens (a sign-in lasts 30 days) and provides no client self-revoke
-  endpoint, so Sign out deletes the local file and instructs the user to revoke T3-Tab in T3's
-  Settings → Sharing & access.
+- **The read-only OAuth sign-in to T3 `/mcp` is removed.** It existed to list projects and models before the panel had
+  its own T3 session, and it was about a tenth of the helper's bundle. The daemon deletes the token an older version
+  left. T3 provides no client self-revoke, so that grant stays in T3's Settings → Sharing & access until it expires,
+  at most 30 days after it was made.
 
 - **Inbox layout for the panel.** The panel's home lists waiting permission prompts first, across
   every session, then conversations with their status, the current tab and connected sessions.
-  A conversation, the new-conversation form and settings (T3 sign-in and site permissions) open as
+  A conversation, the new-conversation form and settings (site permissions) open as
   their own views. Prompts can come from any MCP session, not only from panel conversations, so a
   layout built around one open conversation (as in Claude in Chrome) would show them in the wrong
   place, and a tabbed layout would hide them; both were tried in a prototype and rejected.
@@ -282,9 +275,9 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **One end-to-end seam backed by unit tests.** `pnpm e2e` launches headless Playwright Chromium
   with the built extension, real native host, real daemon and real MCP clients against a local test
   site, an install of the packed helper into a temporary home from a folder outside the repository (into a
-  browser that is already running, with no reload), plus fake `t3`, `claude` and `codex` CLIs and a fake T3 OAuth/`/mcp` server for side-panel
+  browser that is already running, with no reload), plus fake `t3`, `claude` and `codex` CLIs for side-panel
   sessions. Unit tests (`pnpm test`, Vitest) cover page reading, diffs, refs, permissions, agent
-  config installation, Codex provider parsing and T3 sign-in checks underneath.
+  config installation, Codex provider parsing and T3 connection checks underneath.
 - **Temporary HOME for config and agent tests.** Every test that touches `~/.claude`, `~/.codex`,
   T3 settings or launched agents uses a temporary `HOME` and XDG directories, never live user
   configuration.

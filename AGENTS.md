@@ -65,11 +65,7 @@ edits, `--print`, a second install, uninstall and, when both agent CLIs are avai
 `mcp list` output. The `daemon.json` token sent with the extension's `Origin` is refused. It then checks side-panel sessions (`e2e/panel-sessions.mjs`) with fake `t3`, `claude`
 and `codex` commands (`e2e/fakes/`) first on the daemon's PATH, which record their arguments and drive the
 real `t3-tab mcp` server: a T3 thread started with project, provider and model claims the owner's tab and
-reads it, is continued with `t3 thread send` and polled with `t3 thread show`; the sign-in to a fake T3
-environment (`e2e/fakes/t3-server.mjs`, T3's OAuth and `/mcp` answers, recorded in the temporary T3 home's
-`server-runtime.json`) refuses a forged answer and a full-access grant, keeps a read-only one in a 0600 file,
-lists T3's projects and models through the panel's request API, starts a thread with listed values and signs out, and no file,
-panel reply, command argument or environment but the credential file holds a token; a made-up claim code and a
+reads it, is continued with `t3 thread send` and polled with `t3 thread show`; a made-up claim code and a
 used one are refused; T3 stopped and T3 missing are reported; direct Claude Code and Codex runs start with
 their isolating flags, read the tab, and are resumed with the session id they printed and a new claim code;
 Full access is confirmed with a fake T3 per request with no live panel, and an unbound claim, a lowered mode or a stopped T3 prompts; a tab the owner unshares during a direct turn is not shared with the next turn, and neither is one removed
@@ -388,8 +384,8 @@ directly through the daemon and feeds the same thread view.
 - **The WebSocket is not checked.** The browser opens the panel's one socket to T3's `/ws`
   (`entrypoints/sidepanel/lib/t3-rpc.ts`, `t3-client.ts`), so no process check covers it. A process that took T3's port
   between the ticket request and the socket could receive that ticket and its one-use proof, and whatever the panel sends
-  on the socket. Disconnect drops the session and revokes it through `t3.unpair`. The read-only sign-in and the `t3 thread`
-  polling below remain in the daemon, but the panel no longer uses them.
+  on the socket. Disconnect drops the session and revokes it through `t3.unpair`. The `t3 thread` polling below remains in
+  the daemon, but the panel no longer uses it.
 - **Themes.** The panel follows T3's active theme by default. T3 theme files can be imported, and any theme can be
   edited; custom CSS goes through T3's own filter, which removes rules that load remote files.
 
@@ -407,40 +403,20 @@ in memory (`packages/server/src/agents/`), so they end when it stops.
   though the thread may still be running in T3. Each `t3 thread` command signs in to T3
   for a moment, so the panel checks T3's state at most once a minute unless the owner reopens the panel. The project is
   a T3 project id or a folder inside one; provider and model are optional (both or neither). The `t3` CLI has
-  no command that lists projects, providers or models; the panel picks them from lists once T3-Tab is signed
-  in to T3 (below), and otherwise takes them as text. Choosing "Type…" in a list brings the text fields back.
-- **Signing in to T3 for the lists (older route, no longer shown in the panel).** The `panel.t3SignIn` request signs the daemon in to the
-  local T3 environment's `/mcp` endpoint the way T3's outside agents do (`packages/server/src/agents/t3-access.ts`):
-  OAuth metadata, dynamic client registration as "T3-Tab", and the authorization code flow with PKCE (S256).
-  The address comes from `<T3 home>/userdata/server-runtime.json` (only `origin`, `pid` and `startedAt`; its server
-  must be alive, and the address a loopback `http` one). The extension opens T3's approval page in a normal tab; the owner
-  approves there and picks the access level. When T3 asks for a sign-in code there, the owner creates one in T3 Code under
-  Settings → Sharing & access, and the panel says so while the sign-in waits. T3 sends the answer to a one-use listener on `127.0.0.1` that
-  checks `state` and `iss` (T3's metadata must promise `iss`, and an answer without it is refused) and closes after
-  one answer. T3-Tab keeps the sign-in only when T3 granted exactly
-  `orchestration:read` (T3's "Read only"); anything broader is not stored, and the panel asks the owner to
-  revoke it in T3 and sign in again. The token is stored only in `t3-credential.json` in T3-Tab's state folder
-  (next to `daemon.json`, written as a new 0600 file and renamed into place), sent only to that environment's
-  `/mcp` with redirects refused, and used only for `t3_project_list` and `orchestrator_capabilities`
-  (`t3-catalog.ts`). T3-Tab never hands it to the extension, the panel, logs, error messages, agents, or a
-  command's arguments or environment. Like every file in the owner's home, the 0600 file is still readable by any
-  program running as the owner, coding agents included; the sign-in is read-only and ends after 30 days.
-  A sign-out cancels a sign-in at any stage, and writing the file and signing out run one at a time, so a sign-out
-  during a sign-in leaves no credential. Every request to T3 opens its own connection and is sent on it only after
-  `/proc/net/tcp{,6}` and `/proc/<pid>/fd` show that the recorded pid accepted that connection and that the process
-  did not start after T3's `startedAt` (`t3-connection.ts`). That comparison has no tolerance: the start time read
-  from `/proc` is rounded down by at most 1.01 s, so a process started less than that after the record can still
-  pass, and a forward wall-clock step after T3 started can refuse T3 until it restarts. A backward wall-clock step
-  makes processes look as if they started earlier, so a process that reused T3's recorded pid could pass the
-  start-time check; it still has to hold the accepted connection, and programs running as the owner are outside
-  T3-Tab's trust model anyway. Where there is no `/proc` (any platform but Linux),
-  T3-Tab sends nothing, so the sign-in and the lists are unavailable and the project and model are typed instead.
-  T3 issues no refresh tokens and offers a client no way to revoke itself: a
-  sign-in lasts 30 days, a refused token is deleted, and "Sign out" deletes the file and any temporary copy a crash left (the
-  daemon also removes those when it starts) and tells the owner to
-  revoke T3-Tab in T3's Settings → Sharing & access to end it there at once. The lists are fetched on sign-in,
-  when the panel opens, and on "Reload lists"; after a failure, at most once a minute. Threads still start and
-  continue through `t3 thread`.
+  no command that lists projects, providers or models, so on this route they are given as text.
+- **Every request to T3 is checked.** The address comes from `<T3 home>/userdata/server-runtime.json` (only `origin`,
+  `pid` and `startedAt`; its server must be alive, and the address a loopback `http` one). Every request opens its own
+  connection and is sent on it only after `/proc/net/tcp{,6}` and `/proc/<pid>/fd` show that the recorded pid accepted
+  that connection and that the process did not start after T3's `startedAt` (`t3-connection.ts`). That comparison has no
+  tolerance: the start time read from `/proc` is rounded down by at most 1.01 s, so a process started less than that
+  after the record can still pass, and a forward wall-clock step after T3 started can refuse T3 until it restarts. A
+  backward wall-clock step makes processes look as if they started earlier, so a process that reused T3's recorded pid
+  could pass the start-time check; it still has to hold the accepted connection, and programs running as the owner are
+  outside T3-Tab's trust model anyway. Where there is no `/proc` (any platform but Linux), T3-Tab sends nothing.
+- **The older T3 sign-in is gone.** T3-Tab used to sign in to T3's `/mcp` for its project and model lists and keep a
+  read-only token in `t3-credential.json`. When the daemon starts it deletes that file and any temporary copy of it
+  (`agents/stale-t3-credential.ts`). T3 offers a client no way to revoke itself, so such a grant stays listed in T3's
+  Settings → Sharing & access until it expires, at most 30 days after it was made.
 - **Finding `t3`.** `T3_TAB_T3` when set (and then only it), else `t3` on PATH or in the usual install
   folders, else the launchers listed in `<T3 home>/runtime/launchers`, else `<T3 home>/runtime/bin/t3`, else
   the desktop app's launcher `<T3 home>/bin/t3`, else the newest fully installed
