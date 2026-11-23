@@ -2,6 +2,7 @@
 // a temporary HOME, headless Chromium with the built extension, and MCP clients that speak to the real
 // daemon over stdio. Nothing here touches the machine's own agent configuration or browser profile.
 import { execFile, spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -39,6 +40,29 @@ export async function createHome() {
   };
 }
 
+let shortTemp;
+/**
+ * A short folder for a browser's own temporary files. Chromium puts a socket there (`<TMPDIR>/org.chromium.Chromium.XXXXXX/SingletonSocket`)
+ * and a Unix socket path is limited to about 100 characters, so a long TMPDIR of the caller (a CI workspace, a sandbox) made
+ * every browser abort with "Socket path too long". The caller's TMPDIR stays as it is for everything else. One folder per
+ * run, removed when the process exits.
+ */
+function browserTemp() {
+  shortTemp ??= mkdtemp('/tmp/t3e-').then(
+    (folder) => {
+      process.once('exit', () => rmSync(folder, { recursive: true, force: true }));
+      return folder;
+    },
+    () => tmpdir(),
+  );
+  return shortTemp;
+}
+
+/** The environment of a browser the harness starts: the run's own, with the short temporary folder. */
+async function browserEnv(home) {
+  return { ...home.childEnv, TMPDIR: await browserTemp() };
+}
+
 /** Fails early when the extension has not been built. */
 export async function requireBuild(home) {
   await stat(join(home.extensionDir, 'manifest.json'));
@@ -59,7 +83,7 @@ export async function launchBrowser(home) {
     headless: true,
     // No viewport emulation: the window is wider than 1280, so a screenshot has to be scaled down.
     viewport: null,
-    env: home.childEnv,
+    env: await browserEnv(home),
     args: [
       '--window-size=1600,1000',
       // Without this, the "started debugging this browser" bar comes and goes as the extension attaches, and the
@@ -93,7 +117,7 @@ export async function launchUndrivenBrowser(home, startUrl, extraExtensions = []
       `--load-extension=${extensions}`,
       startUrl,
     ],
-    { env: home.childEnv, stdio: 'ignore' },
+    { env: await browserEnv(home), stdio: 'ignore' },
   );
   const close = async () => {
     if (browser.exitCode !== null) return;
