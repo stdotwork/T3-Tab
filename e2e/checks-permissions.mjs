@@ -477,7 +477,7 @@ async function assertPromptRows(panelPage, serviceWorker) {
   const session = { id: 'synthetic', name: 'Synthetic session' };
   const prompt = (number, tool, title) => ({ id: `row-${number}`, origin: 'http://synthetic.test', tool, session, tab: { id: 900 + number, title } });
   const show = async (pending, sites = base.sites) => await renderPanelState(panelPage, { ...base, pending, sites });
-  const row = (title) => panelPage.locator('li').filter({ hasText: title });
+  const row = (title) => panelPage.locator('li.prompt-card').filter({ hasText: title });
   const disabledStates = async (title) => {
     const states = await row(title).locator('button').evaluateAll((buttons) => buttons.map((button) => button.disabled));
     assert(states.length === 3, `Row "${title}" shows ${states.length} buttons, expected 3`);
@@ -493,9 +493,9 @@ async function assertPromptRows(panelPage, serviceWorker) {
   await show([one, two]);
   const readLabels = await labels('Row one');
   const actLabels = await labels('Row two');
-  assert(JSON.stringify(readLabels) === JSON.stringify(['Allow reading once', 'Always allow reading on this site', 'Decline']), `Read prompt buttons: ${JSON.stringify(readLabels)}`);
+  assert(JSON.stringify(readLabels) === JSON.stringify(['Allow reading once', 'Decline', 'Always allow reading on this site']), `Read prompt buttons: ${JSON.stringify(readLabels)}`);
   assert(
-    JSON.stringify(actLabels) === JSON.stringify(['Allow acting once', 'Always allow everything on this site (reading, opening, acting, JavaScript)', 'Decline']),
+    JSON.stringify(actLabels) === JSON.stringify(['Allow acting once', 'Decline', 'Always allow everything on this site (reading, opening, acting, JavaScript)']),
     `Act prompt buttons: ${JSON.stringify(actLabels)}`,
   );
   await settle();
@@ -528,6 +528,7 @@ async function assertPromptRows(panelPage, serviceWorker) {
   ];
   await show([], sites);
   await panelPage.locator('#btn-settings').click();
+  await panelPage.locator('.settings-tabs').getByRole('button', { name: 'Sites', exact: true }).click();
   const readSite = panelPage.locator('#site-permissions li').filter({ hasText: 'http://read.test' });
   await readSite.getByText('Reading allowed; opening, acting and JavaScript ask').waitFor();
   const readSiteButtons = await readSite.locator('button').allTextContents();
@@ -547,9 +548,9 @@ async function assertPromptMetadata(serviceWorker, prompt) {
 async function assertPromptUi(panelPage, serviceWorker, prompt) {
   const state = await panelRequest(serviceWorker, { type: 'panel.state' });
   await renderPanelState(panelPage, state);
-  // The prompt names its tab by title in the sentence and by id in the meta line, both in the same card.
-  const card = panelPage.locator('.prompt-card').filter({ hasText: `"${prompt.tab.title}"` });
-  await card.getByText(`tab ${prompt.tab.id}`, { exact: true }).waitFor();
+  // The prompt names its tab by title and, in a span of the same line, by id, both in the same card.
+  const card = panelPage.locator('li.prompt-card').filter({ hasText: `"${prompt.tab.title}"` });
+  await card.locator('.prompt-tab span').getByText(`tab ${prompt.tab.id}`, { exact: true }).waitFor();
   const allow = panelPage.getByRole('button', { name: 'Allow opening once' });
   await allow.waitFor();
   assert(await allow.isDisabled(), 'New prompt buttons were enabled immediately');

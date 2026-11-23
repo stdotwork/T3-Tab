@@ -111,7 +111,7 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   assert(JSON.stringify(showCall?.args) === JSON.stringify(['thread', 'show', '--json', '--messages', '20', thread.threadId]), `t3 thread show: ${JSON.stringify(showCall?.args)}`);
   console.log('Panel T3 thread: continued with t3 thread send; the same session read the tab again');
 
-  await checkT3SignIn({ browserContext, serviceWorker, panelPage, fakes, fakeT3, home, tabId, screenshotPath });
+  await checkT3SignIn({ browserContext, serviceWorker, fakes, fakeT3, home, tabId });
 
   // A claim code the panel never issued shares nothing.
   const bogus = await mcpClient.callTool({ name: 'tabs', arguments: { claim: 'not-a-real-claim-code-0000' } });
@@ -178,22 +178,15 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   assert(connected.every((session) => !session.sharedTabIds.includes(tabId)), `A finished turn's session still holds the tab: ${JSON.stringify(connected)}`);
   state = await panelRequest(serviceWorker, { type: 'panel.agents', tabId });
   assert(state.conversationTabs[between.conversation.id]?.some((tab) => tab.id === tabId), `The conversation does not list its tab: ${JSON.stringify(state.conversationTabs)}`);
-  await renderAgents(panelPage, state);
-  await panelPage.locator('#agent-conversations button').filter({ hasText: 'Between turns' }).click();
-  await panelPage.locator('#agent-next-turn').getByText('Your next message shares "T3-Tab E2E".').waitFor();
-  // The harness's panel is an ordinary tab, which the worker refuses as a sender, so this one click is passed on to
-  // the same handler. The button, its request and the refresh after it are the real ones.
-  await panelPage.exposeFunction('__t3tabForwardPanel', async (message) => await panelRequest(serviceWorker, message));
-  await panelPage.evaluate(() => {
-    globalThis.__t3tabSendMessage = chrome.runtime.sendMessage;
-    chrome.runtime.sendMessage = async (message) => await globalThis.__t3tabForwardPanel(message);
-  });
-  await panelPage.getByRole('button', { name: 'Remove "T3-Tab E2E" from this conversation' }).click();
-  await panelPage.locator('#agent-next-turn').getByText('Your next message shares no tabs.').waitFor();
-  await panelPage.evaluate(() => {
-    chrome.runtime.sendMessage = globalThis.__t3tabSendMessage;
-  });
-  await panelPage.locator('#btn-conv-back').click();
+  // The owner's view: a second panel page carried by the harness, on the real poll, opens the conversation from the
+  // thread list, shows the tab it holds and takes it back with the chip's Remove button.
+  const livePanel = await openLivePanel(browserContext, serviceWorker, tabId);
+  await livePanel.locator('#btn-threads').click();
+  await livePanel.locator('.thread-row').filter({ hasText: 'Between turns' }).click();
+  const heldChip = livePanel.locator('.tab-chip').filter({ hasText: 'T3-Tab E2E' });
+  await heldChip.waitFor();
+  await heldChip.getByRole('button', { name: 'Remove "T3-Tab E2E" from this conversation' }).click();
+  await livePanel.locator('.tab-chip').getByText('No tabs shared', { exact: true }).waitFor();
   state = await panelRequest(serviceWorker, { type: 'panel.agents', tabId });
   assert(state.conversationTabs[between.conversation.id]?.length === 0, `The tab is still listed: ${JSON.stringify(state.conversationTabs)}`);
   const beforeSend = (await calls(fakes)).filter((call) => call.name === 'claude').length;
@@ -233,74 +226,59 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   assert(run.messages[3].text.includes(`read: ${readLine}`), `The resumed Codex run did not get the tab again:\n${run.messages[3].text}`);
   console.log(`Panel direct Codex: thread ${run.threadId}, resumed with codex exec resume; both turns read tab ${tabId}`);
 
-  // The panel itself: render the real state and check what it shows, then take the screenshots for the PR.
-  state = await panelRequest(serviceWorker, { type: 'panel.agents', tabId });
+  // The panel itself, on the real poll: the new-thread screen with T3 stopped runs a direct agent and offers the
+  // current tab, and the thread list opens a finished conversation with the agent's reply in it.
   const realPanelState = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
-  await renderAgents(panelPage, state);
-  await panelPage.evaluate((next) => globalThis.__t3tabRenderPanelState(next), realPanelState);
-
-  // Check New conversation view: status line, shared tab, and default route with T3 stopped.
-  await panelPage.locator('#btn-new').click();
-  await panelPage.locator('#agent-status').getByText('T3 Code is not running. You can run Claude Code or Codex directly instead.').waitFor();
-  await panelPage.locator('#agent-share').getByText('Shares "T3-Tab E2E"').waitFor();
-  assert((await panelPage.locator('#agent-via').inputValue()) === 'claude', 'With T3 stopped the panel does not default to a direct run');
-  await panelPage.locator('#btn-new-back').click();
-
-  // Check Home conversation list and pushed Conversation view.
-  await panelPage.locator('#agent-conversations button').filter({ hasText: 'Read it with Codex' }).click();
-  await panelPage.locator('#agent-thread .message.assistant').filter({ hasText: readLine }).first().waitFor();
+  await livePanel.locator('#btn-new').click();
+  await livePanel.locator('.composer-chips .tab-chip').filter({ hasText: 'T3-Tab E2E' }).waitFor();
+  await livePanel.getByRole('button', { name: 'Home folder' }).waitFor();
+  await livePanel.locator('.model-chip').first().click();
+  await livePanel.getByRole('tab', { name: 'Claude Code' }).waitFor();
+  await livePanel.getByRole('tab', { name: 'Codex' }).waitFor();
+  await livePanel.keyboard.press('Escape');
+  await livePanel.locator('#btn-threads').click();
+  await livePanel.locator('.thread-row').filter({ hasText: 'Read it with Codex' }).click();
+  await livePanel.locator('article.assistant').filter({ hasText: readLine }).first().waitFor();
 
   if (screenshotPath !== undefined) {
     const shotsDir = dirname(screenshotPath);
     await mkdir(shotsDir, { recursive: true });
-    await panelPage.bringToFront();
-    await panelPage.setViewportSize({ width: 360, height: 800 });
-
-    // Conversation view screenshots (360 px light and dark)
-    await panelPage.emulateMedia({ colorScheme: 'light' });
-    await sleep(260);
-    await panelPage.screenshot({ path: join(shotsDir, 'conversation-360-light.png'), animations: 'disabled' });
-    await panelPage.emulateMedia({ colorScheme: 'dark' });
-    await sleep(260);
-    await panelPage.screenshot({ path: join(shotsDir, 'conversation-360-dark.png'), animations: 'disabled' });
-
-    // Return to Home and render realistic waiting prompts for the Home screenshots (360 px light and dark)
-    await panelPage.locator('#btn-conv-back').click();
-    const sampleSession = realPanelState.sessions[0] ?? { id: 'sample-session', name: 'claude-code · 12345678' };
-    const homeWithPrompts = {
-      ...realPanelState,
-      pending: [
-        {
-          id: 'shot-act',
-          origin: siteUrl,
-          tool: 'act',
-          session: sampleSession,
-          tab: { id: tabId, title: 'T3-Tab E2E' },
-        },
-        {
-          id: 'shot-read',
-          origin: siteUrl,
-          tool: 'read',
-          session: sampleSession,
-          tab: { id: tabId, title: 'T3-Tab E2E' },
-        },
-      ],
+    const shoot = async (page, file, options = {}) => {
+      for (const scheme of ['light', 'dark']) {
+        await page.emulateMedia({ colorScheme: scheme });
+        await sleep(300);
+        await page.screenshot({ path: join(shotsDir, file.replace('{scheme}', scheme)), animations: 'disabled', ...options });
+      }
+      await page.emulateMedia({ colorScheme: 'light' });
     };
-    await panelPage.evaluate((next) => globalThis.__t3tabRenderPanelState(next), homeWithPrompts);
-    await panelPage.emulateMedia({ colorScheme: 'light' });
+    // The conversation as the owner sees it (360 px, light and dark), and the thread view as the main screenshot.
+    await livePanel.bringToFront();
+    await shoot(livePanel, 'conversation-360-{scheme}.png');
+    await livePanel.screenshot({ path: screenshotPath, animations: 'disabled' });
+    // Waiting prompts and the site list, drawn from supplied state on the headless panel.
+    const sampleSession = realPanelState.sessions[0] ?? { id: 'sample-session', name: 'claude-code · 12345678' };
+    await panelPage.setViewportSize({ width: 360, height: 800 });
+    await panelPage.bringToFront();
+    await panelPage.evaluate((next) => globalThis.__t3tabRenderPanelState(next), {
+      ...realPanelState,
+      pending: ['act', 'read'].map((tool) => ({ id: `shot-${tool}`, origin: siteUrl, tool, session: sampleSession, tab: { id: tabId, title: 'T3-Tab E2E' } })),
+      sites: [
+        { origin: 'http://127.0.0.1:3000', setting: 'ask' },
+        { origin: 'http://127.0.0.1:4000', setting: 'read' },
+        { origin: 'http://127.0.0.1:5000', setting: 'allow' },
+      ],
+    });
     await sleep(550);
-    await panelPage.screenshot({ path: join(shotsDir, 'home-360-light.png'), animations: 'disabled' });
-    await panelPage.screenshot({ path: screenshotPath, fullPage: true, animations: 'disabled' });
-    await panelPage.emulateMedia({ colorScheme: 'dark' });
-    await sleep(260);
-    await panelPage.screenshot({ path: join(shotsDir, 'home-360-dark.png'), animations: 'disabled' });
-    await panelPage.emulateMedia({ colorScheme: 'light' });
+    await shoot(panelPage, 'home-360-{scheme}.png');
+    await panelPage.locator('#btn-settings').click();
+    await panelPage.locator('.settings-tabs').getByRole('button', { name: 'Sites', exact: true }).click();
+    await shoot(panelPage, 'settings-360-{scheme}.png');
+    await panelPage.locator('#btn-settings-back').click();
     await panelPage.evaluate((next) => globalThis.__t3tabRenderPanelState(next), realPanelState);
     console.log(`Panel screenshots: ${shotsDir}`);
-  } else {
-    await panelPage.locator('#btn-conv-back').click();
   }
-  console.log('Panel UI: status line, shared tab, conversation list and replies rendered from the real state');
+  await livePanel.close();
+  console.log('Panel UI: tab chip, direct agents, conversation list and replies rendered from the real state');
 
   // T3 not installed at all.
   await rm(join(fakes.binDir, 't3'));
@@ -315,7 +293,7 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
  * read-only grant is stored in a 0600 file and gives the panel T3's project and model lists, a thread starts with a
  * listed project and model, and sign-out deletes the file. The token never shows up anywhere but that file.
  */
-async function checkT3SignIn({ browserContext, serviceWorker, panelPage, fakes, fakeT3, home, tabId, screenshotPath }) {
+async function checkT3SignIn({ browserContext, serviceWorker, fakes, fakeT3, home, tabId }) {
   const credentialFile = join(home.stateDir, 't3-credential.json');
   const replies = [];
   const ask = async (request) => {
@@ -325,15 +303,7 @@ async function checkT3SignIn({ browserContext, serviceWorker, panelPage, fakes, 
   };
   let state = await ask({ type: 'panel.agents', refresh: true, tabId });
   assert(state.t3Access.state === 'signed-out' && state.t3Access.catalog === undefined, `Before sign-in: ${JSON.stringify(state.t3Access)}`);
-  await renderAgents(panelPage, state);
-  await panelPage.locator('#btn-settings').click();
-  await panelPage.locator('#t3-access-line').getByText('Sign in to T3 Code once to pick projects and models from its lists.').waitFor();
-  await panelPage.locator('#btn-settings-back').click();
-  await panelPage.locator('#btn-new').click();
-  assert(await panelPage.locator('#agent-project').isVisible(), 'Signed out, the typed project field is not shown');
-  assert(!(await panelPage.locator('#agent-project-list').isVisible()), 'Signed out, a project list is shown');
-  await panelPage.locator('#btn-new-back').click();
-  console.log('T3 sign-in: signed out, the panel offers the sign-in and keeps the typed fields');
+  console.log('T3 sign-in: signed out, no lists');
 
   // First approval grants more than read-only: T3-Tab keeps nothing.
   let approval = await openSignIn(browserContext, serviceWorker, fakeT3);
@@ -370,66 +340,6 @@ async function checkT3SignIn({ browserContext, serviceWorker, panelPage, fakes, 
   assert(JSON.stringify(catalog?.projects.map((project) => project.id)) === JSON.stringify(['proj-demo', 'proj-docs', 'proj-api']), `Projects: ${JSON.stringify(catalog)}`);
   assert(catalog.providers.find((provider) => provider.instanceId === 'opencode')?.unavailable === 'Provider executable is not installed.', 'The unavailable provider is not marked');
   console.log(`T3 sign-in: read-only grant stored in ${relative(home.tempHome, credentialFile)} (mode 0${mode.toString(8)}); lists: ${catalog.projects.length} projects, ${catalog.providers.length} providers`);
-
-  // The panel shows T3's lists, and the typed fields only when asked for.
-  await renderAgents(panelPage, state);
-  const currentPanelState = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
-  await panelPage.evaluate((next) => globalThis.__t3tabRenderPanelState(next), currentPanelState);
-  await panelPage.locator('#btn-settings').click();
-  await panelPage.locator('#t3-access-line').getByText(`Signed in to T3 Code at ${fakeT3.origin} (read only)`).waitFor();
-  if (screenshotPath !== undefined) {
-    const shotsDir = dirname(screenshotPath);
-    await mkdir(shotsDir, { recursive: true });
-    await panelPage.evaluate((next) => globalThis.__t3tabRenderPanelState(next), {
-      ...currentPanelState,
-      sites: [
-        { origin: 'http://127.0.0.1:3000', setting: 'ask' },
-        { origin: 'http://127.0.0.1:4000', setting: 'read' },
-        { origin: 'http://127.0.0.1:5000', setting: 'allow' },
-      ],
-    });
-    await panelPage.bringToFront();
-    await panelPage.setViewportSize({ width: 360, height: 800 });
-    await panelPage.emulateMedia({ colorScheme: 'light' });
-    await sleep(260);
-    await panelPage.screenshot({ path: join(shotsDir, 'settings-360-light.png'), animations: 'disabled' });
-    await panelPage.emulateMedia({ colorScheme: 'dark' });
-    await sleep(260);
-    await panelPage.screenshot({ path: join(shotsDir, 'settings-360-dark.png'), animations: 'disabled' });
-    await panelPage.emulateMedia({ colorScheme: 'light' });
-    await panelPage.evaluate((next) => globalThis.__t3tabRenderPanelState(next), currentPanelState);
-  }
-  await panelPage.locator('#btn-settings-back').click();
-
-  await panelPage.locator('#btn-new').click();
-  const projectOptions = await panelPage.locator('#agent-project-list option').allTextContents();
-  assert(JSON.stringify(projectOptions) === JSON.stringify(['Demo app — /work/demo', 'Docs site — /work/docs', 'API server — /work/api', 'Type a project id or folder…']), `Project list: ${JSON.stringify(projectOptions)}`);
-  const groups = await panelPage.locator('#agent-model-list optgroup').evaluateAll((nodes) => nodes.map((node) => `${node.label}${node.disabled ? ' [disabled]' : ''}`));
-  assert(JSON.stringify(groups) === JSON.stringify(['Claude', 'codex (codex)', 'OpenCode (unavailable: Provider executable is not installed.) [disabled]']), `Model groups: ${JSON.stringify(groups)}`);
-  assert(!(await panelPage.locator('#agent-project').isVisible()) && !(await panelPage.locator('#agent-provider').isVisible()), 'With lists, the typed fields are shown');
-  await panelPage.locator('#agent-project-list').selectOption('p:proj-demo');
-  await panelPage.locator('#agent-model-list').selectOption({ label: 'Claude Haiku 5.5' });
-  assert((await panelPage.locator('#agent-model-list option').first().textContent()) === "The project's default (claudeAgent/claude-sonnet-5-5)", 'The default choice does not name the project default');
-  if (screenshotPath !== undefined) {
-    const shotsDir = dirname(screenshotPath);
-    await mkdir(shotsDir, { recursive: true });
-    await panelPage.bringToFront();
-    await panelPage.setViewportSize({ width: 360, height: 800 });
-    await panelPage.emulateMedia({ colorScheme: 'light' });
-    await sleep(260);
-    await panelPage.screenshot({ path: join(shotsDir, 'new-360-light.png'), animations: 'disabled' });
-    const listsShot = screenshotPath.replace(/(\.png)?$/, '-t3-lists.png');
-    await panelPage.screenshot({ path: listsShot, fullPage: true, animations: 'disabled' });
-    await panelPage.emulateMedia({ colorScheme: 'dark' });
-    await sleep(260);
-    await panelPage.screenshot({ path: join(shotsDir, 'new-360-dark.png'), animations: 'disabled' });
-    await panelPage.emulateMedia({ colorScheme: 'light' });
-    console.log(`Panel screenshot with T3's lists: ${listsShot}`);
-  }
-  await panelPage.locator('#agent-model-list').selectOption('typed');
-  assert(await panelPage.locator('#agent-provider').isVisible(), 'Choosing to type does not show the provider field');
-  await panelPage.locator('#btn-new-back').click();
-  console.log('T3 sign-in: the panel lists projects and models from T3, marks the unavailable provider, and still offers typing');
 
   // A thread started with a listed project and model; it still runs through `t3 thread start`.
   const claudeProvider = catalog.providers.find((provider) => provider.instanceId === 'claudeAgent');
@@ -479,11 +389,28 @@ async function checkT3SignIn({ browserContext, serviceWorker, panelPage, fakes, 
   assert(signedOut.state === 'signed-out' && signedOut.detail.includes('Settings → Sharing & access'), `Sign out: ${JSON.stringify(signedOut)}`);
   assert(!(await exists(credentialFile)), 'Sign out left the credential file');
   state = await ask({ type: 'panel.agents', tabId });
-  await renderAgents(panelPage, state);
-  await panelPage.locator('#btn-new').click();
-  assert(await panelPage.locator('#agent-project').isVisible(), 'After sign-out, the typed project field is not back');
-  await panelPage.locator('#btn-new-back').click();
+  assert(state.t3Access.state === 'signed-out' && state.t3Access.catalog === undefined, `After sign-out: ${JSON.stringify(state.t3Access)}`);
   console.log(`T3 sign-in: signed out and the file was deleted: ${signedOut.detail}`);
+}
+
+/**
+ * A second panel page for the owner's view of a conversation. Pages in a tab are refused by the worker's sender
+ * check, so the harness carries the page's requests to the same handler (as e2e/panel-flow.mjs does); `setup.done`
+ * is set first so the page skips the setup screen, and it runs its normal poll.
+ */
+async function openLivePanel(browserContext, serviceWorker, tabId) {
+  await serviceWorker.evaluate(() => chrome.storage.local.set({ 'setup.done': true }));
+  const page = await browserContext.newPage();
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.exposeFunction('__t3tabPanelBridge', async (request) => {
+    try {
+      return await serviceWorker.evaluate(async (message) => await globalThis.__t3tabHandlePanelRequest(message), request);
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  await page.goto(`chrome-extension://${new URL(serviceWorker.url()).host}/sidepanel.html?tabId=${tabId}`);
+  return page;
 }
 
 async function openSignIn(browserContext, serviceWorker, fakeT3) {
@@ -524,14 +451,6 @@ function claimFileOf(args) {
   const serverArgs = JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers['t3-tab'].args;
   const index = serverArgs.indexOf('--claim-file');
   return index === -1 ? undefined : serverArgs[index + 1];
-}
-
-async function renderAgents(panelPage, state) {
-  await panelPage.evaluate((next) => {
-    const render = globalThis.__t3tabRenderAgentState;
-    if (typeof render !== 'function') throw new Error('Agent panel renderer is unavailable');
-    render(next);
-  }, state);
 }
 
 async function waitForConversation(serviceWorker, id, done) {
