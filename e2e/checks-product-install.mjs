@@ -169,7 +169,7 @@ export async function checkProductInstall() {
     await waitForHelper(second.serviceWorker, false, 5_000);
     const customManifest = join(custom.profileDir, 'NativeMessagingHosts', 'com.t3tab.native.json');
     await run(join(nodeDir, 'npx'), ['--yes', `--package=${tarball}`, 't3-tab', 'setup']);
-    assert(!(await exists(customManifest)), 'setup wrote into the profile folder of a headless browser in a temporary folder');
+    assert(!(await exists(customManifest)), `setup wrote into the profile folder of a headless browser in a temporary folder: ${await readFile(customManifest, 'utf8').catch(() => '')}`);
     await run(join(nodeDir, 'npx'), ['--yes', `--package=${tarball}`, 't3-tab', 'setup', '--user-data-dir', custom.profileDir]);
     assert(await exists(customManifest), 'setup --user-data-dir did not register in the named profile folder');
     await waitForHelper(second.serviceWorker, true);
