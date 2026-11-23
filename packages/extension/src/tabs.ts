@@ -1,3 +1,4 @@
+import { ensureAttached, onDialogOpen, openDialog } from './cdp';
 import type { TabInfo } from '@t3-tab/protocol';
 
 import { originOf, restrictedPageError, type SitePermission } from './permissions';
@@ -78,10 +79,13 @@ export async function openSessionTab(
   if (!isOpenableUrl(url)) throw new Error('Only http and https URLs can be opened');
   const origin = originOf(url);
   if (origin === undefined) throw new Error('Only http and https URLs can be opened');
-  const created = await chrome.tabs.create({ url, active: true });
+  // The debugger is on the tab before its page runs: a dialog opened earlier than that can never be answered.
+  const created = await chrome.tabs.create({ url: 'about:blank', active: true });
   if (created.id === undefined) throw new Error('The browser did not create a tab');
   try {
     await attachToSessionGroup(session, created.id, store);
+    await ensureAttached(created.id);
+    await chrome.tabs.update(created.id, { url });
     await waitForLoad(created.id, OPEN_TIMEOUT_MS);
     await assertTabOrigin(created.id, origin);
     return { tab: tabInfo(await getTab(created.id), true), origin };
@@ -200,6 +204,7 @@ async function waitForLoad(tabId: number, timeoutMs: number): Promise<void> {
   await new Promise<void>((resolve) => {
     const done = (): void => {
       clearTimeout(timer);
+      stopWaiting();
       chrome.tabs.onUpdated.removeListener(listener);
       resolve();
     };
@@ -207,7 +212,10 @@ async function waitForLoad(tabId: number, timeoutMs: number): Promise<void> {
       if (updatedId === tabId && change.status === 'complete') done();
     };
     const timer = setTimeout(done, timeoutMs);
+    // A dialog holds the load open until it is answered, which the agent can only do once this returns.
+    const stopWaiting = onDialogOpen(tabId, done);
     chrome.tabs.onUpdated.addListener(listener);
+    if (openDialog(tabId) !== undefined) done();
     void chrome.tabs.get(tabId).then((tab) => {
       if (tab.status === 'complete' && tab.url !== undefined && tab.url !== '' && tab.url !== 'about:blank') done();
     });

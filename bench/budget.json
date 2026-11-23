@@ -38,8 +38,8 @@
       "tokens": 225
     },
     "form.act-fill-submit": {
-      "chars": 551,
-      "tokens": 173
+      "chars": 600,
+      "tokens": 184
     },
     "form.screenshot": {
       "chars": 49,
@@ -56,8 +56,8 @@
       "tokens": 225
     },
     "hidden.act-click": {
-      "chars": 172,
-      "tokens": 52
+      "chars": 209,
+      "tokens": 62
     },
     "hidden.run_js": {
       "chars": 7,

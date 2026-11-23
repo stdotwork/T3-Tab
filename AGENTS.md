@@ -47,7 +47,9 @@ the browser, that Add for Claude Code writes an entry naming the installed launc
 sees the browser, that running `setup` again over a daemon of another version stops it and the browser reconnects
 to a new one, that `uninstall` removes the helper folder, manifest, state and agent entry and stops the daemon,
 that `scripts/install-test-build.sh` (through a `file://` address) installs the same helper, and that a browser
-started with its own `--user-data-dir` finds it too. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
+started with its own `--user-data-dir` finds it too. Then `e2e/checks-real-use.mjs` runs in a headless Chromium only the extension debugs, because Playwright answers
+dialogs itself and makes hidden tabs act focused: dialogs, background input, another extension's frame
+(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs and same-origin frames. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
 two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
 links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
 `screenshot`, `act` and `run_js`. It also checks session tab groups, socket-bound session ids, tab sharing,
@@ -216,11 +218,38 @@ it. `run_js` evaluates an expression or async function body in the page for case
 not cover. The extension sends a WebSocket ping every 20 seconds while the daemon is connected so Chrome
 does not stop its service worker.
 
-`read` returns the main frame's document and same-origin child frames only. A child frame of another
-origin, or one the browser cannot name, is left out with one line `frame omitted: <origin>` in its place
-(`restrictToOriginFrames` in `packages/extension/src/ax.ts`). In Chromium 159 (checked headless) `Accessibility.getFullAXTree`
-does not return child-frame content at all, so for now the filter only adds those lines. Screenshots are
+`read` returns the main frame's document and same-origin child frames. `Accessibility.getFullAXTree` does not
+include child-frame content, so `addSameOriginFrames` (`packages/extension/src/page.ts`) fetches each child frame of
+the approved origin, up to 20, walking down only through such frames, and drops one that navigated during the fetch.
+A child frame of another origin, or one the browser cannot name (a sandboxed frame), is left out with one line
+`frame omitted: <origin>` in its place (`restrictToOriginFrames` in `packages/extension/src/ax.ts`). Screenshots are
 not filtered for iframes.
+
+With `all`, images are listed with a ref, named or not, so they can be hovered or clicked. The default view leaves
+plain text out but still tracks it: a read or `act` whose only change is plain text replies `Text changed since the
+last read:` with that diff, and a reply about changed elements adds up to 10 lines of `New text:`.
+
+**JavaScript dialogs.** A dialog pauses the page, so every command that reaches it would hang. `cdp.ts` tracks
+`Page.javascriptDialogOpening` and fails such commands at once with a notice naming the dialog. `act` answers it:
+`press Enter` accepts, `press Escape` dismisses, and a `type` step without a ref holds a prompt's text until Enter.
+A step that opens a dialog counts as done, so the same batch can answer it. Answers run one at a time per tab and
+are refused if another dialog replaced the one checked; the browser's command names no dialog, so a replacement in
+the instant before it lands cannot be caught. A dialog from a frame of another origin
+is named by origin only and can only be dismissed. `tabs open` attaches the debugger on `about:blank` before loading
+the page, because a dialog opened before the debugger attached cannot be answered through it; on a tab the owner
+already had open, the tool says to ask the owner to answer it.
+
+**Background tabs.** Chromium never acknowledges wheel input on a hidden page and holds mouse input for seconds, so
+an `act` batch on a hidden tab turns on `Emulation.setFocusEmulationEnabled` while its steps run and off afterwards.
+The page sees itself as visible and focused for that long.
+
+**Other extensions' frames.** Chromium drops `chrome.debugger` from a tab, and refuses to attach, while any frame in
+it belongs to another extension, such as a password manager's autofill menu; blocking the frame's request does not
+prevent it. `clearForeignFrames` (`foreign-frames.ts`) points those frames at `about:blank`, including inside closed
+shadow roots, and the debugger attaches again. This is the only use of the `scripting` permission and `<all_urls>`
+host access, and it runs only while the tab is on the origin the running tool call was approved for. Refs stay valid
+after a reattach only when the main document's loader id is unchanged and `chrome.webNavigation` saw no top-frame
+commit in between. Input that was in flight when the debugger dropped is not sent again.
 
 `find` matches case-insensitive literal text by default. Passing `regex: true` opts into a regular
 expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. Every text box

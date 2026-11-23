@@ -1,7 +1,7 @@
 // Setup shared by the end-to-end run (extension.e2e.mjs) and the token benchmark (bench/bench.mjs):
 // a temporary HOME, headless Chromium with the built extension, and MCP clients that speak to the real
 // daemon over stdio. Nothing here touches the machine's own agent configuration or browser profile.
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -69,6 +69,98 @@ export async function launchBrowser(home) {
       `--load-extension=${home.extensionDir}`,
     ],
   });
+}
+
+/**
+ * Headless Chromium that nothing but the extension debugs. Playwright attaches to every page, answers dialogs
+ * itself and makes hidden tabs act focused, which hides how a real browser treats dialogs and background tabs.
+ * `panel` sends a request to the extension's side-panel handler over a connection to its service worker only.
+ */
+export async function launchUndrivenBrowser(home, startUrl, extraExtensions = []) {
+  const extensions = [home.extensionDir, ...extraExtensions].join(',');
+  const browser = spawn(
+    chromium.executablePath(),
+    [
+      '--headless=new',
+      '--no-sandbox',
+      '--no-first-run',
+      '--no-default-browser-check',
+      `--user-data-dir=${home.profileDir}`,
+      '--remote-debugging-port=0',
+      '--window-size=1600,1000',
+      '--silent-debugger-extension-api',
+      `--disable-extensions-except=${extensions}`,
+      `--load-extension=${extensions}`,
+      startUrl,
+    ],
+    { env: home.childEnv, stdio: 'ignore' },
+  );
+  const close = async () => {
+    if (browser.exitCode !== null) return;
+    const exited = new Promise((resolve) => browser.once('exit', resolve));
+    browser.kill('SIGTERM');
+    await Promise.race([exited, sleep(3_000)]);
+    if (browser.exitCode === null) browser.kill('SIGKILL');
+  };
+  try {
+    let port;
+    for (let attempt = 0; attempt < 120 && port === undefined; attempt += 1) {
+      port = await readFile(join(home.profileDir, 'DevToolsActivePort'), 'utf8').then(
+        (content) => content.split('\n')[0],
+        () => undefined,
+      );
+      if (port === undefined) await sleep(100);
+    }
+    if (port === undefined) throw new Error('Chromium did not report a debugging port');
+    const workerUrl = await findExtensionWorker(port);
+    const panel = async (request) => {
+      const response = await evaluateOver(workerUrl, `globalThis.__t3tabHandlePanelRequest(${JSON.stringify(request)})`);
+      if (response?.ok === false) throw new Error(`${request.type}: ${response.error}`);
+      return response;
+    };
+    return { panel, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+async function findExtensionWorker(port) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
+    for (const target of targets) {
+      if (target.type !== 'service_worker') continue;
+      // A worker still starting has no `chrome.runtime` or panel handler yet: look again on the next pass.
+      const name = await evaluateOver(
+        target.webSocketDebuggerUrl,
+        "typeof globalThis.__t3tabHandlePanelRequest === 'function' && chrome.runtime.getManifest().name",
+      ).catch(() => undefined);
+      if (name === 'T3-Tab') return target.webSocketDebuggerUrl;
+    }
+    await sleep(100);
+  }
+  throw new Error('The T3-Tab service worker did not start');
+}
+
+async function evaluateOver(url, expression) {
+  const socket = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    socket.onopen = resolve;
+    socket.onerror = () => reject(new Error(`Could not connect to ${url}`));
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      socket.onmessage = (message) => {
+        const reply = JSON.parse(message.data);
+        if (reply.id !== 1) return;
+        if (reply.result?.exceptionDetails !== undefined) reject(new Error(reply.result.exceptionDetails.exception?.description ?? reply.result.exceptionDetails.text));
+        else resolve(reply.result?.result?.value);
+      };
+      socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
+    });
+  } finally {
+    socket.close();
+  }
 }
 
 /** The extension's service worker, and its id. */

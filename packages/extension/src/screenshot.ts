@@ -1,6 +1,6 @@
 import type { ScreenshotResult } from '@t3-tab/protocol';
 
-import { documentEpoch, ensureAttached, sendCommand } from './cdp';
+import { documentEpoch, ensureAttached, sendCommand, setRecoveryOrigin } from './cdp';
 import { originOf } from './permissions';
 
 const JPEG_QUALITY = 85;
@@ -22,6 +22,7 @@ export interface CaptureGuard {
  * recorded before the capture and compared after it; if either moved, the image is discarded.
  */
 export async function captureViewport(tabId: number, maxEdge: number, guard: CaptureGuard): Promise<ScreenshotResult> {
+  setRecoveryOrigin(tabId, guard.origin);
   await ensureAttached(tabId);
   const epoch = documentEpoch(tabId);
   const url = await guard.currentUrl();

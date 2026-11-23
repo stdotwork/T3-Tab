@@ -186,6 +186,8 @@ function classify(node: AxNode, all: boolean): Kind {
   if (role === 'statictext') return all ? 'text' : 'hoist';
   if (ALWAYS_CONTAINERS.has(role)) return 'container';
   if (CONTAINERS.has(role)) return named || (all && LANDMARKS.has(role)) ? 'container' : 'hoist';
+  // With `all`, an image gets a ref even without a name, so it can be hovered or clicked.
+  if (all && role === 'image') return 'other';
   if (all && named && !WRAPPERS.has(role)) return 'other';
   return 'hoist';
 }
@@ -199,7 +201,7 @@ function elementLine(node: AxNode, kind: Kind, name: string, refs: RefTable): st
     return `${'#'.repeat(marks)} ${truncate(name, MAX_NAME)}`;
   }
   const parts: string[] = [];
-  if ((kind === 'interactive' || kind === 'container') && node.backendId !== undefined) {
+  if ((kind === 'interactive' || kind === 'container' || role === 'image') && node.backendId !== undefined) {
     parts.push(refs.refFor(node.backendId));
   }
   parts.push(role === 'image' ? 'img' : role);

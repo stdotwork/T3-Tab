@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 3 as const;
+export const PROTOCOL_VERSION = 4 as const;
 /** Shown when the extension and the background program speak different protocol versions. It is also a WebSocket close reason, so at most 123 bytes. */
 export const PROTOCOL_MISMATCH = 'The T3-Tab extension and helper are different versions.';
 /** The close reason and error text that say which side is behind. Each fits a WebSocket close reason. */
@@ -188,6 +188,8 @@ export interface ActFailure {
 export interface PageActionResult extends PageReadResult {
   /** Set when the batch stopped before its last step. */
   failure?: ActFailure;
+  /** What the agent is told when the tab is waiting on a JavaScript dialog; `nodes` is empty then. */
+  dialog?: string;
 }
 
 export interface ScreenshotResult {
