@@ -25,7 +25,10 @@ export async function packHelper(rootDir) {
   return { tarball: join(out, file), out };
 }
 
-async function waitForHelper(serviceWorker, connected, timeoutMs = 25_000) {
+// The worker's reconnect delay is capped at 30 s plus up to 0.25 s of jitter (`scheduleReconnect` in background.ts), so a
+// wait for the helper to come back has to outlast that, or the check races the retry timer.
+const RECONNECT_MAX_MS = 30_000 + 250;
+async function waitForHelper(serviceWorker, connected, timeoutMs = RECONNECT_MAX_MS + 10_000) {
   const deadline = Date.now() + timeoutMs;
   let last;
   while (Date.now() < deadline) {
