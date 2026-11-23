@@ -10,7 +10,18 @@ interface RuntimeResult {
   exceptionDetails?: { text?: string; exception?: { description?: string } };
 }
 
-const BODY_START = /^\s*(?:await\b|const\b|let\b|var\b|return\b|if\b|for\b|while\b|try\b|throw\b|\{)/;
+/** A returned element would serialise to `{}`; it comes back as a short name such as `input#email.wide`. */
+const DESCRIBE_NODES = `(value) => {
+  if (typeof Node === 'undefined') return value;
+  const name = (item) => {
+    if (!(item instanceof Node)) return item;
+    if (!(item instanceof Element)) return item.nodeName;
+    const classes = Array.from(item.classList, (entry) => '.' + entry).join('');
+    return item.localName + (item.id ? '#' + item.id : '') + classes;
+  };
+  if (value instanceof NodeList || value instanceof HTMLCollection) return Array.from(value, name);
+  return Array.isArray(value) ? value.map(name) : name(value);
+}`;
 
 /**
  * Evaluates an expression or an async function body in the page and returns a JSON value. The call is
@@ -39,9 +50,11 @@ export async function evaluatePage(
       `The page's JavaScript context belongs to ${context.origin}, not the approved ${expectedOrigin}; read the page and approve it first.`,
     );
   }
-  const wrapped = BODY_START.test(expression)
-    ? `(async () => {\n${expression}\n})()`
-    : `(async () => {\nreturn await (${expression});\n})()`;
+  // Whatever parses as one expression returns its value; anything else is a function body.
+  const describe = `const __t3TabDescribe = ${DESCRIBE_NODES};`;
+  const asExpression = `(async () => {\n${describe}\nconst __t3TabValue = await (${expression.replace(/[;\s]+$/, '')}\n);\nreturn __t3TabDescribe(__t3TabValue);\n})()`;
+  const asBody = `(async () => {\n${describe}\nreturn __t3TabDescribe(await (async () => {\n${expression}\n})());\n})()`;
+  const wrapped = (await compiles(tabId, context.id, asExpression)) ? asExpression : asBody;
   let evaluated: RuntimeResult;
   try {
     evaluated = await sendCommand<RuntimeResult>(tabId, 'Runtime.evaluate', {
@@ -66,6 +79,17 @@ export async function evaluatePage(
   if (evaluated.result.value !== undefined) return { value: evaluated.result.value };
   if (evaluated.result.type === 'undefined') return { value: null };
   throw new Error(`run_js result cannot be returned as JSON (${evaluated.result.description ?? evaluated.result.type ?? 'unknown'})`);
+}
+
+/** Parses without running, in the page's context; the page's content security policy does not apply. */
+async function compiles(tabId: number, executionContextId: number, expression: string): Promise<boolean> {
+  const compiled = await sendCommand<{ exceptionDetails?: unknown }>(tabId, 'Runtime.compileScript', {
+    expression,
+    sourceURL: '',
+    persistScript: false,
+    executionContextId,
+  });
+  return compiled.exceptionDetails === undefined;
 }
 
 function assertCurrentOrigin(tab: chrome.tabs.Tab, expectedOrigin: string): void {
