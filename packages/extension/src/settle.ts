@@ -1,4 +1,4 @@
-import { documentEpoch, networkRevision, sendCommand } from './cdp';
+import { documentEpoch, networkRevision, openDialog, sendCommand } from './cdp';
 
 const QUIET_MS = 150;
 const POLL_MS = 50;
@@ -65,6 +65,8 @@ export async function settlePage(tabId: number): Promise<SettleResult> {
   const startedAt = Date.now();
   const tracker = new SettleTracker(startedAt);
   while (true) {
+    // A dialog pauses the page, so there is nothing to wait for until it is answered.
+    if (openDialog(tabId) !== undefined) return { settled: true, timedOut: false, elapsedMs: Date.now() - startedAt };
     const probe = await probePage(tabId);
     const now = Date.now();
     const snapshot: SettleSnapshot = {

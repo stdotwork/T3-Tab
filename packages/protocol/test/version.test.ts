@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { EXTENSION_OUTDATED, HELPER_OUTDATED, PROTOCOL_MISMATCH, PROTOCOL_VERSION, mismatchReason } from '../src/index.js';
 
 describe('protocol version', () => {
-  it('is version 3, which added panel setup, T3 pairing and prompts in agent threads', () => {
-    expect(PROTOCOL_VERSION).toBe(3);
+  it('is version 4, which added the open dialog to an action result', () => {
+    expect(PROTOCOL_VERSION).toBe(4);
   });
 
   it('has mismatch messages that fit a WebSocket close reason', () => {

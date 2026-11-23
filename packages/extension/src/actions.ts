@@ -1,6 +1,16 @@
 import { actStepRef, type ActAction, type ActFailure, type ActStep, type PageActionResult } from '@t3-tab/protocol';
 
-import { documentEpoch, ensureAttached, navigationsSince, sendCommand } from './cdp';
+import {
+  answerDialog,
+  DialogOpenError,
+  dialogNotice,
+  documentEpoch,
+  ensureAttached,
+  holdInputFocus,
+  navigationsSince,
+  openDialog,
+  sendCommand,
+} from './cdp';
 import { readPage } from './page';
 import { originOf } from './permissions';
 import type { StoredSession } from './sessions';
@@ -47,7 +57,14 @@ export async function actOnPage(
   reloadSession: () => Promise<StoredSession>,
 ): Promise<PageActionResult> {
   await ensureAttached(tabId);
-  await sendCommand(tabId, 'DOM.enable');
+  let releaseFocus: (() => Promise<void>) | undefined;
+  try {
+    return await runSteps();
+  } finally {
+    await releaseFocus?.();
+  }
+
+  async function runSteps(): Promise<PageActionResult> {
   let epoch = documentEpoch(tabId);
   let failure: ActFailure | undefined;
   let activeSession = session;
@@ -60,12 +77,17 @@ export async function actOnPage(
       activeSession = await reloadSession();
       await assertActAccess(activeSession, tabId, expectedOrigin);
       const ref = actStepRef(step);
-      if (ref !== undefined) {
+      const dialog = openDialog(tabId);
+      if (dialog !== undefined) {
+        await answerDialogStep(tabId, step, expectedOrigin);
+      } else if (ref !== undefined) {
+        releaseFocus ??= await holdInputFocus(tabId);
         if (epoch !== expectedEpoch) throw staleRef(ref, `document epoch ${expectedEpoch} -> ${epoch}`);
         const backendId = backendIds[index];
         if (backendId === undefined || backendId === null) throw staleRef(ref, 'the ref has no DOM node id');
         await runElementStep(tabId, step, backendId, ref);
       } else {
+        if (action !== 'wait') releaseFocus ??= await holdInputFocus(tabId);
         await runPageStep(tabId, step);
       }
       // CDP input goes to whatever document is current, with or without a ref. A new document on the
@@ -73,11 +95,14 @@ export async function actOnPage(
       // may have taken the input, so the batch stops.
       if (action !== 'wait') assertSameOriginSince(tabId, epoch, expectedOrigin, action);
     } catch (error) {
-      failure = {
-        step: index + 1,
-        action,
-        error: error instanceof Error ? error.message : String(error),
-      };
+      // The step ran and the page opened a dialog; the next step can answer it.
+      if (!(error instanceof DialogOpenError)) {
+        failure = {
+          step: index + 1,
+          action,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
     }
 
     await settlePage(tabId);
@@ -103,8 +128,46 @@ export async function actOnPage(
   }
 
   activeSession = await reloadSession();
+  const waiting = openDialog(tabId);
+  if (waiting !== undefined) {
+    const tab = await resolveSessionTab(activeSession, tabId);
+    return {
+      tab: tabId,
+      title: tab.title ?? '',
+      url: tab.url ?? tab.pendingUrl ?? '',
+      epoch: documentEpoch(tabId),
+      nodes: [],
+      dialog: dialogNotice(tabId, waiting),
+      ...(failure === undefined ? {} : { failure }),
+    };
+  }
   const page = await readPage(activeSession, tabId, expectedOrigin, reloadSession);
   return failure === undefined ? page : { ...page, failure };
+  }
+}
+
+/** While a dialog is open: Enter accepts it, Escape dismisses it, and `type` holds a prompt's text. */
+async function answerDialogStep(tabId: number, step: ActStep, expectedOrigin: string): Promise<void> {
+  const dialog = openDialog(tabId);
+  if (dialog === undefined) return;
+  const sameSite = originOf(dialog.url) === expectedOrigin && !dialogNotice(tabId, dialog).includes('another site');
+  if ('wait' in step && 'ms' in step.wait) {
+    await sleep(clamp(step.wait.ms, 0, MAX_WAIT_MS));
+    return;
+  }
+  if ('type' in step && step.type.ref === undefined && dialog.type === 'prompt' && sameSite) {
+    dialog.input = step.type.text;
+    return;
+  }
+  if ('press' in step && step.press.key === 'Escape') {
+    await answerDialog(tabId, false);
+    return;
+  }
+  if ('press' in step && step.press.key === 'Enter' && sameSite) {
+    await answerDialog(tabId, true, dialog.type === 'prompt' ? (dialog.input ?? dialog.defaultPrompt) : undefined);
+    return;
+  }
+  throw new Error(dialogNotice(tabId, dialog));
 }
 
 function assertSameOriginSince(tabId: number, since: number, expectedOrigin: string, action: ActAction): void {
@@ -343,6 +406,10 @@ export function parseKey(value: string): KeyStroke {
     PageUp: { key: 'PageUp', code: 'PageUp', keyCode: 33 },
     PageDown: { key: 'PageDown', code: 'PageDown', keyCode: 34 },
     Space: { key: ' ', code: 'Space', keyCode: 32, text: ' ' },
+    Shift: { key: 'Shift', code: 'ShiftLeft', keyCode: 16 },
+    Control: { key: 'Control', code: 'ControlLeft', keyCode: 17 },
+    Alt: { key: 'Alt', code: 'AltLeft', keyCode: 18 },
+    Meta: { key: 'Meta', code: 'MetaLeft', keyCode: 91 },
   };
   const named = aliases[name];
   if (named !== undefined) return named;

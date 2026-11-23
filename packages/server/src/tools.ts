@@ -115,7 +115,8 @@ async function runAct(
     backendIds,
     epoch: state.currentEpoch,
   });
-  const reply = await formatRead(state, session.id, page, {});
+  // A page paused on a dialog has nothing to read, and its refs and diff baselines stay as they were.
+  const reply = page.dialog === undefined ? await formatRead(state, session.id, page, {}) : `tab ${page.tab}\n${page.dialog}`;
   if (page.failure !== undefined) {
     throw new Error(`Step ${page.failure.step} (${page.failure.action}) failed: ${page.failure.error}\n${reply}`);
   }
