@@ -47,9 +47,9 @@ the browser, that Add for Claude Code writes an entry naming the installed launc
 sees the browser, that running `setup` again over a daemon of another version stops it and the browser reconnects
 to a new one, that `uninstall` removes the helper folder, manifest, state and agent entry and stops the daemon,
 that `scripts/install-test-build.sh` (through a `file://` address) installs the same helper, and that a browser
-started with its own `--user-data-dir` finds it too. Then `e2e/checks-real-use.mjs` runs in a headless Chromium only the extension debugs, because Playwright answers
+started with its own `--user-data-dir` finds it once `setup` names that folder. Then `e2e/checks-real-use.mjs` runs in a headless Chromium only the extension debugs, because Playwright answers
 dialogs itself and makes hidden tabs act focused: dialogs, background input, another extension's frame
-(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs and same-origin frames. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
+(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs and same-origin frames. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that every tool works on that hidden tab, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
 two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
 links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
 `screenshot`, `act` and `run_js`. It also checks session tab groups, socket-bound session ids, tab sharing,
@@ -77,7 +77,7 @@ between turns with the conversation's Remove button; a missing, world-readable o
 the conversation and in the agent's first tool reply. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
-variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless.
+variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long.
 
 `e2e/panel-flow.mjs` (not part of `pnpm e2e`, because it needs a real agent login) walks the panel from first open to
 finished threads against a real throwaway T3 and again with T3 absent, and saves each screen at 400 px in light and
@@ -113,9 +113,10 @@ the prototype build shows until the package is published, behind one constant, `
   everything `setup` wrote.
 - It registers the native host for every browser it finds (`install-native-host.ts`): Chromium, Chrome, Brave, Edge
   and Vivaldi. Linux and macOS write `NativeMessagingHosts/com.t3tab.native.json` in the browser's profile folder
-  (Linux honours `XDG_CONFIG_HOME`), and also in the profile folder of every browser process running with its own
+  (Linux honours `XDG_CONFIG_HOME`), and also in the profile folder of a browser process running with its own
   `--user-data-dir`, which a browser reads instead of its usual folder (`runningProfiles`: `/proc` on Linux, `ps` on
-  macOS; `--user-data-dir <folder>` names one that is not running). Windows adds an HKCU key per browser
+  macOS). Browsers running headless and profiles under a temporary folder are test browsers and are skipped;
+  `--user-data-dir <folder>` names a folder to serve whatever it is, running or not. Windows adds an HKCU key per browser
   (`Software\<vendor>\NativeMessagingHosts\com.t3tab.native`, through `reg.exe`) pointing at one manifest file in the
   helper folder. The manifest allows `EXTENSION_IDS` (the manifest `key`'s ID, plus `STORE_EXTENSION_ID` once set in
   `packages/protocol/src/index.ts`).
@@ -126,7 +127,10 @@ the prototype build shows until the package is published, behind one constant, `
   Windows, never a checkout path or the npx cache. `--print` describes without writing.
 - `uninstall` (also from the installed `t3-tab`) stops the daemon, removes agent entries, every registration in
   `install.json` and the usual places, the helper folder and the state folder; a manifest that is not T3-Tab's is
-  left alone.
+  left alone. With `--claude` or `--codex` it removes only those agents' entries and keeps the rest, which the other
+  agent and the browser still use.
+- With no browser link written, `setup` says how to name one (`--browser`, `--user-data-dir`) and exits 1. `--help`,
+  `-h` and `help` print usage and exit 0, for the program and for each command.
 
 A browser reads the native host manifest again on every `sendNativeMessage`, so a helper installed while the browser
 runs is found without a reload (checked in headless Chromium, in the end-to-end run). The panel asks every three
@@ -167,7 +171,6 @@ pnpm exec t3-tab install --claude --codex --browser chromium
 pnpm exec t3-tab install --print
 pnpm exec t3-tab uninstall
 pnpm exec t3-tab uninstall --claude --codex
-pnpm exec t3-tab setup --print
 pnpm exec t3-tab daemon
 pnpm exec t3-tab native-host install --browser chromium
 pnpm exec t3-tab native-host install --browser chrome
@@ -177,14 +180,15 @@ pnpm exec t3-tab mcp
 
 `setup` is what users run (see above); from a checkout it refuses, because only the bundle can be copied.
 `install` registers `t3-tab mcp` as a user-level stdio MCP server for Claude Code in `~/.claude.json` and
-Codex in `~/.codex/config.toml`. When neither `--claude` nor `--codex` is given, it registers every agent
-whose CLI or config it finds. When `--browser` is omitted, it installs the native host for every Chromium,
-Chrome or Brave installation it finds. It uses `claude mcp add` or `codex mcp add` when that CLI is on PATH,
+Codex in `$CODEX_HOME/config.toml` (`~/.codex/config.toml` when `CODEX_HOME` is unset), with a 330-second
+`tool_timeout_sec`, because a browser prompt can wait longer than Codex's 60-second default. When neither `--claude`
+nor `--codex` is given, it registers every agent whose CLI or config it finds. When `--browser` is omitted, it installs
+the native host for every Chromium, Chrome, Brave, Edge or Vivaldi installation it finds. It uses `claude mcp add` or `codex mcp add` when that CLI is on PATH,
 and otherwise edits the config file directly. The registered command uses absolute paths to the running Node
 binary and built `dist/cli.js`, so it works from any working directory. Running `install` again leaves one
-entry. `install --print` describes the same changes without writing anything. `uninstall` removes the
-`t3-tab` entries, plus the native host manifests and launcher; `--claude` and `--codex` limit it to those
-agents.
+entry. `install --print` describes the same changes, including running profiles, without writing anything. `uninstall`
+removes the `t3-tab` entries, plus the helper, native host manifests and state; `--claude` and `--codex` limit it to
+those agents' entries.
 
 `daemon` listens on `127.0.0.1:8765` by default. Set `T3_TAB_PORT` or pass `--port <number>` to change the
 port. Its random token is stored in `$XDG_STATE_HOME/t3-tab/daemon.json` with mode `0600`, falling back to
@@ -206,6 +210,21 @@ replaced, `smart-diff.ts` is the line diff, `find.ts` the search, and `page.ts` 
 caps it at 12,000 characters. Diff baselines are kept per MCP server process, so two agents reading the
 same tab do not take each other's diffs. A reply starts with `tab <id>: <title> — <url>`; when the session
 last saw that same title and address for the tab, it starts with `tab <id>` alone.
+
+Text is cut for display, never for search. The extension keeps each name up to 8,000 characters (2 MB a page, then 300
+each) and drops the line-wrap boxes the reader never prints; the reader prints up to 300, and `find` searches all of it
+and prints a window around the match. Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
+site) when another link of the same name goes elsewhere, when it has no name, when it is the element a `ref` read asks
+for, and in `find`. With `depth`, an element with more inside ends in `…`.
+
+`tabs` also moves a tab: `goto` with a `url`, `back`, `forward` and `reload`. `goto` asks like `open` does. `back`,
+`forward` and `reload` revisit a page the tab has shown, so they ask only for an origin the session holds no approval
+for on that tab. The browser's reload resends a form's POST without asking, so unless the debugger saw the document come
+from a GET, `reload` fetches the address with a new GET (`location.replace`, which keeps the history).
+
+A call that names no tab uses the session's current tab, marked `[current]`: the last it opened, switched to or was
+handed by the owner, else the tab in front, else its first. The owner moving between tabs does not change it, so an
+action cannot land on a tab the agent did not mean.
 
 `act` takes its steps as flat objects, `{ "action": "fill", "ref": "e7", "text": "Ada" }`, with the fields
 `ref`, `text`, `key`, `dx`, `dy` and `ms` (`packages/server/src/tool-schemas.ts`): the schema the agent reads
@@ -231,7 +250,7 @@ last read:` with that diff, and a reply about changed elements adds up to 10 lin
 
 **JavaScript dialogs.** A dialog pauses the page, so every command that reaches it would hang. `cdp.ts` tracks
 `Page.javascriptDialogOpening` and fails such commands at once with a notice naming the dialog. `act` answers it:
-`press Enter` accepts, `press Escape` dismisses, and a `type` step without a ref holds a prompt's text until Enter.
+`press Enter` accepts, `press Escape` dismisses (in any of the usual spellings), and a `type` step without a ref holds a prompt's text until Enter.
 A step that opens a dialog counts as done, so the same batch can answer it. Answers run one at a time per tab and
 are refused if another dialog replaced the one checked; the browser's command names no dialog, so a replacement in
 the instant before it lands cannot be caught. A dialog from a frame of another origin
@@ -241,7 +260,9 @@ already had open, the tool says to ask the owner to answer it.
 
 **Background tabs.** Chromium never acknowledges wheel input on a hidden page and holds mouse input for seconds, so
 an `act` batch on a hidden tab turns on `Emulation.setFocusEmulationEnabled` while its steps run and off afterwards.
-The page sees itself as visible and focused for that long.
+So do a screenshot and a load through `tabs`, because a hidden page gets no animation frames and would stay blank if it
+renders from script; a load holds it until the page settles. The page sees itself as visible and focused for that long.
+The settle probe runs in an isolated world (`privateWorld` in `cdp.ts`), so its observer and counter are not on the page.
 
 **Other extensions' frames.** Chromium drops `chrome.debugger` from a tab, and refuses to attach, while any frame in
 it belongs to another extension, such as a password manager's autofill menu; blocking the frame's request does not
@@ -265,6 +286,11 @@ The daemon issues each session id and binds it to the control connection that re
 on another socket, or with another id, are refused. Tabs a session opens go into its own Chromium tab
 group. It can list and use only tabs in that group or tabs the owner shares from the side panel.
 
+`tabs open` asks first, for the requested address: nothing is created, fetched or run until the owner says yes. Then
+the page loads in a new tab behind the one the owner is on, with the debugger attached on `about:blank` first. If a
+redirect takes it to another origin, the tab stays in the session's group unapproved, and the reply names the origin and
+says to read it to ask for access; an origin that is already allowed just carries on.
+
 Site permissions are stored per HTTP(S) origin: `ask` by default, `read` or `allow`. `read` lets sessions
 read the site without a prompt and never covers opening, acting or `run_js`; `allow` covers all four. A read
 prompt's lasting choice sets `read`; the lasting choice of an open, act or `run_js` prompt sets `allow`.
@@ -275,7 +301,7 @@ action. `tabs list`, `switch` and `open` show only the origin and `[needs approv
 current origin the session has not approved (and the site is not set to `read` or `allow`). A tab opened
 from a tab of a session, through `chrome.webNavigation.onCreatedNavigationTarget`, joins that session's
 group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own
-(shared or not), is left alone. A prompt names its tab id and title; it can time out or be declined, and one session may
+(shared or not), is left alone. A prompt names its tab id and title, and its address when it is about loading one (a page being opened has no tab yet); it can time out or be declined, and one session may
 have at most three waiting prompts. The side panel keeps prompt rows stable and disables a prompt's buttons
 for 500 ms when it appears and again whenever a row is removed or inserted above another.
 

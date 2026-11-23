@@ -17,16 +17,16 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   and falling back to non-destructive file edits. From the installed helper the entry runs the helper's
   launcher, so it names no checkout and no Node path. T3 Code threads load those user-level configs, so the same setup
   serves both T3 threads and standalone CLI sessions without changing T3 Code.
-- **Three-package TypeScript workspace.** `packages/extension` holds the browser service worker and
+- **Four-package TypeScript workspace.** `packages/extension` holds the browser service worker and
   side panel; `packages/server` is one Node.js CLI providing the background daemon, Chrome native
-  host and stdio MCP server; `packages/protocol` holds the versioned message types shared between
-  them. Keeping page reading, ref tracking, diffs and agent process management in Node keeps the
+  host and stdio MCP server; `packages/helper` bundles that CLI into the one file users install;
+  `packages/protocol` holds the versioned message types shared between them. Keeping page reading, ref tracking, diffs and agent process management in Node keeps the
   extension small and easy to unit-test.
 
 ## Browser target and reference boundaries
 
-- **Chromium first, Firefox later.** v1 targets Chromium-based browsers (Chromium, Chrome and
-  Brave). The extension is built with WXT (a WebExtension build framework) so Firefox support can
+- **Chromium first, Firefox later.** v1 targets Chromium-based browsers (Chromium, Chrome, Brave,
+  Edge and Vivaldi). The extension is built with WXT (a WebExtension build framework) so Firefox support can
   be added later without rewriting the extension.
 - **Behavioural reference only for proprietary tools.** The permission model—per-site prompts,
   confirmation for risky actions, session tab groups and explicit tab sharing—follows Claude in
@@ -128,7 +128,11 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   constant is the only change needed.
 - **Uninstall is one command and removes what install added.** Setup records every file and registry key it wrote
   in `install.json`; `uninstall` removes those, the usual locations, agent entries and the state folder, and
-  leaves other products' native host manifests alone.
+  leaves other products' native host manifests alone. Naming an agent (`--claude`, `--codex`) removes only that
+  agent's entry, because the other agent and the browser still use the helper.
+- **Test browsers are left alone.** Setup also serves browsers running with their own `--user-data-dir`, but not
+  headless ones or profiles under a temporary folder, which belong to test runs. A folder the user names is always
+  served.
 - **Until the package is published, the panel shows a test command.** One constant (`HELPER_CHANNEL` in
   `packages/extension/src/helper-command.ts`) chooses between the product command and a script that downloads
   the packed helper from a GitHub prerelease and runs the same `setup`. Plain `npx <tarball url>` was rejected for
@@ -150,6 +154,18 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **Dialogs are answered through `act`.** Enter accepts, Escape dismisses and `type` fills a prompt,
   so the tool schema did not grow. A dialog from a frame of another origin shows no text and can
   only be dismissed.
+- **Opening a page asks first, and does not take the owner's tab.** The prompt names the address and nothing is
+  fetched or run until the owner says yes, because a page loaded before the answer has already used their cookies. The
+  page opens behind the tab they are on, so the side panel stays in view for the answer. A hidden page gets no animation
+  frames, so it counts as visible until it has settled and for a screenshot, then goes back to hidden. A redirect to
+  another origin keeps the tab, unapproved, rather than failing: the approval covers only the origin asked for.
+- **A session has a current tab.** With tabs opening in the background, the tab in front no longer says what the agent
+  is working on. Calls that name no tab use the last one the session opened, switched to or was handed. The owner moving
+  between tabs does not change it, so an action cannot land on a tab the agent did not mean.
+- **Moving a tab follows the rules for opening one.** `goto` asks like `open` every time unless the site is allowed,
+  including on the same origin: the agent chooses the address, and a GET can change things, so a read grant or an earlier
+  approval does not cover it. `back`, `forward` and `reload` revisit what the tab has shown and ask only for an origin
+  the session holds no approval for there. `reload` never resends a form: the browser's own reload would, without asking.
 - **Socket-bound sessions and tab groups.** The daemon issues each session id and binds it to the
   control socket that registered it; requests on another socket or with another id are refused.
   Tabs a session opens go into its own Chromium tab group. A session can list and use only tabs in
