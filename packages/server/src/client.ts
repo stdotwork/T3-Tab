@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { open, mkdir, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
   PROTOCOL_VERSION,
@@ -18,7 +17,8 @@ import {
 } from '@t3-tab/protocol';
 import WebSocket from 'ws';
 
-import { readDaemonState, stateDirectory, type DaemonState } from './state.js';
+import { runningCliPath } from './version.js';
+import { readDaemonState, readRawDaemonState, stateDirectory, type DaemonState } from './state.js';
 
 const START_TIMEOUT_MS = 10_000;
 const LOCK_STALE_MS = 30_000;
@@ -246,9 +246,27 @@ export async function daemonIsHealthy(state: DaemonState): Promise<boolean> {
   }
 }
 
+/**
+ * Stops the daemon the state folder names, if it answers its own token. A process that only reuses the number is left
+ * alone. Returns true when a daemon was running and has stopped.
+ */
+export async function stopDaemon(directory: string): Promise<boolean> {
+  const raw = await readRawDaemonState(directory);
+  if (raw === null || !(await daemonIsHealthy(raw as DaemonState))) return false;
+  try {
+    process.kill(raw.pid, 'SIGTERM');
+  } catch {
+    return false;
+  }
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    if (!(await daemonIsHealthy(raw as DaemonState))) return true;
+    await sleep(50);
+  }
+  return false;
+}
+
 function startDaemonProcess(env: NodeJS.ProcessEnv): void {
-  const cliPath = fileURLToPath(new URL('./cli.js', import.meta.url));
-  const child = spawn(process.execPath, [cliPath, 'daemon'], {
+  const child = spawn(process.execPath, [runningCliPath(), 'daemon'], {
     env,
     detached: true,
     stdio: 'ignore',

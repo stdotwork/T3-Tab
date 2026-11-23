@@ -9,7 +9,11 @@ work, with the browser tools injected.
 
 - `packages/extension` — the WXT Manifest V3 Chromium extension, including its service worker and side panel.
 - `packages/server` — the Node.js/TypeScript daemon, Chrome native host and stdio MCP server. The
-  `t3-tab` binary in `dist/cli.js` provides all three commands.
+  `t3-tab` binary in `dist/cli.js` provides all three commands, plus `setup` and `uninstall`.
+- `packages/helper` — the npm package `t3-tab` (not published yet): `build.mjs` bundles the server and its
+  dependencies into one file, `dist/cli.js`, which is what users install (below).
+- `scripts/` — `install-test-build.sh` (installs the packed helper from a GitHub prerelease, the stand-in for npm
+  until the package is published) and `publish-test-build.sh` (refreshes that prerelease from a checkout).
 - `packages/protocol` — the versioned types shared by the extension and background program.
 - `docs/decisions.md` — lasting v1 design decisions, tradeoffs and out-of-scope boundaries.
 - `e2e/` — the Playwright end-to-end harness; `e2e/harness.mjs` holds the setup the end-to-end run and the
@@ -31,9 +35,19 @@ pnpm e2e
 pnpm bench
 ```
 
-`pnpm build` writes the Chromium extension to `packages/extension/.output/chrome-mv3`.
-The built server is `packages/server/dist/cli.js`; `node_modules/.bin/t3-tab` runs it after installation.
-`pnpm e2e` launches headless Playwright Chromium with that built extension, starts the real native host and
+`pnpm build` writes the Chromium extension to `packages/extension/.output/chrome-mv3` and the packed helper's
+bundle to `packages/helper/dist/cli.js`.
+The built server is `packages/server/dist/cli.js`; `node_modules/.bin/t3-tab` runs it after installation. That is
+the developer path; users get the helper from `t3-tab setup` (see "Installing the helper").
+`pnpm e2e` first installs the helper the way a user does (`e2e/checks-product-install.mjs`): `npm pack` of
+`packages/helper`, then `npx --package <tarball> t3-tab setup` run from a temporary folder outside the repository
+with a temporary HOME, into a headless Chromium that is already running with the extension and no helper. It checks
+that the panel's helper state goes from missing to connected with no reload and the background program started by
+the browser, that Add for Claude Code writes an entry naming the installed launcher and that entry's `mcp` server
+sees the browser, that running `setup` again over a daemon of another version stops it and the browser reconnects
+to a new one, that `uninstall` removes the helper folder, manifest, state and agent entry and stops the daemon,
+that `scripts/install-test-build.sh` (through a `file://` address) installs the same helper, and that a browser
+started with its own `--user-data-dir` finds it too. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
 two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
 links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
 `screenshot`, `act` and `run_js`. It also checks session tab groups, socket-bound session ids, tab sharing,
@@ -82,9 +96,49 @@ current run (the measured number plus 5%, plus 40% for JPEG bytes, which vary wi
 change only on purpose and give the reason in the PR. `pnpm bench --check results.json` judges a saved
 results file without a browser. Changing `bench/pages.mjs` changes every number, so redo the budget with it.
 
+## Installing the helper
+
+Users add the extension from the browser's store and run one command from any folder: `npx t3-tab@latest setup`
+(the panel shows it with a copy button; `packages/extension/src/helper-command.ts` holds it, with the test command
+the prototype build shows until the package is published, behind one constant, `HELPER_CHANNEL`). It needs Node.js
+20 or newer; without it the shell reports `npx` or `node` not found and the panel keeps showing the command.
+`setup` runs from the bundled file (an unbundled build refuses; `__T3_TAB_VERSION__` is set only by the bundler):
+
+- It copies the bundle to the per-user helper folder (`helperLayout` in `packages/server/src/helper-layout.ts`:
+  `$XDG_DATA_HOME` or `~/.local/share/t3-tab` on Linux, `~/Library/Application Support/T3-Tab` on macOS,
+  `%LOCALAPPDATA%\T3-Tab` on Windows) and writes the launchers `t3-tab` and `native-host` (`.cmd` on Windows) that run it
+  with the Node that ran `setup`, or `node` on PATH if that one is gone. `install.json` records the version and
+  everything `setup` wrote.
+- It registers the native host for every browser it finds (`install-native-host.ts`): Chromium, Chrome, Brave, Edge
+  and Vivaldi. Linux and macOS write `NativeMessagingHosts/com.t3tab.native.json` in the browser's profile folder
+  (Linux honours `XDG_CONFIG_HOME`), and also in the profile folder of every browser process running with its own
+  `--user-data-dir`, which a browser reads instead of its usual folder (`runningProfiles`: `/proc` on Linux, `ps` on
+  macOS; `--user-data-dir <folder>` names one that is not running). Windows adds an HKCU key per browser
+  (`Software\<vendor>\NativeMessagingHosts\com.t3tab.native`, through `reg.exe`) pointing at one manifest file in the
+  helper folder. The manifest allows `EXTENSION_IDS` (the manifest `key`'s ID, plus `STORE_EXTENSION_ID` once set in
+  `packages/protocol/src/index.ts`).
+- It stops a running daemon whose `daemon.json` shows another helper or protocol version (after an authenticated
+  health check, so a reused process number is never signalled), so the browser's next connection starts the new one.
+- `--agents` also adds T3-Tab to Claude Code and Codex when found; the panel's Add buttons do the same one agent at
+  a time (`Setup.addAgent`). The entry is the launcher with `mcp` (`mcpCommand`), or Node and the installed file on
+  Windows, never a checkout path or the npx cache. `--print` describes without writing.
+- `uninstall` (also from the installed `t3-tab`) stops the daemon, removes agent entries, every registration in
+  `install.json` and the usual places, the helper folder and the state folder; a manifest that is not T3-Tab's is
+  left alone.
+
+A browser reads the native host manifest again on every `sendNativeMessage`, so a helper installed while the browser
+runs is found without a reload (checked in headless Chromium, in the end-to-end run). The panel asks every three
+seconds while the helper is missing; the browser starts the daemon through the native host. The panel's helper state
+says why it is missing (`HelperProblem` in `daemon-link.ts`): not registered, registered for another extension ID,
+the native host stopped, or the helper or the extension is behind (the side that sees the other's newer or older
+protocol version says so), and shows the command or a pointer to the extensions page accordingly.
+
+The macOS and Windows registrations are written and unit-tested (`helper-install.test.ts`) but have not been run
+on those systems. Linux was run, with Node 26.13.1 only.
+
 ## CLI
 
-Build before running the CLI:
+The developer path, from a checkout. Build before running the CLI:
 
 ```sh
 pnpm exec t3-tab install
@@ -92,6 +146,7 @@ pnpm exec t3-tab install --claude --codex --browser chromium
 pnpm exec t3-tab install --print
 pnpm exec t3-tab uninstall
 pnpm exec t3-tab uninstall --claude --codex
+pnpm exec t3-tab setup --print
 pnpm exec t3-tab daemon
 pnpm exec t3-tab native-host install --browser chromium
 pnpm exec t3-tab native-host install --browser chrome
@@ -99,6 +154,7 @@ pnpm exec t3-tab native-host install --browser brave
 pnpm exec t3-tab mcp
 ```
 
+`setup` is what users run (see above); from a checkout it refuses, because only the bundle can be copied.
 `install` registers `t3-tab mcp` as a user-level stdio MCP server for Claude Code in `~/.claude.json` and
 Codex in `~/.codex/config.toml`. When neither `--claude` nor `--codex` is given, it registers every agent
 whose CLI or config it finds. When `--browser` is omitted, it installs the native host for every Chromium,
@@ -345,7 +401,9 @@ in memory (`packages/server/src/agents/`), so they end when it stops.
   conversation's view. A
   code the extension did not issue is refused.
 - **Versions.** The extension, native host and daemon must speak the same `PROTOCOL_VERSION`. On a mismatch
-  the link closes and the panel says to rebuild, run `t3-tab install` and reload the extension.
+  the link closes with a reason that says which side is behind (`mismatchReason` in the protocol package): when
+  the helper is, the panel shows the setup command (running it updates the helper, no reload); when the extension is,
+  it points to the browser's extensions page.
 
 ## CI
 

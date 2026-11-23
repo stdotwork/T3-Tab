@@ -24,7 +24,6 @@ import {
   removeCodexServer,
   type McpCommand,
 } from './install-config.js';
-import { BROWSERS, nativeHostPaths, type SupportedBrowser } from './install-native-host.js';
 
 export type Agent = 'claude' | 'codex';
 export type InstallMethod = 'cli' | 'file';
@@ -56,12 +55,6 @@ export interface AgentUninstallResult {
 }
 
 const AGENTS: readonly Agent[] = ['claude', 'codex'];
-const BROWSER_EXECUTABLES: Record<SupportedBrowser, readonly string[]> = {
-  chromium: ['chromium', 'chromium-browser'],
-  chrome: ['google-chrome', 'google-chrome-stable'],
-  brave: ['brave', 'brave-browser', 'brave-browser-stable'],
-};
-
 export async function installAgent(options: InstallAgentOptions): Promise<AgentInstallResult> {
   const configPath = agentConfigPath(options.agent, options.home);
   const executable = await executableOnPath(options.agent, options.env);
@@ -116,31 +109,6 @@ export async function findAgents(home: string, env: NodeJS.ProcessEnv): Promise<
     }
   }
   return found;
-}
-
-export async function findBrowsers(home: string, env: NodeJS.ProcessEnv): Promise<SupportedBrowser[]> {
-  const found: SupportedBrowser[] = [];
-  for (const browser of BROWSERS) {
-    const hasExecutable = await anyExecutableOnPath(BROWSER_EXECUTABLES[browser], env);
-    if (hasExecutable || (await fileExists(dirname(nativeHostPaths(browser, home).manifestDirectory)))) {
-      found.push(browser);
-    }
-  }
-  return found;
-}
-
-/**
- * The browsers `native-host install` serves: the one asked for, else every Chromium, Chrome or Brave installation found.
- * When none is found it keeps the old default, Chromium, so the command still installs something.
- */
-export async function nativeHostBrowsers(
-  requested: SupportedBrowser | undefined,
-  home: string,
-  env: NodeJS.ProcessEnv,
-): Promise<{ browsers: SupportedBrowser[]; found: boolean }> {
-  if (requested !== undefined) return { browsers: [requested], found: true };
-  const found = await findBrowsers(home, env);
-  return found.length === 0 ? { browsers: ['chromium'], found: false } : { browsers: found, found: true };
 }
 
 async function editAgentConfig(
@@ -216,13 +184,6 @@ async function executableOnPath(name: string, env: NodeJS.ProcessEnv): Promise<s
     }
   }
   return undefined;
-}
-
-async function anyExecutableOnPath(names: readonly string[], env: NodeJS.ProcessEnv): Promise<boolean> {
-  for (const name of names) {
-    if ((await executableOnPath(name, env)) !== undefined) return true;
-  }
-  return false;
 }
 
 async function runCommand(

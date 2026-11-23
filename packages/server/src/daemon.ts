@@ -1,11 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_DAEMON_PORT,
-  PROTOCOL_MISMATCH,
+  mismatchReason,
   PROTOCOL_VERSION,
   type BrowserDaemonRequestMessage,
   type BrowserPongMessage,
@@ -20,10 +19,11 @@ import { T3PanelPairing } from './agents/t3-pairing.js';
 import { removeTemporaryCredentials } from './agents/t3-credential.js';
 import { BrowserConnection } from './browser-link.js';
 import { handleControlMessage, type ControlState } from './daemon-control.js';
-import { isBrowserMessage, isOtherProtocolVersion, parseJson } from './daemon-messages.js';
+import { isBrowserMessage, otherProtocolVersion, parseJson } from './daemon-messages.js';
 import { browserPromptsGone, promptClosed, promptOpened } from './daemon-prompts.js';
 import { connectionRole, tokensMatch, isLoopbackHostHeader, type ConnectionCredential, type ConnectionRole } from './security.js';
 import { Setup } from './setup.js';
+import { HELPER_VERSION, runningMcpCommand } from './version.js';
 import { clearDaemonState, clearExtensionState, writeDaemonState, writeExtensionState, type DaemonState } from './state.js';
 
 export interface DaemonOptions {
@@ -67,7 +67,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const browsers = new Map<WebSocket, BrowserConnection>();
   const sessions = new Map<WebSocket, ToolSession>();
   const control: ControlState = { sessions, claims: new Map(), redeeming: new Map(), prompts: new Map() };
-  const server = { command: process.execPath, args: [fileURLToPath(new URL('./cli.js', import.meta.url)), 'mcp'] };
+  const server = runningMcpCommand();
   const agents = options.agents ?? new Agents({ env: process.env, stateDir, server });
   const t3Access = options.t3Access ?? new T3Access({ env: process.env, stateDir });
   const setup = options.setup ?? new Setup({ env: process.env, server, agents });
@@ -153,6 +153,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     pid: process.pid,
     port: address.port,
     token,
+    ...(HELPER_VERSION === undefined ? {} : { helperVersion: HELPER_VERSION }),
   };
   try {
     // Written first: whoever finds this daemon in `daemon.json` can then find the extension's secret too.
@@ -215,7 +216,8 @@ function handleBrowserMessage(
 ): void {
   const value = parseJson(data);
   if (!isBrowserMessage(value)) {
-    webSocket.close(1008, isOtherProtocolVersion(value) ? PROTOCOL_MISMATCH : 'Invalid protocol message');
+    const theirs = otherProtocolVersion(value);
+    webSocket.close(1008, theirs === undefined ? 'Invalid protocol message' : mismatchReason(theirs));
     return;
   }
 

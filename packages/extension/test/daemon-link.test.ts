@@ -1,4 +1,4 @@
-import { PROTOCOL_MISMATCH, PROTOCOL_VERSION } from '@t3-tab/protocol';
+import { EXTENSION_OUTDATED, HELPER_OUTDATED, PROTOCOL_MISMATCH, PROTOCOL_VERSION } from '@t3-tab/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -24,14 +24,19 @@ function openSocket(): { socket: WebSocket; sent: string[] } {
 }
 
 describe('a daemon of another protocol version', () => {
-  it.each(['Invalid protocol message', PROTOCOL_MISMATCH])('tells the owner to update when it closes with %j', async (reason) => {
+  it.each([
+    ['Invalid protocol message', HELPER_OUTDATED],
+    [PROTOCOL_MISMATCH, PROTOCOL_MISMATCH],
+    [HELPER_OUTDATED, HELPER_OUTDATED],
+    [EXTENSION_OUTDATED, EXTENSION_OUTDATED],
+  ])('fails a request with the version problem when it closes with %j', async (reason, said) => {
     noteDaemonClose(1008, reason);
-    await expect(askDaemon('agents.list', {})).rejects.toThrow('different versions');
+    await expect(askDaemon('agents.list', {})).rejects.toThrow(said);
   });
 
   it('keeps the plain message for another kind of close', async () => {
     noteDaemonClose(1008, 'Invalid tab count');
-    await expect(askDaemon('agents.list', {})).rejects.toThrow('not connected');
+    await expect(askDaemon('agents.list', {})).rejects.toThrow('not connected to its helper');
   }, 8_000);
 });
 
@@ -44,28 +49,37 @@ describe('the helper state the panel asks for', () => {
   it('answers with no link at all, tries to connect, and says what is wrong', async () => {
     const connector = vi.fn();
     setDaemonConnector(connector);
-    expect(await daemonLinkState(0)).toEqual({
-      connected: false,
-      error: 'T3-Tab is not connected to its background program. Run `t3-tab install`, then reopen the browser.',
-    });
+    expect(await daemonLinkState(0)).toEqual({ connected: false, error: 'T3-Tab is not connected to its helper.', problem: 'missing' });
     expect(connector).toHaveBeenCalled();
     noteDaemonProblem(new Error('Specified native messaging host not found.'));
-    expect(await daemonLinkState(0)).toEqual({ connected: false, error: 'Specified native messaging host not found.' });
+    expect(await daemonLinkState(0)).toEqual({ connected: false, error: 'Specified native messaging host not found.', problem: 'missing' });
   });
 
-  it('flags a version mismatch, whether the link was closed for it or the native host reported it', async () => {
-    noteDaemonClose(1008, PROTOCOL_MISMATCH);
-    expect(await daemonLinkState(0)).toEqual({ connected: false, error: PROTOCOL_MISMATCH, protocolMismatch: true });
-    noteDaemonClose(1000, '');
-    noteDaemonProblem(new Error('Native host protocol mismatch'));
-    expect(await daemonLinkState(0)).toEqual({ connected: false, error: PROTOCOL_MISMATCH, protocolMismatch: true });
+  it.each([
+    ['Access to the specified native messaging host is forbidden.', 'blocked'],
+    ['Native host has exited.', 'failed'],
+    ['Error when communicating with the native messaging host.', 'failed'],
+    [HELPER_OUTDATED, 'helper-outdated'],
+    [EXTENSION_OUTDATED, 'extension-outdated'],
+    ['Native host protocol mismatch', 'helper-outdated'],
+    ['something else', 'unknown'],
+  ])('names the problem for %j', async (message, problem) => {
+    noteDaemonProblem(new Error(message));
+    expect(await daemonLinkState(0)).toEqual({ connected: false, error: message, problem });
+  });
+
+  it('says which side is behind when the link was closed for a version mismatch', async () => {
+    noteDaemonClose(1008, EXTENSION_OUTDATED);
+    expect(await daemonLinkState(0)).toEqual({ connected: false, error: EXTENSION_OUTDATED, problem: 'extension-outdated' });
+    noteDaemonClose(1008, 'Invalid protocol message');
+    expect(await daemonLinkState(0)).toEqual({ connected: false, error: HELPER_OUTDATED, problem: 'helper-outdated' });
   });
 
   it('forgets the problem once a link opens', async () => {
     noteDaemonProblem(new Error('Native host has exited.'));
     setDaemonSocket(openSocket().socket);
     setDaemonSocket(undefined);
-    expect((await daemonLinkState(0)).error).toMatch(/not connected/);
+    expect((await daemonLinkState(0)).error).toMatch(/not connected to its helper/);
   });
 });
 

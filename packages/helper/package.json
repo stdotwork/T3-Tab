@@ -1,0 +1,27 @@
+{
+  "name": "t3-tab",
+  "version": "0.1.0",
+  "description": "T3-Tab helper: gives coding agents your own browser as MCP tools. Install it with `npx t3-tab@latest setup`.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": { "type": "git", "url": "git+https://github.com/stdotwork/T3-Tab.git" },
+  "bin": {
+    "t3-tab": "./dist/cli.js"
+  },
+  "files": [
+    "dist/cli.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "node --check build.mjs"
+  },
+  "devDependencies": {
+    "@t3-tab/server": "workspace:*",
+    "rolldown": "1.2.19"
+  }
+}

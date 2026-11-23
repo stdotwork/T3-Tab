@@ -11,10 +11,11 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   browser tools injected, and delegation stays in T3 Code (an app that manages coding-agent
   threads). Building a custom agent loop or embedding T3 Code's web UI inside the side panel was
   rejected so T3-Tab stays small and works with every provider T3 Code supports.
-- **Reach T3 Code threads via user-level MCP config.** `t3-tab install` registers `t3-tab mcp` in
-  Claude Code (`~/.claude.json`) and Codex (`~/.codex/config.toml`) using absolute paths to Node
-  and the built CLI, preferring `claude mcp add` and `codex mcp add` and falling back to
-  non-destructive file edits. T3 Code threads load those user-level configs, so the same setup
+- **Reach T3 Code threads via user-level MCP config.** The panel's Add buttons (and `t3-tab setup
+  --agents`, or `t3-tab install` from a checkout) register `t3-tab mcp` in Claude Code
+  (`~/.claude.json`) and Codex (`~/.codex/config.toml`), preferring `claude mcp add` and `codex mcp add`
+  and falling back to non-destructive file edits. From the installed helper the entry runs the helper's
+  launcher, so it names no checkout and no Node path. T3 Code threads load those user-level configs, so the same setup
   serves both T3 threads and standalone CLI sessions without changing T3 Code.
 - **Three-package TypeScript workspace.** `packages/extension` holds the browser service worker and
   side panel; `packages/server` is one Node.js CLI providing the background daemon, Chrome native
@@ -86,7 +87,53 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **Keepalive and strict protocol versioning.** The extension pings the WebSocket every 20 seconds
   while connected so Chromium does not stop the idle Manifest V3 service worker mid-session. The
   extension, native host and daemon require an exact `PROTOCOL_VERSION` match; a mismatch closes
-  the link and prompts the user to rebuild and reload.
+  the link and the panel says which side is behind (see "Installing the helper").
+
+## Installing the helper
+
+- **The product is installed from the extension store plus one command.** A store extension cannot write a
+  native host manifest, so the part that lives on the machine (the helper: native host, daemon and MCP server)
+  is one command that runs from any folder, `npx t3-tab@latest setup`, shown in the panel with a copy button.
+  Native-host products do the same through their own CLI or app (Claude Code, 1Password, KeePassXC); MCP products
+  run `npx <package>@latest`. No git checkout, no repository, no administrator rights.
+- **npm package `t3-tab`, bundled into one file.** `packages/helper` bundles the server and all its
+  dependencies into `dist/cli.js`, so the package has no dependencies and starts fast under `npx`. `setup`
+  copies that file into a per-user folder (`~/.local/share/t3-tab`, `~/Library/Application Support/T3-Tab`,
+  `%LOCALAPPDATA%\T3-Tab`) and writes two launchers next to it: one the native host manifest names, one agents'
+  MCP entries name. The launchers run the file with the Node that ran `setup` and fall back to `node` on PATH if
+  that Node moved. The npx cache is never referenced, because it can be cleared at any time.
+  Alternatives rejected: `npx t3-tab@latest mcp` in every agent entry (starts slower, needs the network on each
+  launch, and the browser's native host cannot use it); a self-updating binary from `curl | sh` (needs a release
+  pipeline per platform, and Node is already needed for the agents' own tools).
+- **Updating is running the command again.** It replaces the file, rewrites the launchers and registrations, and
+  stops a running background program that is from another version (`daemon.json` records the helper version) so
+  the browser starts the new one. A helper that updated itself from the browser's launch would run downloaded
+  code without being asked, so it does not. When the two sides disagree, the helper or the extension names the
+  one that is behind (its protocol version is older); the panel then shows the command, or points to the
+  browser's extensions page. Agents that were using the old background program need restarting.
+- **Registration covers every Chromium-family browser found, and running browsers with their own profile.**
+  Linux and macOS: a manifest in the browser's profile folder (Linux honours `XDG_CONFIG_HOME`); Windows: an HKCU
+  registry key per browser pointing at one manifest. A browser started with `--user-data-dir` reads
+  `<that folder>/NativeMessagingHosts` instead of its usual folder, so `setup` also registers in the profile
+  folder of every browser process it finds running (from `/proc` or `ps`) and takes `--user-data-dir <folder>`.
+  This was the cause of the helper shown as missing on a machine where the manifest and launcher worked by hand.
+- **No reload or restart is needed.** Chromium reads the manifest again each time the extension asks for the
+  native host, which the panel makes every three seconds while the helper is missing (checked in headless
+  Chromium: a manifest written after the browser started was used on the next attempt). The panel's step needs
+  no button, and the browser starts the background program through the native host whenever it is not running.
+- **One extension ID.** The manifest `key` gives an unpacked build the same ID on every machine. The native host
+  manifest and the daemon accept a list of IDs: the key's, and `STORE_EXTENSION_ID` in
+  `packages/protocol/src/index.ts`, which stays empty until the store listing exists (the store assigns its own
+  ID; its dashboard shows a public key to put in `EXTENSION_KEY`, after which both are the same). Filling in the
+  constant is the only change needed.
+- **Uninstall is one command and removes what install added.** Setup records every file and registry key it wrote
+  in `install.json`; `uninstall` removes those, the usual locations, agent entries and the state folder, and
+  leaves other products' native host manifests alone.
+- **Until the package is published, the panel shows a test command.** One constant (`HELPER_CHANNEL` in
+  `packages/extension/src/helper-command.ts`) chooses between the product command and a script that downloads
+  the packed helper from a GitHub prerelease and runs the same `setup`. Plain `npx <tarball url>` was rejected for
+  the test build because `npx` caches by address and would not fetch a refreshed file. Windows has no test
+  script yet; the product command works there.
 
 ## Permissions and trust model
 
@@ -198,7 +245,8 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 
 - **One end-to-end seam backed by unit tests.** `pnpm e2e` launches headless Playwright Chromium
   with the built extension, real native host, real daemon and real MCP clients against a local test
-  site, plus fake `t3`, `claude` and `codex` CLIs and a fake T3 OAuth/`/mcp` server for side-panel
+  site, an install of the packed helper into a temporary home from a folder outside the repository (into a
+  browser that is already running, with no reload), plus fake `t3`, `claude` and `codex` CLIs and a fake T3 OAuth/`/mcp` server for side-panel
   sessions. Unit tests (`pnpm test`, Vitest) cover page reading, diffs, refs, permissions, agent
   config installation, Codex provider parsing and T3 sign-in checks underneath.
 - **Temporary HOME for config and agent tests.** Every test that touches `~/.claude`, `~/.codex`,
@@ -218,4 +266,4 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - Per-model tool profiles or on-demand tool packs.
 - Cross-product token benchmarks against Claude in Chrome or the Codex Chrome plugin (v1 benchmarks
   T3-Tab against its own budget).
-- Publishing to browser web stores or npm.
+- Publishing to browser web stores or npm (the install is built and packed for it, and waits for the owner).

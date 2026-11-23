@@ -4,6 +4,9 @@
 //
 //   CLAUDE_CODE_OAUTH_TOKEN=... T3_TAB_FLOW_SHOTS=/some/folder node e2e/panel-flow.mjs [t3|direct|all]
 //
+// `setup` stops after the three setup screens (helper missing, helper found, all ready) and needs no agent login:
+//   T3_TAB_FLOW_SHOTS=/some/folder T3_TAB_FLOW_T3_HOME=/some/throwaway/t3-home node e2e/panel-flow.mjs setup
+//
 // Everything runs under a temporary HOME; the browser is headless; the T3 server is started and stopped here.
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -11,6 +14,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 
+import { packHelper, runSetupFromTarball } from './checks-product-install.mjs';
 import { connectMcp, createHome, extensionWorker, installNativeHost, launchBrowser, listen, panelRequest, requireBuild, sleep, stopDaemon } from './harness.mjs';
 
 const shotsDir = process.env.T3_TAB_FLOW_SHOTS;
@@ -221,7 +225,7 @@ async function runT3Flow() {
   const projectDir = join(home.tempHome, 'demo-project');
   await mkdir(projectDir, { recursive: true });
   await writeFile(join(projectDir, 'README.md'), '# Demo project\n');
-  Object.assign(home.childEnv, { T3CODE_HOME: join(home.tempHome, '.t3'), T3_TAB_T3: (await which3()) });
+  Object.assign(home.childEnv, { T3CODE_HOME: process.env.T3_TAB_FLOW_T3_HOME ?? join(home.tempHome, '.t3'), T3_TAB_T3: (await which3()) });
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN !== undefined) home.childEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
   await requireBuild(home);
   const site = await startSite();
@@ -239,10 +243,13 @@ async function runT3Flow() {
 
     // 1. First open: the helper is not installed yet.
     await panelPage.getByText('Welcome to T3-Tab').waitFor();
-    await panelPage.getByText('t3-tab native-host install').waitFor();
+    await panelPage.locator('.command-line code').waitFor();
     check('first open shows the setup list with the one command', true);
     await shot('01-setup-no-helper');
-    await installNativeHost(home);
+    // The helper goes in the way a user installs it: the packed tarball, run from outside the repository.
+    const packed = await packHelper(home.rootDir);
+    await runSetupFromTarball(home, packed.tarball);
+    await rm(packed.out, { recursive: true, force: true });
     await panelPage.locator('.setup-row').filter({ hasText: 'T3-Tab helper' }).getByText('Ready').waitFor({ timeout: 60_000 });
     check('the helper row turned ready by itself', true);
     await panelPage.locator('.setup-row').filter({ hasText: 'T3 Code' }).getByRole('button', { name: 'Connect' }).waitFor({ timeout: 30_000 });
@@ -261,6 +268,10 @@ async function runT3Flow() {
     await panelPage.locator('.setup-row').filter({ hasText: 'T3 Code' }).getByText('Connected').waitFor({ timeout: 30_000 });
     check('one click connected the panel to T3', true);
     await shot('03-setup-all-ready');
+    if (which === 'setup') {
+      await panelRequest(serviceWorker, { type: 'panel.t3Unpair' }).catch(() => undefined);
+      return;
+    }
     await panelPage.getByRole('button', { name: 'Start', exact: true }).click();
 
     // 2. Home is a new thread.
@@ -586,7 +597,7 @@ async function runDirectFlow() {
 await mkdir(shotsDir, { recursive: true });
 let failure;
 try {
-  if (which === 't3' || which === 'all') await runT3Flow();
+  if (which === 't3' || which === 'setup' || which === 'all') await runT3Flow();
   if (which === 'direct' || which === 'all') await runDirectFlow();
 } catch (error) {
   failure = error;

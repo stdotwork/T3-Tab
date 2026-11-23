@@ -1,13 +1,13 @@
 import { Check, Copy, Plug } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 
+import { HELPER_COMMAND, HELPER_REQUIREMENT } from '../../src/helper-command';
 import { errorText, panel } from './lib/api';
 import type { LiveState } from './lib/store';
 import { refreshSetup } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
 import { ProviderIcon, Spinner } from './ui';
 
-export const HELPER_COMMAND = 'pnpm exec t3-tab native-host install';
 
 const Ready = ({ text = 'Ready' }: { text?: string }): ReactNode => (
   <span className="state-ready">
@@ -20,7 +20,15 @@ export function CommandLine(): ReactNode {
   const [copied, setCopied] = useState(false);
   return (
     <div className="command-line">
-      <code>{HELPER_COMMAND}</code>
+      <code>
+        {HELPER_COMMAND.split(/(?<=[/|])/).map((part, index) => (
+          // A long command breaks after a slash, not in the middle of a word. Copy still copies the whole command.
+          <span key={index}>
+            {index > 0 ? <wbr /> : null}
+            {part}
+          </span>
+        ))}
+      </code>
       <button
         type="button"
         aria-label={copied ? 'Copied' : 'Copy command'}
@@ -35,6 +43,50 @@ export function CommandLine(): ReactNode {
         {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
       </button>
     </div>
+  );
+}
+
+const OUTDATED_HELPER = 'This extension is newer than the helper on this machine. Run this to update it:';
+
+/** What the panel tells the owner about the helper, and what to do: one command, or one browser page, never both. */
+export function helperNote(live: LiveState): { text: string; command: boolean } {
+  const { helper } = live;
+  if (helper.connected) return { text: 'Running', command: false };
+  if (!live.loaded) return { text: 'Looking for the helper', command: false };
+  switch (helper.problem) {
+    case 'extension-outdated':
+      return { text: 'This extension is older than the helper. Update T3-Tab on your browser’s extensions page.', command: false };
+    case 'helper-outdated':
+      return { text: OUTDATED_HELPER, command: true };
+    case 'blocked':
+      return { text: 'The helper on this machine does not know this extension. Run this again to update it:', command: true };
+    case 'failed':
+      return { text: `The helper is installed but would not start. ${HELPER_REQUIREMENT} Run this again:`, command: true };
+    default:
+      return { text: `Run this in a terminal, from any folder. ${HELPER_REQUIREMENT}`, command: true };
+  }
+}
+
+/** The helper's row and, while it is not connected and a command helps, the command to copy. */
+export function HelperStep({ live, icon = true }: { live: LiveState; icon?: boolean }): ReactNode {
+  const note = helperNote(live);
+  const ready = live.helper.connected;
+  return (
+    <>
+      <div className={note.command ? 'setup-row helper-row' : 'setup-row'}>
+        {icon ? (
+          <span className="setup-icon">
+            <Plug size={17} aria-hidden="true" />
+          </span>
+        ) : null}
+        <span className="setup-text">
+          <strong>T3-Tab helper</strong>
+          <small>{note.text}</small>
+        </span>
+        {ready ? <Ready /> : live.helper.problem === 'extension-outdated' ? null : <Spinner />}
+      </div>
+      {note.command ? <CommandLine /> : null}
+    </>
   );
 }
 
@@ -132,17 +184,7 @@ export function Setup({ live, state, onDone }: { live: LiveState; state: T3State
       </header>
       <section>
         <h2>Helper</h2>
-        <div className="setup-row">
-          <span className="setup-icon">
-            <Plug size={17} aria-hidden="true" />
-          </span>
-          <span className="setup-text">
-            <strong>T3-Tab helper</strong>
-            <small>{helperReady ? 'Running' : live.helper.protocolMismatch === true ? 'Out of date. Run this again, then reload the extension.' : 'Connects this browser to your agents. Run this once in the T3-Tab folder:'}</small>
-          </span>
-          {helperReady ? <Ready /> : <Spinner />}
-        </div>
-        {helperReady ? null : <CommandLine />}
+        <HelperStep live={live} />
       </section>
       <section>
         <h2>Agents</h2>

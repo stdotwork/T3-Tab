@@ -1,9 +1,29 @@
 export const PROTOCOL_VERSION = 3 as const;
 /** Shown when the extension and the background program speak different protocol versions. It is also a WebSocket close reason, so at most 123 bytes. */
-export const PROTOCOL_MISMATCH = 'T3-Tab extension and background program are different versions. Rebuild, run t3-tab install, reload.';
+export const PROTOCOL_MISMATCH = 'The T3-Tab extension and helper are different versions.';
+/** The close reason and error text that say which side is behind. Each fits a WebSocket close reason. */
+export const HELPER_OUTDATED = 'The T3-Tab helper is older than the extension.';
+export const EXTENSION_OUTDATED = 'The T3-Tab extension is older than the helper.';
+/** What a side that speaks `PROTOCOL_VERSION` says about a peer that spoke `theirs`. */
+export function mismatchReason(theirs: number): string {
+  return theirs > PROTOCOL_VERSION ? HELPER_OUTDATED : EXTENSION_OUTDATED;
+}
 export const DEFAULT_DAEMON_PORT = 8765;
 export const NATIVE_HOST_NAME = 'com.t3tab.native';
+/**
+ * The extension's ID. The manifest `key` (`EXTENSION_KEY` in the extension) fixes it, so an unpacked build gets the
+ * same ID on every machine.
+ */
 export const EXTENSION_ID = 'gggnknbjooockcnnocejdolfdpjifebm';
+/**
+ * STORE ID: the ID the browser store assigns once the extension is published. Fill it in then (the store's dashboard
+ * also shows the public key to put in `EXTENSION_KEY`, which makes unpacked builds use this ID too). Until then it is
+ * undefined and only `EXTENSION_ID` is allowed.
+ */
+export const STORE_EXTENSION_ID: string | undefined = undefined;
+/** Every ID the native host manifest and the daemon accept. */
+export const EXTENSION_IDS: readonly string[] = STORE_EXTENSION_ID === undefined ? [EXTENSION_ID] : [...new Set([EXTENSION_ID, STORE_EXTENSION_ID])];
+export const EXTENSION_ORIGINS: readonly string[] = EXTENSION_IDS.map((id) => `chrome-extension://${id}`);
 export const EXTENSION_ORIGIN = `chrome-extension://${EXTENSION_ID}`;
 
 /** Default long edge, in pixels, of a screenshot. */

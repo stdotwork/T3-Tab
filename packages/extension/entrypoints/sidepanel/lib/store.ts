@@ -8,11 +8,8 @@ import type { StoredSession } from '../../../src/sessions';
 import { panel, readStored, writeStored } from './api';
 import type { SetupAgent } from './catalog';
 
-export interface HelperState {
-  connected: boolean;
-  error?: string;
-  protocolMismatch?: boolean;
-}
+export type { HelperProblem, HelperState } from '../../../src/daemon-link';
+import type { HelperState } from '../../../src/daemon-link';
 
 export interface SetupState {
   agents: SetupAgent[];

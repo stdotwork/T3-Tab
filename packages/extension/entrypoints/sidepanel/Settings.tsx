@@ -20,7 +20,7 @@ import { refreshPanel, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
 import { previewTheme, removeCustomTheme, saveCustomTheme, setScheme, setTheme, STOCK_THEME, useAppearance, type SchemeChoice } from './lib/theme';
 import { siteChoices, siteStatus } from './prompt-choices';
-import { AgentRow, CommandLine, T3Row } from './Setup';
+import { AgentRow, HelperStep, T3Row } from './Setup';
 import { IconButton } from './ui';
 
 export type SettingsTab = 'appearance' | 'sites' | 'connections';
@@ -339,19 +339,7 @@ function Connections({ live, state }: { live: LiveState; state: T3State }): Reac
   return (
     <div className="settings-page">
       <h3>Helper</h3>
-      <div className="setup-row">
-        <span className="setup-text">
-          <strong>T3-Tab helper</strong>
-          <small>{live.helper.connected ? 'Running' : 'Not connected. Run this once in the T3-Tab folder:'}</small>
-        </span>
-        {live.helper.connected ? (
-          <span className="state-ready">
-            <Check size={14} aria-hidden="true" />
-            Ready
-          </span>
-        ) : null}
-      </div>
-      {live.helper.connected ? null : <CommandLine />}
+      <HelperStep live={live} icon={false} />
       <h3>Agents</h3>
       <AgentRow id="claude" live={live} />
       <AgentRow id="codex" live={live} />

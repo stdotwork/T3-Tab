@@ -375,16 +375,19 @@ describe('simultaneous first tool calls', () => {
 });
 
 describe('protocol version mismatch', () => {
-  it('closes an extension of another version with a reason that says to update', async () => {
+  it.each([
+    ['newer', PROTOCOL_VERSION + 1, 'helper is older'],
+    ['older', PROTOCOL_VERSION - 1, 'extension is older'],
+  ])('closes an extension that is %s with a reason that says which side to update', async (_name, version, said) => {
     const handle = await start();
     const browser = await open(handle, EXTENSION_ORIGIN);
     const closed = new Promise<{ code: number; reason: string }>((resolve) => {
       browser.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
     });
-    browser.send(JSON.stringify({ type: 'browser.hello', protocolVersion: PROTOCOL_VERSION + 1, browserId: 'b', browserName: 'Chromium' }));
+    browser.send(JSON.stringify({ type: 'browser.hello', protocolVersion: version, browserId: 'b', browserName: 'Chromium' }));
     const { code, reason } = await closed;
     expect(code).toBe(1008);
-    expect(reason).toContain('different versions');
+    expect(reason).toContain(said);
     expect(Buffer.byteLength(reason)).toBeLessThanOrEqual(123);
   });
 });

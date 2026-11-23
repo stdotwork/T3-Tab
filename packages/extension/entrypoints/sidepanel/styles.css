@@ -249,7 +249,9 @@ ul { list-style: none; margin: 0; padding: 0; }
 .primary-btn:hover:not(:disabled) { background: var(--action-hover); }
 .primary-btn:disabled { opacity: 0.45; }
 .command-line { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px; padding: 6px 6px 6px 10px; border-radius: var(--radius); background: var(--app-theme-code-background); color: var(--app-theme-code-foreground); }
-.command-line code { flex: 1; min-width: 0; font: 12px ui-monospace, 'SF Mono', Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.helper-row { align-items: flex-start; }
+.helper-row .setup-icon, .helper-row > .spin, .helper-row > .state-ready { margin-top: 3px; }
+.command-line code { flex: 1; min-width: 0; font: 12px ui-monospace, 'SF Mono', Menlo, Consolas, monospace; overflow-wrap: anywhere; line-height: 1.5; }
 .command-line button { display: grid; place-items: center; width: 26px; height: 26px; flex: none; border-radius: 6px; color: var(--icon); }
 .command-line button:hover { background: var(--hover); color: var(--fg); }
 
