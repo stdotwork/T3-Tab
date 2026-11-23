@@ -200,8 +200,8 @@ async function navigateTab(
     : await permissionPrompts.authorize(target, 'open', session, promptTab(tab), promptAddress(url));
 
   const current = await resolveSessionTab(await registeredSession(session), tabId);
-  // Only a move from the page that was approved: the tab may have gone elsewhere while the prompt waited.
-  if (action !== 'goto') assertSameOrigin(current, origin);
+  // Only a move from the page that was asked about: the tab may have gone elsewhere while the prompt waited.
+  assertSameOrigin(current, origin);
   if (action === 'goto') await loadAddress(tabId, url);
   else if (action === 'reload') await reloadTab(tabId, current.url ?? url);
   else await goToHistoryEntry(tabId, entryId ?? -1);

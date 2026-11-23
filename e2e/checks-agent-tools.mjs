@@ -257,12 +257,12 @@ export async function checkAgentTools() {
 
     await check('press takes the obvious key spellings', async () => {
       const tab = await openAllowed('/keys');
-      for (const key of ['enter', 'ESC', 'tab', 'F5', 'f12', 'pagedown', 'space', 'up']) {
+      for (const key of ['enter', 'ESC', 'tab', 'F5', 'f12', 'pagedown', 'space', 'up', ' ']) {
         const acted = await call('act', { tab, steps: [{ action: 'press', key }] });
         assert(!acted.error, `press ${key}: ${acted.text}`);
       }
       const keys = await call('run_js', { tab, expression: 'k.textContent' });
-      assert(keys.text === '"Enter,Escape,Tab,F5,F12,PageDown, ,ArrowUp,"', `keys the page saw: ${keys.text}`);
+      assert(keys.text === '"Enter,Escape,Tab,F5,F12,PageDown, ,ArrowUp, ,"', `keys the page saw: ${keys.text}`);
       await closeTab(tab);
 
       const dialog = await openAllowed('/dialog');
@@ -303,6 +303,35 @@ export async function checkAgentTools() {
       await closeTab(tab);
     });
 
+    await check('goto is refused when the tab moved while its prompt waited', async () => {
+      const tab = await openAllowed('/one');
+      const seen = hits.other.length;
+      const going = call('tabs', { action: 'goto', tab, url: `${urls.other}/two` });
+      const prompt = await waitPrompt((item) => item.tool === 'open' && item.origin === urls.other);
+      await call('run_js', { tab, expression: `location.href = ${JSON.stringify(`${urls.ask}/start`)}; 0` });
+      for (let attempt = 0; attempt < 60 && !(await tabInfo(tab)).url.startsWith(urls.ask); attempt += 1) await sleep(50);
+      await decide(prompt, 'allow-once');
+      const result = await going;
+      assert(result.error && /moved/.test(result.text), `goto from a tab that moved: ${result.text}`);
+      assert(hits.other.length === seen, `the approved page was loaded over one nobody approved: ${hits.other.join(' ')}`);
+      assert((await tabInfo(tab)).url === `${urls.ask}/start`, `the tab was moved: ${(await tabInfo(tab)).url}`);
+      await closeTab(tab);
+    });
+
+    await check('back and forward between entries of one document return at once', async () => {
+      const tab = await openAllowed('/one');
+      await call('run_js', { tab, expression: "history.pushState({}, '', '/one/next'); 0" });
+      for (const [action, path] of [['back', '/one'], ['forward', '/one/next']]) {
+        const started = Date.now();
+        const moved = await call('tabs', { action, tab });
+        assert(!moved.error, `${action}: ${moved.text}`);
+        assert(Date.now() - started < 3_000, `${action} within one document took ${Date.now() - started} ms`);
+        const where = await call('run_js', { tab, expression: 'location.pathname' });
+        assert(where.text === JSON.stringify(path), `${action} ended at ${where.text}`);
+      }
+      await closeTab(tab);
+    });
+
     await check('reload never sends a form again', async () => {
       const tab = await openAllowed('/form-post');
       const form = await call('read', { tab });
@@ -328,10 +357,12 @@ export async function checkAgentTools() {
 
     await check('an action leaves nothing in the page for a site to find', async () => {
       const tab = await openAllowed('/red');
+      const globals = async () => JSON.parse((await call('run_js', { tab, expression: 'Object.getOwnPropertyNames(globalThis).filter((name) => !/^(on|webkit|[A-Z])/.test(name))' })).text);
+      const before = new Set(await globals());
       const page = await call('read', { tab });
       await call('act', { tab, steps: [{ action: 'click', ref: refFor(page.text, 'button "Press"') }] });
-      const names = await call('run_js', { tab, expression: "Object.getOwnPropertyNames(globalThis).filter((name) => /^_*t3|t3tab/i.test(name))" });
-      assert(names.text === '[]', `page-visible globals: ${names.text}`);
+      const added = (await globals()).filter((name) => !before.has(name));
+      assert(added.length === 0, `page-visible globals: ${added.join(' ')}`);
       await closeTab(tab);
     });
   } finally {

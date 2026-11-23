@@ -7,6 +7,7 @@ import {
   ensureAttached,
   holdInputFocus,
   privateWorld,
+  sameDocumentMoveCount,
   sendCommand,
   waitForDocumentLoad,
 } from './cdp';
@@ -116,12 +117,14 @@ export async function loadAddress(tabId: number, url: string): Promise<void> {
  * arrived. A hidden page gets no animation frames and slow timers, so a page that renders from script would stay blank:
  * the tab counts as visible until it has settled, and goes back to hidden.
  */
-async function navigated(tabId: number, go: () => Promise<boolean>): Promise<void> {
+async function navigated(tabId: number, go: () => Promise<boolean>, throughHistory = false): Promise<void> {
   const since = documentEpoch(tabId);
+  // A history entry can belong to this same document (a fragment, `pushState`), which fires no load event.
+  const moves = throughHistory ? sameDocumentMoveCount(tabId) : undefined;
   const release = await holdInputFocus(tabId);
   try {
     if (!(await go())) return;
-    await waitForDocumentLoad(tabId, since, OPEN_TIMEOUT_MS);
+    await waitForDocumentLoad(tabId, since, OPEN_TIMEOUT_MS, moves);
     await settlePage(tabId);
   } catch (error) {
     if (!(error instanceof DialogOpenError)) throw error;
@@ -151,7 +154,7 @@ export async function goToHistoryEntry(tabId: number, entryId: number): Promise<
   await navigated(tabId, async () => {
     await sendCommand(tabId, 'Page.navigateToHistoryEntry', { entryId });
     return true;
-  });
+  }, true);
 }
 
 /**

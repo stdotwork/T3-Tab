@@ -435,6 +435,8 @@ const KEY_ALIASES: Record<string, string> = {
 };
 
 function keyPieces(value: string): string[] {
+  // The space character itself, which trimming would lose.
+  if (value !== '' && value.trim() === '') return [' '];
   const pieces = value.split('+').map((piece) => piece.trim()).filter((piece) => piece !== '');
   // "+" itself, alone or as the last key of a chord.
   if (value.trim().endsWith('+')) pieces.push('+');
@@ -462,6 +464,7 @@ export function parseKey(value: string): KeyStroke {
 /** The key's standard name when `value` is one key with no modifiers, as a dialog's answer must be. */
 function plainKeyName(value: string): string | undefined {
   const pieces = keyPieces(value);
+  if (pieces[0] === ' ' && pieces.length === 1) return KEYS.space?.key;
   return pieces.length === 1 && pieces[0] !== undefined ? namedKey(pieces[0])?.key : undefined;
 }
 

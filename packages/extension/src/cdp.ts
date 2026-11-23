@@ -18,6 +18,13 @@ const NAVIGATION_LOG_SIZE = 32;
 /** Per tab: bumped by any network event, so action settling can see when traffic goes quiet. */
 const networkEvents = new Map<number, number>();
 
+interface LoadWaiter {
+  since: number;
+  /** For a move through history, which may stay within the document and then fires no load event. */
+  sameDocumentSince: number | undefined;
+  wake: () => void;
+}
+
 /** One JavaScript execution context the page reported through `Runtime.executionContextCreated`. */
 interface PageContext {
   id: number;
@@ -47,7 +54,7 @@ export class DialogOpenError extends Error {}
 const dialogs = new Map<number, OpenDialog>();
 const dialogWaiters = new Map<number, Set<() => void>>();
 /** Per tab: the main document's loader and address, to tell a reattach to the same document from a new one. */
-const mainDocuments = new Map<number, { loaderId: string; url: string }>();
+const mainDocuments = new Map<number, { loaderId: string; url: string; frameId?: string }>();
 /** Tabs the debugger left since their last attach. */
 const detached = new Set<number>();
 /** Per tab: how many running batches need the page to take input while it is in the background. */
@@ -62,7 +69,9 @@ const recoveryOrigins = new Map<number, string>();
 const dialogAnswers = new Map<number, Promise<unknown>>();
 /** Per tab: the epoch of the last document that finished loading. */
 const loadedEpochs = new Map<number, number>();
-const loadWaiters = new Map<number, Set<{ since: number; wake: () => void }>>();
+const loadWaiters = new Map<number, Set<LoadWaiter>>();
+/** Per tab: how many times the main frame moved within one document (a fragment or `pushState` entry). */
+const sameDocumentMoves = new Map<number, number>();
 /** Per tab: the HTTP method of the document request in flight, by loader, and of the document showing. */
 const pendingMethods = new Map<number, Map<string, string>>();
 const documentMethods = new Map<number, string>();
@@ -117,6 +126,10 @@ export function initCdp(): void {
       documentLoaded(source.tabId);
       return;
     }
+    if (method === 'Page.navigatedWithinDocument') {
+      movedWithinDocument(source.tabId, params);
+      return;
+    }
     if (method.startsWith('Runtime.executionContext')) {
       trackContext(source.tabId, method, params);
       return;
@@ -130,15 +143,18 @@ export function initCdp(): void {
       return;
     }
     if (method !== 'Page.frameNavigated') return;
-    const navigated = params as { type?: unknown; frame?: { parentId?: unknown; url?: unknown; loaderId?: unknown } } | undefined;
+    const navigated = params as { type?: unknown; frame?: { id?: unknown; parentId?: unknown; url?: unknown; loaderId?: unknown } } | undefined;
     const frame = navigated?.frame;
     // Only the top frame replaces the document the held refs point into.
     if (frame !== undefined && frame.parentId === undefined) {
       bumpEpoch(source.tabId);
       const url = typeof frame.url === 'string' ? frame.url : '';
       logNavigation(source.tabId, url);
-      if (typeof frame.loaderId === 'string') mainDocuments.set(source.tabId, { loaderId: frame.loaderId, url });
-      else mainDocuments.delete(source.tabId);
+      if (typeof frame.loaderId === 'string') {
+        mainDocuments.set(source.tabId, { loaderId: frame.loaderId, url, ...(typeof frame.id === 'string' ? { frameId: frame.id } : {}) });
+      } else {
+        mainDocuments.delete(source.tabId);
+      }
       commitDocumentMethod(source.tabId, frame.loaderId);
       // A page restored from the back-forward cache is already loaded and fires no load event.
       if (navigated?.type === 'BackForwardCacheRestore') documentLoaded(source.tabId);
@@ -177,6 +193,7 @@ export function initCdp(): void {
     recoveryOrigins.delete(tabId);
     dialogAnswers.delete(tabId);
     loadedEpochs.delete(tabId);
+    sameDocumentMoves.delete(tabId);
     pendingMethods.delete(tabId);
     documentMethods.delete(tabId);
     privateWorlds.delete(tabId);
@@ -219,21 +236,39 @@ function documentLoaded(tabId: number): void {
   }
 }
 
+function movedWithinDocument(tabId: number, params: unknown): void {
+  const frameId = (params as { frameId?: unknown } | undefined)?.frameId;
+  if (frameId !== mainDocuments.get(tabId)?.frameId) return;
+  const moves = sameDocumentMoveCount(tabId) + 1;
+  sameDocumentMoves.set(tabId, moves);
+  for (const waiter of loadWaiters.get(tabId) ?? []) {
+    if (waiter.sameDocumentSince !== undefined && waiter.sameDocumentSince < moves) waiter.wake();
+  }
+}
+
+/** Taken before a move through history, and passed to `waitForDocumentLoad`. */
+export function sameDocumentMoveCount(tabId: number): number {
+  return sameDocumentMoves.get(tabId) ?? 0;
+}
+
 function wakeLoadWaiters(tabId: number): void {
   for (const waiter of loadWaiters.get(tabId) ?? []) waiter.wake();
 }
 
 /**
  * Resolves when a document newer than epoch `since` has loaded, the tab opens a dialog (which holds the load open
- * until the agent answers it), the tab or debugger goes away, or the time is up: a slow page is still returned.
+ * until the agent answers it), the tab or debugger goes away, or the time is up: a slow page is still returned. With
+ * `sameDocumentSince`, a move within the document since that count also ends the wait.
  */
-export async function waitForDocumentLoad(tabId: number, since: number, timeoutMs: number): Promise<void> {
+export async function waitForDocumentLoad(tabId: number, since: number, timeoutMs: number, sameDocumentSince?: number): Promise<void> {
   if ((loadedEpochs.get(tabId) ?? -1) > since || dialogs.has(tabId)) return;
+  if (sameDocumentSince !== undefined && sameDocumentMoveCount(tabId) > sameDocumentSince) return;
   await new Promise<void>((resolve) => {
-    const waiters = loadWaiters.get(tabId) ?? new Set<{ since: number; wake: () => void }>();
+    const waiters = loadWaiters.get(tabId) ?? new Set<LoadWaiter>();
     loadWaiters.set(tabId, waiters);
-    const waiter = {
+    const waiter: LoadWaiter = {
       since,
+      sameDocumentSince,
       wake: (): void => {
         clearTimeout(timer);
         stopDialog();
@@ -526,16 +561,19 @@ async function attach(tabId: number): Promise<void> {
     if ((focusHolds.get(tabId) ?? 0) > 0) {
       await attachCommand(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true });
     }
-    const tree = (await attachCommand(tabId, 'Page.getFrameTree')) as { frameTree?: { frame?: { loaderId?: unknown; url?: unknown } } };
-    const { loaderId, url } = tree.frameTree?.frame ?? {};
+    const tree = (await attachCommand(tabId, 'Page.getFrameTree')) as { frameTree?: { frame?: { id?: unknown; loaderId?: unknown; url?: unknown } } };
+    const { id: frameId, loaderId, url } = tree.frameTree?.frame ?? {};
     // The same loader alone is not enough: a page restored from the back-forward cache keeps its loader.
     sameDocument =
       detached.has(tabId) &&
       commitsAtDetach.get(tabId) === (topCommits.get(tabId) ?? 0) &&
       typeof loaderId === 'string' &&
       mainDocuments.get(tabId)?.loaderId === loaderId;
-    if (typeof loaderId === 'string') mainDocuments.set(tabId, { loaderId, url: typeof url === 'string' ? url : '' });
-    else mainDocuments.delete(tabId);
+    if (typeof loaderId === 'string') {
+      mainDocuments.set(tabId, { loaderId, url: typeof url === 'string' ? url : '', ...(typeof frameId === 'string' ? { frameId } : {}) });
+    } else {
+      mainDocuments.delete(tabId);
+    }
   } catch (error) {
     await chrome.debugger.detach({ tabId }).catch(() => undefined);
     throw error;

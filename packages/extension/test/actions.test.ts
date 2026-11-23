@@ -18,6 +18,7 @@ describe('keyboard steps', () => {
     expect(parseKey('a').key).toBe('a');
     expect(parseKey('A').key).toBe('A');
     expect(parseKey('+').key).toBe('+');
+    expect(parseKey(' ')).toEqual({ key: ' ', code: 'Space', keyCode: 32, text: ' ' });
     expect(parseKey('Control++').key).toBe('+');
   });
 
