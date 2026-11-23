@@ -232,7 +232,9 @@ last read:` with that diff, and a reply about changed elements adds up to 10 lin
 **JavaScript dialogs.** A dialog pauses the page, so every command that reaches it would hang. `cdp.ts` tracks
 `Page.javascriptDialogOpening` and fails such commands at once with a notice naming the dialog. `act` answers it:
 `press Enter` accepts, `press Escape` dismisses, and a `type` step without a ref holds a prompt's text until Enter.
-A step that opens a dialog counts as done, so the same batch can answer it. A dialog from a frame of another origin
+A step that opens a dialog counts as done, so the same batch can answer it. Answers run one at a time per tab and
+are refused if another dialog replaced the one checked; the browser's command names no dialog, so a replacement in
+the instant before it lands cannot be caught. A dialog from a frame of another origin
 is named by origin only and can only be dismissed. `tabs open` attaches the debugger on `about:blank` before loading
 the page, because a dialog opened before the debugger attached cannot be answered through it; on a tab the owner
 already had open, the tool says to ask the owner to answer it.
@@ -245,8 +247,9 @@ The page sees itself as visible and focused for that long.
 it belongs to another extension, such as a password manager's autofill menu; blocking the frame's request does not
 prevent it. `clearForeignFrames` (`foreign-frames.ts`) points those frames at `about:blank`, including inside closed
 shadow roots, and the debugger attaches again. This is the only use of the `scripting` permission and `<all_urls>`
-host access. Refs stay valid when the main document's loader id is the same after the reattach. Input that was in
-flight when the debugger dropped is not sent again.
+host access, and it runs only while the tab is on the origin the running tool call was approved for. Refs stay valid
+after a reattach only when the main document's loader id is unchanged and `chrome.webNavigation` saw no top-frame
+commit in between. Input that was in flight when the debugger dropped is not sent again.
 
 `find` matches case-insensitive literal text by default. Passing `regex: true` opts into a regular
 expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. Every text box

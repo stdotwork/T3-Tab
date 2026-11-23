@@ -1,4 +1,4 @@
-import { ensureAttached, onDialogOpen } from './cdp';
+import { ensureAttached, onDialogOpen, openDialog } from './cdp';
 import type { TabInfo } from '@t3-tab/protocol';
 
 import { originOf, restrictedPageError, type SitePermission } from './permissions';
@@ -215,6 +215,7 @@ async function waitForLoad(tabId: number, timeoutMs: number): Promise<void> {
     // A dialog holds the load open until it is answered, which the agent can only do once this returns.
     const stopWaiting = onDialogOpen(tabId, done);
     chrome.tabs.onUpdated.addListener(listener);
+    if (openDialog(tabId) !== undefined) done();
     void chrome.tabs.get(tabId).then((tab) => {
       if (tab.status === 'complete' && tab.url !== undefined && tab.url !== '' && tab.url !== 'about:blank') done();
     });

@@ -1,6 +1,6 @@
 import type { BrowserMethods } from '@t3-tab/protocol';
 
-import { ensureAttached, mainWorldContext, sendCommand } from './cdp';
+import { ensureAttached, mainWorldContext, sendCommand, setRecoveryOrigin } from './cdp';
 import { originOf, restrictedPageError } from './permissions';
 import type { StoredSession } from './sessions';
 import { resolveSessionTab } from './tabs';
@@ -40,6 +40,7 @@ export async function evaluatePage(
   if (expression === '') throw new Error('run_js needs an expression');
   const found = await resolveSessionTab(session, tab);
   const tabId = found.id ?? -1;
+  setRecoveryOrigin(tabId, expectedOrigin);
   await ensureAttached(tabId);
   const latest = await reloadSession();
   const current = await resolveSessionTab(latest, tabId);

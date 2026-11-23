@@ -1,7 +1,7 @@
 import type { PageReadResult } from '@t3-tab/protocol';
 
 import { restrictToOriginFrames, slimAxNodes, type FrameInfo, type FramePolicy } from './ax';
-import { DialogOpenError, documentEpoch, ensureAttached, sendCommand } from './cdp';
+import { DialogOpenError, documentEpoch, ensureAttached, sendCommand, setRecoveryOrigin } from './cdp';
 import { redactPasswordValues } from './password';
 import { originOf } from './permissions';
 import type { StoredSession } from './sessions';
@@ -15,6 +15,7 @@ export async function readPage(
 ): Promise<PageReadResult> {
   const initial = await resolveSessionTab(session, tab);
   const tabId = initial.id ?? -1;
+  setRecoveryOrigin(tabId, expectedOrigin);
   await ensureAttached(tabId);
   const before = await resolveSessionTab(await reloadSession(), tabId);
   assertOrigin(before, expectedOrigin);

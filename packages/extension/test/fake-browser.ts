@@ -91,6 +91,7 @@ export class FakeBrowser {
         },
       },
       tabGroups: { TAB_GROUP_ID_NONE: -1 },
+      webNavigation: { onCommitted: { addListener: () => undefined } },
     };
     (globalThis as unknown as { chrome: unknown }).chrome = fake;
   }

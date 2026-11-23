@@ -10,6 +10,7 @@ import {
   navigationsSince,
   openDialog,
   sendCommand,
+  setRecoveryOrigin,
 } from './cdp';
 import { readPage } from './page';
 import { originOf } from './permissions';
@@ -56,6 +57,7 @@ export async function actOnPage(
   expectedOrigin: string,
   reloadSession: () => Promise<StoredSession>,
 ): Promise<PageActionResult> {
+  setRecoveryOrigin(tabId, expectedOrigin);
   await ensureAttached(tabId);
   let releaseFocus: (() => Promise<void>) | undefined;
   try {
@@ -160,11 +162,11 @@ async function answerDialogStep(tabId: number, step: ActStep, expectedOrigin: st
     return;
   }
   if ('press' in step && step.press.key === 'Escape') {
-    await answerDialog(tabId, false);
+    await answerDialog(tabId, false, undefined, dialog);
     return;
   }
   if ('press' in step && step.press.key === 'Enter' && sameSite) {
-    await answerDialog(tabId, true, dialog.type === 'prompt' ? (dialog.input ?? dialog.defaultPrompt) : undefined);
+    await answerDialog(tabId, true, dialog.type === 'prompt' ? (dialog.input ?? dialog.defaultPrompt) : undefined, dialog);
     return;
   }
   throw new Error(dialogNotice(tabId, dialog));

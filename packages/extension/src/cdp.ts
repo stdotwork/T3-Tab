@@ -53,6 +53,13 @@ const detached = new Set<number>();
 /** Per tab: how many running batches need the page to take input while it is in the background. */
 const focusHolds = new Map<number, number>();
 const focusReleaseDue = new Set<number>();
+/** Per tab: top-frame commits, counted apart from the debugger so those made while it is off are seen too. */
+const topCommits = new Map<number, number>();
+const commitsAtDetach = new Map<number, number>();
+/** Per tab: the origin the running tool call was approved for, the only one whose frames recovery may touch. */
+const recoveryOrigins = new Map<number, string>();
+/** Per tab: the end of the queue of dialog answers. */
+const dialogAnswers = new Map<number, Promise<unknown>>();
 
 export function documentEpoch(tabId: number): number {
   return epochs.get(tabId) ?? 0;
@@ -118,6 +125,9 @@ export function initCdp(): void {
       else mainDocuments.delete(source.tabId);
     }
   });
+  chrome.webNavigation.onCommitted.addListener((details) => {
+    if (details.frameId === 0) topCommits.set(details.tabId, (topCommits.get(details.tabId) ?? 0) + 1);
+  });
   chrome.debugger.onDetach.addListener((source) => {
     if (source.tabId === undefined) return;
     attached.delete(source.tabId);
@@ -125,7 +135,7 @@ export function initCdp(): void {
     dialogs.delete(source.tabId);
     focusReleaseDue.delete(source.tabId);
     // The epoch moves on the next attach, and only if a different document is showing by then.
-    detached.add(source.tabId);
+    markDetached(source.tabId);
   });
   chrome.tabs.onRemoved.addListener((tabId) => {
     attached.delete(tabId);
@@ -138,6 +148,10 @@ export function initCdp(): void {
     detached.delete(tabId);
     focusHolds.delete(tabId);
     focusReleaseDue.delete(tabId);
+    topCommits.delete(tabId);
+    commitsAtDetach.delete(tabId);
+    recoveryOrigins.delete(tabId);
+    dialogAnswers.delete(tabId);
     notifyDialogWaiters(tabId);
   });
 }
@@ -155,9 +169,27 @@ function trackDialog(tabId: number, params: unknown): void {
 
 function dialogClosed(tabId: number): void {
   dialogs.delete(tabId);
-  if (focusReleaseDue.delete(tabId) && (focusHolds.get(tabId) ?? 0) === 0) {
-    void send(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => undefined);
+  if (focusReleaseDue.delete(tabId) && (focusHolds.get(tabId) ?? 0) === 0) void turnFocusOff(tabId);
+}
+
+/** A dialog that opens first pauses the page, so the release is kept for when it closes. */
+async function turnFocusOff(tabId: number): Promise<void> {
+  try {
+    await send(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: false });
+  } catch (error) {
+    if (error instanceof DialogOpenError) focusReleaseDue.add(tabId);
   }
+}
+
+function markDetached(tabId: number): void {
+  if (detached.has(tabId)) return;
+  detached.add(tabId);
+  commitsAtDetach.set(tabId, topCommits.get(tabId) ?? 0);
+}
+
+/** Names the origin a tool call was approved for, before it attaches. */
+export function setRecoveryOrigin(tabId: number, origin: string): void {
+  recoveryOrigins.set(tabId, origin);
 }
 
 function notifyDialogWaiters(tabId: number): void {
@@ -195,14 +227,26 @@ export function dialogNotice(tabId: number, dialog: OpenDialog): string {
   return `Tab ${tabId} is waiting on a JavaScript ${dialog.type}: ${JSON.stringify(text)}. Answer it with act: press Enter for OK${fill}, or Escape to cancel.`;
 }
 
-/** Answers the tab's open dialog. One the owner answered first counts as answered. */
-export async function answerDialog(tabId: number, accept: boolean, promptText?: string): Promise<void> {
-  try {
-    await send(tabId, 'Page.handleJavaScriptDialog', { accept, ...(promptText === undefined ? {} : { promptText }) });
-  } catch (error) {
-    if (!(error instanceof Error && /No dialog is showing/.test(error.message))) throw error;
-  }
-  dialogClosed(tabId);
+/**
+ * Answers the tab's open dialog, one answer at a time. `expected` is the dialog the caller checked: if it has
+ * gone the answer is dropped, and if another took its place the call fails rather than answer that one. The
+ * browser's command names no dialog, so one that replaces it in the moment before the command lands is not caught.
+ */
+export async function answerDialog(tabId: number, accept: boolean, promptText?: string, expected?: OpenDialog): Promise<void> {
+  const answer = async (): Promise<void> => {
+    const current = dialogs.get(tabId);
+    if (current === undefined) return;
+    if (expected !== undefined && current !== expected) throw new Error(dialogNotice(tabId, current));
+    try {
+      await send(tabId, 'Page.handleJavaScriptDialog', { accept, ...(promptText === undefined ? {} : { promptText }) });
+    } catch (error) {
+      if (!(error instanceof Error && /No dialog is showing/.test(error.message))) throw error;
+    }
+    if (dialogs.get(tabId) === current) dialogClosed(tabId);
+  };
+  const queued = (dialogAnswers.get(tabId) ?? Promise.resolve()).then(answer, answer);
+  dialogAnswers.set(tabId, queued.catch(() => undefined));
+  await queued;
 }
 
 /**
@@ -238,7 +282,7 @@ export async function holdInputFocus(tabId: number): Promise<() => Promise<void>
       focusReleaseDue.add(tabId);
       return;
     }
-    await send(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => undefined);
+    await turnFocusOff(tabId);
   };
 }
 
@@ -307,7 +351,7 @@ export async function sendCommand<T = Record<string, unknown>>(
       if (!isNotAttached(error) || attempt >= MAX_COMMAND_ATTEMPTS) throw error;
       attached.delete(tabId);
       // The detach event can arrive after the reattach, so it cannot be what marks the session as lost.
-      detached.add(tabId);
+      markDetached(tabId);
       // Input that was in flight has already reached the page (a click that focuses a login field is what
       // brings a password manager's frame in), so sending it again would press twice.
       if (method.startsWith('Input.') && /while handling command/i.test(error instanceof Error ? error.message : '')) {
@@ -323,8 +367,10 @@ async function send<T>(tabId: number, method: string, params?: Record<string, un
   const reachesPage = method !== 'Page.handleJavaScriptDialog';
   const waiting = reachesPage ? dialogs.get(tabId) : undefined;
   if (waiting !== undefined) throw new DialogOpenError(dialogNotice(tabId, waiting));
-  const result = chrome.debugger.sendCommand({ tabId }, method, params) as Promise<unknown>;
-  if (!reachesPage) return (await withTimeout(result, COMMAND_TIMEOUT_MS, `${method} timed out`)) as T;
+  if (!reachesPage) {
+    const answered = chrome.debugger.sendCommand({ tabId }, method, params) as Promise<unknown>;
+    return (await withTimeout(answered, COMMAND_TIMEOUT_MS, `${method} timed out`)) as T;
+  }
   let stop = (): void => undefined;
   const paused = new Promise<never>((_resolve, reject) => {
     stop = onDialogOpen(tabId, () => {
@@ -332,6 +378,7 @@ async function send<T>(tabId: number, method: string, params?: Record<string, un
       if (dialog !== undefined) reject(new DialogOpenError(dialogNotice(tabId, dialog)));
     });
   });
+  const result = chrome.debugger.sendCommand({ tabId }, method, params) as Promise<unknown>;
   try {
     return (await withTimeout(Promise.race([result, paused]), COMMAND_TIMEOUT_MS, `${method} timed out`)) as T;
   } finally {
@@ -366,7 +413,12 @@ async function attach(tabId: number): Promise<void> {
     }
     const tree = (await attachCommand(tabId, 'Page.getFrameTree')) as { frameTree?: { frame?: { loaderId?: unknown; url?: unknown } } };
     const { loaderId, url } = tree.frameTree?.frame ?? {};
-    sameDocument = detached.has(tabId) && typeof loaderId === 'string' && mainDocuments.get(tabId)?.loaderId === loaderId;
+    // The same loader alone is not enough: a page restored from the back-forward cache keeps its loader.
+    sameDocument =
+      detached.has(tabId) &&
+      commitsAtDetach.get(tabId) === (topCommits.get(tabId) ?? 0) &&
+      typeof loaderId === 'string' &&
+      mainDocuments.get(tabId)?.loaderId === loaderId;
     if (typeof loaderId === 'string') mainDocuments.set(tabId, { loaderId, url: typeof url === 'string' ? url : '' });
     else mainDocuments.delete(tabId);
   } catch (error) {
@@ -374,6 +426,7 @@ async function attach(tabId: number): Promise<void> {
     throw error;
   }
   detached.delete(tabId);
+  commitsAtDetach.delete(tabId);
   // Losing the debugger and getting it back on the same document leaves held refs valid.
   if (!sameDocument) bumpEpoch(tabId);
   attached.add(tabId);
@@ -392,6 +445,11 @@ async function attachDebugger(tabId: number): Promise<boolean> {
       if (!isForeignFrameError(error)) throw error;
       if (attempt >= FOREIGN_FRAME_ATTEMPTS) {
         throw new Error("Another extension's frame on this page keeps blocking the browser debugger. Close its popup and try again.");
+      }
+      const approved = recoveryOrigins.get(tabId);
+      const actual = originOf((await chrome.tabs.get(tabId)).url ?? '');
+      if (approved === undefined || actual !== approved) {
+        throw new Error(`The page moved to ${actual ?? 'an unknown origin'}. Read the new page and approve it first.`);
       }
       await clearForeignFrames(tabId);
       await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
