@@ -41,7 +41,7 @@ describe('claude -p --include-partial-messages', () => {
   it('still reads the reply and the session id for the existing message list', () => {
     const parse = directParser('claude');
     const events = lines.map((line) => parse(line));
-    expect(events.find((event) => event.sessionId !== undefined)?.sessionId).toBe('e4d0de81-1ec1-4cde-85c4-613fca25d69a');
+    expect(events.find((event) => event.sessionId !== undefined)?.sessionId).toBe('00000000-0000-4000-8000-000000000001');
     expect(events.flatMap((event) => (event.text === undefined ? [] : [event.text]))).toEqual([
       'Done: status reported 0 browsers connected, and fail returned the error "boom" as expected.',
     ]);
