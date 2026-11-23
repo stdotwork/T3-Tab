@@ -112,6 +112,16 @@ export async function checkProductInstall() {
     await entryClient.client.close();
     console.log('Product install: Add for Claude Code wrote an entry for the installed launcher; its `mcp` server sees the browser');
 
+    // 4b. `uninstall --claude` takes out that agent's entry and nothing else: helper, browser link, state and daemon stay.
+    const daemonBefore = JSON.parse(await readFile(home.statePath, 'utf8'));
+    const partial = await run(join(root, 't3-tab'), ['uninstall', '--claude']);
+    assert(/Kept the helper/.test(partial), `uninstall --claude did not say what it kept:\n${partial}`);
+    assert(JSON.parse(await readFile(claudeConfig, 'utf8')).mcpServers?.['t3-tab'] === undefined, 'uninstall --claude left the Claude Code entry');
+    for (const path of [root, join(root, 'cli.js'), manifest, home.statePath]) assert(await exists(path), `uninstall --claude removed ${path}`);
+    assert(isAlive(daemonBefore.pid), 'uninstall --claude stopped the daemon');
+    await panelRequest(serviceWorker, { type: 'panel.addAgent', agent: 'claude' });
+    console.log('Product install: uninstall --claude removed only the Claude Code entry; the helper, browser link, state and daemon stayed');
+
     // 5. An update: a daemon of another version is stopped by setup and the browser reconnects to a new one.
     const stateFile = home.statePath;
     const old = JSON.parse(await readFile(stateFile, 'utf8'));
@@ -150,19 +160,38 @@ export async function checkProductInstall() {
     await context.close();
     context = undefined;
 
-    // 8. A browser started with its own profile folder reads that folder, not ~/.config/chromium.
+    // 8. A browser started with its own profile folder reads that folder, not ~/.config/chromium. This one is headless in a
+    // temporary folder, which setup leaves alone on its own, so the folder is named with --user-data-dir.
     const custom = { ...home, profileDir: join(home.tempHome, 'my-test-profile', 'chromium-data') };
     await mkdir(custom.profileDir, { recursive: true });
     context = await launchBrowser(custom);
     const second = await extensionWorker(context);
     await waitForHelper(second.serviceWorker, false, 5_000);
-    await run(join(nodeDir, 'npx'), ['--yes', `--package=${tarball}`, 't3-tab', 'setup']);
     const customManifest = join(custom.profileDir, 'NativeMessagingHosts', 'com.t3tab.native.json');
-    assert(await exists(customManifest), 'setup did not register in the running browser\'s own profile folder');
+    await run(join(nodeDir, 'npx'), ['--yes', `--package=${tarball}`, 't3-tab', 'setup']);
+    assert(!(await exists(customManifest)), `setup wrote into the profile folder of a headless browser in a temporary folder: ${await readFile(customManifest, 'utf8').catch(() => '')}`);
+    await run(join(nodeDir, 'npx'), ['--yes', `--package=${tarball}`, 't3-tab', 'setup', '--user-data-dir', custom.profileDir]);
+    assert(await exists(customManifest), 'setup --user-data-dir did not register in the named profile folder');
     await waitForHelper(second.serviceWorker, true);
     await run(join(root, 't3-tab'), ['uninstall']);
     assert(!(await exists(customManifest)), 'Uninstall left the manifest in the custom profile folder');
-    console.log('Product install: a browser with its own --user-data-dir found the helper too, and uninstall cleaned that profile');
+    console.log('Product install: a headless test browser is left alone; named with --user-data-dir it found the helper too, and uninstall cleaned that profile');
+
+    // 9. Help is for people who type it: stdout, exit 0. With no browser anywhere, setup says what to do and exits non-zero.
+    const bundle = join(home.rootDir, 'packages', 'helper', 'dist', 'cli.js');
+    const bare = join(home.tempHome, 'no-browser');
+    const bareEnv = cleanEnv({ HOME: bare, XDG_CONFIG_HOME: join(bare, '.config'), XDG_STATE_HOME: join(bare, '.state'), XDG_DATA_HOME: join(bare, '.share'), PATH: nodeDir });
+    await mkdir(bare, { recursive: true });
+    const attempt = (args) => execFileAsync(process.execPath, [bundle, ...args], { cwd: runDir, env: bareEnv, timeout: 60_000 }).then((r) => ({ code: 0, ...r }), (e) => ({ code: e.code, stdout: e.stdout ?? '', stderr: e.stderr ?? '' }));
+    for (const args of [['--help'], ['-h'], ['help'], ['setup', '--help'], ['uninstall', '--help']]) {
+      const out = await attempt(args);
+      assert(out.code === 0 && out.stdout.startsWith(args[0] === 'setup' || args[0] === 'uninstall' ? `Usage: t3-tab ${args[0]}` : 't3-tab:'), `t3-tab ${args.join(' ')} exited ${out.code}:\n${out.stdout}${out.stderr}`);
+    }
+    const none = await attempt(['setup']);
+    assert(none.code === 1 && none.stdout.includes('--browser <chromium|chrome|brave|edge|vivaldi>') && none.stdout.includes('--user-data-dir <folder>'), `setup with no browser exited ${none.code}:\n${none.stdout}${none.stderr}`);
+    const printOnly = await attempt(['setup', '--print']);
+    assert(printOnly.code === 0, `setup --print with no browser exited ${printOnly.code}`);
+    console.log('Product install: --help prints usage and exits 0; setup with no browser names --browser and --user-data-dir and exits 1; setup --print exits 0');
   } finally {
     await context?.close().catch(() => undefined);
     await stopDaemon(home.statePath);

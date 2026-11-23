@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { startDaemon } from './daemon.js';
 import { currentHost } from './helper-layout.js';
+import { helpFor } from './help.js';
 import { setupHelper, uninstallHelper } from './helper-setup.js';
 import {
   agentConfigPath,
@@ -17,6 +18,7 @@ import {
   installNativeHost,
   isSupportedBrowser,
   nativeHostBrowsers,
+  installProfiles,
   planRegistrations,
   runningProfiles,
   type SupportedBrowser,
@@ -31,6 +33,11 @@ const cliPath = runningCliPath();
 
 export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
   const [command, ...rest] = args;
+  const help = helpFor(args);
+  if (help !== undefined) {
+    process.stdout.write(help);
+    return;
+  }
   switch (command) {
     case 'daemon':
       await runDaemon(rest);
@@ -61,7 +68,7 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       process.stdout.write(`${HELPER_VERSION ?? 'development build'}\n`);
       return;
     default:
-      throw new UsageError('Usage: t3-tab <setup|uninstall|daemon|native-host|mcp|version>   (developers also: install)');
+      throw new UsageError('Usage: t3-tab <setup|uninstall|daemon|native-host|mcp|version>   (developers also: install)\nRun `t3-tab --help` for what each does.');
   }
 }
 
@@ -113,14 +120,14 @@ async function runAgentInstall(args: string[], cliPath: string): Promise<void> {
     if (agents.length === 0) process.stdout.write('No Claude Code or Codex installation found.\n');
     for (const agent of agents) {
       const method = await agentInstallMethod(agent, process.env);
-      const configPath = agentConfigPath(agent, home);
+      const configPath = agentConfigPath(agent, home, process.env);
       const action = method === 'cli' ? `${agent} mcp add` : 'file edit';
       process.stdout.write(
         `${agentName(agent)}: would register t3-tab in ${configPath} with ${action} (${server.command} ${server.args.join(' ')})\n`,
       );
     }
     if (browsers.length === 0) process.stdout.write('No supported browser installation found.\n');
-    for (const entry of planRegistrations(browsers, host)) {
+    for (const entry of planRegistrations(browsers, host, await installProfiles(browsers, host))) {
       process.stdout.write(`Native host (${entry.browser ?? 'profile'}): would install ${entry.manifestPath}\n`);
     }
     return;
@@ -132,7 +139,7 @@ async function runAgentInstall(args: string[], cliPath: string): Promise<void> {
     process.stdout.write(`${agentName(agent)}: registered t3-tab in ${result.configPath} with ${action}\n`);
   }
   if (browsers.length > 0) {
-    const manifests = await installNativeHost({ browsers, host, cliPath, profiles: await runningProfiles(host) });
+    const manifests = await installNativeHost({ browsers, host, cliPath, profiles: await installProfiles(browsers, host) });
     for (const manifest of manifests) process.stdout.write(`Native host: installed ${manifest}\n`);
   }
   if (agents.length === 0 && browsers.length === 0) {
@@ -207,6 +214,8 @@ async function runSetup(args: string[]): Promise<void> {
     stateDir: stateDirectory(),
     say,
   });
+  // The helper is installed either way, but with no browser link written the browser cannot find it: that is a failure.
+  if (!parsed.print && result.registrations.length === 0) process.exitCode = 1;
   if (!parsed.print && result.registrations.length > 0) {
     say('Done. Open the T3-Tab side panel in your browser: it finds the helper by itself, with no reload.');
     if (!parsed.agents) say('Add Claude Code or Codex from the panel, or run this again with --agents.');

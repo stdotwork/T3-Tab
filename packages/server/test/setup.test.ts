@@ -95,12 +95,21 @@ describe('adding one agent', () => {
       { id: 'codex', found: true, registered: true },
     ]);
     expect(await readFile(join(home, '.codex', 'config.toml'), 'utf8')).toBe(
-      '[mcp_servers.t3-tab]\ncommand = "/usr/bin/node"\nargs = ["/x/cli.js", "mcp"]\n',
+      '[mcp_servers.t3-tab]\ncommand = "/usr/bin/node"\nargs = ["/x/cli.js", "mcp"]\ntool_timeout_sec = 330\n',
     );
     expect(existsSync(join(home, '.claude.json'))).toBe(false);
     // The browser link is not touched.
     expect(existsSync(join(home, '.config'))).toBe(false);
     expect(existsSync(join(home, '.local'))).toBe(false);
+  });
+
+  it('writes Codex\'s entry under CODEX_HOME when that is set', async () => {
+    const codexHome = join(root, 'codex-home');
+    const setup = new Setup({ env: { ...env, CODEX_HOME: codexHome }, server, agents: probe({ state: 'missing' }), find: found('codex') });
+    const status = await setup.addAgent('codex');
+    expect(status.agents.find((agent) => agent.id === 'codex')?.registered).toBe(true);
+    expect(await readFile(join(codexHome, 'config.toml'), 'utf8')).toContain('[mcp_servers.t3-tab]');
+    expect(existsSync(join(home, '.codex'))).toBe(false);
   });
 
   it('keeps the rest of a Claude Code config', async () => {

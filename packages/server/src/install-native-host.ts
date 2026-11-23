@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { access, chmod, mkdir, readFile, readdir, rmdir, unlink, writeFile } from 'node:fs/promises';
-import { delimiter } from 'node:path';
+import { tmpdir } from 'node:os';
+import path, { delimiter } from 'node:path';
 import { promisify } from 'node:util';
 
 import { EXTENSION_IDS, NATIVE_HOST_NAME } from '@t3-tab/protocol';
@@ -185,11 +186,14 @@ export async function findBrowsers(host: Host, deps: FindBrowsersDeps = realFind
 
 const BROWSER_PROGRAM = /(chrom|brave|vivaldi|msedge|microsoft-edge)/i;
 
-/** The `--user-data-dir` of a browser's main process, from its command line; undefined for helpers and other programs. */
+/**
+ * The `--user-data-dir` of a browser's main process, from its command line; undefined for helpers, other programs and
+ * browsers running headless (`--headless`, `--headless=new`, `--headless=old`), which are test browsers, not the user's.
+ */
 export function userDataDirFromArguments(argv: readonly string[]): string | undefined {
   const [program, ...rest] = argv;
   if (program === undefined || !BROWSER_PROGRAM.test(program.slice(program.lastIndexOf('/') + 1))) return undefined;
-  if (rest.some((argument) => argument.startsWith('--type='))) return undefined;
+  if (rest.some((argument) => argument.startsWith('--type=') || argument === '--headless' || argument.startsWith('--headless='))) return undefined;
   for (let index = 0; index < rest.length; index += 1) {
     const argument = rest[index] ?? '';
     if (argument.startsWith('--user-data-dir=')) return argument.slice('--user-data-dir='.length) || undefined;
@@ -220,10 +224,25 @@ export function realProcessDeps(): ProcessDeps {
   };
 }
 
+/** The folders temporary files live in. A profile under one of them belongs to a test or a throwaway browser. */
+function temporaryFolders(host: Host): string[] {
+  const folders = [tmpdir(), host.env.TMPDIR?.trim() ?? '', '/tmp', '/var/tmp', '/dev/shm'];
+  if (host.platform === 'darwin') folders.push('/private/tmp', '/var/folders', '/private/var/folders');
+  return folders.filter((folder) => folder !== '');
+}
+
+/** True when `folder` is `root` or inside it, compared by path segments: `/tmpfoo` is not under `/tmp`. */
+function isUnder(folder: string, root: string): boolean {
+  const base = path.posix.normalize(root).split('/').filter(Boolean);
+  const parts = path.posix.normalize(folder).split('/').filter(Boolean);
+  return path.posix.isAbsolute(folder) && base.every((segment, index) => parts[index] === segment);
+}
+
 /**
  * Profile folders of browsers running now with their own `--user-data-dir`. Such a browser reads native host manifests
- * from that folder only, so the usual one would leave the helper "not found" there. Windows reads its registry
- * instead, so nothing is looked for there.
+ * from that folder only, so the usual one would leave the helper "not found" there. Browsers running headless and
+ * profiles under a temporary folder are left out: they are test browsers, and nothing is written into them unless the
+ * user names the folder. Windows reads its registry instead, so nothing is looked for there.
  */
 export async function runningProfiles(host: Host, deps: ProcessDeps = realProcessDeps()): Promise<string[]> {
   const found = new Set<string>();
@@ -242,7 +261,16 @@ export async function runningProfiles(host: Host, deps: ProcessDeps = realProces
   } catch {
     // No process list: the usual profile folders still get the helper.
   }
-  return [...found];
+  const temporary = temporaryFolders(host);
+  return [...found].filter((profile) => !temporary.some((root) => isUnder(profile, root)));
+}
+
+/**
+ * The running browsers' profile folders that `install` and `install --print` both act on: only when a browser was
+ * found (or named), as the usual folders are the reason to look at all.
+ */
+export async function installProfiles(browsers: readonly SupportedBrowser[], host: Host, deps?: ProcessDeps): Promise<string[]> {
+  return browsers.length > 0 ? await runningProfiles(host, deps) : [];
 }
 
 /** `ps` joins the arguments with spaces, so a path with spaces is cut at the next ` --` flag. Best effort. */

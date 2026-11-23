@@ -7,6 +7,11 @@ export interface McpCommand {
 
 export const CLAUDE_SERVER_NAME = 't3-tab';
 export const CODEX_SERVER_NAME = 't3-tab';
+/**
+ * How long Codex waits for one T3-Tab tool call. Its default is 60 seconds and a browser prompt waits up to 300, so the
+ * entry sets 330, as direct runs do (`agents/commands.ts`): longer than T3-Tab's own 310-second wait, so its error comes first.
+ */
+export const CODEX_TOOL_TIMEOUT_SEC = 330;
 
 export function addClaudeServer(source: string, server: McpCommand): string {
   const config = parseClaudeConfig(source);
@@ -37,6 +42,32 @@ export function addCodexServer(source: string, server: McpCommand): string {
   return `${before}${block}${ensureBlankLineAfter(after)}`;
 }
 
+/**
+ * Adds `tool_timeout_sec` to the `t3-tab` table `codex mcp add` wrote, after its last key, and changes nothing else. A
+ * table that already has the key, or no table, comes back as it was.
+ */
+export function ensureCodexToolTimeout(source: string): string {
+  const range = findCodexServerRange(source);
+  if (range === undefined) return source;
+  let inMain = false;
+  let insertAt: number | undefined;
+  for (const line of linesWithOffsets(source.slice(range.start, range.end))) {
+    const key = tableKey(line.text);
+    if (key !== undefined) {
+      if (inMain) break;
+      inMain = key.replace(/["'\s]/g, '') === `mcp_servers.${CODEX_SERVER_NAME}`;
+      if (inMain) insertAt = range.start + line.start + line.text.length;
+    } else if (inMain) {
+      const text = line.text.trim();
+      if (/^tool_timeout_sec\s*=/.test(text)) return source;
+      if (text !== '' && !text.startsWith('#')) insertAt = range.start + line.start + line.text.length;
+    }
+  }
+  if (insertAt === undefined) return source;
+  const before = source.slice(0, insertAt);
+  return `${before}${before.endsWith('\n') ? '' : '\n'}tool_timeout_sec = ${CODEX_TOOL_TIMEOUT_SEC}\n${source.slice(insertAt)}`;
+}
+
 export function removeCodexServer(source: string): string {
   let current = source;
   for (;;) {
@@ -50,7 +81,7 @@ export function removeCodexServer(source: string): string {
 
 function codexServerBlock(server: McpCommand): string {
   const args = server.args.map(tomlString).join(', ');
-  return `[mcp_servers.${CODEX_SERVER_NAME}]\ncommand = ${tomlString(server.command)}\nargs = [${args}]\n`;
+  return `[mcp_servers.${CODEX_SERVER_NAME}]\ncommand = ${tomlString(server.command)}\nargs = [${args}]\ntool_timeout_sec = ${CODEX_TOOL_TIMEOUT_SEC}\n`;
 }
 
 export function parseClaudeConfig(source: string): Record<string, unknown> {

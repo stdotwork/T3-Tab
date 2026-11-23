@@ -11,6 +11,7 @@ import {
   applyRegistrations,
   findBrowsers,
   hostManifest,
+  installProfiles,
   planRegistrations,
   removeRegistrations,
   runningProfiles,
@@ -146,6 +147,37 @@ describe('browsers running with their own profile folder', () => {
     expect(mac).toEqual(['/Users/a/My Profile']);
     expect(await runningProfiles(currentHost({ HOME: '/h' }, 'win32'), noProcesses)).toEqual([]);
   });
+
+  it('leaves out browsers running headless, whichever way the flag is spelled', async () => {
+    const profiles = await runningProfiles(currentHost({ HOME: '/h' }, 'linux'), {
+      ...noProcesses,
+      readCommandLines: async () => [
+        ['/x/chrome', '--headless', '--user-data-dir=/work/a'],
+        ['/x/chrome', '--headless=new', '--user-data-dir=/work/b'],
+        ['/x/chrome', '--user-data-dir=/work/c', '--headless=old'],
+        ['/x/chrome', '--user-data-dir=/work/live', '--remote-debugging-port=0'],
+      ],
+    });
+    expect(profiles).toEqual(['/work/live']);
+  });
+
+  it('leaves out profiles under a temporary folder, compared by path segments', async () => {
+    const running = (folders: string[]): ProcessDeps => ({ ...noProcesses, readCommandLines: async () => folders.map((folder) => ['/x/chrome', `--user-data-dir=${folder}`]) });
+    const linux = currentHost({ HOME: '/h', TMPDIR: '/scratch/t' }, 'linux');
+    expect(
+      await runningProfiles(linux, running(['/tmp/p', '/tmp', '/var/tmp/a/b', '/dev/shm/x', '/scratch/t/p', '/scratch/t/../keep', '/tmpfoo/p', '/var/tmpx/p', '/work/p', 'relative/p', '/private/tmp/p', '/var/folders/zz/T/p'])),
+    ).toEqual(['/scratch/t/../keep', '/tmpfoo/p', '/var/tmpx/p', '/work/p', 'relative/p', '/private/tmp/p', '/var/folders/zz/T/p']);
+    const mac = currentHost({ HOME: '/Users/a' }, 'darwin');
+    const ps = (folders: string[]): ProcessDeps => ({ ...noProcesses, psOutput: async () => folders.map((folder) => `/Applications/Brave Browser.app/Contents/MacOS/Brave Browser --user-data-dir=${folder}`).join('\n') });
+    expect(await runningProfiles(mac, ps(['/private/tmp/p', '/var/folders/zz/T/p', '/private/var/folders/zz/p', '/tmp/p', '/Users/a/Profiles/p']))).toEqual(['/Users/a/Profiles/p']);
+  });
+
+  it('serves the same running profiles for `install` and `install --print`, and none when no browser is found', async () => {
+    const host = currentHost({ HOME: '/h' }, 'linux');
+    const deps: ProcessDeps = { ...noProcesses, readCommandLines: async () => [['/x/chrome', '--user-data-dir=/work/live']] };
+    expect(await installProfiles(['chromium'], host, deps)).toEqual(['/work/live']);
+    expect(await installProfiles([], host, deps)).toEqual([]);
+  });
 });
 
 describe('setup and uninstall on Linux (run in a temporary home)', () => {
@@ -170,7 +202,9 @@ describe('setup and uninstall on Linux (run in a temporary home)', () => {
     stateDir: join(home, '.local', 'state', 't3-tab'),
     say: (line) => void lines.push(line),
     findDeps: { exists: async (path) => path.endsWith('/.config/chromium'), onPath: async () => false },
-    processDeps: { ...noProcesses, readCommandLines: async () => [['/x/chrome', `--user-data-dir=${join(home, 'elsewhere')}`]] },
+    // The folder is named, as `setup --user-data-dir` does; a browser running under this temporary home would be skipped.
+    userDataDirs: [join(home, 'elsewhere')],
+    processDeps: { ...noProcesses, readCommandLines: async () => [['/x/chrome', `--user-data-dir=${join(home, 'running-in-temp')}`], ['/x/chrome', '--headless', '--user-data-dir=/work/headless']] },
     ...extra,
   });
 
@@ -178,7 +212,7 @@ describe('setup and uninstall on Linux (run in a temporary home)', () => {
     await expect(setupHelper(options({ bundle: undefined, version: undefined }))).rejects.toThrow(NOT_BUNDLED);
   });
 
-  it('copies the program, writes launchers, registers every browser found and the running profile, and records it', async () => {
+  it('copies the program, writes launchers, registers every browser found and the named profile folder, not test browsers, and records it', async () => {
     const result = await setupHelper(options());
     const layout = helperLayout(currentHost({ HOME: home }, 'linux'));
     expect(await readFile(layout.cli, 'utf8')).toContain('console.log("bundle")');
@@ -210,7 +244,7 @@ describe('setup and uninstall on Linux (run in a temporary home)', () => {
     expect(JSON.parse(await readFile(layout.marker, 'utf8')).version).toBe('10.0.0');
   });
 
-  it('uninstall removes the program, launchers, manifests (also in the running profile) and state, and nothing else', async () => {
+  it('uninstall removes the program, launchers, manifests (also in the named profile folder) and state, and nothing else', async () => {
     await setupHelper(options());
     const stateDir = join(home, '.local', 'state', 't3-tab');
     await mkdir(stateDir, { recursive: true });
@@ -225,5 +259,30 @@ describe('setup and uninstall on Linux (run in a temporary home)', () => {
     await expect(stat(join(home, 'elsewhere/NativeMessagingHosts'))).rejects.toThrow();
     await expect(stat(stateDir)).rejects.toThrow();
     expect(await readFile(neighbour, 'utf8')).toContain('com.other.host');
+  });
+
+  it('uninstall with agents named removes only their entries and keeps the helper, state, browser links and daemon', async () => {
+    await setupHelper(options());
+    const host = currentHost({ HOME: home }, 'linux');
+    const layout = helperLayout(host);
+    const stateDir = join(home, '.local', 'state', 't3-tab');
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, 'daemon.json'), '{}');
+    const removedFrom: string[] = [];
+    lines.length = 0;
+    await uninstallHelper({
+      host,
+      stateDir,
+      agents: ['codex'],
+      say: (line) => void lines.push(line),
+      processDeps: noProcesses,
+      removeAgent: async (agent) => (removedFrom.push(agent), `removed ${agent}`),
+    });
+    expect(removedFrom).toEqual(['codex']);
+    expect((await readdir(layout.root)).sort()).toEqual(['cli.js', 'install.json', 'native-host', 't3-tab']);
+    await stat(join(home, '.config/chromium/NativeMessagingHosts/com.t3tab.native.json'));
+    await stat(join(home, 'elsewhere/NativeMessagingHosts/com.t3tab.native.json'));
+    await stat(join(stateDir, 'daemon.json'));
+    expect(lines).toEqual(['removed codex', 'Kept the helper, the browser link and the background program; only the Codex entry was removed.']);
   });
 });

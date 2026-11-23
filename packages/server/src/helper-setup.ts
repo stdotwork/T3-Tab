@@ -60,6 +60,8 @@ export interface SetupResult {
   stoppedDaemon: boolean;
 }
 
+export const NO_BROWSER = `No Chromium-family browser found. Name one with --browser <${BROWSERS.join('|')}>, or the profile folder of one that is running with --user-data-dir <folder>, and run this command again.`;
+
 export const NOT_BUNDLED =
   'This is not the packed helper, so `setup` has nothing to install. Run `npx t3-tab@latest setup`, or use `t3-tab install` from a checkout.';
 
@@ -80,7 +82,7 @@ export async function setupHelper(options: SetupOptions): Promise<SetupResult> {
   if (options.print === true) {
     say(`Would install T3-Tab ${options.version} in ${layout.root}`);
     for (const entry of plan) say(`Would register the browser link: ${entry.kind === 'registry' ? entry.key : entry.manifestPath}`);
-    if (plan.length === 0) say('No Chromium-family browser found.');
+    if (plan.length === 0) say(NO_BROWSER);
     return { layout, registrations: plan, browsers, stoppedDaemon: false };
   }
 
@@ -103,7 +105,7 @@ export async function setupHelper(options: SetupOptions): Promise<SetupResult> {
 
   const registrations = await applyRegistrations(plan, layout.hostLauncher, options.run);
   for (const entry of registrations) say(`Registered the browser link: ${entry.kind === 'registry' ? entry.key : entry.manifestPath}`);
-  if (registrations.length === 0) say('No Chromium-family browser found. Install one and run this command again.');
+  if (registrations.length === 0) say(NO_BROWSER);
 
   const marker: InstallMarker = {
     name: 't3-tab',
@@ -144,11 +146,21 @@ export interface UninstallOptions {
   removeAgent(agent: Agent): Promise<string>;
 }
 
-/** Removes everything setup (or the developer `install`) added: agent entries, browser registrations, the program, and its state. */
+/**
+ * Removes everything setup (or the developer `install`) added: agent entries, browser registrations, the program, and its
+ * state. With agents named it removes only their entries: the helper, state, browser links and daemon stay, because the
+ * other agent's entry, and the browser, still use them.
+ */
 export async function uninstallHelper(options: UninstallOptions): Promise<void> {
   const { host, say } = options;
   const layout = helperLayout(host);
   const p = pathsOf(host);
+
+  if (options.agents !== undefined && options.agents.length > 0) {
+    for (const agent of options.agents) say(await options.removeAgent(agent));
+    say(`Kept the helper, the browser link and the background program; only the ${options.agents.map(agentName).join(' and ')} ${options.agents.length === 1 ? 'entry was' : 'entries were'} removed.`);
+    return;
+  }
 
   if (await stopDaemon(options.stateDir)) say('Stopped the background program.');
 
