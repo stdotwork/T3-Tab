@@ -46,3 +46,25 @@ describe('claim codes in a thread', () => {
     expect(shown.rows[0]).toMatchObject({ kind: 'user', text: 'Read it' });
   });
 });
+
+describe('approval requests in a thread', () => {
+  const view = (items: T3Projection['visibleTurnItems']) =>
+    t3ThreadView({ thread: { id: 't', title: 'Thread' }, runs: [], runtimeRequests: [], visibleTurnItems: items });
+  const approval = (id: string, status: string) => ({ item: { id, type: 'approval_request', status, requestId: id, prompt: 'Allow the tool?' } });
+  const rowEntries = (shown: ReturnType<typeof view>) => shown.rows.flatMap((row) => (row.kind === 'work' ? row.entries : []));
+
+  it('adds no row for an answered approval', () => {
+    const shown = view([approval('a1', 'completed')]);
+    expect(shown.rows).toEqual([]);
+  });
+
+  it('adds a row for one that is still waiting', () => {
+    const shown = view([approval('a2', 'waiting')]);
+    expect(rowEntries(shown)).toMatchObject([{ id: 'a2', icon: 'approval', status: 'waiting' }]);
+  });
+
+  it('keeps the waiting one and drops the answered one when both are in the thread', () => {
+    const shown = view([approval('old', 'completed'), approval('new', 'waiting')]);
+    expect(rowEntries(shown).map((entry) => entry.id)).toEqual(['new']);
+  });
+});

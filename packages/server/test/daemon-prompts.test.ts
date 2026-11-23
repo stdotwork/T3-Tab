@@ -205,7 +205,13 @@ describe('the panel\'s setup and pairing requests', () => {
       addAgent: async (agentName: unknown) => (calls.push(`add:${String(agentName)}`), { agents: [], t3: { state: 'missing' } }),
     } as unknown as Setup;
     const pairing = {
-      pair: async () => ({ origin: 'http://127.0.0.1:1', credential: 'c', expiresAt: 'e' }),
+      pair: async (params: unknown) => (calls.push(`pair:${JSON.stringify(params)}`), { origin: 'http://127.0.0.1:1', accessToken: 'a', expiresIn: 60 }),
+      session: async (params: unknown) => (calls.push(`session:${JSON.stringify(params)}`), { outcome: 'moved' }),
+      threadMode: async (threadId: unknown) => {
+        calls.push(`mode:${String(threadId)}`);
+        if (threadId === 'bad') throw new Error('Invalid thread id');
+        return { runtimeMode: 'full-access' };
+      },
       unpair: async () => {
         throw new Error('no session list');
       },
@@ -214,10 +220,24 @@ describe('the panel\'s setup and pairing requests', () => {
     const browser = await open(handle, true);
     expect(await ask(browser, 'setup.status', { refresh: true })).toMatchObject({ ok: true, result: { t3: { state: 'missing' } } });
     expect(await ask(browser, 'setup.addAgent', { agent: 'codex' })).toMatchObject({ ok: true });
-    expect(await ask(browser, 't3.pair')).toMatchObject({ ok: true, result: { origin: 'http://127.0.0.1:1', credential: 'c', expiresAt: 'e' } });
+    expect(await ask(browser, 't3.pair', { origin: 'http://127.0.0.1:1', dpop: 'a.b.c' })).toMatchObject({
+      ok: true,
+      result: { origin: 'http://127.0.0.1:1', accessToken: 'a', expiresIn: 60 },
+    });
+    const sessionParams = { kind: 'ticket', origin: 'http://127.0.0.1:1', accessToken: 'tok', dpop: 'a.b.c' };
+    expect(await ask(browser, 't3.session', sessionParams)).toMatchObject({ ok: true, result: { outcome: 'moved' } });
+    expect(await ask(browser, 't3.threadMode', { threadId: 'th1' })).toMatchObject({ ok: true, result: { runtimeMode: 'full-access' } });
+    expect(await ask(browser, 't3.threadMode', { threadId: 'bad' })).toMatchObject({ ok: false, error: 'Invalid thread id' });
     expect(await ask(browser, 't3.unpair')).toMatchObject({ ok: false, error: 'no session list' });
     expect(await ask(browser, 'agents.get', { id: 'nope' })).toMatchObject({ ok: false, error: expect.stringContaining('No such conversation') });
     expect(await ask(browser, 'agents.stop', { id: 7 })).toMatchObject({ ok: false, error: 'Invalid conversation id' });
-    expect(calls).toEqual(['status:true', 'add:codex']);
+    expect(calls).toEqual([
+      'status:true',
+      'add:codex',
+      `pair:${JSON.stringify({ origin: 'http://127.0.0.1:1', dpop: 'a.b.c' })}`,
+      `session:${JSON.stringify(sessionParams)}`,
+      'mode:th1',
+      'mode:bad',
+    ]);
   });
 });
