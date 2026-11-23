@@ -11,7 +11,7 @@ import { Settings, type SettingsTab } from './Settings';
 import { Setup } from './Setup';
 import { errorText, panel } from './lib/api';
 import { directProviders, resolveChoice, selectionFor, t3Providers, type Choice, type PickerProvider } from './lib/catalog';
-import { refreshConversations, startPolling, useLive, useStored, type LiveState } from './lib/store';
+import { headlessRender, refreshConversations, startPolling, useLive, useStored, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
 import { syncT3Theme } from './lib/theme';
 import { directThreadView, type ThreadView } from './lib/thread-model';
@@ -583,7 +583,7 @@ export function App(): ReactNode {
   }, [screen]);
 
   if (!setupLoaded || !live.loaded) return <div className="screen" />;
-  if (!setupDone) return <Setup live={live} state={state} onDone={() => setSetupDone(true)} />;
+  if (!setupDone && !headlessRender) return <Setup live={live} state={state} onDone={() => setSetupDone(true)} />;
 
   const nav = (next: Screen): void => {
     if (next.name === 'settings' || next.name === 'threads') {

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { PROTOCOL_MISMATCH, PROTOCOL_VERSION } from '../src/index.js';
 
 describe('protocol version', () => {
-  it('is version 3, which added panel setup, T3 pairing and prompts in the agent's thread', () => {
+  it('is version 3, which added panel setup, T3 pairing and prompts in agent threads', () => {
     expect(PROTOCOL_VERSION).toBe(3);
   });
 
