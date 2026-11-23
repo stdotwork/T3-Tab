@@ -170,6 +170,8 @@ describe('browsers running with their own profile folder', () => {
     const mac = currentHost({ HOME: '/Users/a' }, 'darwin');
     const ps = (folders: string[]): ProcessDeps => ({ ...noProcesses, psOutput: async () => folders.map((folder) => `/Applications/Brave Browser.app/Contents/MacOS/Brave Browser --user-data-dir=${folder}`).join('\n') });
     expect(await runningProfiles(mac, ps(['/private/tmp/p', '/var/folders/zz/T/p', '/private/var/folders/zz/p', '/tmp/p', '/Users/a/Profiles/p']))).toEqual(['/Users/a/Profiles/p']);
+    // A TMPDIR of the root folder does not make every profile temporary.
+    expect(await runningProfiles(currentHost({ HOME: '/h', TMPDIR: '/' }, 'linux'), running(['/work/p']))).toEqual(['/work/p']);
   });
 
   it('serves the same running profiles for `install` and `install --print`, and none when no browser is found', async () => {

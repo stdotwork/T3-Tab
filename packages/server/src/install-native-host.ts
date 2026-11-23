@@ -228,7 +228,8 @@ export function realProcessDeps(): ProcessDeps {
 function temporaryFolders(host: Host): string[] {
   const folders = [tmpdir(), host.env.TMPDIR?.trim() ?? '', '/tmp', '/var/tmp', '/dev/shm'];
   if (host.platform === 'darwin') folders.push('/private/tmp', '/var/folders', '/private/var/folders');
-  return folders.filter((folder) => folder !== '');
+  // A TMPDIR of `/` would make every profile count as temporary.
+  return folders.filter((folder) => path.posix.normalize(folder) !== '/' && folder !== '');
 }
 
 /** True when `folder` is `root` or inside it, compared by path segments: `/tmpfoo` is not under `/tmp`. */
