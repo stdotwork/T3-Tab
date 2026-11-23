@@ -14,9 +14,8 @@ import {
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
 import { Agents } from './agents/conversations.js';
-import { T3Access } from './agents/t3-access.js';
+import { removeStaleT3Credentials } from './agents/stale-t3-credential.js';
 import { T3PanelPairing } from './agents/t3-pairing.js';
-import { removeTemporaryCredentials } from './agents/t3-credential.js';
 import { BrowserConnection } from './browser-link.js';
 import { handleControlMessage, type ControlState } from './daemon-control.js';
 import { isBrowserMessage, otherProtocolVersion, parseJson } from './daemon-messages.js';
@@ -32,8 +31,6 @@ export interface DaemonOptions {
   stateDir?: string;
   /** The side panel's agent runs; tests pass their own. */
   agents?: Agents;
-  /** The side panel's read-only T3 sign-in; tests pass their own. */
-  t3Access?: T3Access;
   /** The panel's first-run steps; tests pass their own. */
   setup?: Setup;
   /** The panel's own T3 pairing; tests pass their own. */
@@ -57,10 +54,8 @@ const MAX_BROWSER_MESSAGE_BYTES = 16 * 1_024 * 1_024;
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   if (options.stateDir === undefined) throw new Error('A state directory is required');
   const stateDir = options.stateDir;
-  // A crash can leave a temporary copy of the T3 token. A failure here must not keep the browser tools from starting.
-  await removeTemporaryCredentials(stateDir).catch(() => {
-    process.stderr.write('T3-Tab could not remove a leftover temporary credential file from its state folder.\n');
-  });
+  // An older T3-Tab kept a T3 token here that nothing reads now. It is not worth waiting for: a few directory entries.
+  await removeStaleT3Credentials(stateDir);
   const token = randomBytes(32).toString('base64url');
   const extensionToken = randomBytes(32).toString('base64url');
   const roles = new WeakMap<IncomingMessage, ConnectionRole>();
@@ -69,10 +64,9 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const control: ControlState = { sessions, claims: new Map(), redeeming: new Map(), prompts: new Map(), peers: new Map(), t3Threads: new Map() };
   const server = runningMcpCommand();
   const agents = options.agents ?? new Agents({ env: process.env, stateDir, server });
-  const t3Access = options.t3Access ?? new T3Access({ env: process.env, stateDir });
   const setup = options.setup ?? new Setup({ env: process.env, server, agents });
   const pairing = options.pairing ?? new T3PanelPairing({ env: process.env });
-  const panel: PanelServices = { agents, t3Access, setup, pairing };
+  const panel: PanelServices = { agents, setup, pairing };
   const httpServer = createServer((request, response) => handleHttpRequest(request, response, token));
   const sockets = {
     extension: new WebSocketServer({ noServer: true, maxPayload: MAX_BROWSER_MESSAGE_BYTES }),
@@ -180,7 +174,6 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
       if (closed) return;
       closed = true;
       await agents.close();
-      t3Access.close();
       await clearDaemonState(stateDir, token);
       await clearExtensionState(stateDir, extensionToken);
       await closeServer(httpServer, sockets);
@@ -207,7 +200,6 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse, t
 
 interface PanelServices {
   agents: Agents;
-  t3Access: T3Access;
   setup: Setup;
   pairing: T3PanelPairing;
 }
@@ -263,12 +255,12 @@ function handleBrowserMessage(
 
 /**
  * A side-panel request the extension passed on: start, continue, stop, read or list the panel's agent conversations,
- * set up an agent, sign in to T3 for its lists, run the panel's T3 session requests, or report a thread's mode. Pairing
- * and session replies carry the panel's own T3 token and nothing else; errors name what failed, not what was sent.
+ * set up an agent, run the panel's T3 session requests, or report a thread's mode. Pairing and session replies carry
+ * the panel's own T3 token and nothing else; errors name what failed, not what was sent.
  */
 async function answerDaemonRequest(
   webSocket: WebSocket,
-  { agents, t3Access, setup, pairing }: PanelServices,
+  { agents, setup, pairing }: PanelServices,
   message: BrowserDaemonRequestMessage,
 ): Promise<void> {
   let reply: DaemonReplyMessage;
@@ -279,9 +271,6 @@ async function answerDaemonRequest(
     else if (message.method === 'agents.list') result = { conversations: agents.list() };
     else if (message.method === 'agents.start') result = { conversation: await agents.start(params) };
     else if (message.method === 'agents.send') result = { conversation: await agents.send(params.id, params.message, params.claim) };
-    else if (message.method === 't3.access') result = await t3Access.view(params.refresh === true);
-    else if (message.method === 't3.signIn') result = await t3Access.signIn();
-    else if (message.method === 't3.signOut') result = await t3Access.signOut();
     else if (message.method === 'agents.get') result = { conversation: agents.get(params.id) };
     else if (message.method === 'agents.stop') result = { conversation: await agents.stop(params.id) };
     else if (message.method === 'setup.status') result = await setup.status(params.refresh === true);
