@@ -59,6 +59,8 @@ export interface AgentStartRequest {
   provider?: string;
   model?: string;
   tabId?: number;
+  /** The owner took the tab chip off: the run starts with no shared tabs. */
+  noTabs?: boolean;
 }
 
 export type PanelRequest =
@@ -204,7 +206,7 @@ async function signInToT3(): Promise<{ ok: true }> {
  * themselves. The extension issues the claim code here, so only a start from the panel can share tabs.
  */
 async function startAgent(request: AgentStartRequest): Promise<{ conversation: AgentConversation }> {
-  const tabs = await shareTargets(request.tabId);
+  const tabs = request.noTabs === true ? [] : await shareTargets(request.tabId);
   const claimTabs: ClaimTab[] = tabs.map((tab) => {
     const origin = originOf(tab.url);
     return origin === undefined ? { tabId: tab.id } : { tabId: tab.id, origin };
@@ -324,6 +326,7 @@ function parsePanelRequest(value: unknown): PanelRequest {
       if (typeof field === 'string' && field.trim() !== '') request[key] = field.trim();
     }
     if (Number.isInteger(candidate.tabId)) request.tabId = candidate.tabId as number;
+    if (candidate.noTabs === true) request.noTabs = true;
     return request;
   }
   if (candidate.type === 'panel.t3SignIn' || candidate.type === 'panel.t3SignOut') return { type: candidate.type };
