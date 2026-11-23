@@ -161,11 +161,12 @@ async function answerDialogStep(tabId: number, step: ActStep, expectedOrigin: st
     dialog.input = step.type.text;
     return;
   }
-  if ('press' in step && step.press.key === 'Escape') {
+  const answer = 'press' in step ? plainKeyName(step.press.key) : undefined;
+  if (answer === 'Escape') {
     await answerDialog(tabId, false, undefined, dialog);
     return;
   }
-  if ('press' in step && step.press.key === 'Enter' && sameSite) {
+  if (answer === 'Enter' && sameSite) {
     await answerDialog(tabId, true, dialog.type === 'prompt' ? (dialog.input ?? dialog.defaultPrompt) : undefined, dialog);
     return;
   }
@@ -389,43 +390,87 @@ async function pressKey(tabId: number, value: string): Promise<void> {
   await sendCommand(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...params, text: undefined, unmodifiedText: undefined });
 }
 
-export function parseKey(value: string): KeyStroke {
+const KEYS: Record<string, KeyStroke> = {
+  enter: { key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' },
+  tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
+  escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
+  backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
+  delete: { key: 'Delete', code: 'Delete', keyCode: 46 },
+  insert: { key: 'Insert', code: 'Insert', keyCode: 45 },
+  arrowup: { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
+  arrowdown: { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+  arrowleft: { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
+  arrowright: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+  home: { key: 'Home', code: 'Home', keyCode: 36 },
+  end: { key: 'End', code: 'End', keyCode: 35 },
+  pageup: { key: 'PageUp', code: 'PageUp', keyCode: 33 },
+  pagedown: { key: 'PageDown', code: 'PageDown', keyCode: 34 },
+  space: { key: ' ', code: 'Space', keyCode: 32, text: ' ' },
+  shift: { key: 'Shift', code: 'ShiftLeft', keyCode: 16 },
+  control: { key: 'Control', code: 'ControlLeft', keyCode: 17 },
+  alt: { key: 'Alt', code: 'AltLeft', keyCode: 18 },
+  meta: { key: 'Meta', code: 'MetaLeft', keyCode: 91 },
+};
+for (let number = 1; number <= 12; number += 1) {
+  KEYS[`f${number}`] = { key: `F${number}`, code: `F${number}`, keyCode: 111 + number };
+}
+const KEY_ALIASES: Record<string, string> = {
+  return: 'enter',
+  esc: 'escape',
+  del: 'delete',
+  ins: 'insert',
+  up: 'arrowup',
+  down: 'arrowdown',
+  left: 'arrowleft',
+  right: 'arrowright',
+  pgup: 'pageup',
+  pgdn: 'pagedown',
+  spacebar: 'space',
+  ctrl: 'control',
+  option: 'alt',
+  cmd: 'meta',
+  command: 'meta',
+  super: 'meta',
+  win: 'meta',
+};
+
+function keyPieces(value: string): string[] {
   const pieces = value.split('+').map((piece) => piece.trim()).filter((piece) => piece !== '');
-  const name = pieces.at(-1);
+  // "+" itself, alone or as the last key of a chord.
+  if (value.trim().endsWith('+')) pieces.push('+');
+  return pieces;
+}
+
+function namedKey(name: string): KeyStroke | undefined {
+  const lower = name.toLowerCase();
+  return KEYS[KEY_ALIASES[lower] ?? lower];
+}
+
+export function parseKey(value: string): KeyStroke {
+  const name = keyPieces(value).at(-1);
   if (name === undefined) throw new Error('press needs a key such as Enter or Control+A');
-  const aliases: Record<string, KeyStroke> = {
-    Enter: { key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' },
-    Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
-    Escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
-    Backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
-    Delete: { key: 'Delete', code: 'Delete', keyCode: 46 },
-    ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
-    ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
-    ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
-    ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
-    Home: { key: 'Home', code: 'Home', keyCode: 36 },
-    End: { key: 'End', code: 'End', keyCode: 35 },
-    PageUp: { key: 'PageUp', code: 'PageUp', keyCode: 33 },
-    PageDown: { key: 'PageDown', code: 'PageDown', keyCode: 34 },
-    Space: { key: ' ', code: 'Space', keyCode: 32, text: ' ' },
-    Shift: { key: 'Shift', code: 'ShiftLeft', keyCode: 16 },
-    Control: { key: 'Control', code: 'ControlLeft', keyCode: 17 },
-    Alt: { key: 'Alt', code: 'AltLeft', keyCode: 18 },
-    Meta: { key: 'Meta', code: 'MetaLeft', keyCode: 91 },
-  };
-  const named = aliases[name];
-  if (named !== undefined) return named;
-  if (name.length !== 1) throw new Error(`Unknown key: ${name}`);
-  const upper = name.toUpperCase();
-  return { key: name, code: /^[A-Z]$/.test(upper) ? `Key${upper}` : '', keyCode: upper.charCodeAt(0), text: name };
+  // One character is that character, in its case; only longer names are spellings of a named key.
+  if (name.length === 1 && name !== ' ') {
+    const upper = name.toUpperCase();
+    return { key: name, code: /^[A-Z]$/.test(upper) ? `Key${upper}` : '', keyCode: upper.charCodeAt(0), text: name };
+  }
+  const named = name === ' ' ? KEYS.space : namedKey(name);
+  if (named === undefined) throw new Error(`Unknown key: ${name}. Use a character or a name such as Enter, Escape, Tab, ArrowDown or F5.`);
+  return named;
+}
+
+/** The key's standard name when `value` is one key with no modifiers, as a dialog's answer must be. */
+function plainKeyName(value: string): string | undefined {
+  const pieces = keyPieces(value);
+  return pieces.length === 1 && pieces[0] !== undefined ? namedKey(pieces[0])?.key : undefined;
 }
 
 function modifierMask(value: string): number {
-  const pieces = value.split('+').map((piece) => piece.trim().toLowerCase());
+  const pieces = keyPieces(value).map((piece) => KEY_ALIASES[piece.toLowerCase()] ?? piece.toLowerCase());
   let mask = 0;
   if (pieces.includes('alt')) mask |= 1;
-  if (pieces.includes('control') || pieces.includes('ctrl')) mask |= 2;
-  if (pieces.includes('meta') || pieces.includes('command') || pieces.includes('cmd')) mask |= 4;
+  if (pieces.includes('control')) mask |= 2;
+  if (pieces.includes('meta')) mask |= 4;
   if (pieces.includes('shift')) mask |= 8;
   return mask;
 }
