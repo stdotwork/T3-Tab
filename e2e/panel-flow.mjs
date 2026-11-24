@@ -307,7 +307,7 @@ async function checkClosedPanelFullAccess({ home, t3, serviceWorker, tabId, thre
     await setThreadMode(home, t3.origin, threadId, 'approval-required');
     await sleep(2_100);
     const listed = (await client.callTool({ name: 'tabs', arguments: {} })).content?.[0]?.text ?? '';
-    check('after lowering, the tab Full access opened needs approval again', new RegExp(`^${openedInFull}( \\[front\\])? \\[needs approval\\]`, 'm').test(listed));
+    check('after lowering, the tab Full access opened needs approval again', new RegExp(`^${openedInFull}( \\[current\\])? \\[needs approval\\]`, 'm').test(listed));
     const readCall = client.callTool({ name: 'read', arguments: { tab: openedInFull } });
     const readPrompt = await until('the read to prompt', async () => await pendingAt(passed), 15_000).catch(() => undefined);
     if (readPrompt !== undefined) await panelRequest(serviceWorker, { type: 'panel.decide', promptId: readPrompt.id, decision: 'decline' });
