@@ -309,6 +309,8 @@ export type AgentItem =
       text: string;
       /** True while the agent is still writing this text. */
       streaming?: boolean;
+      /** When the item was added, in milliseconds since the epoch. */
+      at?: number;
     }
   | {
       id: string;

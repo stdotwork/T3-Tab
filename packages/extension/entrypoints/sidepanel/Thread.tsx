@@ -3,7 +3,6 @@ import {
   Brain,
   ChevronRight,
   CircleHelp,
-  Copy,
   FilePen,
   Globe,
   ListChecks,
@@ -13,13 +12,15 @@ import {
   ShieldAlert,
   SquareTerminal,
   Wrench,
+  X,
 } from 'lucide-react';
-import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { lazy, memo, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 
-import type { PendingApproval, PendingQuestion, Row, ThreadView, WorkEntry, WorkIcon } from './lib/thread-model';
-import { formatDuration } from './ui';
+import type { PendingApproval, PendingQuestion, QueuedMessage, Row, ThreadView, WorkEntry, WorkIcon } from './lib/thread-model';
+import { clockTime, CopyButton, formatDuration } from './ui';
+
+// The markdown parser is about a quarter of the panel's script, and a new thread has nothing to render with it.
+const Markdown = lazy(() => import('./Markdown'));
 
 const ICONS: Record<WorkIcon, typeof Brain> = {
   thinking: Brain,
@@ -37,23 +38,13 @@ const ICONS: Record<WorkIcon, typeof Brain> = {
   note: MessageSquare,
 };
 
-/** Agent text is rendered as markdown with no remote images, so a reply cannot load anything by being shown. */
+/** Agent text, as plain text for the moment the markdown renderer takes to load. */
 export const MessageText = memo(function MessageText({ text }: { text: string }): ReactNode {
   return (
     <div className="chat-markdown">
-      <Markdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          img: ({ alt }) => <span className="md-image">{alt ?? 'image'}</span>,
-          a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noreferrer noopener">
-              {children}
-            </a>
-          ),
-        }}
-      >
-        {text}
-      </Markdown>
+      <Suspense fallback={<p className="plain-text">{text}</p>}>
+        <Markdown text={text} />
+      </Suspense>
     </div>
   );
 });
@@ -119,29 +110,30 @@ function WorkGroup({ row }: { row: Extract<Row, { kind: 'work' }> }): ReactNode 
 }
 
 function AssistantRow({ row }: { row: Extract<Row, { kind: 'assistant' }> }): ReactNode {
-  const [copied, setCopied] = useState(false);
   return (
     <article className="assistant" data-message-role="assistant">
       <MessageText text={row.text} />
       {row.streaming ? null : (
         <div className="message-meta">
-          <button
-            type="button"
-            aria-label={copied ? 'Copied' : 'Copy reply'}
-            title={copied ? 'Copied' : 'Copy'}
-            onClick={() => {
-              void navigator.clipboard.writeText(row.text).then(() => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1200);
-              });
-            }}
-          >
-            <Copy size={13} aria-hidden="true" />
-          </button>
-          {row.at === undefined ? null : <time>{new Date(row.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}
+          <CopyButton text={row.text} label="Copy reply" />
+          {row.at === undefined ? null : <time>{clockTime(row.at)}</time>}
         </div>
       )}
     </article>
+  );
+}
+
+function UserRow({ row }: { row: Extract<Row, { kind: 'user' }> }): ReactNode {
+  return (
+    <div className="user-row" data-message-role="user">
+      <div className="user-bubble" data-user-message-bubble>
+        {row.text}
+      </div>
+      <div className="message-meta user-meta">
+        {row.at === undefined ? null : <time>{clockTime(row.at)}</time>}
+        <CopyButton text={row.text} label="Copy message" />
+      </div>
+    </div>
   );
 }
 
@@ -163,13 +155,7 @@ export function Timeline({ view }: { view: ThreadView }): ReactNode {
     >
       {view.rows.map((row) => {
         if (row.kind === 'user') {
-          return (
-            <div className="user-row" key={row.id} data-message-role="user">
-              <div className="user-bubble" data-user-message-bubble>
-                {row.text}
-              </div>
-            </div>
-          );
+          return <UserRow key={row.id} row={row} />;
         }
         if (row.kind === 'work') return <WorkGroup key={row.id} row={row} />;
         if (row.kind === 'assistant') return <AssistantRow key={row.id} row={row} />;
@@ -183,18 +169,27 @@ export function Timeline({ view }: { view: ThreadView }): ReactNode {
   );
 }
 
+const APPROVAL_KINDS: Record<string, { head: string; code: boolean }> = {
+  command: { head: 'Run this command?', code: true },
+  'file-change': { head: 'Change this file?', code: true },
+  'file-read': { head: 'Read this file?', code: true },
+  permission: { head: 'Allow this?', code: false },
+  'mcp-elicitation': { head: 'Allow this request?', code: false },
+};
+
 export function ApprovalCard({ approval, onAnswer }: { approval: PendingApproval; onAnswer: (decision: string) => void }): ReactNode {
   const order = ['cancel', 'decline', 'acceptForSession', 'acceptAlways', 'accept'];
   const options = [...approval.options]
     .filter((option) => option.decision !== 'cancel')
     .sort((a, b) => order.indexOf(a.decision) - order.indexOf(b.decision));
+  const kind = APPROVAL_KINDS[approval.kind] ?? { head: 'Waiting for approval', code: false };
   return (
-    <div className="approval-card" role="group" aria-label="Approval">
+    <div className="approval-card" role="group" aria-label="Approval" data-approval-kind={approval.kind}>
       <div className="approval-head">
         <ShieldAlert size={14} aria-hidden="true" />
-        Waiting for approval
+        {kind.head}
       </div>
-      <p className="approval-title">{approval.title}</p>
+      {kind.code ? <pre className="approval-code">{approval.title}</pre> : <p className="approval-title">{approval.title}</p>}
       {approval.detail === undefined ? null : <p className="approval-detail">{approval.detail}</p>}
       <div className="approval-actions">
         {options.map((option) => (
@@ -204,6 +199,31 @@ export function ApprovalCard({ approval, onAnswer }: { approval: PendingApproval
         ))}
       </div>
     </div>
+  );
+}
+
+/** Follow-ups waiting for the current turn. After a Stop, T3 holds them until the owner says go. */
+export function QueuedMessages({ queued, running, onCancel, onStart }: { queued: QueuedMessage[]; running: boolean; onCancel: (runId: string) => void; onStart: (runId: string) => void }): ReactNode {
+  if (queued.length === 0) return null;
+  return (
+    <ul className="queued-list" aria-label="Queued messages">
+      {queued.map((entry, index) => (
+        <li key={entry.runId}>
+          <small>{entry.held && !running ? 'Held' : 'Queued'}</small>
+          <span className="queued-text" title={entry.text}>
+            {entry.text}
+          </span>
+          {!running && index === 0 ? (
+            <button type="button" className="queued-send" onClick={() => onStart(entry.runId)}>
+              Send now
+            </button>
+          ) : null}
+          <button type="button" className="queued-x" aria-label={`Remove queued message: ${entry.text.slice(0, 40)}`} title="Remove" onClick={() => onCancel(entry.runId)}>
+            <X size={13} aria-hidden="true" />
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -218,11 +238,30 @@ export function QuestionCard({
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
   const question = pending.questions[index];
+  // As in T3 Code: 1-9 choose an option unless the owner is typing somewhere. Choosing never sends.
+  useEffect(() => {
+    if (question === undefined) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || !/^[1-9]$/.test(event.key)) return;
+      if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable], [role="dialog"], [role="menu"]') !== null) return;
+      const option = question.options[Number(event.key) - 1];
+      if (option === undefined) return;
+      event.preventDefault();
+      const value = option.value ?? option.label;
+      setPicked((current) => {
+        const now = current[question.id] ?? [];
+        return { ...current, [question.id]: question.multiSelect === true ? (now.includes(value) ? now.filter((entry) => entry !== value) : [...now, value]) : [value] };
+      });
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [question]);
   if (question === undefined) return null;
   const chosen = picked[question.id] ?? [];
   const typed = custom[question.id] ?? '';
   const answered = (entry: (typeof pending.questions)[number]): boolean => (picked[entry.id]?.length ?? 0) > 0 || (custom[entry.id] ?? '').trim() !== '';
   const last = index === pending.questions.length - 1;
+  const canAdvance = last ? pending.questions.every(answered) : answered(question);
   const submit = (): void => {
     const answers: Record<string, unknown> = {};
     for (const entry of pending.questions) {
@@ -270,7 +309,18 @@ export function QuestionCard({
         })}
       </div>
       {question.allowCustomAnswer === false ? null : (
-        <input className="question-custom" placeholder="Or type your own answer" value={typed} onChange={(event) => setCustom({ ...custom, [question.id]: event.target.value })} />
+        <input
+          className="question-custom"
+          placeholder="Or type your own answer"
+          value={typed}
+          onChange={(event) => setCustom({ ...custom, [question.id]: event.target.value })}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' || event.nativeEvent.isComposing || !canAdvance) return;
+            event.preventDefault();
+            if (last) submit();
+            else setIndex(index + 1);
+          }}
+        />
       )}
       <div className="question-actions">
         {index > 0 ? (
@@ -281,7 +331,7 @@ export function QuestionCard({
         <button
           type="button"
           className="prompt-btn primary"
-          disabled={last ? !pending.questions.every(answered) : !answered(question)}
+          disabled={!canAdvance}
           onClick={() => (last ? submit() : setIndex(index + 1))}
         >
           {last ? 'Submit' : 'Next'}

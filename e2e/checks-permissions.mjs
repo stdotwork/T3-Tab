@@ -551,8 +551,10 @@ async function assertPromptMetadata(serviceWorker, prompt) {
 async function assertPromptUi(panelPage, serviceWorker, prompt) {
   const state = await panelRequest(serviceWorker, { type: 'panel.state' });
   await renderPanelState(panelPage, state);
-  // A page being opened has no tab yet: the card names the address it would load.
-  await panelPage.locator('li.prompt-card .prompt-tab').filter({ hasText: prompt.url }).waitFor();
+  // A page being opened has no tab yet: the card names the address it would load and is tied to no tab.
+  const card = panelPage.locator('li.prompt-card').filter({ has: panelPage.locator('.prompt-address', { hasText: prompt.url }) });
+  await card.waitFor();
+  assert((await card.getAttribute('data-tab-id')) === null, 'A prompt for a page not opened yet is tied to a tab');
   const allow = panelPage.getByRole('button', { name: 'Allow opening once' });
   await allow.waitFor();
   assert(await allow.isDisabled(), 'New prompt buttons were enabled immediately');

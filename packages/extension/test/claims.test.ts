@@ -362,7 +362,7 @@ describe("a conversation's shared tabs", () => {
   it('takes a tab back between turns, after the last turn has disconnected', async () => {
     const { claims, sessions } = await setup();
     await claimTabs(claims, sessions, 'turn-1', 'first', 'launch');
-    // The turn ended: its MCP session is gone, so the session list has no control for it any more.
+    // The turn ended: its MCP session is gone, so the panel has no control for it any more.
     await sessions.unregister('turn-1');
     await removeConversationTab(claims, sessions, 'conversation', 1);
     expect(await claims.conversationTabs()).toEqual({ conversation: [{ tabId: 2, origin: 'https://b.test' }] });

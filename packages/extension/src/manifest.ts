@@ -10,5 +10,9 @@ export const EXTENSION_MANIFEST = {
   permissions: ['debugger', 'nativeMessaging', 'scripting', 'sidePanel', 'storage', 'tabGroups', 'tabs', 'webNavigation'],
   // Only for `clearForeignFrames`: the debugger already reaches every page, but `chrome.scripting` needs this too.
   host_permissions: ['<all_urls>'],
-  action: { default_title: 'T3-Tab' },
+  icons: { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png', 48: 'icons/icon-48.png', 128: 'icons/icon-128.png' },
+  action: {
+    default_title: 'T3-Tab',
+    default_icon: { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png', 48: 'icons/icon-48.png', 128: 'icons/icon-128.png' },
+  },
 };

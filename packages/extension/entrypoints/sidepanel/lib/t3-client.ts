@@ -132,6 +132,9 @@ export function applyThreadEvent(projection: T3Projection, event: { type: string
   if (type === 'runtime-request.updated') {
     return { ...projection, runtimeRequests: upsert(projection.runtimeRequests, payload as T3Projection['runtimeRequests'][number]) };
   }
+  if (type === 'message.updated') {
+    return { ...projection, messages: upsert(projection.messages ?? [], payload as NonNullable<T3Projection['messages']>[number]) };
+  }
   if (type === 'turn-item.updated') {
     const item = payload as T3Projection['visibleTurnItems'][number]['item'];
     const index = projection.visibleTurnItems.findLastIndex((entry) => entry.item.id === item.id);
@@ -482,6 +485,16 @@ export class T3Client {
     } else if (runId !== undefined) {
       await this.rpc('orchestration.dispatchCommand', { type: 'run.interrupt', commandId: crypto.randomUUID(), threadId, runId, holdQueue: true });
     }
+  }
+
+  /** Takes a queued follow-up back before it runs. */
+  async cancelQueued(threadId: string, runId: string): Promise<void> {
+    await this.rpc('orchestration.dispatchCommand', { type: 'queued-run.cancel', commandId: crypto.randomUUID(), threadId, runId });
+  }
+
+  /** Starts a follow-up T3 is holding, which it does after a Stop until someone says go. */
+  async startQueued(threadId: string, runId: string): Promise<void> {
+    await this.rpc('orchestration.dispatchCommand', { type: 'queued-run.start', commandId: crypto.randomUUID(), threadId, runId });
   }
 
   async setRuntimeMode(threadId: string, runtimeMode: string): Promise<void> {

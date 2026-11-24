@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Copy, Download, Moon, Paintbrush, Plus, Sun, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, Download, Moon, Paintbrush, Pencil, Plus, Sun, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { SitePermission } from '../../src/permissions';
@@ -7,9 +7,9 @@ import {
   getThemeColorsForMode,
   parseThemeFile,
   serializeThemeFile,
+  singleAppearanceOf,
   THEME_COLOR_ROLES,
   themeColorToHex,
-  themeIdFromName,
   type ThemeAppearance,
   type ThemeColorRole,
   type ThemeColors,
@@ -17,9 +17,9 @@ import {
 } from '../../src/t3/theme-palette';
 import { errorText, panel } from './lib/api';
 import { DEFAULT_PROJECT_KEY, LAST_PROJECT, NO_PROJECT, pickableProjects } from './lib/new-thread';
-import { refreshPanel, useStored, type LiveState } from './lib/store';
+import { refreshPanel, useFreshSetup, useStored, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
-import { previewTheme, removeCustomTheme, saveCustomTheme, setScheme, setTheme, STOCK_THEME, useAppearance, type SchemeChoice } from './lib/theme';
+import { freeThemeName, importCustomTheme, previewTheme, removeCustomTheme, saveCustomTheme, setScheme, setTheme, STOCK_THEME, useAppearance, type SchemeChoice } from './lib/theme';
 import { SITE_CHOICES, siteStatus } from './prompt-choices';
 import { AgentRow, HelperStep, T3Row } from './Setup';
 import { IconButton, timeAgo, useDismiss } from './ui';
@@ -43,33 +43,75 @@ function SchemeCard({ scheme, active, label }: { scheme: SchemeChoice; active: b
   );
 }
 
-function ThemeEditor({ start, onClose }: { start: ThemeDefinition | undefined; onClose: () => void }): ReactNode {
-  const seedColors = start?.colors ?? STOCK_THEME.colors;
-  const [name, setName] = useState(start === undefined ? 'My theme' : `${start.label} copy`);
-  const [appearance, setAppearance] = useState<ThemeAppearance>(start?.appearance ?? (document.documentElement.classList.contains('dark') ? 'dark' : 'light'));
-  const [canvas, setCanvas] = useState(themeColorToHex(seedColors.canvas) ?? '#ffffff');
-  const [accent, setAccent] = useState(themeColorToHex(seedColors.accent) ?? '#5b5bd6');
-  const [overrides, setOverrides] = useState<Partial<Record<ThemeColorRole, string>>>({});
+/** One mode of a theme being edited: its two seed colours, and every colour set by hand or carried over. */
+interface ModeDraft {
+  canvas: string;
+  accent: string;
+  overrides: Partial<Record<ThemeColorRole, string>>;
+}
+
+const generated = (mode: ThemeAppearance, canvas: string, accent: string): ThemeColors => {
+  const vivid = createVividThemeColors(mode, canvas, accent);
+  // The send button and other solid actions follow the accent the owner picked.
+  return { ...vivid, messageAction: vivid.accent, messageActionForeground: vivid.accentForeground, messageActionHover: vivid.accent };
+};
+
+/** Starts from a theme's real colours: whatever differs from what its seeds would generate stays as an override. */
+function draftFrom(colors: ThemeColors, mode: ThemeAppearance): ModeDraft {
+  const canvas = themeColorToHex(colors.canvas) ?? '#ffffff';
+  const accent = themeColorToHex(colors.accent) ?? '#5b5bd6';
+  const seeded = generated(mode, canvas, accent);
+  const overrides: Partial<Record<ThemeColorRole, string>> = {};
+  for (const role of THEME_COLOR_ROLES) if (colors[role] !== seeded[role]) overrides[role] = colors[role];
+  return { canvas, accent, overrides };
+}
+
+const stockDraft = (mode: ThemeAppearance): ModeDraft => {
+  const colors = getThemeColorsForMode(STOCK_THEME, mode) ?? STOCK_THEME.colors;
+  return { canvas: themeColorToHex(colors.canvas) ?? '#ffffff', accent: themeColorToHex(colors.accent) ?? '#5b5bd6', overrides: {} };
+};
+
+function ThemeEditor({ start, editing, onClose, onSaved }: { start: ThemeDefinition | undefined; editing: boolean; onClose: () => void; onSaved: (id: string) => void }): ReactNode {
+  const [name, setName] = useState(start === undefined ? 'My theme' : editing ? start.label : `${start.label} copy`);
+  const startMode = start === undefined ? (document.documentElement.classList.contains('dark') ? 'dark' : 'light') : (singleAppearanceOf(start) ?? (document.documentElement.classList.contains('dark') ? 'dark' : 'light'));
+  const [appearance, setAppearance] = useState<ThemeAppearance>(startMode);
+  const [both, setBoth] = useState(start !== undefined && singleAppearanceOf(start) === null);
+  const [drafts, setDrafts] = useState<Partial<Record<ThemeAppearance, ModeDraft>>>(() => {
+    if (start === undefined) return { [startMode]: stockDraft(startMode) };
+    const out: Partial<Record<ThemeAppearance, ModeDraft>> = {};
+    for (const mode of ['light', 'dark'] as const) {
+      const colors = getThemeColorsForMode(start, mode);
+      if (colors !== null) out[mode] = draftFrom(colors, mode);
+    }
+    return out;
+  });
   const [css, setCss] = useState(start?.css ?? '');
   const [showAll, setShowAll] = useState(false);
-  const colors = useMemo<ThemeColors>(() => {
-    const vivid = createVividThemeColors(appearance, canvas, accent);
-    // The send button and other solid actions follow the accent the owner picked.
-    return { ...vivid, messageAction: vivid.accent, messageActionForeground: vivid.accentForeground, messageActionHover: vivid.accent, ...overrides };
-  }, [appearance, canvas, accent, overrides]);
+  const draft = drafts[appearance] ?? stockDraft(appearance);
+  const { canvas, accent, overrides } = draft;
+  const update = (patch: Partial<ModeDraft>): void => setDrafts((current) => ({ ...current, [appearance]: { ...(current[appearance] ?? stockDraft(appearance)), ...patch } }));
+  const colorsOf = (mode: ThemeAppearance): ThemeColors => {
+    const entry = drafts[mode] ?? stockDraft(mode);
+    return { ...generated(mode, entry.canvas, entry.accent), ...entry.overrides };
+  };
+  const colors = useMemo<ThemeColors>(() => ({ ...generated(appearance, canvas, accent), ...overrides }), [appearance, canvas, accent, overrides]);
   useEffect(() => {
     previewTheme({ colors, appearance, ...(css === '' ? {} : { css }) });
   }, [colors, appearance, css]);
   useEffect(() => () => previewTheme(), []);
   const save = (): void => {
-    const label = name.trim().slice(0, 48) || 'My theme';
-    saveCustomTheme({ id: `custom-${themeIdFromName(label)}`.slice(0, 48), label, appearance, colors, ...(css === '' ? {} : { css }) });
+    const { id, label } = freeThemeName(name, editing ? start?.id : undefined);
+    const main: ThemeAppearance = both ? 'light' : appearance;
+    const other: ThemeAppearance = main === 'light' ? 'dark' : 'light';
+    saveCustomTheme({ id, label, appearance: main, colors: colorsOf(main), ...(both ? { variants: { [other]: colorsOf(other) } } : {}), ...(css === '' ? {} : { css }) });
+    onSaved(id);
     onClose();
   };
+  const heading = editing ? 'Edit theme' : start === undefined ? 'Create theme' : 'Duplicate theme';
   return (
-    <div className="sheet" role="dialog" aria-label="Create theme">
+    <div className="sheet" role="dialog" aria-label={heading}>
       <header className="sheet-head">
-        <h2>Create theme</h2>
+        <h2>{heading}</h2>
         <IconButton label="Close" onClick={onClose}>
           <X size={16} />
         </IconButton>
@@ -89,22 +131,25 @@ function ThemeEditor({ start, onClose }: { start: ThemeDefinition | undefined; o
               className={appearance === value ? 'active' : ''}
               onClick={() => {
                 setAppearance(value);
-                // T3's generator takes light or dark from the canvas, so the canvas has to change with the toggle.
-                const seed = (start === undefined ? undefined : getThemeColorsForMode(start, value)) ?? getThemeColorsForMode(STOCK_THEME, value);
-                if (seed !== null) setCanvas(themeColorToHex(seed.canvas) ?? canvas);
+                // T3's generator takes light or dark from the canvas, so each mode keeps its own colours.
+                setDrafts((current) => (current[value] !== undefined ? current : { ...current, [value]: stockDraft(value) }));
               }}
             >
               {value === 'light' ? <Sun size={13} /> : <Moon size={13} />} {value === 'light' ? 'Light' : 'Dark'}
             </button>
           ))}
         </div>
+        <label className="check-field">
+          <input type="checkbox" checked={both} onChange={(event) => setBoth(event.target.checked)} />
+          Save both light and dark
+        </label>
         <div className="color-pair">
           <label className="color-field">
-            <input type="color" value={canvas} onChange={(event) => setCanvas(event.target.value)} />
+            <input type="color" value={canvas} onChange={(event) => update({ canvas: event.target.value })} />
             Canvas
           </label>
           <label className="color-field">
-            <input type="color" value={accent} onChange={(event) => setAccent(event.target.value)} />
+            <input type="color" value={accent} onChange={(event) => update({ accent: event.target.value })} />
             Accent
           </label>
         </div>
@@ -115,10 +160,15 @@ function ThemeEditor({ start, onClose }: { start: ThemeDefinition | undefined; o
           <div className="role-grid">
             {THEME_COLOR_ROLES.map((role) => (
               <label className="color-field small" key={role}>
-                <input type="color" value={themeColorToHex(colors[role]) ?? '#000000'} onChange={(event) => setOverrides({ ...overrides, [role]: event.target.value })} />
+                <input type="color" value={themeColorToHex(colors[role]) ?? '#000000'} onChange={(event) => update({ overrides: { ...overrides, [role]: event.target.value } })} />
                 {role}
               </label>
             ))}
+            {Object.keys(overrides).length === 0 ? null : (
+              <button type="button" className="link-btn role-reset" onClick={() => update({ overrides: {} })}>
+                Reset to colors made from Canvas and Accent
+              </button>
+            )}
           </div>
         ) : null}
         <label className="field">
@@ -136,13 +186,13 @@ function ThemeEditor({ start, onClose }: { start: ThemeDefinition | undefined; o
   );
 }
 
-function ThemeImport({ onClose }: { onClose: () => void }): ReactNode {
+function ThemeImport({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string) => void }): ReactNode {
   const [text, setText] = useState('');
   const [error, setError] = useState<string>();
   const file = useRef<HTMLInputElement>(null);
   const add = (raw: string): void => {
     try {
-      saveCustomTheme(parseThemeFile(JSON.parse(raw)));
+      onSaved(importCustomTheme(parseThemeFile(JSON.parse(raw))));
       onClose();
     } catch (failure) {
       setError(errorText(failure));
@@ -187,9 +237,22 @@ function ThemeImport({ onClose }: { onClose: () => void }): ReactNode {
 
 function Appearance({ state }: { state: T3State }): ReactNode {
   const appearance = useAppearance();
-  const [sheet, setSheet] = useState<{ kind: 'create'; from?: ThemeDefinition } | { kind: 'add' }>();
+  const [sheet, setSheet] = useState<{ kind: 'create'; from?: ThemeDefinition; editing?: boolean } | { kind: 'add' }>();
+  const [reveal, setReveal] = useState<string>();
+  const list = useRef<HTMLDivElement>(null);
   const custom = new Set(appearance.custom.map((theme) => theme.id));
   const following = appearance.theme === 'follow';
+  // The owner's own themes come first, so one just made or imported is in view.
+  const themes = [...appearance.themes].sort((left, right) => Number(custom.has(right.id)) - Number(custom.has(left.id)));
+  const activeTheme = appearance.themes.find((theme) => theme.id === appearance.activeId);
+  const only = activeTheme === undefined ? null : singleAppearanceOf(activeTheme);
+  const wanted = appearance.scheme === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : appearance.scheme;
+  const schemeMiss = !following && only !== null && wanted !== only;
+  useEffect(() => {
+    if (reveal === undefined) return;
+    list.current?.querySelector(`[data-theme-id="${CSS.escape(reveal)}"]`)?.scrollIntoView({ block: 'center' });
+    setReveal(undefined);
+  }, [reveal, appearance.themes]);
   return (
     <div className="settings-page">
       <h3>Color scheme</h3>
@@ -198,6 +261,7 @@ function Appearance({ state }: { state: T3State }): ReactNode {
         <SchemeCard scheme="light" label="Light" active={appearance.scheme === 'light'} />
         <SchemeCard scheme="dark" label="Dark" active={appearance.scheme === 'dark'} />
       </div>
+      {schemeMiss && activeTheme !== undefined ? <p className="muted-line">{activeTheme.label} has only a {only} version, so it stays {only}.</p> : null}
       <h3>Themes</h3>
       <div className="theme-actions">
         <button type="button" className="row-btn" onClick={() => setSheet({ kind: 'create' })}>
@@ -214,20 +278,29 @@ function Appearance({ state }: { state: T3State }): ReactNode {
         </span>
         {following ? <Check size={15} aria-hidden="true" /> : null}
       </button>
-      <div className="theme-list">
-        {appearance.themes.map((theme) => {
+      <div className="theme-list" ref={list}>
+        {themes.map((theme) => {
           const active = !following && appearance.activeId === theme.id;
+          const single = singleAppearanceOf(theme);
           return (
-            <div className={active ? 'theme-card active' : 'theme-card'} key={theme.id}>
+            <div className={active ? 'theme-card active' : 'theme-card'} key={theme.id} data-theme-id={theme.id}>
               <button type="button" className="theme-pick" aria-pressed={active} aria-label={`Use ${theme.label}`} onClick={() => setTheme(theme.id)}>
                 <span className="theme-orbs">
                   <Orb colors={getThemeColorsForMode(theme, 'light')} />
                   <Orb colors={getThemeColorsForMode(theme, 'dark')} />
                 </span>
-                <span className="theme-card-name">{theme.label}</span>
+                <span className="theme-card-name">
+                  {theme.label}
+                  {single === null ? null : <small>{single === 'dark' ? 'Dark only' : 'Light only'}</small>}
+                </span>
               </button>
               <span className="theme-card-tools">
                 {active ? <Check size={15} className="theme-card-check" aria-hidden="true" /> : null}
+                {custom.has(theme.id) ? (
+                  <IconButton label={`Edit ${theme.label}`} onClick={() => setSheet({ kind: 'create', from: theme, editing: true })}>
+                    <Pencil size={14} />
+                  </IconButton>
+                ) : null}
                 <IconButton label={`Duplicate ${theme.label}`} onClick={() => setSheet({ kind: 'create', from: theme })}>
                   <Copy size={14} />
                 </IconButton>
@@ -254,8 +327,8 @@ function Appearance({ state }: { state: T3State }): ReactNode {
           );
         })}
       </div>
-      {sheet?.kind === 'create' ? <ThemeEditor start={sheet.from} onClose={() => setSheet(undefined)} /> : null}
-      {sheet?.kind === 'add' ? <ThemeImport onClose={() => setSheet(undefined)} /> : null}
+      {sheet?.kind === 'create' ? <ThemeEditor start={sheet.from} editing={sheet.editing === true} onClose={() => setSheet(undefined)} onSaved={setReveal} /> : null}
+      {sheet?.kind === 'add' ? <ThemeImport onClose={() => setSheet(undefined)} onSaved={setReveal} /> : null}
     </div>
   );
 }
@@ -270,7 +343,7 @@ const hostOf = (origin: string): string => {
 
 const TOOL_WORDS: Record<string, string> = { read: 'Read', open: 'Opened', act: 'Acted on', run_js: 'Ran JavaScript on' };
 
-function Sites({ live }: { live: LiveState }): ReactNode {
+function Sites({ live, state }: { live: LiveState; state: T3State }): ReactNode {
   const [error, setError] = useState<string>();
   const set = async (origin: string, setting: SitePermission): Promise<void> => {
     setError(undefined);
@@ -296,7 +369,7 @@ function Sites({ live }: { live: LiveState }): ReactNode {
   return (
     <div className="settings-page">
       <h3>Site permissions</h3>
-      <p className="muted-line">T3 threads in Full access are not asked. Everyone else asks first, unless a site is set here.</p>
+      <p className="muted-line">{state.status === 'ready' ? 'T3 threads in Full access are not asked. Everyone else asks first, unless a site is set here.' : 'Agents ask first, unless a site is set here.'}</p>
       {error === undefined ? null : <p className="error-line">{error}</p>}
       <ul id="site-permissions" className="site-list">
         {rows.map((site) => (
@@ -345,49 +418,15 @@ function Sites({ live }: { live: LiveState }): ReactNode {
   );
 }
 
-function Sessions({ live }: { live: LiveState }): ReactNode {
-  const [error, setError] = useState<string>();
-  const tab = live.currentTab;
-  const toggle = async (sessionId: string, shared: boolean): Promise<void> => {
-    if (tab === undefined) return;
-    setError(undefined);
-    try {
-      await panel({ type: shared ? 'panel.unshareTab' : 'panel.shareTab', sessionId, tabId: tab.id });
-      await refreshPanel();
-    } catch (failure) {
-      setError(errorText(failure));
-    }
-  };
-  return (
-    <>
-      <h3>Connected agents</h3>
-      {error === undefined ? null : <p className="error-line">{error}</p>}
-      <ul id="connected-sessions" className="site-list">
-        {live.sessions.map((session) => {
-          const shared = tab !== undefined && session.sharedTabIds.includes(tab.id);
-          const count = session.sharedTabIds.length;
-          return (
-            <li key={session.id}>
-              <strong>{session.name}</strong>
-              <small>{count === 0 ? 'No shared tabs' : count === 1 ? '1 shared tab' : `${count} shared tabs`}</small>
-              {tab === undefined ? null : (
-                <span className="site-actions">
-                  <button type="button" className="row-btn" onClick={() => void toggle(session.id, shared)}>
-                    {shared ? 'Stop sharing this tab' : 'Share this tab'}
-                  </button>
-                </span>
-              )}
-            </li>
-          );
-        })}
-        {live.sessions.length === 0 ? <li className="muted-line">No agents are using the browser.</li> : null}
-      </ul>
-    </>
-  );
+function FreshSetup(): ReactNode {
+  useFreshSetup();
+  return null;
 }
 
 function Connections({ live, state, startOpen }: { live: LiveState; state: T3State; startOpen: boolean }): ReactNode {
   const [open, setOpen] = useState(startOpen);
+  // Each agent's own command: `t3-tab uninstall` also removes the helper, which the panel needs.
+  const registered = (live.setup?.agents ?? []).filter((agent) => agent.registered).map((agent) => (agent.id === 'claude' ? 'claude mcp remove -s user t3-tab' : 'codex mcp remove t3-tab'));
   const summary = `${live.helper.connected ? 'Helper connected' : 'Helper not connected'} · ${state.status === 'ready' ? 'T3 Code connected' : 'T3 Code not connected'}`;
   return (
     <section className="disclosure">
@@ -400,11 +439,23 @@ function Connections({ live, state, startOpen }: { live: LiveState; state: T3Sta
       </button>
       {open ? (
         <div className="disclosure-body">
+          <FreshSetup />
           <h3>Helper</h3>
           <HelperStep live={live} icon={false} />
-          <h3>Agents</h3>
+          <h3>Your own agents</h3>
           <AgentRow id="claude" live={live} />
           <AgentRow id="codex" live={live} />
+          {registered.length === 0 ? null : (
+            <p className="muted-line">
+              To take the browser tools out again, run {registered.map((command, index) => (
+                <span key={command}>
+                  {index === 0 ? '' : ' or '}
+                  <code>{command}</code>
+                </span>
+              ))}
+              .
+            </p>
+          )}
           <h3>T3 Code</h3>
           <T3Row live={live} state={state} />
           {state.status === 'off' ? null : (
@@ -412,7 +463,6 @@ function Connections({ live, state, startOpen }: { live: LiveState; state: T3Sta
               Disconnect from T3 Code
             </button>
           )}
-          <Sessions live={live} />
         </div>
       ) : null}
     </section>
@@ -510,13 +560,13 @@ export function Settings({
         {tab === 'general' ? (
           <>
             <div className="settings-page settings-top">
-              <DefaultProject state={state} />
+              {state.status === 'ready' ? <DefaultProject state={state} /> : null}
               <Connections live={live} state={state} startOpen={connections === true} />
             </div>
             <Appearance state={state} />
           </>
         ) : null}
-        {tab === 'sites' ? <Sites live={live} /> : null}
+        {tab === 'sites' ? <Sites live={live} state={state} /> : null}
       </div>
     </div>
   );

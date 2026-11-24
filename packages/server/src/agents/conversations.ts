@@ -225,7 +225,7 @@ export class Agents {
       if (conversation.launchCode !== code) continue;
       this.push(conversation, {
         role: 'error',
-        text: `T3-Tab could not share your tabs with this turn: ${reason} Share a tab from the session list if the agent needs it.`,
+        text: `T3-Tab could not share your tabs with this turn: ${reason} Share a tab from Threads in the side panel if the agent needs it.`,
       });
     }
   }
@@ -316,7 +316,7 @@ export class Agents {
   /** Adds an item to a direct run's thread view and returns it. */
   private pushItem(conversation: Conversation, item: ItemDraft, id?: string): TextItem {
     const text = cap(hideCodes(item.text, conversation.codes));
-    const added: TextItem = { id: id ?? `${conversation.turns}:${randomUUID()}`, kind: item.kind, text };
+    const added: TextItem = { id: id ?? `${conversation.turns}:${randomUUID()}`, kind: item.kind, text, at: Date.now() };
     conversation.view.items.push(added);
     if (conversation.view.items.length > MAX_ITEMS) conversation.view.items.splice(0, conversation.view.items.length - MAX_ITEMS);
     conversation.view.updatedAt = Date.now();

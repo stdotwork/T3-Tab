@@ -17,6 +17,8 @@ export interface PickerProvider {
   models: PickerModel[];
   runtimeModes?: string[];
   unavailable?: string;
+  /** The CLI takes any model name, so the picker lets the owner type one. */
+  customModels?: boolean;
 }
 
 export interface SetupAgent {
@@ -79,13 +81,16 @@ const DIRECT_CLAUDE: PickerModel[] = [
 export function directProviders(agents: readonly SetupAgent[]): PickerProvider[] {
   const providers: PickerProvider[] = [];
   if (agents.some((agent) => agent.id === 'claude' && agent.found)) {
-    providers.push({ id: 'claude', name: 'Claude Code', driver: 'claudeAgent', models: DIRECT_CLAUDE });
+    providers.push({ id: 'claude', name: 'Claude Code', driver: 'claudeAgent', models: DIRECT_CLAUDE, customModels: true });
   }
   if (agents.some((agent) => agent.id === 'codex' && agent.found)) {
-    providers.push({ id: 'codex', name: 'Codex', driver: 'codex', models: [{ slug: '', name: 'Default model', shortName: 'Default', options: [], isDefault: true }] });
+    providers.push({ id: 'codex', name: 'Codex', driver: 'codex', models: [{ slug: '', name: 'Default model', shortName: 'Default', options: [], isDefault: true }], customModels: true });
   }
   return providers;
 }
+
+/** What the helper accepts as a model name: no spaces, and it cannot read as a command-line flag. */
+export const isModelName = (text: string): boolean => /^[^\s-][^\s]{0,199}$/.test(text);
 
 export function reasoningOption(model: PickerModel | undefined): ModelOption | undefined {
   return model?.options.find((option) => option.type === 'select' && (option.role === 'reasoning' || option.id === 'effort' || option.id === 'reasoningEffort'));
@@ -94,7 +99,7 @@ export function reasoningOption(model: PickerModel | undefined): ModelOption | u
 /** The saved choice if it still exists, else the first usable provider's default model. */
 export function resolveChoice(providers: readonly PickerProvider[], saved: Choice | undefined): Choice | undefined {
   const saveable = saved === undefined ? undefined : providers.find((provider) => provider.id === saved.provider);
-  if (saved !== undefined && saveable?.models.some((model) => model.slug === saved.model) === true) return saved;
+  if (saved !== undefined && (saveable?.customModels === true || saveable?.models.some((model) => model.slug === saved.model) === true)) return saved;
   const provider = providers.find((entry) => entry.unavailable === undefined) ?? providers[0];
   if (provider === undefined) return undefined;
   const model = provider.models.find((entry) => entry.isDefault === true) ?? provider.models[0];
@@ -110,7 +115,7 @@ export function choiceLabel(providers: readonly PickerProvider[], choice: Choice
   if (choice === undefined) return { name: 'No model' };
   const provider = providers.find((entry) => entry.id === choice.provider);
   const model = provider?.models.find((entry) => entry.slug === choice.model);
-  const name = model === undefined ? choice.model.replace(/^claude-/, '').replaceAll('-', ' ') || 'Default' : compactModelName(model, provider?.driver);
+  const name = model === undefined ? (provider?.customModels === true ? choice.model : choice.model.replace(/^claude-/, '').replaceAll('-', ' ')) || 'Default' : compactModelName(model, provider?.driver);
   const reasoning = reasoningOption(model);
   const value = reasoning === undefined ? undefined : (choice.options[reasoning.id] ?? reasoning.currentValue ?? reasoning.options?.find((option) => option.isDefault === true)?.id);
   const effort = reasoning?.options?.find((option) => option.id === value)?.label;

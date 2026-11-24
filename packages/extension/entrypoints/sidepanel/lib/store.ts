@@ -44,13 +44,20 @@ export interface LiveState {
   sessions: StoredSession[];
   autoAllowed: AutoAllowed[];
   conversations: AgentConversation[];
+  /** Goes up whenever the worker or its stored state says something changed, for views that fetch on change. */
+  changes: number;
 }
 
-let live: LiveState = { loaded: false, helper: { connected: false }, prompts: [], sites: [], sessions: [], autoAllowed: [], conversations: [] };
+let live: LiveState = { loaded: false, helper: { connected: false }, prompts: [], sites: [], sessions: [], autoAllowed: [], conversations: [], changes: 0 };
 const listeners = new Set<() => void>();
 
+const same = (left: unknown, right: unknown): boolean => left === right || JSON.stringify(left) === JSON.stringify(right);
+
+/** Applies a patch. A poll that found nothing new changes nothing, so nothing redraws. */
 const merge = (patch: Partial<LiveState>): void => {
-  live = { ...live, ...patch };
+  const fresh = Object.entries(patch).filter(([key, value]) => !same(live[key as keyof LiveState], value));
+  if (fresh.length === 0) return;
+  live = { ...live, ...Object.fromEntries(fresh) };
   for (const listener of listeners) listener();
 };
 
@@ -79,6 +86,10 @@ export const refreshPanel = refreshPanelState;
 
 let latestSetup = 0;
 let setupsRunning = 0;
+/** Screens showing setup details. Without one the helper's agent and T3 checks are asked for once a minute. */
+let setupViewers = 0;
+let setupFetchedAt = 0;
+const SETUP_IDLE_MS = 60_000;
 
 /** A timed poll waits its turn; an explicit refresh supersedes it, and only the latest reply is applied. */
 export async function refreshSetup(refresh = false): Promise<void> {
@@ -89,12 +100,20 @@ export async function refreshSetup(refresh = false): Promise<void> {
   try {
     const helper = await panel<HelperState>({ type: 'panel.helper' });
     if (request !== latestSetup) return;
+    const wasConnected = live.helper.connected;
     if (!helper.connected) {
       merge({ helper, loaded: true });
       return;
     }
+    if (!refresh && wasConnected && setupViewers === 0 && live.setup !== undefined && Date.now() - setupFetchedAt < SETUP_IDLE_MS) {
+      merge({ helper, loaded: true });
+      return;
+    }
     const setup = await panel<SetupState>({ type: 'panel.setup', refresh });
-    if (request === latestSetup) merge({ helper, setup, loaded: true });
+    if (request !== latestSetup) return;
+    setupFetchedAt = Date.now();
+    merge({ helper, setup, loaded: true });
+    if (!wasConnected) void refreshConversations();
   } catch (error) {
     if (request === latestSetup) merge({ helper: { connected: false, error: error instanceof Error ? error.message : String(error) }, loaded: true });
   } finally {
@@ -153,25 +172,146 @@ export async function checkWorkerBuild(): Promise<void> {
 
 let started = false;
 
+interface PollTask {
+  run: () => Promise<void> | void;
+  every: () => number;
+  due: number;
+}
+
+const anyRunning = (): boolean => live.conversations.some((conversation) => conversation.status === 'running' || conversation.status === 'waiting');
+
+/**
+ * What the panel still asks on a timer. Changes arrive by themselves (the worker's `panel.changed`, stored state, tab
+ * events), so these are the safety net. While the panel is hidden they slow down rather than stop, in case a browser
+ * never reports it visible again, and they run at once when it shows.
+ */
+const polls = {
+  state: { run: refreshPanelState, every: () => 5_000, due: 0 } as PollTask,
+  helper: { run: () => refreshSetup(), every: () => (live.helper.connected && setupViewers === 0 ? 10_000 : 3_000), due: 0 } as PollTask,
+  // Only an answer that never came is asked again.
+  build: { run: () => (live.build === undefined ? checkWorkerBuild() : undefined), every: () => 3_000, due: 0 } as PollTask,
+  conversations: { run: refreshConversations, every: () => (anyRunning() ? 1_500 : 15_000), due: 0 } as PollTask,
+};
+
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
+
+const pollInterval = (task: PollTask): number => {
+  if (!document.hidden) return task.every();
+  return Math.max(task.every(), task === polls.helper && !live.helper.connected ? 5_000 : 15_000);
+};
+
+function schedulePolls(): void {
+  if (pollTimer !== undefined) clearTimeout(pollTimer);
+  const next = Math.min(...Object.values(polls).map((task) => task.due));
+  pollTimer = setTimeout(runDuePolls, Math.max(0, next - Date.now()));
+}
+
+function runDuePolls(): void {
+  const now = Date.now();
+  for (const task of Object.values(polls)) {
+    if (task.due > now) continue;
+    task.due = now + pollInterval(task);
+    void task.run();
+  }
+  schedulePolls();
+}
+
+let changeTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Something changed: one refresh for a burst of events. */
+function refreshSoon(): void {
+  if (changeTimer !== undefined) return;
+  changeTimer = setTimeout(() => {
+    changeTimer = undefined;
+    merge({ changes: live.changes + 1 });
+    void refreshPanelState();
+  }, 50);
+}
+
+/** Keys the panel writes for itself. A change to one says nothing about the browser's state. */
+const OWN_KEY = /^(panel\.tab\.|composer\.|appearance\.|setup\.)/;
+
 export function startPolling(): void {
   if (started || headlessRender) return;
   started = true;
   void refreshPanelState();
   void checkWorkerBuild();
   void refreshSetup(true).then(refreshConversations);
-  setInterval(() => void refreshPanelState(), 1_000);
-  setInterval(() => void refreshSetup(), 3_000);
-  // Only an answer that never came is asked again.
-  setInterval(() => void (live.build === undefined ? checkWorkerBuild() : undefined), 3_000);
-  setInterval(() => void refreshConversations(), 2_000);
-  chrome.tabs?.onActivated?.addListener(() => void refreshPanelState());
-  chrome.tabs?.onUpdated?.addListener(() => void refreshPanelState());
+  const now = Date.now();
+  for (const task of Object.values(polls)) task.due = now + pollInterval(task);
+  schedulePolls();
+  chrome.runtime?.onMessage?.addListener((message: unknown, sender: chrome.runtime.MessageSender) => {
+    if (sender.id === chrome.runtime.id && (message as { type?: unknown } | null)?.type === 'panel.changed') refreshSoon();
+  });
+  chrome.storage?.onChanged?.addListener((changes) => {
+    if (Object.keys(changes).some((key) => !OWN_KEY.test(key))) refreshSoon();
+  });
+  chrome.tabs?.onActivated?.addListener(refreshSoon);
+  chrome.tabs?.onUpdated?.addListener((tabId, info) => {
+    if (fixedTabId !== undefined && tabId !== fixedTabId) return;
+    if (info.title !== undefined || info.url !== undefined || info.groupId !== undefined || info.status === 'complete') refreshSoon();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    for (const task of Object.values(polls)) task.due = 0;
+    runDuePolls();
+  });
+}
+
+/** While a screen shows setup details, they are kept fresh. */
+export function useFreshSetup(): void {
+  useEffect(() => {
+    setupViewers += 1;
+    polls.helper.due = 0;
+    if (started) schedulePolls();
+    return () => {
+      setupViewers -= 1;
+    };
+  }, []);
+}
+
+/** Asks for the list of direct runs again now, so a run just started is followed at the fast pace. */
+export async function refreshRunsNow(): Promise<void> {
+  await refreshConversations();
+  polls.conversations.due = Date.now() + pollInterval(polls.conversations);
+  if (started) schedulePolls();
 }
 
 export function applyHeadlessState(state: { currentTab?: PanelTab; pending: PermissionPrompt[]; sites: StoredSitePermission[]; sessions?: StoredSession[]; autoAllowed?: AutoAllowed[] }): void {
   const next: Partial<LiveState> = { prompts: state.pending, sites: state.sites, sessions: state.sessions ?? [], autoAllowed: state.autoAllowed ?? [], loaded: true, tabLoaded: true };
   if (state.currentTab !== undefined) next.currentTab = state.currentTab;
   merge(next);
+}
+
+/** The tabs a thread started now would share, and the group they come from when it is the owner's own. */
+export interface ShareTargets {
+  tabs: PanelTab[];
+  groupTitle?: string;
+}
+
+/** Follows what sending now would share. Empty on a page that cannot be shared. */
+export function useShareTargets(tab: PanelTab | undefined, changes: number): ShareTargets {
+  const [targets, setTargets] = useState<ShareTargets>({ tabs: [] });
+  const shareable = tab !== undefined && /^https?:/.test(tab.url);
+  const id = tab?.id;
+  useEffect(() => {
+    if (!shareable || id === undefined) {
+      setTargets({ tabs: [] });
+      return;
+    }
+    let current = true;
+    void panel<ShareTargets>({ type: 'panel.shareTargets', tabId: id })
+      .then((next) => {
+        if (current) setTargets(next);
+      })
+      .catch(() => {
+        if (current) setTargets({ tabs: tab === undefined ? [] : [tab] });
+      });
+    return () => {
+      current = false;
+    };
+  }, [id, shareable, tab?.url, changes]);
+  return targets;
 }
 
 export function useLive(): LiveState {

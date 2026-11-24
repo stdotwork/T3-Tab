@@ -297,7 +297,7 @@ action. `tabs list`, `switch` and `open` show only the origin and `[needs approv
 current origin the session has not approved (and the site is not set to `read` or `allow`). A tab opened
 from a tab of a session, through `chrome.webNavigation.onCreatedNavigationTarget`, joins that session's
 group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own
-(shared or not), is left alone. A prompt names its tab id and title, and its address when it is about loading one (a page being opened has no tab yet); it can time out or be declined, and one session may
+(shared or not), is left alone. A prompt names its site and its tab's title, or, for a page being opened (which has no tab yet), the address it would load; it can time out or be declined, and one session may
 have at most three waiting prompts. The side panel keeps prompt rows stable and disables a prompt's buttons
 for 500 ms when it appears and again whenever a row is removed or inserted above another.
 
@@ -317,17 +317,40 @@ Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-ex
 `view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel lives in
 `packages/extension/entrypoints/sidepanel` (React: first-run setup, a new-thread screen, the thread view, and the
 thread list and settings behind icons, coloured only from T3's theme roles); its sharing and prompt calls live in
-`packages/extension/src/panel.ts`, and the policy is in `permissions.ts`, `sessions.ts` and `tabs.ts`.
+`packages/extension/src/panel.ts`, and the policy is in `permissions.ts`, `sessions.ts` and `tabs.ts`. The extension's icon
+is T3-Tab's own: `packages/extension/icon-source.svg`, rendered to `public/icons/`. T3 Code's mark appears only on the row
+that names T3 Code.
+
+The panel loads the markdown renderer and Settings when they are first needed. It asks the worker on a timer only as a
+safety net: the worker's `panel.changed` message, `chrome.storage.onChanged` and tab events bring changes at once. The
+timers are 5 seconds for prompts and sessions, 10 seconds for the helper (3 while it is missing or a screen shows setup
+details), 15 seconds for the list of direct runs (1.5 while one runs) and one minute for the agent and T3 checks. An open
+direct run is fetched every 400 ms only while it runs. A hidden panel slows every timer to at least 15 seconds, or 5 for a
+missing helper.
 
 The panel belongs to the tab it was opened on (`panel-tab.ts`). The worker turns the manifest's window-wide panel off, and
 the toolbar button calls `chrome.sidePanel.setOptions({ tabId, path: 'sidepanel.html?tabId=<id>', enabled: true })` and
 `open` for that tab, so other tabs show no panel until the owner opens one there. The tab chip is always that tab. Each
 tab's panel keeps its draft, its project and the screen it was on in session storage, removed when the tab closes.
 Opened on a tab a thread holds, the panel shows that thread. Opened on any other tab it shows a new thread, with the
-threads working elsewhere listed above the composer; a permission card for another tab says so and has a Go to tab button.
+threads working elsewhere listed above the composer, each saying whether it is working or needs the owner; a permission
+card for another tab says so and has a Go to tab button.
+
+The tab chip shows what the next message shares before it is sent: the tab, or the whole tab group when the owner made
+that group. In a thread, a tab waiting for the next message is outlined and says so, and a tab already shared is filled.
+The Threads screen starts with "Using the browser": every connected agent session, named by its T3 thread when it has one
+and otherwise by its agent, with its shared tabs and a control for the current tab. That control is left out on a page
+that cannot be shared. A green dot on the Threads button says at least one session is connected.
+
+A thread shows why a turn failed, using T3's failure message or the direct run's error. Follow-ups queued in a T3 thread
+are listed above the composer, where they can be removed; after a Stop, T3 holds them and the first has a Send now button.
+A direct run cannot queue, so its composer says to wait and keeps Stop visible. Approval cards name what is asked (a
+command, a file read, a file change or a permission) and show the command or path. In a question card, keys 1 to 9 choose
+an option unless the owner is typing, and Enter in the answer box moves on or submits. Browser steps name the action and
+site, and never the text typed into a field.
 
 A new tab's thread starts in no project, which is T3's Scratch project (`projects.ensureScratch`), and Settings can change
-that default to the last used project or a fixed one. Settings has two pages: General (default project, Connections
+that default to the last used project or a fixed one. Settings has two pages: General (default project when T3 is connected, Connections
 folded away, appearance) and Sites. Sites lists this tab's site and the sites with a grant, since a site left on `ask`
 is the same as one never seen, and the last requests Full access let through.
 
@@ -386,8 +409,14 @@ directly through the daemon and feeds the same thread view.
   between the ticket request and the socket could receive that ticket and its one-use proof, and whatever the panel sends
   on the socket. Disconnect drops the session and revokes it through `t3.unpair`. The `t3 thread` polling below remains in
   the daemon, but the panel no longer uses it.
-- **Themes.** The panel follows T3's active theme by default. T3 theme files can be imported, and any theme can be
-  edited; custom CSS goes through T3's own filter, which removes rules that load remote files.
+- **Themes.** The panel follows T3's active theme by default. T3 theme files can be imported. The owner's themes can be
+  edited, and any theme can be duplicated with all its colours and both of its modes. A name already in use gets a number
+  instead of replacing that theme. A change reaches panels open on other tabs through `chrome.storage.onChanged`. Custom
+  CSS goes through T3's own filter, which removes rules that load remote files.
+- **Adding the tools to the owner's agents.** Add in setup registers `t3-tab mcp` for the owner's own Claude Code and Codex
+  sessions; threads started in the panel do not need it. The panel has no Remove button, so it never edits agent configuration
+  itself. Connections shows the command that removes the entry: `claude mcp remove -s user t3-tab` or
+  `codex mcp remove t3-tab` (or `t3-tab uninstall --claude` / `--codex`).
 
 For direct runs and the older routes, the panel asks the extension's service worker, which passes the request over
 its link to the daemon (`browser.daemonRequest`, answered with `daemon.reply`). The daemon keeps those conversations
@@ -466,7 +495,7 @@ in memory (`packages/server/src/agents/`), so they end when it stops.
   - A T3 thread's agent starts its MCP servers from its own config, so the code has to be in its first message,
     in a line asking it to call `tabs` with `{"claim": "<code>"}`. That message stays in T3's stored transcript.
     The code there is harmless once used, and it expires after 10 minutes if it is not. If the provider restarts,
-    the new session has no tabs until the owner shares one from the session list.
+    the new session has no tabs until the owner shares one from the Threads screen.
   - The panel hides the claim line and replaces any code of the conversation in replies, titles and errors.
   - Each conversation's view lists the tabs it holds, each with a Remove button, and says which tabs the next
     message will share. Remove works between direct turns, when no session is connected: the tab leaves the
@@ -474,7 +503,7 @@ in memory (`packages/server/src/agents/`), so they end when it stops.
 
   The session that claims gets the tabs shared as the panel's "Share current tab" does: a tab still on the
   origin it showed at start is shared with that origin approved, and a tab that moved is shared unapproved.
-  Every prompt, site setting and check above still applies, and the owner can unshare from the session list or the
+  Every prompt, site setting and check above still applies, and the owner can unshare from the Threads screen or the
   conversation's view. A
   code the extension did not issue is refused.
 - **Versions.** The extension, native host and daemon must speak the same `PROTOCOL_VERSION`. On a mismatch

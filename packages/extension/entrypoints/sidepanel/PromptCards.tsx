@@ -66,6 +66,9 @@ function PromptCard({
       return prompt.origin;
     }
   })();
+  // A tab not loaded yet is named by the address it would open; the worker's prompt carries whichever it has.
+  const tab = prompt.tab;
+  const address = prompt.url;
   const choices = promptChoices(prompt.tool);
   const once = choices.find((choice) => choice.decision === 'allow-once');
   const decline = choices.find((choice) => choice.decision === 'decline');
@@ -78,12 +81,12 @@ function PromptCard({
       </button>
     );
   return (
-    <li className="prompt-card" data-prompt-id={prompt.id}>
+    <li className="prompt-card" data-prompt-id={prompt.id} data-tab-id={tab?.id}>
       <div className="prompt-head">
         <Hand size={15} aria-hidden="true" />
         <span>{here ? 'Permission needed' : 'Permission needed on another tab'}</span>
-        {here || prompt.tab === undefined ? null : (
-          <button type="button" className="prompt-goto" onClick={() => prompt.tab !== undefined && showTab(prompt.tab.id)}>
+        {here || tab === undefined ? null : (
+          <button type="button" className="prompt-goto" onClick={() => showTab(tab.id)}>
             Go to tab <ArrowUpRight size={12} aria-hidden="true" />
           </button>
         )}
@@ -93,12 +96,8 @@ function PromptCard({
           <strong>{plain(asker)}</strong> {heading(prompt)}
         </p>
         <p className="prompt-host">{host}</p>
-        {prompt.url === undefined ? null : <p className="prompt-tab">{plain(prompt.url)}</p>}
-        {prompt.tab === undefined ? null : (
-          <p className="prompt-tab">
-            "{plain(prompt.tab.title || '(untitled)')}" <span>tab {prompt.tab.id}</span>
-          </p>
-        )}
+        {address === undefined ? null : <p className="prompt-address">{plain(address)}</p>}
+        {tab === undefined || (address !== undefined && tab.title === '') ? null : <p className="prompt-tab">"{plain(tab.title || '(untitled)')}"</p>}
       </div>
       <div className="prompt-actions">
         {choice(once, 'prompt-btn primary')}
@@ -106,17 +105,13 @@ function PromptCard({
       </div>
       <div className="prompt-always">{choice(always, 'prompt-btn')}</div>
       {error === undefined ? null : <p className="error-line prompt-error">{error}</p>}
-      <p className="prompt-foot">
-        T3 threads in Full access are not asked.
-        {onManageSites === undefined ? null : (
-          <>
-            {' '}
-            <button type="button" className="prompt-link" onClick={onManageSites}>
-              Manage sites
-            </button>
-          </>
-        )}
-      </p>
+      {onManageSites === undefined ? null : (
+        <p className="prompt-foot">
+          <button type="button" className="prompt-link" onClick={onManageSites}>
+            Manage sites
+          </button>
+        </p>
+      )}
     </li>
   );
 }

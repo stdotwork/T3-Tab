@@ -82,11 +82,15 @@ describe('refreshing the setup state', () => {
       if (request.refresh === true) return setupOf('newest');
       return await failing.promise;
     });
+    // A minute on, so this timed poll asks for the setup again and is still waiting for it.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
     const stale = store.refreshSetup();
     await tick();
+    expect(api.panel).toHaveBeenCalledWith({ type: 'panel.setup', refresh: false });
     await store.refreshSetup(true);
     failing.resolve(Promise.reject(new Error('worker restarting')));
     await stale;
+    clock.mockRestore();
     expect(store.useLive().helper).toEqual({ connected: true });
   });
 
@@ -103,7 +107,14 @@ describe('refreshing the setup state', () => {
     await running;
     api.panel.mockClear();
     api.panel.mockImplementation(async (request: { type: string }) => (request.type === 'panel.helper' ? { connected: true } : setupOf('b')));
+    // With no screen showing setup details, the helper is asked and its agent and T3 checks wait a minute.
     await store.refreshSetup();
+    expect(api.panel.mock.calls.map(([request]) => (request as { type: string }).type)).toEqual(['panel.helper']);
+    api.panel.mockClear();
+    const later = Date.now() + 61_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(later);
+    await store.refreshSetup();
+    clock.mockRestore();
     expect(api.panel).toHaveBeenCalledTimes(2);
     expect(store.useLive().setup).toEqual(setupOf('b'));
   });
