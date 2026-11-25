@@ -15,6 +15,10 @@ function withoutExecution<T extends { execution?: unknown }>(tool: T): T {
   return tool;
 }
 
+/** Said once, in the first reply after a new session replaced one that ended. */
+export const SESSION_RESTARTED_NOTICE =
+  'T3-Tab: your earlier browser session ended (the background program restarted or the connection dropped). This is a new session: its tabs and approvals are gone, so open tabs again or ask the owner to share one.';
+
 export async function runMcpServer(options: { claimFile?: string } = {}): Promise<void> {
   const server = new McpServer({ name: 't3-tab', version: '0.1.0' });
   // A direct run from the side panel names a private file with its claim code; it is read once and deleted.
@@ -36,22 +40,14 @@ export async function runMcpServer(options: { claimFile?: string } = {}): Promis
   withoutExecution(
     server.registerTool('status', { description: 'Show connected browsers and their tab counts.' }, async () => {
       try {
-        return { content: [{ type: 'text', text: formatStatus(await getStatus()) }] };
+        return { content: [{ type: 'text', text: `${formatStatus(await getStatus())}\n${formatLink(control.link())}` }] };
       } catch (error) {
         return failure(error);
       }
     }),
   );
 
-  const browserTool = (method: ToolMethod) => async (params: Record<string, unknown>) => {
-    const before = takeNotice();
-    try {
-      return { content: [...before, ...(await control.callTool(method, params))] satisfies ToolContent[] };
-    } catch (error) {
-      const failed = failure(error);
-      return { ...failed, content: [...before, ...failed.content] };
-    }
-  };
+  const browserTool = browserToolHandler(control, takeNotice);
 
   withoutExecution(
     server.registerTool(
@@ -102,11 +98,42 @@ export async function runMcpServer(options: { claimFile?: string } = {}): Promis
   await server.connect(new StdioServerTransport());
 }
 
+/**
+ * A browser tool's handler. A notice the server holds, then one saying a new session replaced one that ended, go
+ * ahead of the daemon's reply; the reconnect happens inside the call, so the second is read after it, whether the
+ * call worked or not.
+ */
+export function browserToolHandler(
+  control: Pick<DaemonSession, 'callTool' | 'takeReconnected'>,
+  takeNotice: () => ToolContent[],
+): (method: ToolMethod) => (params: Record<string, unknown>) => Promise<{ content: ToolContent[]; isError?: true }> {
+  return (method) => async (params) => {
+    const before = takeNotice();
+    const restarted = (): ToolContent[] =>
+      control.takeReconnected() ? [{ type: 'text', text: SESSION_RESTARTED_NOTICE }] : [];
+    try {
+      const content = await control.callTool(method, params);
+      return { content: [...restarted(), ...before, ...content] };
+    } catch (error) {
+      const failed = failure(error);
+      return { ...failed, content: [...restarted(), ...before, ...failed.content] };
+    }
+  };
+}
+
 function failure(error: unknown): { content: ToolContent[]; isError: true } {
   return {
     content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }],
     isError: true,
   };
+}
+
+export function formatLink(link: ReturnType<DaemonSession['link']>): string {
+  if (link === 'connected') return 'This MCP server\'s session: connected.';
+  if (link === 'ended') {
+    return "This MCP server's session: ended (the background program restarted or the connection dropped). The next browser tool call starts a new session without the old tabs.";
+  }
+  return "This MCP server's session: not started yet; the first browser tool call starts it.";
 }
 
 export function formatStatus(browsers: BrowserStatus[]): string {

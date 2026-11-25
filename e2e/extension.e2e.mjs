@@ -16,6 +16,7 @@ import {
   stopDaemon,
   waitForBrowser,
 } from './harness.mjs';
+import { checkDaemonRestart } from './checks-reconnect.mjs';
 import { checkInstallCommand } from './checks-install.mjs';
 import { checkFrames, checkPermissions } from './checks-permissions.mjs';
 import { checkActionTools, checkBrowserTools, checkKeepalive, rawCall, setAutoPrompt } from './checks-tools.mjs';
@@ -150,6 +151,8 @@ try {
     mcpClient,
     screenshotPath: process.env.T3_TAB_E2E_SCREENSHOT,
   });
+  // Last: it stops the daemon the other checks use.
+  await checkDaemonRestart({ home });
 } finally {
   if (mcpClient !== undefined) {
     await mcpClient.close().catch(() => undefined);
