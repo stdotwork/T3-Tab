@@ -1,6 +1,7 @@
 import type { AgentImage } from '@t3-tab/protocol';
 import { Check, ChevronUp, FileText, Globe, Lock, Paperclip, PenLine, Search, ShieldCheck, ShieldOff, Square, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 
 import { MicButton, type Dictation } from './Dictation';
 import { acceptFor, attachmentProblems, draftAttachment, fileBase64, transferFiles, type AttachmentTarget, type DraftAttachment } from './lib/attachments';
@@ -342,6 +343,93 @@ export interface ComposerAttachments {
   onRemove: (key: string) => void;
 }
 
+const draggingFiles = (event: DragEvent): boolean => event.dataTransfer !== null && [...event.dataTransfer.types].includes('Files');
+
+/**
+ * Files dragged anywhere over the panel go to this composer, as T3's whole-workspace drop does: while they are over it the
+ * panel shows the drop overlay, and dropping attaches them. It listens on the window in the capture phase, ahead of
+ * `guardPanelDrops`, which keeps a drop on a screen without a composer from doing anything.
+ */
+function usePanelDrop(attachments: ComposerAttachments | undefined): boolean {
+  const [dragging, setDragging] = useState(false);
+  const latest = useRef(attachments);
+  latest.current = attachments;
+  const enabled = attachments !== undefined;
+  useEffect(() => {
+    if (!enabled) return;
+    // dragenter and dragleave fire for every element crossed; the count reaches 0 only when the files leave the panel.
+    let depth = 0;
+    const onEnter = (event: DragEvent): void => {
+      if (!draggingFiles(event)) return;
+      depth += 1;
+      setDragging(true);
+    };
+    const onOver = (event: DragEvent): void => {
+      if (!draggingFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer !== null) event.dataTransfer.dropEffect = 'copy';
+      setDragging(true);
+    };
+    const onLeave = (event: DragEvent): void => {
+      if (!draggingFiles(event)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) setDragging(false);
+    };
+    const onDrop = (event: DragEvent): void => {
+      if (!draggingFiles(event)) return;
+      event.preventDefault();
+      depth = 0;
+      setDragging(false);
+      latest.current?.onAdd(transferFiles(event.dataTransfer));
+    };
+    const end = (): void => {
+      depth = 0;
+      setDragging(false);
+    };
+    window.addEventListener('dragenter', onEnter, true);
+    window.addEventListener('dragover', onOver, true);
+    window.addEventListener('dragleave', onLeave, true);
+    window.addEventListener('drop', onDrop, true);
+    window.addEventListener('dragend', end, true);
+    return () => {
+      window.removeEventListener('dragenter', onEnter, true);
+      window.removeEventListener('dragover', onOver, true);
+      window.removeEventListener('dragleave', onLeave, true);
+      window.removeEventListener('drop', onDrop, true);
+      window.removeEventListener('dragend', end, true);
+      setDragging(false);
+    };
+  }, [enabled]);
+  return dragging;
+}
+
+/**
+ * Files dropped where no composer takes them do nothing: the panel never opens a dropped file in its place. A composer's
+ * own listener runs first (capture phase) and marks the event handled.
+ */
+export function guardPanelDrops(): void {
+  window.addEventListener('dragover', (event) => {
+    if (event.defaultPrevented || !draggingFiles(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer !== null) event.dataTransfer.dropEffect = 'none';
+  });
+  window.addEventListener('drop', (event) => {
+    if (draggingFiles(event)) event.preventDefault();
+  });
+}
+
+/** T3's workspace drop overlay: a dashed frame over the whole panel with one centred line. */
+function DropOverlay(): ReactNode {
+  return (
+    <div className="drop-overlay" data-panel-drop-overlay>
+      <div className="drop-overlay-pill" role="status">
+        <Paperclip size={ICON.md} aria-hidden="true" />
+        Drop files to attach
+      </div>
+    </div>
+  );
+}
+
 export function Composer({
   value,
   onChange,
@@ -379,7 +467,7 @@ export function Composer({
   // The paperclip's and send's ink sit the composer's inset from its edges, and every control's ink stands on one line.
   const row = useInkAlign<HTMLDivElement>({ edges: true, bottoms: true });
   const chooser = useRef<HTMLInputElement>(null);
-  const [dragging, setDragging] = useState(false);
+  const dragging = usePanelDrop(attachments);
   useEffect(() => {
     const element = input.current;
     if (element === null) return;
@@ -401,12 +489,12 @@ export function Composer({
     event.preventDefault();
     attachments.onAdd(files);
   };
-  const hasFiles = (event: DragEvent): boolean => attachments !== undefined && [...event.dataTransfer.types].includes('Files');
   const chips = chip !== undefined && chip !== null;
   const firstProblem = attachments?.items.map((item) => attachments.problems.get(item.key)).find((problem) => problem !== undefined);
   const shownNotice = firstProblem === undefined ? notice : `${firstProblem} Remove it to send.`;
   return (
     <>
+      {dragging ? createPortal(<DropOverlay />, document.body) : null}
       {shownNotice === undefined ? null : (
         <p className={firstProblem === undefined ? 'composer-notice' : 'composer-notice problem'} role="status">
           {shownNotice}
@@ -419,20 +507,6 @@ export function Composer({
         onSubmit={(event) => {
           event.preventDefault();
           if (canSend) onSend();
-        }}
-        onDragOver={(event) => {
-          if (!hasFiles(event)) return;
-          event.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
-        }}
-        onDrop={(event) => {
-          if (!hasFiles(event)) return;
-          event.preventDefault();
-          setDragging(false);
-          attachments?.onAdd(transferFiles(event.dataTransfer));
         }}
       >
         {chips || (attachments?.items.length ?? 0) > 0 ? (

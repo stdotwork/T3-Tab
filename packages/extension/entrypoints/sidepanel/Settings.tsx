@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Copy, Download, Moon, Paintbrush, Pencil, Plus, Sun, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, Download, Moon, MoreHorizontal, Paintbrush, Pencil, Plus, Sun, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { SitePermission } from '../../src/permissions';
@@ -44,18 +44,6 @@ function Orb({ colors }: { colors: ThemeColors | null }): ReactNode {
   return <span className="theme-orb" style={{ background: `radial-gradient(circle at 32% 28%, ${colors.surfaceRaised}, ${colors.canvas} 48%, ${colors.accent} 130%)` }} />;
 }
 
-function SchemeCard({ scheme, active, label }: { scheme: SchemeChoice; active: boolean; label: string }): ReactNode {
-  return (
-    <button type="button" className={active ? 'scheme-card active' : 'scheme-card'} aria-pressed={active} onClick={() => setScheme(scheme)}>
-      <span className={`scheme-art ${scheme}`}>
-        <i />
-        <b />
-      </span>
-      {label}
-    </button>
-  );
-}
-
 /** One mode of a theme being edited: its two seed colours, and every colour set by hand or carried over. */
 interface ModeDraft {
   canvas: string;
@@ -84,7 +72,7 @@ const stockDraft = (mode: ThemeAppearance): ModeDraft => {
   return { canvas: themeColorToHex(colors.canvas) ?? '#ffffff', accent: themeColorToHex(colors.accent) ?? '#5b5bd6', overrides: {} };
 };
 
-function ThemeEditor({ start, editing, onClose, onSaved }: { start: ThemeDefinition | undefined; editing: boolean; onClose: () => void; onSaved: (id: string) => void }): ReactNode {
+function ThemeEditor({ start, editing, onClose }: { start: ThemeDefinition | undefined; editing: boolean; onClose: () => void }): ReactNode {
   const [name, setName] = useState(start === undefined ? 'My theme' : editing ? start.label : `${start.label} copy`);
   const startMode = start === undefined ? (document.documentElement.classList.contains('dark') ? 'dark' : 'light') : (singleAppearanceOf(start) ?? (document.documentElement.classList.contains('dark') ? 'dark' : 'light'));
   const [appearance, setAppearance] = useState<ThemeAppearance>(startMode);
@@ -117,7 +105,6 @@ function ThemeEditor({ start, editing, onClose, onSaved }: { start: ThemeDefinit
     const main: ThemeAppearance = both ? 'light' : appearance;
     const other: ThemeAppearance = main === 'light' ? 'dark' : 'light';
     saveCustomTheme({ id, label, appearance: main, colors: colorsOf(main), ...(both ? { variants: { [other]: colorsOf(other) } } : {}), ...(css === '' ? {} : { css }) });
-    onSaved(id);
     onClose();
   };
   const heading = editing ? 'Edit theme' : start === undefined ? 'Create theme' : 'Duplicate theme';
@@ -194,13 +181,13 @@ function ThemeEditor({ start, editing, onClose, onSaved }: { start: ThemeDefinit
   );
 }
 
-function ThemeImport({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string) => void }): ReactNode {
+function ThemeImport({ onClose }: { onClose: () => void }): ReactNode {
   const [text, setText] = useState('');
   const [error, setError] = useState<string>();
   const file = useRef<HTMLInputElement>(null);
   const add = (raw: string): void => {
     try {
-      onSaved(importCustomTheme(parseThemeFile(JSON.parse(raw))));
+      importCustomTheme(parseThemeFile(JSON.parse(raw)));
       onClose();
     } catch (failure) {
       setError(errorText(failure));
@@ -238,100 +225,139 @@ function ThemeImport({ onClose, onSaved }: { onClose: () => void; onSaved: (id: 
   );
 }
 
+const SCHEMES: Array<{ id: SchemeChoice; label: string }> = [
+  { id: 'system', label: 'System' },
+  { id: 'light', label: 'Light' },
+  { id: 'dark', label: 'Dark' },
+];
+
+/** A theme's light and dark swatches side by side, as in the theme menu and on its trigger. */
+function Swatches({ theme }: { theme: ThemeDefinition | undefined }): ReactNode {
+  return (
+    <span className="theme-orbs" aria-hidden="true">
+      <Orb colors={theme === undefined ? null : getThemeColorsForMode(theme, 'light')} />
+      <Orb colors={theme === undefined ? null : getThemeColorsForMode(theme, 'dark')} />
+    </span>
+  );
+}
+
+function exportTheme(theme: ThemeDefinition): void {
+  const url = URL.createObjectURL(new Blob([serializeThemeFile(theme)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${theme.id}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function Appearance({ state }: { state: T3State }): ReactNode {
   const appearance = useAppearance();
   const [sheet, setSheet] = useState<{ kind: 'create'; from?: ThemeDefinition; editing?: boolean } | { kind: 'add' }>();
-  const [reveal, setReveal] = useState<string>();
-  const list = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState<'themes' | 'actions'>();
+  const themesBox = useRef<HTMLDivElement>(null);
+  const actionsBox = useRef<HTMLDivElement>(null);
+  useDismiss(themesBox, open === 'themes', () => setOpen(undefined));
+  useDismiss(actionsBox, open === 'actions', () => setOpen(undefined));
   const custom = new Set(appearance.custom.map((theme) => theme.id));
   const following = appearance.theme === 'follow';
-  // The owner's own themes come first, so one just made or imported is in view.
+  // The owner's own themes come first, so one just made or imported is at the top of the menu.
   const themes = [...appearance.themes].sort((left, right) => Number(custom.has(right.id)) - Number(custom.has(left.id)));
   const activeTheme = appearance.themes.find((theme) => theme.id === appearance.activeId);
   const only = activeTheme === undefined ? null : singleAppearanceOf(activeTheme);
   const wanted = appearance.scheme === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : appearance.scheme;
   const schemeMiss = !following && only !== null && wanted !== only;
-  useEffect(() => {
-    if (reveal === undefined) return;
-    list.current?.querySelector(`[data-theme-id="${CSS.escape(reveal)}"]`)?.scrollIntoView({ block: 'center' });
-    setReveal(undefined);
-  }, [reveal, appearance.themes]);
+  const current = following ? 'Follow T3 Code' : (activeTheme?.label ?? 'Follow T3 Code');
+  const act = (run: () => void): void => {
+    setOpen(undefined);
+    run();
+  };
   return (
     <div className="settings-page">
-      <h3>Color scheme</h3>
-      <div className="scheme-grid">
-        <SchemeCard scheme="system" label="System" active={appearance.scheme === 'system'} />
-        <SchemeCard scheme="light" label="Light" active={appearance.scheme === 'light'} />
-        <SchemeCard scheme="dark" label="Dark" active={appearance.scheme === 'dark'} />
+      <h3>Appearance</h3>
+      <div className="setting-row">
+        <span className="setting-text">Color scheme</span>
+        <div className="segmented" role="radiogroup" aria-label="Color scheme">
+          {SCHEMES.map((scheme) => (
+            <button type="button" role="radio" key={scheme.id} aria-checked={appearance.scheme === scheme.id} className={appearance.scheme === scheme.id ? 'active' : ''} onClick={() => setScheme(scheme.id)}>
+              {scheme.label}
+            </button>
+          ))}
+        </div>
       </div>
       {schemeMiss && activeTheme !== undefined ? <p className="muted-line">{activeTheme.label} has only a {only} version, so it stays {only}.</p> : null}
-      <h3>Themes</h3>
-      <div className="theme-actions">
-        <button type="button" className="row-btn" onClick={() => setSheet({ kind: 'create' })}>
-          <Paintbrush size={ICON.sm} aria-hidden="true" /> Create theme
-        </button>
-        <button type="button" className="row-btn" onClick={() => setSheet({ kind: 'add' })}>
-          <Plus size={ICON.sm} aria-hidden="true" /> Add theme
-        </button>
-      </div>
-      <button type="button" className={following ? 'theme-card follow active' : 'theme-card follow'} aria-pressed={following} onClick={() => setTheme('follow')}>
-        <span className="theme-card-name">
-          Follow T3 Code
-          <small>{state.status === 'ready' ? 'Uses the theme active in T3 Code' : 'Uses T3 Code’s default until connected'}</small>
-        </span>
-        {following ? <Check size={ICON.sm} aria-hidden="true" /> : null}
-      </button>
-      <div className="theme-list" ref={list}>
-        {themes.map((theme) => {
-          const active = !following && appearance.activeId === theme.id;
-          const single = singleAppearanceOf(theme);
-          return (
-            <div className={active ? 'theme-card active' : 'theme-card'} key={theme.id} data-theme-id={theme.id}>
-              <button type="button" className="theme-pick" aria-pressed={active} aria-label={`Use ${theme.label}`} onClick={() => setTheme(theme.id)}>
-                <span className="theme-orbs">
-                  <Orb colors={getThemeColorsForMode(theme, 'light')} />
-                  <Orb colors={getThemeColorsForMode(theme, 'dark')} />
-                </span>
-                <span className="theme-card-name">
-                  {theme.label}
-                  {single === null ? null : <small>{single === 'dark' ? 'Dark only' : 'Light only'}</small>}
-                </span>
-              </button>
-              <span className="theme-card-tools">
-                {active ? <Check size={ICON.sm} className="theme-card-check" aria-hidden="true" /> : null}
-                {custom.has(theme.id) ? (
-                  <IconButton label={`Edit ${theme.label}`} onClick={() => setSheet({ kind: 'create', from: theme, editing: true })}>
-                    <Pencil size={ICON.md} />
-                  </IconButton>
-                ) : null}
-                <IconButton label={`Duplicate ${theme.label}`} onClick={() => setSheet({ kind: 'create', from: theme })}>
-                  <Copy size={ICON.md} />
-                </IconButton>
-                <IconButton
-                  label={`Export ${theme.label}`}
-                  onClick={() => {
-                    const url = URL.createObjectURL(new Blob([serializeThemeFile(theme)], { type: 'application/json' }));
-                    const link = document.createElement('a');
-                    link.href = url;
-                    link.download = `${theme.id}.json`;
-                    link.click();
-                    URL.revokeObjectURL(url);
-                  }}
-                >
-                  <Download size={ICON.md} />
-                </IconButton>
-                {custom.has(theme.id) ? (
-                  <IconButton label={`Remove ${theme.label}`} onClick={() => removeCustomTheme(theme.id)}>
-                    <Trash2 size={ICON.md} />
-                  </IconButton>
-                ) : null}
-              </span>
+      <div className="setting-row theme-row">
+        <span className="setting-text">Theme</span>
+        <span className="theme-controls">
+          <div className="picker" ref={themesBox}>
+            <button type="button" className="row-btn theme-trigger" aria-haspopup="listbox" aria-expanded={open === 'themes'} aria-label={`Theme: ${current}`} onClick={() => setOpen(open === 'themes' ? undefined : 'themes')}>
+              <Swatches theme={activeTheme} />
+              <span className="setting-value">{current}</span>
+              <ChevronDown size={ICON.xs} aria-hidden="true" />
+            </button>
+            {open === 'themes' ? (
+              <div className="popover setting-popover theme-popover">
+                <div className="theme-options" role="listbox" aria-label="Theme">
+                  <button type="button" role="option" aria-selected={following} className={following ? 'model-row active' : 'model-row'} onClick={() => act(() => setTheme('follow'))}>
+                    <Swatches theme={following ? activeTheme : (appearance.themes.find((theme) => theme.id === state.defaultTheme) ?? STOCK_THEME)} />
+                    <span className="project-name">Follow T3 Code</span>
+                    {following ? <Check size={ICON.sm} className="row-check" aria-hidden="true" /> : null}
+                  </button>
+                  <div className="picker-divider" />
+                  {themes.map((theme) => {
+                    const active = !following && appearance.activeId === theme.id;
+                    const single = singleAppearanceOf(theme);
+                    return (
+                      <button type="button" role="option" key={theme.id} data-theme-id={theme.id} aria-selected={active} className={active ? 'model-row active' : 'model-row'} onClick={() => act(() => setTheme(theme.id))}>
+                        <Swatches theme={theme} />
+                        <span className="project-name">{theme.label}</span>
+                        {single === null ? null : <small className="theme-only">{single === 'dark' ? 'Dark only' : 'Light only'}</small>}
+                        {active ? <Check size={ICON.sm} className="row-check" aria-hidden="true" /> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="picker-divider" />
+                <button type="button" className="model-row add" onClick={() => act(() => setSheet({ kind: 'create' }))}>
+                  <Paintbrush size={ICON.sm} aria-hidden="true" /> Create theme
+                </button>
+                <button type="button" className="model-row add" onClick={() => act(() => setSheet({ kind: 'add' }))}>
+                  <Plus size={ICON.sm} aria-hidden="true" /> Add theme
+                </button>
+              </div>
+            ) : null}
+          </div>
+          {activeTheme === undefined ? null : (
+            <div className="picker" ref={actionsBox}>
+              <IconButton label={`Theme actions for ${activeTheme.label}`} aria-haspopup="menu" aria-expanded={open === 'actions'} onClick={() => setOpen(open === 'actions' ? undefined : 'actions')}>
+                <MoreHorizontal size={ICON.md} />
+              </IconButton>
+              {open === 'actions' ? (
+                <div className="popover setting-popover" role="menu" aria-label={`Theme actions for ${activeTheme.label}`}>
+                  {custom.has(activeTheme.id) ? (
+                    <button type="button" role="menuitem" className="model-row" onClick={() => act(() => setSheet({ kind: 'create', from: activeTheme, editing: true }))}>
+                      <Pencil size={ICON.sm} aria-hidden="true" /> Edit {activeTheme.label}
+                    </button>
+                  ) : null}
+                  <button type="button" role="menuitem" className="model-row" onClick={() => act(() => setSheet({ kind: 'create', from: activeTheme }))}>
+                    <Copy size={ICON.sm} aria-hidden="true" /> Duplicate {activeTheme.label}
+                  </button>
+                  <button type="button" role="menuitem" className="model-row" onClick={() => act(() => exportTheme(activeTheme))}>
+                    <Download size={ICON.sm} aria-hidden="true" /> Export {activeTheme.label}
+                  </button>
+                  {custom.has(activeTheme.id) ? (
+                    <button type="button" role="menuitem" className="model-row" onClick={() => act(() => removeCustomTheme(activeTheme.id))}>
+                      <Trash2 size={ICON.sm} aria-hidden="true" /> Remove {activeTheme.label}
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
-          );
-        })}
+          )}
+        </span>
       </div>
-      {sheet?.kind === 'create' ? <ThemeEditor start={sheet.from} editing={sheet.editing === true} onClose={() => setSheet(undefined)} onSaved={setReveal} /> : null}
-      {sheet?.kind === 'add' ? <ThemeImport onClose={() => setSheet(undefined)} onSaved={setReveal} /> : null}
+      {following ? <p className="muted-line">{state.status === 'ready' ? 'Follows the theme active in T3 Code.' : 'Uses T3 Code’s default theme until T3 Code is connected.'}</p> : null}
+      {sheet?.kind === 'create' ? <ThemeEditor start={sheet.from} editing={sheet.editing === true} onClose={() => setSheet(undefined)} /> : null}
+      {sheet?.kind === 'add' ? <ThemeImport onClose={() => setSheet(undefined)} /> : null}
     </div>
   );
 }

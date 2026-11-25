@@ -555,7 +555,11 @@ async function runT3Flow() {
     await panelPage.locator('#btn-settings').click();
     await panelPage.getByText('Color scheme').waitFor();
     await shot('14-settings-appearance');
-    await panelPage.getByRole('button', { name: 'Create theme' }).click();
+    const themeMenu = async (name) => {
+      await panelPage.locator('.theme-trigger').click();
+      await panelPage.locator('.theme-popover').getByRole('button', { name }).click();
+    };
+    await themeMenu('Create theme');
     await shot('15-theme-create');
     await panelPage.locator('.sheet').getByRole('radio', { name: 'Dark' }).click();
     await sleep(320);
@@ -568,7 +572,7 @@ async function runT3Flow() {
     check('the theme editor previews a dark theme', darkDraft.every((channel) => channel < 60), darkDraft.join(','));
     await panelPage.screenshot({ path: join(shotsDir, 't3-15-theme-create-dark.png') });
     await panelPage.getByRole('button', { name: 'Close', exact: true }).click();
-    await panelPage.getByRole('button', { name: 'Add theme' }).click();
+    await themeMenu('Add theme');
     const themeFile = JSON.stringify({ version: 1, name: 'Flow Import', appearance: 'dark', colors: { canvas: '#101820', text: '#f2f7fa', accent: '#ff7a59', messageAction: '#ff7a59', messageActionForeground: '#101820' } });
     await panelPage.locator('.sheet textarea').fill(themeFile);
     await panelPage.locator('.sheet').getByRole('button', { name: 'Add theme' }).click();
@@ -577,17 +581,18 @@ async function runT3Flow() {
       return value === '16,24,32' ? value : undefined;
     }, 5_000).catch(() => undefined);
     check('a T3 theme file imports and applies', canvas !== undefined, String(canvas));
-    const pressed = async (name) => await panelPage.getByRole('button', { name }).getAttribute('aria-pressed');
-    check('the imported theme is the one marked selected', (await pressed('Use Flow Import')) === 'true' && (await pressed(/Follow T3 Code/)) === 'false');
+    const chosen = async () => await panelPage.locator('.theme-trigger').innerText();
+    check('the imported theme is the one marked selected', (await chosen()).includes('Flow Import'));
     await shot('16a-theme-imported');
     const hostile = JSON.stringify({ version: 1, name: 'Flow CSS', appearance: 'dark', colors: { canvas: '#203040' }, css: '@import url("https://example.invalid/a.css"); .screen { outline: 1px solid red; background-image: url("https://example.invalid/b.png"); }' });
-    await panelPage.getByRole('button', { name: 'Add theme' }).click();
+    await themeMenu('Add theme');
     await panelPage.locator('.sheet textarea').fill(hostile);
     await panelPage.locator('.sheet').getByRole('button', { name: 'Add theme' }).click();
     await until('the CSS theme', async () => (await canvasColor(panelPage)) === '32,48,64', 5_000);
     const adopted = await panelPage.evaluate(() => [...document.adoptedStyleSheets].flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText)).join(' '));
     check('custom CSS applied with its remote loads stripped', adopted.includes('outline') && !/url\(|@import/.test(adopted), adopted.slice(0, 90));
-    await panelPage.getByRole('button', { name: /Follow T3 Code/ }).click();
+    await panelPage.locator('.theme-trigger').click();
+    await panelPage.getByRole('option', { name: 'Follow T3 Code' }).click();
     await new Promise((resolve, reject) => {
       const child = spawn('t3', ['theme', 'set', 'grove'], { env: home.childEnv, stdio: 'ignore' });
       child.once('error', reject);
@@ -598,7 +603,7 @@ async function runT3Flow() {
       return value !== '32,48,64' && (await panelPage.evaluate(() => window.__t3tabT3.snapshot().defaultTheme)) === 'grove' ? value : undefined;
     }, 8_000).catch(() => undefined);
     check('the panel follows the theme set in T3', groveCanvas !== undefined, String(groveCanvas));
-    check('Follow T3 Code is the one marked selected', (await pressed(/Follow T3 Code/)) === 'true' && (await pressed('Use Flow Import')) === 'false');
+    check('Follow T3 Code is the one marked selected', (await chosen()).includes('Follow T3 Code'));
     await shot('16b-theme-follows-t3');
     await panelPage.locator('.settings-tabs').getByRole('button', { name: 'Sites' }).click();
     await shot('17-settings-sites');

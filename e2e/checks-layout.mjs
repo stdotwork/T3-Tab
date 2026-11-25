@@ -222,7 +222,8 @@ export async function checkLayout({ livePanel, serviceWorker, screenshotPath }) 
   await page.locator('.settings-tabs button').filter({ hasText: 'Sites' }).click();
   await run('settings-sites');
   await page.locator('.settings-tabs button').filter({ hasText: 'General' }).click();
-  const create = page.getByRole('button', { name: 'Create theme' });
+  await page.locator('.theme-trigger').click();
+  const create = page.locator('.theme-popover').getByRole('button', { name: 'Create theme' });
   if ((await create.count()) > 0) {
     await create.click();
     await page.locator('.sheet-head').waitFor();

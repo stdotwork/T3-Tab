@@ -95,7 +95,9 @@ ul { list-style: none; margin: 0; padding: 0; }
    controls stand on one line at their ink (useInkAlign in ui.tsx); bigger controls are just taller. */
 .composer { --ink-inset: var(--gutter); position: relative; display: flex; flex-direction: column; padding: 0; border: 1px solid var(--app-theme-input); border-radius: var(--radius-xl); background: var(--raised); box-shadow: 0 1px 2px rgb(0 0 0 / 5%); transition: border-color 0.12s; flex: none; }
 .composer:focus-within { border-color: color-mix(in srgb, var(--focus) 55%, var(--line)); }
-.composer.dragging { border-color: var(--focus); border-style: dashed; }
+.drop-overlay { position: fixed; inset: 8px; z-index: 80; display: flex; align-items: center; justify-content: center; border: 2px dashed color-mix(in srgb, var(--action) 60%, transparent); border-radius: var(--radius-xl); background: color-mix(in srgb, var(--action) 3.5%, transparent); pointer-events: none; }
+.drop-overlay-pill { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border: 1px solid color-mix(in srgb, var(--action) 25%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--bg) 95%, transparent); color: var(--fg); font-size: var(--text-sm); font-weight: 500; box-shadow: 0 10px 15px -3px rgb(0 0 0 / 10%), 0 4px 6px -4px rgb(0 0 0 / 10%); }
+.drop-overlay-pill svg { color: var(--action); }
 .composer-input { display: block; width: 100%; resize: none; border: 0; background: transparent; padding: 10px calc(var(--gutter) - 1px) 4px; font-size: var(--text-sm); line-height: 1.5; max-height: 200px; min-height: 36px; outline: none; }
 .composer-chips { display: flex; flex-wrap: wrap; gap: var(--gap); min-width: 0; padding: 10px calc(var(--gutter) - 1px) 0; }
 .composer-chips + .composer-input { padding-top: 6px; }
@@ -444,32 +446,24 @@ button.session-text:hover strong { text-decoration: underline; text-underline-of
 .settings-page { padding: 12px var(--gutter) 24px; display: flex; flex-direction: column; gap: 8px; }
 .settings-page h3 { color: var(--fg); font-size: var(--text-sm); font-weight: 500; margin: 8px 0 2px; }
 .muted-line { color: var(--muted-fg); font-size: var(--text-sm); }
-.scheme-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.scheme-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 8px 6px; border: 1px solid var(--line); border-radius: var(--radius-lg); color: var(--muted-fg); font-size: var(--text-xs); }
-.scheme-card:hover { background: var(--hover); }
-.scheme-card.active { border-color: var(--focus); box-shadow: inset 0 0 0 1px var(--focus); color: var(--fg); }
-.scheme-art { position: relative; display: block; width: 100%; height: 62px; border-radius: var(--radius-sm); overflow: hidden; background: #fff; }
-.scheme-art.dark { background: #111; }
-.scheme-art.system { background: linear-gradient(90deg, #fff 50%, #111 50%); }
-.scheme-art i { position: absolute; right: 8px; top: 8px; width: 42%; height: 9px; border-radius: var(--radius-xs); background: #d4d4d8; }
-.scheme-art b { position: absolute; left: 8px; right: 8px; bottom: 7px; height: 16px; border-radius: var(--radius-sm); border: 1px solid #a1a1aa; background: rgb(255 255 255 / 55%); }
-.scheme-art.dark i { background: #3f3f46; }
-.scheme-art.dark b { background: #27272a; border-color: #52525b; }
-.scheme-art.system b { background: rgb(128 128 128 / 40%); }
-.theme-actions { display: flex; gap: 8px; }
-.theme-list { display: flex; flex-direction: column; gap: 8px; }
-.theme-card { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); text-align: left; }
-.theme-card.active { border-color: var(--focus); box-shadow: inset 0 0 0 1px var(--focus); }
-.theme-card.follow:hover { background: var(--hover); }
-.theme-pick { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; text-align: left; }
 .theme-orbs { display: inline-flex; flex: none; }
-.theme-orb { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line); display: block; }
-.theme-orb + .theme-orb { margin-left: -8px; }
+.theme-orb { width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--line); display: block; }
+.theme-orb + .theme-orb { margin-left: -5px; }
+/* The theme row: a select-style trigger with the theme's swatches, and the current theme's actions beside it. */
+.theme-controls { display: flex; align-items: center; gap: var(--gap); min-width: 0; }
+.theme-row > .setting-text { flex: none; }
+.theme-controls { flex: 0 1 auto; }
+.setting-row .theme-controls > .picker:first-child { flex: 0 1 auto; min-width: 0; }
+.theme-trigger { flex: 0 1 auto; min-width: 0; max-width: 100%; gap: 6px; padding: 4px 8px; }
+.theme-trigger .setting-value { max-width: none; min-width: 0; }
+/* The themes scroll inside the menu; Create theme and Add theme stay in view under them. */
+.setting-popover.theme-popover { display: flex; flex-direction: column; width: min(240px, calc(100vw - 2 * var(--gutter))); max-height: min(360px, 50vh); overflow: hidden; }
+.theme-options { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.theme-popover .model-row .project-name { min-width: 0; }
+/* "Dark only" sits at the row's end, with the check right after it. */
+.theme-only { flex: none; margin-left: auto; color: var(--muted-fg); font-size: var(--text-xs); }
+.theme-only + .row-check { margin-left: 0; }
 .theme-orb.empty { background: transparent; border-style: dashed; }
-.theme-card-name { display: flex; flex-direction: column; min-width: 0; font-weight: 500; font-size: var(--text-sm); }
-.theme-card-name small { color: var(--muted-fg); font-weight: 400; }
-.theme-card-tools { display: inline-flex; align-items: center; flex: none; }
-.theme-card-check { margin-right: 6px; }
 .site-list { display: flex; flex-direction: column; gap: 8px; }
 .site-list li { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); overflow-wrap: anywhere; }
 .site-list li.muted-line { border-style: dashed; background: none; }

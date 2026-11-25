@@ -226,6 +226,13 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   provider; hovering offers T3's snooze presets and Settle (Wake and Un-settle on the shelves), sent as T3's own client
   sends them. The Working, Snoozed and Settled shelves sit at the foot of the list as in T3. T3's custom snooze time is
   left out; its presets, including the owner's own list from T3's settings, are offered.
+- **Appearance settings are compact.** T3's Settings shows the color scheme as three large preview cards and themes as a
+  grid of cards; in a side panel that pushed everything else off screen, so the panel uses one segmented row for the
+  scheme and one select-style menu for the theme, as T3 uses for its other settings, with the current theme's actions
+  in a menu beside it.
+- **Files can be dropped anywhere on a screen with a composer.** As in T3's workspace drop, a file dragged over the
+  new-thread screen or a thread shows a dashed overlay over the whole panel and goes to the composer; on other screens a
+  drop is refused so the panel never opens the file in its place.
 - **A new tab starts in no project.** That is T3's Scratch project. The default can be changed in Settings to the last used
   project or a fixed one. A pick made on a tab holds for that tab only.
 - **T3 credentials travel on checked connections.** The daemon spends the pairing credential and sends token renewals

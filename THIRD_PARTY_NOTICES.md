@@ -38,7 +38,8 @@ T3-Tab is Apache-2.0 licensed. Files copied or adapted from another project are 
   and is not T3-Tab's icon. `ProjectAvatar`, `projectInitials` and `projectHue` in the same file follow T3 Code's
   `ProjectMonogram` (its letters, its hash over the same eighteen Tailwind hues, and its SVG text), `SendArrow` in
   `Composer.tsx` is the path of T3 Code's composer send glyph, and `lib/snooze.ts` follows the presets, labels and times
-  of T3 Code's `threadSettled` module; all are rewritten from T3 Code's built client (nightly 0.1.12, 2026-11-24).
+  of T3 Code's `threadSettled` module, and `DropOverlay` in `Composer.tsx` follows T3 Code's workspace drop overlay (its
+  dashed frame, centred line and wording); all are rewritten from T3 Code's built client (nightly 0.1.12, 2026-11-24).
 
 ## Lucide
 

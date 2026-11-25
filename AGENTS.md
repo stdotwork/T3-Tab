@@ -73,8 +73,10 @@ between turns with the conversation's Remove button; a missing, world-readable o
 the conversation and in the agent's first tool reply. The thread list, given T3 threads as one shell snapshot, shows T3's
 sidebar sections in T3's order (pinned, active, then the Working, Snoozed and Settled shelves), leaves archived threads
 out, and the threads button carries a dot only while a thread waits on the owner's answer or approval. The composer
-keeps the paperclip, model, mic and send in that order at 320, 360 and 400 px with no access row under it; the mic says why it cannot record without T3; a PDF for a direct run is named and holds the message; a PNG
-reaches the fake Claude Code as an image block; and with T3's config handed to the panel, the access level is chosen in
+keeps the paperclip, model, mic and send in that order at 320, 360 and 400 px with no access row under it; the mic says why it cannot record without T3; a PDF for a direct run is named and holds the message; a pasted image is attached; a PNG
+dragged over the heading shows the whole-panel drop overlay, is attached when dropped there and
+reaches the fake Claude Code as an image block, while a file dropped on Settings is refused; Settings has a 28 px
+color scheme row and a theme menu with swatches, Create theme and Add theme, and each theme's actions beside it; and with T3's config handed to the panel, the access level is chosen in
 the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e/ink.mjs`) walks the new-thread
 screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, Settings
 and a theme sheet at 320, 360 and 400 px in light and dark, and measures visible ink (SVG strokes and fills, text glyphs
@@ -437,7 +439,9 @@ directly through the daemon and feeds the same thread view.
   control 32 px and the row 8 px from the box's edges. The access level (runtime mode) is in the model picker's footer, as
   in T3; a running T3 thread's model chip opens the same footer, and a change there is sent at once with
   `thread.runtime-mode.set`.
-- **Attachments.** Paperclip, paste and drop add files. For a T3 thread each file is uploaded the way T3's own composer
+- **Attachments.** Paperclip, paste and drop add files. Files dragged anywhere over a screen with a composer (the
+  new-thread screen and a thread) show T3's whole-workspace drop overlay and go to that composer; on any other screen a
+  drop does nothing. For a T3 thread each file is uploaded the way T3's own composer
   does it: `attachments.createUploadUrl` over the socket signs a ten-minute upload address, the bytes are POSTed there
   (the address is the only credential), and the message carries the returned ids; a launch with uploads also sends the
   thread id T3 files them under. PNG, JPEG, GIF and WebP up to 10 MB go as images, anything else up to 50 MB as a file.
@@ -451,7 +455,9 @@ directly through the daemon and feeds the same thread view.
   so instead of recording. A side panel cannot show the browser's microphone prompt, so the first press opens
   `microphone.html` in a tab, where the browser asks once for the extension; after that the panel records without asking.
   Nothing uses the browser's Web Speech service.
-- **Themes.** The panel follows T3's active theme by default. T3 theme files can be imported. The owner's themes can be
+- **Themes.** Settings shows the color scheme as one segmented row and the theme as one menu (Follow T3 Code, then
+  every theme with its light and dark swatches, then Create theme and Add theme); edit, duplicate, export and remove
+  for the current theme sit in a menu beside it. The panel follows T3's active theme by default. T3 theme files can be imported. The owner's themes can be
   edited, and any theme can be duplicated with all its colours and both of its modes. A name already in use gets a number
   instead of replacing that theme. A change reaches panels open on other tabs through `chrome.storage.onChanged`. Custom
   CSS goes through T3's own filter, which removes rules that load remote files.

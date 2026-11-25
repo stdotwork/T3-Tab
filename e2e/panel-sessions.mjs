@@ -282,6 +282,7 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   }
   await checkThreadSections(livePanel, screenshotPath);
   await checkComposer({ livePanel, fakes, screenshotPath });
+  await checkAppearance({ livePanel, screenshotPath });
   await checkLayout({ livePanel, serviceWorker, screenshotPath });
   await livePanel.close();
   console.log('Panel UI: tab chip, direct agents, conversation list and replies rendered from the real state');
@@ -540,6 +541,79 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR
 const PDF = Buffer.from('%PDF-1.7\n%fake\n');
 
 /**
+ * Settings → Appearance: the color scheme is one segmented row, and the theme is one select-style menu with its actions
+ * beside it. Files dropped on Settings, where there is no composer, are refused and nothing changes.
+ */
+async function checkAppearance({ livePanel, screenshotPath }) {
+  await livePanel.locator('#btn-settings').click();
+  await livePanel.locator('.settings-tabs').waitFor();
+  const dropped = await livePanel.evaluate(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['x'], 'note.txt', { type: 'text/plain' }));
+    const target = document.querySelector('.settings-scroll');
+    const fire = (type) => {
+      const event = new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    fire('dragenter');
+    const over = fire('dragover');
+    const effect = transfer.dropEffect;
+    const drop = fire('drop');
+    return { over, effect, drop, overlay: document.querySelector('[data-panel-drop-overlay]') !== null, url: location.pathname };
+  });
+  assert(dropped.over && dropped.drop && !dropped.overlay && dropped.url.endsWith('sidepanel.html'), `A file dropped on Settings: ${JSON.stringify(dropped)}`);
+
+  const scheme = livePanel.getByRole('radiogroup', { name: 'Color scheme' });
+  const schemeBox = await scheme.boundingBox();
+  assert(schemeBox !== null && schemeBox.height <= 28.5, `The color scheme control is ${schemeBox?.height} px tall`);
+  await scheme.getByRole('radio', { name: 'Dark' }).click();
+  assert(await livePanel.evaluate(() => document.documentElement.classList.contains('dark')), 'Dark did not apply');
+  await scheme.getByRole('radio', { name: 'System' }).click();
+
+  const trigger = livePanel.locator('.theme-trigger');
+  assert((await trigger.innerText()).includes('Follow T3 Code'), `The theme trigger reads ${await trigger.innerText()}`);
+  await trigger.click();
+  const menu = livePanel.getByRole('listbox', { name: 'Theme' });
+  const names = await menu.getByRole('option').allInnerTexts();
+  assert(names[0]?.includes('Follow T3 Code') && names.length >= 3 && (await menu.locator('.theme-orbs').count()) === names.length, `The theme menu: ${JSON.stringify(names)}`);
+  const pick = names[2].split('\n')[0].trim();
+  if (screenshotPath !== undefined) {
+    for (const width of [320, 360, 400]) {
+      await livePanel.setViewportSize({ width, height: 640 });
+      for (const colorScheme of ['light', 'dark']) {
+        await livePanel.emulateMedia({ colorScheme });
+        await sleep(250);
+        await livePanel.screenshot({ path: join(dirname(screenshotPath), `settings-theme-menu-${width}-${colorScheme}.png`), animations: 'disabled' });
+      }
+    }
+  }
+  await menu.getByRole('option', { name: pick }).click();
+  assert((await trigger.innerText()).includes(pick), `Picking ${pick} left the trigger at ${await trigger.innerText()}`);
+  await livePanel.getByRole('button', { name: `Theme actions for ${pick}` }).click();
+  const actions = await livePanel.getByRole('menu').getByRole('menuitem').allInnerTexts();
+  assert(actions.some((text) => text.includes(`Duplicate ${pick}`)) && actions.some((text) => text.includes(`Export ${pick}`)), `Theme actions: ${JSON.stringify(actions)}`);
+  await livePanel.getByRole('button', { name: `Theme actions for ${pick}` }).click();
+  await trigger.click();
+  for (const name of ['Create theme', 'Add theme']) assert((await livePanel.locator('.theme-popover').getByRole('button', { name }).count()) === 1, `${name} is not in the theme menu`);
+  await menu.getByRole('option', { name: 'Follow T3 Code' }).click();
+  if (screenshotPath !== undefined) {
+    for (const width of [320, 360, 400]) {
+      await livePanel.setViewportSize({ width, height: 640 });
+      for (const colorScheme of ['light', 'dark']) {
+        await livePanel.emulateMedia({ colorScheme });
+        await sleep(250);
+        await livePanel.screenshot({ path: join(dirname(screenshotPath), `settings-${width}-${colorScheme}.png`), animations: 'disabled' });
+      }
+    }
+    await livePanel.emulateMedia({ colorScheme: 'light' });
+    await livePanel.setViewportSize({ width: 360, height: 800 });
+  }
+  await livePanel.locator('#btn-settings-back').click();
+  console.log(`Settings appearance: a 28 px color scheme row, a theme menu of ${names.length} themes with swatches, ${pick} picked and its actions listed; a file dropped on Settings was refused`);
+}
+
+/**
  * The composer as T3 Code lays it out: the paperclip at the left end, then the model, the mic and send; no access row
  * under the box. A
  * file a direct run cannot take is named and holds the message; an image goes to the agent with the message; the mic
@@ -581,8 +655,58 @@ async function checkComposer({ livePanel, fakes, screenshotPath }) {
   assert(problem.includes("spec.pdf can't go to Claude Code") && problem.includes('Remove it to send'), `The PDF's problem: ${problem}`);
   assert(await livePanel.getByRole('button', { name: 'Send', exact: true }).isDisabled(), 'Send is enabled with a file the agent cannot take');
   await livePanel.getByRole('button', { name: 'Remove spec.pdf' }).click();
-  await chooser.setInputFiles([{ name: 'dot.png', mimeType: 'image/png', buffer: PNG }]);
+  // A pasted file is attached too.
+  await livePanel.locator('.composer-input').evaluate((input, bytes) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([new Uint8Array(bytes)], 'pasted.png', { type: 'image/png' }));
+    input.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
+  }, [...PNG]);
+  await livePanel.locator('.file-chip').filter({ hasText: 'pasted.png' }).waitFor();
+  await livePanel.getByRole('button', { name: 'Remove pasted.png' }).click();
+  // Files dragged anywhere over the panel, here over the heading, show the whole-panel overlay and drop into the composer.
+  const drag = async (type, selector) =>
+    await livePanel.evaluate(
+      ({ type, selector, bytes }) => {
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([new Uint8Array(bytes)], 'dot.png', { type: 'image/png' }));
+        const event = new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer });
+        document.querySelector(selector).dispatchEvent(event);
+        return { prevented: event.defaultPrevented, effect: transfer.dropEffect };
+      },
+      { type, selector, bytes: [...PNG] },
+    );
+  await drag('dragenter', '.hero h1');
+  const over = await drag('dragover', '.hero h1');
+  // Chromium ignores dropEffect on a DataTransfer made by script, so only the handled drag is checked here.
+  assert(over.prevented, `A drag over the heading was not taken: ${JSON.stringify(over)}`);
+  await livePanel.locator('[data-panel-drop-overlay]').waitFor();
+  const frame = await livePanel.locator('[data-panel-drop-overlay]').evaluate((overlay) => {
+    const box = overlay.getBoundingClientRect();
+    return { left: box.left, top: box.top, right: window.innerWidth - box.right, bottom: window.innerHeight - box.bottom };
+  });
+  assert(Object.values(frame).every((inset) => Math.abs(inset - 8) < 0.5), `The drop overlay does not cover the panel: ${JSON.stringify(frame)}`);
+  if (screenshotPath !== undefined) {
+    for (const width of [320, 360, 400]) {
+      await livePanel.setViewportSize({ width, height: 640 });
+      for (const scheme of ['light', 'dark']) {
+        await livePanel.emulateMedia({ colorScheme: scheme });
+        await sleep(250);
+        await livePanel.screenshot({ path: join(dirname(screenshotPath), `drop-overlay-${width}-${scheme}.png`), animations: 'disabled' });
+      }
+    }
+    await livePanel.emulateMedia({ colorScheme: 'light' });
+    await livePanel.setViewportSize({ width: 360, height: 800 });
+  }
+  await drag('drop', '.hero h1');
+  await livePanel.locator('[data-panel-drop-overlay]').waitFor({ state: 'detached' });
   await livePanel.locator('.file-chip img').waitFor();
+  assert((await livePanel.locator('.file-chip').count()) === 1, `Chips after the drop: ${await livePanel.locator('.file-chip').count()}`);
+  // Leaving the panel takes the overlay away.
+  await drag('dragenter', '.hero h1');
+  await livePanel.locator('[data-panel-drop-overlay]').waitFor();
+  await drag('dragleave', '.hero h1');
+  await livePanel.locator('[data-panel-drop-overlay]').waitFor({ state: 'detached' });
+  console.log(`Composer drop: a PNG dropped on the heading was attached; the overlay covered the panel ${frame.left} px in; paste attaches too`);
   assert((await livePanel.locator('.file-chip.problem').count()) === 0, 'The PNG is marked as a problem');
   if (screenshotPath !== undefined) {
     for (const width of [320, 360, 400]) {
