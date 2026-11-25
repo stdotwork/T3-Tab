@@ -1,18 +1,26 @@
-import { ArrowUp, Check, ChevronDown, Globe, Search, ShieldCheck, ShieldOff, Square, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import type { AgentImage } from '@t3-tab/protocol';
+import { ArrowUp, Check, ChevronUp, FileText, Globe, Lock, Paperclip, PenLine, Search, ShieldCheck, ShieldOff, Square, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
 
+import { MicButton, type Dictation } from './Dictation';
+import { acceptFor, attachmentProblems, draftAttachment, fileBase64, transferFiles, type AttachmentTarget, type DraftAttachment } from './lib/attachments';
 import { choiceLabel, isModelName, reasoningOption, RUNTIME_MODES, type Choice, type PickerProvider } from './lib/catalog';
 import { compactModelName } from './lib/model-short-name';
+import { t3, type ChatAttachment } from './lib/t3-client';
+import { insertDictation } from './lib/voice';
 import { ProviderIcon, useDismiss } from './ui';
 
 export function ModelPicker({
   providers,
   choice,
   onChoice,
+  access,
 }: {
   providers: PickerProvider[];
   choice: Choice | undefined;
   onChoice: (choice: Choice) => void;
+  /** T3 threads: the access level, in the footer. */
+  access?: AccessControl | undefined;
 }): ReactNode {
   const [open, setOpen] = useState(false);
   const [rail, setRail] = useState(choice?.provider);
@@ -37,7 +45,15 @@ export function ModelPicker({
 
   return (
     <div className="picker" ref={box}>
-      <button type="button" className="model-chip" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(!open)} disabled={providers.length === 0}>
+      <button
+        type="button"
+        className="model-chip"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={access === undefined ? undefined : `${label.name}${label.effort === undefined ? '' : ` · ${label.effort}`} · ${RUNTIME_MODES.find((mode) => mode.id === access.value)?.label ?? access.value}`}
+        onClick={() => setOpen(!open)}
+        disabled={providers.length === 0}
+      >
         <ProviderIcon driver={label.driver} size={15} />
         <span className="model-chip-name">{label.name}</span>
         {label.effort === undefined ? null : <span className="model-chip-effort">{label.effort}</span>}
@@ -140,47 +156,101 @@ export function ModelPicker({
               </div>
             </div>
           )}
+          {access === undefined ? null : (
+            <div className="model-footer">
+              <AccessMenu {...access} />
+            </div>
+          )}
         </div>
       ) : null}
     </div>
   );
 }
 
-export function RuntimeMenu({ value, modes, onChange }: { value: string; modes?: string[] | undefined; onChange: (mode: string) => void }): ReactNode {
+const MODE_ICONS: Record<string, typeof ShieldCheck> = { 'approval-required': Lock, 'auto-accept-edits': PenLine, auto: ShieldCheck, 'full-access': ShieldOff };
+
+export interface AccessControl {
+  value: string;
+  modes?: string[] | undefined;
+  onChange: (mode: string) => void;
+}
+
+/** The access level, in the model picker's footer as T3 Code has it: a small menu that opens upward. */
+function AccessMenu({ value, modes, onChange }: AccessControl): ReactNode {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   useDismiss(box, open, () => setOpen(false));
   const options = RUNTIME_MODES.filter((mode) => modes === undefined || modes.includes(mode.id));
   const current = RUNTIME_MODES.find((mode) => mode.id === value);
-  const ModeIcon = value === 'full-access' ? ShieldOff : ShieldCheck;
+  const ModeIcon = MODE_ICONS[value] ?? ShieldCheck;
   return (
-    <div className="picker runtime" ref={box}>
-      <button type="button" className="runtime-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
+    <div className="access" ref={box}>
+      <button type="button" className="access-btn" aria-haspopup="menu" aria-expanded={open} aria-label={`Access: ${current?.label ?? value}`} onClick={() => setOpen(!open)}>
         <ModeIcon size={13} aria-hidden="true" />
         {current?.label ?? value}
-        <ChevronDown size={12} aria-hidden="true" />
+        <ChevronUp size={12} aria-hidden="true" />
       </button>
       {open ? (
-        <div className="popover runtime-popover" role="menu">
-          {options.map((mode) => (
-            <button
-              type="button"
-              role="menuitemradio"
-              aria-checked={mode.id === value}
-              key={mode.id}
-              className="menu-row"
-              onClick={() => {
-                onChange(mode.id);
-                setOpen(false);
-              }}
-            >
-              <span>
-                <strong>{mode.label}</strong>
-                <small>{mode.hint}</small>
-              </span>
-              {mode.id === value ? <Check size={14} aria-hidden="true" /> : null}
-            </button>
-          ))}
+        <div className="popover access-popover" role="menu" aria-label="Access">
+          {options.map((mode) => {
+            const Icon = MODE_ICONS[mode.id] ?? ShieldCheck;
+            return (
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={mode.id === value}
+                key={mode.id}
+                className="menu-row"
+                onClick={() => {
+                  onChange(mode.id);
+                  setOpen(false);
+                }}
+              >
+                <Icon size={14} className="menu-icon" aria-hidden="true" />
+                <span>
+                  <strong>{mode.label}</strong>
+                  <small>{mode.hint}</small>
+                </span>
+                {mode.id === value ? <Check size={14} className="row-check" aria-hidden="true" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** The chip of a running T3 thread: its model is fixed, and the popover holds the access level. */
+export function ThreadModelPicker({ name, effort, driver, access }: { name: string; effort?: string | undefined; driver?: string | undefined; access?: AccessControl | undefined }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useDismiss(box, open, () => setOpen(false));
+  const mode = RUNTIME_MODES.find((entry) => entry.id === access?.value)?.label;
+  const chip = (
+    <>
+      <ProviderIcon driver={driver} size={15} />
+      <span className="model-chip-name">{name}</span>
+      {effort === undefined ? null : <span className="model-chip-effort">{effort}</span>}
+    </>
+  );
+  if (access === undefined) return <span className="model-chip static">{chip}</span>;
+  return (
+    <div className="picker" ref={box}>
+      <button type="button" className="model-chip" aria-haspopup="dialog" aria-expanded={open} title={`${name}${effort === undefined ? '' : ` · ${effort}`}${mode === undefined ? '' : ` · ${mode}`}`} onClick={() => setOpen(!open)}>
+        {chip}
+      </button>
+      {open ? (
+        <div className="popover model-popover" role="dialog" aria-label="This thread's model and access">
+          <div className="model-fixed">
+            <ProviderIcon driver={driver} size={15} />
+            <span className="model-chip-name">{name}</span>
+            {effort === undefined ? null : <span className="model-chip-effort">{effort}</span>}
+            <small>This thread keeps its model</small>
+          </div>
+          <div className="model-footer">
+            <AccessMenu {...access} />
+          </div>
         </div>
       ) : null}
     </div>
@@ -231,6 +301,29 @@ export function TabChip({
   );
 }
 
+/** An attached file: a thumbnail for an image, a file icon otherwise, and its name; marked when it cannot be sent. */
+function AttachmentChip({ attachment, problem, onRemove }: { attachment: DraftAttachment; problem?: string | undefined; onRemove: () => void }): ReactNode {
+  return (
+    <span className={problem === undefined ? 'file-chip' : 'file-chip problem'} title={problem ?? attachment.name}>
+      {attachment.preview === undefined ? <FileText size={13} aria-hidden="true" /> : <img src={attachment.preview} alt="" />}
+      <span className="file-chip-name">{attachment.name}</span>
+      <button type="button" aria-label={`Remove ${attachment.name}`} onClick={onRemove}>
+        <X size={12} aria-hidden="true" />
+      </button>
+    </span>
+  );
+}
+
+export interface ComposerAttachments {
+  items: readonly DraftAttachment[];
+  /** Why an attachment cannot go with this message, by key. */
+  problems: ReadonlyMap<string, string>;
+  /** What the file chooser offers. */
+  accept?: string | undefined;
+  onAdd: (files: File[]) => void;
+  onRemove: (key: string) => void;
+}
+
 export function Composer({
   value,
   onChange,
@@ -243,6 +336,9 @@ export function Composer({
   chip,
   picker,
   autoFocus,
+  attachments,
+  dictation,
+  notice,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -256,56 +352,186 @@ export function Composer({
   chip?: ReactNode;
   picker: ReactNode;
   autoFocus?: boolean;
+  attachments?: ComposerAttachments | undefined;
+  dictation?: Dictation | undefined;
+  /** A line above the box: why an attachment cannot go, or what the mic needs. */
+  notice?: string | undefined;
 }): ReactNode {
   const input = useRef<HTMLTextAreaElement>(null);
+  const chooser = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
   useEffect(() => {
     const element = input.current;
     if (element === null) return;
     element.style.height = 'auto';
     element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
   }, [value]);
-  const canSend = value.trim() !== '' && busy !== true;
+  const problems = attachments?.problems.size ?? 0;
+  const canSend = value.trim() !== '' && busy !== true && problems === 0 && dictation?.phase !== 'finishing';
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       if (canSend) onSend();
     }
   };
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    if (attachments === undefined) return;
+    const files = transferFiles(event.clipboardData);
+    if (files.length === 0) return;
+    event.preventDefault();
+    attachments.onAdd(files);
+  };
+  const hasFiles = (event: DragEvent): boolean => attachments !== undefined && [...event.dataTransfer.types].includes('Files');
+  const chips = chip !== undefined && chip !== null;
+  const firstProblem = attachments?.items.map((item) => attachments.problems.get(item.key)).find((problem) => problem !== undefined);
+  const shownNotice = firstProblem === undefined ? notice : `${firstProblem} Remove it to send.`;
   return (
-    <form
-      className="composer"
-      data-chat-composer-form
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (canSend) onSend();
-      }}
-    >
-      {chip === undefined || chip === null ? null : <div className="composer-chips">{chip}</div>}
-      <textarea
-        ref={input}
-        className="composer-input"
-        rows={1}
-        value={value}
-        placeholder={placeholder}
-        aria-label="Message"
-        autoFocus={autoFocus}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={onKeyDown}
-      />
-      <div className="composer-row">
-        {picker}
-        <span className="composer-spacer" />
-        {running && onStop !== undefined ? (
-          <button type="button" className="send-btn stop" aria-label="Stop" title="Stop" onClick={onStop}>
-            <Square size={12} fill="currentColor" aria-hidden="true" />
-          </button>
+    <>
+      {shownNotice === undefined ? null : (
+        <p className={firstProblem === undefined ? 'composer-notice' : 'composer-notice problem'} role="status">
+          {shownNotice}
+        </p>
+      )}
+      <form
+        className={dragging ? 'composer dragging' : 'composer'}
+        data-chat-composer-form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSend) onSend();
+        }}
+        onDragOver={(event) => {
+          if (!hasFiles(event)) return;
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+        }}
+        onDrop={(event) => {
+          if (!hasFiles(event)) return;
+          event.preventDefault();
+          setDragging(false);
+          attachments?.onAdd(transferFiles(event.dataTransfer));
+        }}
+      >
+        {chips || (attachments?.items.length ?? 0) > 0 ? (
+          <div className="composer-chips">
+            {chip}
+            {attachments?.items.map((item) => <AttachmentChip key={item.key} attachment={item} problem={attachments.problems.get(item.key)} onRemove={() => attachments.onRemove(item.key)} />)}
+          </div>
         ) : null}
-        {!running || onStop === undefined || (canQueue === true && value.trim() !== '') ? (
-          <button type="submit" className="send-btn" aria-label={running ? 'Queue message' : 'Send'} title={running ? 'Queue for when this turn ends' : undefined} disabled={!canSend}>
-            <ArrowUp size={16} aria-hidden="true" />
-          </button>
-        ) : null}
-      </div>
-    </form>
+        <textarea
+          ref={input}
+          className="composer-input"
+          rows={1}
+          value={value}
+          placeholder={placeholder}
+          aria-label="Message"
+          autoFocus={autoFocus}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={onKeyDown}
+          onPaste={onPaste}
+        />
+        <div className="composer-row">
+          {attachments === undefined ? null : (
+            <>
+              <button type="button" className="composer-icon" aria-label="Attach files" title="Attach files" onClick={() => chooser.current?.click()}>
+                <Paperclip size={16} aria-hidden="true" />
+              </button>
+              <input
+                ref={chooser}
+                type="file"
+                multiple
+                hidden
+                {...(attachments.accept === undefined ? {} : { accept: attachments.accept })}
+                onChange={(event) => {
+                  const files = [...(event.target.files ?? [])];
+                  event.target.value = '';
+                  if (files.length > 0) attachments.onAdd(files);
+                }}
+              />
+            </>
+          )}
+          <span className="composer-spacer" />
+          {picker}
+          {dictation === undefined ? null : <MicButton dictation={dictation} />}
+          {running && onStop !== undefined ? (
+            <button type="button" className="send-btn stop" aria-label="Stop" title="Stop" onClick={onStop}>
+              <Square size={12} fill="currentColor" aria-hidden="true" />
+            </button>
+          ) : null}
+          {!running || onStop === undefined || (canQueue === true && value.trim() !== '') ? (
+            <button type="submit" className="send-btn" aria-label={running ? 'Queue message' : 'Send'} title={running ? 'Queue for when this turn ends' : undefined} disabled={!canSend}>
+              <ArrowUp size={16} aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
+      </form>
+    </>
   );
+}
+
+/** Puts dictated text into a draft at the textarea's caret. */
+export function dictateInto(value: string, text: string): string {
+  const element = document.querySelector<HTMLTextAreaElement>('.composer-input');
+  const caret = element !== null && document.activeElement === element ? element.selectionStart : value.length;
+  return insertDictation(value, text, caret).value;
+}
+
+/** The composer's attached files for one draft, checked against what the agent it goes to can take. */
+export function useComposerAttachments(target: AttachmentTarget): ComposerAttachments & { clear: () => void; forT3: () => Promise<ChatAttachment[]>; forDirect: () => Promise<AgentImage[]> } {
+  const [items, setItems] = useState<DraftAttachment[]>([]);
+  const previews = useRef(new Set<string>());
+  useEffect(() => {
+    const held = previews.current;
+    return () => {
+      for (const url of held) URL.revokeObjectURL(url);
+    };
+  }, []);
+  const drop = (removed: readonly DraftAttachment[]): void => {
+    for (const item of removed) {
+      if (item.preview === undefined) continue;
+      URL.revokeObjectURL(item.preview);
+      previews.current.delete(item.preview);
+    }
+  };
+  const problems = useMemo(() => attachmentProblems(items, target), [items, target.kind, target.kind === 'direct' ? target.agent : '']);
+  return {
+    items,
+    problems,
+    accept: acceptFor(target),
+    onAdd: (files) => {
+      const added = files.map((file) => {
+        const item = draftAttachment(file, crypto.randomUUID());
+        if (item.mimeType.startsWith('image/') && item.size <= 20 * 1024 * 1024) {
+          item.preview = URL.createObjectURL(file);
+          previews.current.add(item.preview);
+        }
+        return item;
+      });
+      setItems((current) => [...current, ...added]);
+    },
+    onRemove: (key) =>
+      setItems((current) => {
+        drop(current.filter((item) => item.key === key));
+        return current.filter((item) => item.key !== key);
+      }),
+    clear: () =>
+      setItems((current) => {
+        drop(current);
+        return [];
+      }),
+    /** Uploads each file to T3, as its own composer does before sending; a failure takes back what was uploaded. */
+    forT3: async () => {
+      const uploaded: ChatAttachment[] = [];
+      try {
+        for (const item of items) uploaded.push(await t3.uploadAttachment(item));
+      } catch (error) {
+        for (const done of uploaded) await t3.discardAttachment(done.id);
+        throw error;
+      }
+      return uploaded;
+    },
+    forDirect: async () => await Promise.all(items.map(async (item) => ({ name: item.name, mimeType: item.mimeType, data: await fileBase64(item.file) }))),
+  };
 }

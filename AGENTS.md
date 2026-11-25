@@ -72,7 +72,11 @@ Full access is confirmed with a fake T3 per request with no live panel, and an u
 between turns with the conversation's Remove button; a missing, world-readable or replaced claim file warns in
 the conversation and in the agent's first tool reply. The thread list, given T3 threads as one shell snapshot, shows T3's
 sidebar sections in T3's order (pinned, active, then the Working, Snoozed and Settled shelves), leaves archived threads
-out, and the threads button carries a dot only while a thread waits on the owner's answer or approval. It renders the panel from that state and, when
+out, and the threads button carries a dot only while a thread waits on the owner's answer or approval. The composer
+keeps the paperclip, model, mic and send on one 32 px row with equal insets at 320, 360 and 400 px and no access row
+under it; the mic says why it cannot record without T3; a PDF for a direct run is named and holds the message; a PNG
+reaches the fake Claude Code as an image block; and with T3's config handed to the panel, the access level is chosen in
+the model picker. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
 variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once that the earlier one ended, and that `status` reports each state of its link.
@@ -421,8 +425,27 @@ directly through the daemon and feeds the same thread view.
 - **The WebSocket is not checked.** The browser opens the panel's one socket to T3's `/ws`
   (`entrypoints/sidepanel/lib/t3-rpc.ts`, `t3-client.ts`), so no process check covers it. A process that took T3's port
   between the ticket request and the socket could receive that ticket and its one-use proof, and whatever the panel sends
-  on the socket. Disconnect drops the session and revokes it through `t3.unpair`. The `t3 thread` polling below remains in
+  on the socket. The same holds for the two other connections the browser opens to T3: an attachment upload and the
+  voice socket (below). Disconnect drops the session and revokes it through `t3.unpair`. The `t3 thread` polling below remains in
   the daemon, but the panel no longer uses it.
+- **The composer.** The bottom row is T3's: the paperclip at the left end, then the model, the mic and send, every
+  control 32 px and the row 8 px from the box's edges. The access level (runtime mode) is in the model picker's footer, as
+  in T3; a running T3 thread's model chip opens the same footer, and a change there is sent at once with
+  `thread.runtime-mode.set`.
+- **Attachments.** Paperclip, paste and drop add files. For a T3 thread each file is uploaded the way T3's own composer
+  does it: `attachments.createUploadUrl` over the socket signs a ten-minute upload address, the bytes are POSTed there
+  (the address is the only credential), and the message carries the returned ids; a launch with uploads also sends the
+  thread id T3 files them under. PNG, JPEG, GIF and WebP up to 10 MB go as images, anything else up to 50 MB as a file.
+  A direct run takes PNG, JPEG, GIF and WebP only, up to 5 MB each and 6 MB a message (`lib/attachments.ts`, checked again
+  in `agents/images.ts`). Any other file is shown as one that cannot go to that agent and holds the message until it is
+  removed; nothing is dropped silently.
+- **Dictation.** The mic records 16 kHz mono PCM in an audio worklet (`public/pcm-capture.js`) and streams it to T3's
+  `/ws/voice`, where T3 transcribes it on this machine with the model chosen in its Settings → Voice, the same route T3's
+  composer takes. The media ticket and `GET /api/voice/status` go through the daemon's `t3.session` like the RPC ticket.
+  Without T3 connected, without T3's `voiceTranscription` capability or without a downloaded voice model, the button says
+  so instead of recording. A side panel cannot show the browser's microphone prompt, so the first press opens
+  `microphone.html` in a tab, where the browser asks once for the extension; after that the panel records without asking.
+  Nothing uses the browser's Web Speech service.
 - **Themes.** The panel follows T3's active theme by default. T3 theme files can be imported. The owner's themes can be
   edited, and any theme can be duplicated with all its colours and both of its modes. A name already in use gets a number
   instead of replacing that theme. A change reaches panels open on other tabs through `chrome.storage.onChanged`. Custom
@@ -467,8 +490,11 @@ in memory (`packages/server/src/agents/`), so they end when it stops.
   comes from `t3 thread list --json --project /`: a running server answers that no project matches, a stopped
   one that it is not running. The panel shows "not found" or "not running" and then offers the direct runs.
 - **Direct runs.** The message goes on stdin, the folder defaults to the home folder, and each turn is one
-  process, continued with the session id the CLI printed. The agent gets T3-Tab's tools and no others:
-  - Claude Code: `claude -p --output-format stream-json --verbose --restricted --setting-sources ""
+  process, continued with the session id the CLI printed. Images go with a turn as the CLI takes them: Claude Code gets
+  `--input-format stream-json` and one user message line with the text and a base64 image block per image; Codex gets
+  `--image=<file>` for each, written to a `0600` file in a private folder under the state folder and removed when the turn
+  ends. The agent gets T3-Tab's tools and no others:
+  - Claude Code: `claude -p [--input-format stream-json] --output-format stream-json --verbose --restricted --setting-sources ""
     --strict-mcp-config --mcp-config <T3-Tab only> --tools "" --allowedTools mcp__t3-tab --permission-mode
     dontAsk --disable-slash-commands [--model <m>] [--resume <session>]`. User, project and local settings and
     their hooks are not loaded, there are no built-in tools, and anything not allowed is denied without a
@@ -476,7 +502,7 @@ in memory (`packages/server/src/agents/`), so they end when it stops.
     is still read as text.
   - Codex: `codex exec [resume] --json --skip-git-repo-check --ignore-user-config --ignore-rules --disable
     <feature>… -c approval_policy="never" -c sandbox_mode="read-only" -c web_search="disabled" -c
-    mcp_servers.t3-tab.*=… [-m <m>] [<session>] -`. `$CODEX_HOME/config.toml` is ignored while the login there
+    mcp_servers.t3-tab.*=… [--image=<file>…] [-m <m>] [<session>] -`. `$CODEX_HOME/config.toml` is ignored while the login there
     still works, which also leaves a project's `.codex/config.toml` untrusted and unapplied. The disabled
     features are the shell, image viewing, apps, plugins, hooks, sub-agents, browser and computer use, image
     generation, goals, memories and web search; `--disable` stops the run if Codex no longer knows a name. Codex

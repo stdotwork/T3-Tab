@@ -388,13 +388,19 @@ export interface T3Pairing {
 export type T3SessionReply =
   | { outcome: 'token'; accessToken: string; expiresIn: number }
   | { outcome: 'ticket'; ticket: string }
+  /** T3's local voice transcription: whether it is available, and why not. */
+  | { outcome: 'voice'; voice: T3VoiceStatus }
   /** T3 answered with this HTTP error. */
   | { outcome: 'refused'; status: number }
   /** T3 now runs at another address, so nothing was sent. */
   | { outcome: 'moved' };
 
+/** What T3's `/api/voice/status` said, cut down to what the panel shows. */
+export type T3VoiceStatus = { supported: false; reason: string } | { supported: true; state: 'ready' | 'missing-model' | 'transcribing' | 'other' };
+
 export interface T3SessionParams {
-  kind: 'renew' | 'ticket';
+  /** `ticket` is for T3's RPC socket, `media-ticket` for its voice socket. */
+  kind: 'renew' | 'ticket' | 'media-ticket' | 'voice-status';
   origin: string;
   accessToken: string;
   /** A DPoP proof the panel signed for this request's method and address. */
@@ -420,9 +426,18 @@ export function withoutClaimNote(text: string): string {
   return index === -1 ? text : text.slice(0, index);
 }
 
+/** An image that goes with a direct run's message: PNG, JPEG, GIF or WebP, base64-encoded. */
+export interface AgentImage {
+  name: string;
+  mimeType: string;
+  data: string;
+}
+
 export interface AgentStartParams {
   via: AgentVia;
   message: string;
+  /** Direct runs only. */
+  images?: AgentImage[];
   project?: string;
   provider?: string;
   model?: string;
@@ -435,7 +450,7 @@ export interface DaemonMethods {
   'agents.status': { params: { refresh?: boolean }; result: AgentsStatus };
   'agents.list': { params: Record<string, never>; result: { conversations: AgentConversation[] } };
   'agents.start': { params: AgentStartParams; result: { conversation: AgentConversation } };
-  'agents.send': { params: { id: string; message: string; claim?: string }; result: { conversation: AgentConversation } };
+  'agents.send': { params: { id: string; message: string; claim?: string; images?: AgentImage[] }; result: { conversation: AgentConversation } };
   /** Which agents are installed and wired to T3-Tab, and whether T3 Code is running. */
   'setup.status': { params: { refresh?: boolean }; result: SetupStatus };
   /** Registers T3-Tab's MCP server in one agent's user config, as `t3-tab install --claude|--codex` does. */

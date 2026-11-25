@@ -42,6 +42,8 @@ interface Recorded {
 
 /** What the listener answers to a POST; a test sets it before it asks. */
 let postAnswer: { status: number; body: unknown };
+/** What it answers to a GET. */
+let getAnswer: unknown = {};
 
 /** A T3 that listens in this process, so the pid T3-Tab checks is this one. `storedOrigin` is what its runtime file says. */
 async function runningT3(pid = process.pid, storedOrigin?: (listening: string) => string): Promise<string> {
@@ -53,7 +55,7 @@ async function runningT3(pid = process.pid, storedOrigin?: (listening: string) =
       if (request.method === 'POST') {
         response.statusCode = postAnswer.status;
         response.end(JSON.stringify(postAnswer.body));
-      } else response.end('{}');
+      } else response.end(JSON.stringify(getAnswer));
     });
   });
   await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
@@ -190,6 +192,32 @@ describe('the panel\'s T3 session requests', () => {
     expect(request?.headers.authorization).toBe('DPoP ACCESS1');
     expect(request?.headers.dpop).toBe(DPOP);
     expect(request?.body).toBe('');
+  });
+
+  it('gets a ticket for the voice socket from the media ticket path', async () => {
+    const origin = await runningT3();
+    postAnswer = { status: 200, body: { ticket: 'MEDIA1' } };
+    const reply = await new T3PanelPairing({ env }).session({ kind: 'media-ticket', origin, accessToken: 'ACCESS1', dpop: DPOP });
+    expect(reply).toEqual({ outcome: 'ticket', ticket: 'MEDIA1' });
+    expect(`${requests[0]?.method} ${requests[0]?.url}`).toBe('POST /api/auth/websocket-ticket/media');
+    expect(requests[0]?.headers.authorization).toBe('DPoP ACCESS1');
+  });
+
+  it("reads T3's voice status with a GET and passes on only whether it works and why not", async () => {
+    const origin = await runningT3();
+    const pairing = new T3PanelPairing({ env });
+    getAnswer = { supported: true, state: 'missing-model', modelId: 'x', gpuDevices: [] };
+    expect(await pairing.session({ kind: 'voice-status', origin, accessToken: 'ACCESS1', dpop: DPOP })).toEqual({ outcome: 'voice', voice: { supported: true, state: 'missing-model' } });
+    expect(`${requests[0]?.method} ${requests[0]?.url}`).toBe('GET /api/voice/status');
+    expect(requests[0]?.headers.authorization).toBe('DPoP ACCESS1');
+    expect(requests[0]?.headers.dpop).toBe(DPOP);
+    getAnswer = { supported: false, reason: 'voice transcription is not available on linux-riscv64' };
+    expect(await pairing.session({ kind: 'voice-status', origin, accessToken: 'ACCESS1', dpop: DPOP })).toEqual({
+      outcome: 'voice',
+      voice: { supported: false, reason: 'voice transcription is not available on linux-riscv64' },
+    });
+    getAnswer = { supported: true, state: 'loading-weird' };
+    expect(await pairing.session({ kind: 'voice-status', origin, accessToken: 'ACCESS1', dpop: DPOP })).toEqual({ outcome: 'voice', voice: { supported: true, state: 'other' } });
   });
 
   it('returns moved and sends nothing when the stored origin is not the one T3 runs at now', async () => {

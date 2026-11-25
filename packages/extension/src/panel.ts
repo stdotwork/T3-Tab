@@ -1,6 +1,7 @@
 import {
   claimNote,
   type AgentConversation,
+  type AgentImage,
   type AgentsStatus,
   type AgentVia,
   type SetupAgent,
@@ -67,6 +68,8 @@ export interface AgentStartRequest {
   tabId?: number;
   /** The owner took the tab chip off: the run starts with no shared tabs. */
   noTabs?: boolean;
+  /** Images for a direct run; the background program checks them. */
+  images?: AgentImage[];
 }
 
 export type PanelRequest =
@@ -85,7 +88,7 @@ export type PanelRequest =
   | { type: 'panel.t3ClaimRevoke'; code: string }
   | { type: 'panel.agents'; refresh?: boolean; tabId?: number }
   | AgentStartRequest
-  | { type: 'panel.agentSend'; id: string; message: string }
+  | { type: 'panel.agentSend'; id: string; message: string; images?: AgentImage[] }
   | { type: 'panel.agentRemoveTab'; id: string; tabId: number }
   | { type: 'panel.conversationTabs'; id: string }
   | { type: 'panel.shareTargets'; tabId?: number }
@@ -136,7 +139,7 @@ export async function handlePanelRequest(
   }
   if (request.type === 'panel.agents') return await agentPanelState(request.refresh === true, request.tabId);
   if (request.type === 'panel.agentStart') return await startAgent(request);
-  if (request.type === 'panel.agentSend') return await sendToAgent(request.id, request.message);
+  if (request.type === 'panel.agentSend') return await sendToAgent(request.id, request.message, request.images);
   if (request.type === 'panel.conversationTabs') {
     const held = (await claimStore.conversationTabs())[request.id] ?? [];
     const tabs = await Promise.all(held.map(async ({ tabId }) => await panelTab(tabId).catch(() => undefined)));
@@ -223,7 +226,7 @@ async function startAgent(request: AgentStartRequest): Promise<{ conversation: A
   const claim = newClaimCode();
   // A direct run gets its code through a private file; a T3 thread's agent can only read it in its first message.
   const grant = await claimStore.issue(claim, claimTabs, { route: request.via === 't3' ? 'message' : 'launch' });
-  const params = { via: request.via, message: request.message, claim, ...optionalFields(request) };
+  const params = { via: request.via, message: request.message, claim, ...optionalFields(request), ...(request.images === undefined ? {} : { images: request.images }) };
   try {
     const started = await askDaemon('agents.start', params);
     await claimStore.bindConversation(grant, started.conversation.id);
@@ -268,11 +271,11 @@ async function revokeClaim(code: string): Promise<void> {
 }
 
 /** Each turn of a direct run is a new process and session, so it gets a new code for the tabs still shared. */
-async function sendToAgent(id: string, message: string): Promise<{ conversation: AgentConversation }> {
+async function sendToAgent(id: string, message: string, images: AgentImage[] | undefined): Promise<{ conversation: AgentConversation }> {
   const claim = newClaimCode();
   const renewed = await claimStore.renew(id, claim);
   try {
-    return await askDaemon('agents.send', { id, message, ...(renewed ? { claim } : {}) });
+    return await askDaemon('agents.send', { id, message, ...(renewed ? { claim } : {}), ...(images === undefined ? {} : { images }) });
   } catch (error) {
     if (renewed) await revokeClaim(claim);
     throw error;
@@ -319,6 +322,16 @@ async function panelTab(tabId: number | undefined): Promise<PanelTab> {
   return { id: tab.id, title: tab.title ?? '', url: tab.url ?? tab.pendingUrl ?? '' };
 }
 
+/** The images a panel request carries, checked for shape only; the background program checks what they hold. */
+function parseImages(value: unknown): AgentImage[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return value.map((entry: unknown) => {
+    const { name, mimeType, data } = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+    if (typeof name !== 'string' || typeof mimeType !== 'string' || typeof data !== 'string') throw new Error('Invalid image');
+    return { name, mimeType, data };
+  });
+}
+
 function parsePanelRequest(value: unknown): PanelRequest {
   if (typeof value !== 'object' || value === null) throw new Error('Invalid panel request');
   const candidate = value as Record<string, unknown>;
@@ -349,6 +362,8 @@ function parsePanelRequest(value: unknown): PanelRequest {
     }
     if (Number.isInteger(candidate.tabId)) request.tabId = candidate.tabId as number;
     if (candidate.noTabs === true) request.noTabs = true;
+    const images = parseImages(candidate.images);
+    if (images !== undefined) request.images = images;
     return request;
   }
   if (candidate.type === 'panel.conversationTabs' && typeof candidate.id === 'string') return { type: 'panel.conversationTabs', id: candidate.id };
@@ -360,7 +375,7 @@ function parsePanelRequest(value: unknown): PanelRequest {
   }
   if (
     candidate.type === 'panel.t3Session' &&
-    (candidate.kind === 'renew' || candidate.kind === 'ticket') &&
+    (candidate.kind === 'renew' || candidate.kind === 'ticket' || candidate.kind === 'media-ticket' || candidate.kind === 'voice-status') &&
     typeof candidate.origin === 'string' &&
     typeof candidate.accessToken === 'string' &&
     typeof candidate.dpop === 'string'
@@ -385,7 +400,8 @@ function parsePanelRequest(value: unknown): PanelRequest {
   }
   if (candidate.type === 'panel.t3ClaimRevoke' && typeof candidate.code === 'string') return { type: 'panel.t3ClaimRevoke', code: candidate.code };
   if (candidate.type === 'panel.agentSend' && typeof candidate.id === 'string' && typeof candidate.message === 'string') {
-    return { type: 'panel.agentSend', id: candidate.id, message: candidate.message };
+    const images = parseImages(candidate.images);
+    return { type: 'panel.agentSend', id: candidate.id, message: candidate.message, ...(images === undefined ? {} : { images }) };
   }
   if (candidate.type === 'panel.agentRemoveTab' && typeof candidate.id === 'string' && Number.isInteger(candidate.tabId)) {
     return { type: 'panel.agentRemoveTab', id: candidate.id, tabId: candidate.tabId as number };

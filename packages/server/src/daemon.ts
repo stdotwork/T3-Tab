@@ -270,7 +270,7 @@ async function answerDaemonRequest(
     if (message.method === 'agents.status') result = await agents.status(params.refresh === true);
     else if (message.method === 'agents.list') result = { conversations: agents.list() };
     else if (message.method === 'agents.start') result = { conversation: await agents.start(params) };
-    else if (message.method === 'agents.send') result = { conversation: await agents.send(params.id, params.message, params.claim) };
+    else if (message.method === 'agents.send') result = { conversation: await agents.send(params.id, params.message, params.claim, params.images) };
     else if (message.method === 'agents.get') result = { conversation: agents.get(params.id) };
     else if (message.method === 'agents.stop') result = { conversation: await agents.stop(params.id) };
     else if (message.method === 'setup.status') result = await setup.status(params.refresh === true);

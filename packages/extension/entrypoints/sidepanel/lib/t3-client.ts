@@ -1,8 +1,11 @@
 /** The panel's live connection to T3 Code: providers, projects, the thread list and the threads being watched. */
+import type { T3VoiceStatus } from '@t3-tab/protocol';
+
 import type { EnvironmentTheme } from '../../../src/t3/theme-palette';
 import { errorText } from './api';
+import { t3Kind, type DraftAttachment } from './attachments';
 import { RpcSocket } from './t3-rpc';
-import { forgetSession, pairWithT3, SessionRefused, socketUrl, storedSession, type T3Session } from './t3-session';
+import { forgetSession, pairWithT3, SessionRefused, socketUrl, storedSession, voiceSocketUrl, voiceStatus, type T3Session } from './t3-session';
 import { t3ThreadView, type T3Projection, type ThreadView } from './thread-model';
 
 export interface ModelOptionChoice {
@@ -103,6 +106,47 @@ export interface ThreadShell {
 
 export type T3Status = 'off' | 'connecting' | 'ready' | 'lost';
 
+/** One attachment of a message, as T3's `ChatAttachment` takes it after the file was uploaded. */
+export interface ChatAttachment {
+  type: 'image' | 'file';
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
+/** The owner's speech settings in T3, which go with every recording as T3's own composer sends them. */
+export interface SpeechOptions {
+  speechLanguage: string;
+  speechTranslateToEnglish: boolean;
+  speechCustomWords: Array<{ term: string; aliases: string[] }>;
+  speechRemoveFillerWords: boolean;
+  speechSilenceFiltering: boolean;
+}
+
+type ServerSettings = { defaultTheme?: string; defaultAppearance?: string } & Partial<SpeechOptions>;
+
+export const DEFAULT_SPEECH: SpeechOptions = {
+  speechLanguage: 'auto',
+  speechTranslateToEnglish: false,
+  speechCustomWords: [],
+  speechRemoveFillerWords: true,
+  speechSilenceFiltering: true,
+};
+
+/** T3's speech settings from its server settings, each falling back to T3's own default. */
+export function speechOptions(settings: Partial<SpeechOptions>): SpeechOptions {
+  return {
+    speechLanguage: typeof settings.speechLanguage === 'string' && settings.speechLanguage.length >= 2 ? settings.speechLanguage : DEFAULT_SPEECH.speechLanguage,
+    speechTranslateToEnglish: settings.speechTranslateToEnglish === true,
+    speechCustomWords: Array.isArray(settings.speechCustomWords) ? settings.speechCustomWords : [],
+    speechRemoveFillerWords: settings.speechRemoveFillerWords !== false,
+    speechSilenceFiltering: settings.speechSilenceFiltering !== false,
+  };
+}
+
+const UPLOAD_PATH = /^\/api\/attachments\/upload\/[A-Za-z0-9_.-]+$/;
+
 export interface T3State {
   status: T3Status;
   error?: string;
@@ -116,12 +160,15 @@ export interface T3State {
   threadStop: boolean;
   /** The folder of T3's Scratch project, which is what "no project" runs in. Unset when this T3 offers none. */
   scratchRoot?: string;
+  /** T3 can transcribe speech on this machine (its `voiceTranscription` capability). */
+  voice: boolean;
+  speech: SpeechOptions;
 }
 
 type ConfigEvent =
-  | { type: 'snapshot'; config: { providers: Provider[]; scratchWorkspaceRoot?: string; settings: { defaultTheme?: string; defaultAppearance?: string }; environment?: { capabilities?: { threadStop?: boolean } } } }
+  | { type: 'snapshot'; config: { providers: Provider[]; scratchWorkspaceRoot?: string; settings: ServerSettings; environment?: { capabilities?: { threadStop?: boolean; voiceTranscription?: boolean } } } }
   | { type: 'providerStatuses'; payload: { providers: Provider[] } }
-  | { type: 'settingsUpdated'; payload: { settings: { defaultTheme?: string; defaultAppearance?: string } } }
+  | { type: 'settingsUpdated'; payload: { settings: ServerSettings } }
   | { type: 'environmentThemesUpdated'; payload: { themes: EnvironmentTheme[] } }
   | { type: string; payload?: unknown };
 
@@ -145,7 +192,7 @@ interface Watch {
   listeners: Set<(view: ThreadView) => void>;
 }
 
-const EMPTY: T3State = { status: 'off', providers: [], projects: [], threads: [], defaultTheme: '', defaultAppearance: '', themes: [], threadStop: false };
+const EMPTY: T3State = { status: 'off', providers: [], projects: [], threads: [], defaultTheme: '', defaultAppearance: '', themes: [], threadStop: false, voice: false, speech: DEFAULT_SPEECH };
 
 const SUBSCRIBE_TIMEOUT_MS = 15_000;
 
@@ -414,13 +461,15 @@ export class T3Client {
         defaultTheme: config.settings.defaultTheme ?? '',
         defaultAppearance: config.settings.defaultAppearance ?? '',
         threadStop: config.environment?.capabilities?.threadStop === true,
+        voice: config.environment?.capabilities?.voiceTranscription === true,
+        speech: speechOptions(config.settings),
         ...(config.scratchWorkspaceRoot === undefined ? {} : { scratchRoot: config.scratchWorkspaceRoot }),
       });
     } else if (event.type === 'providerStatuses') {
       this.set({ providers: (event as Extract<ConfigEvent, { type: 'providerStatuses' }>).payload.providers });
     } else if (event.type === 'settingsUpdated') {
       const { settings } = (event as Extract<ConfigEvent, { type: 'settingsUpdated' }>).payload;
-      this.set({ defaultTheme: settings.defaultTheme ?? '', defaultAppearance: settings.defaultAppearance ?? '' });
+      this.set({ defaultTheme: settings.defaultTheme ?? '', defaultAppearance: settings.defaultAppearance ?? '', speech: speechOptions(settings) });
     } else if (event.type === 'environmentThemesUpdated') {
       this.set({ themes: [...(event as Extract<ConfigEvent, { type: 'environmentThemesUpdated' }>).payload.themes] });
     }
@@ -471,10 +520,63 @@ export class T3Client {
     return this.socket.request<T>(tag, payload);
   }
 
-  async launchThread(input: { projectId: string; model: ModelSelection; runtimeMode: string; text: string }): Promise<string> {
+  /**
+   * Uploads one file the way T3's composer does: T3 signs a one-use upload address over the RPC socket, and the bytes go
+   * to that address, which is the only credential the upload carries. The id it returns goes in a message's attachments.
+   */
+  async uploadAttachment(attachment: DraftAttachment): Promise<ChatAttachment> {
+    const session = this.session;
+    if (session === undefined) throw new Error('T3 Code is not connected.');
+    const type = t3Kind(attachment);
+    const { attachmentId, relativeUrl } = await this.rpc<{ attachmentId: string; relativeUrl: string }>('attachments.createUploadUrl', {
+      type,
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.size,
+    });
+    if (typeof attachmentId !== 'string' || typeof relativeUrl !== 'string' || !UPLOAD_PATH.test(relativeUrl)) throw new Error('T3 sent no upload address.');
+    const uploaded = await fetch(`${session.origin}${relativeUrl}`, {
+      method: 'POST',
+      headers: { 'content-type': attachment.mimeType },
+      body: attachment.file,
+      redirect: 'error',
+      credentials: 'omit',
+    }).catch(() => undefined);
+    if (uploaded?.ok !== true) {
+      await this.discardAttachment(attachmentId);
+      throw new Error(`T3 Code did not take ${attachment.name}${uploaded === undefined ? '' : ` (HTTP ${uploaded.status})`}.`);
+    }
+    return { type, id: attachmentId, name: attachment.name, mimeType: attachment.mimeType, sizeBytes: attachment.size };
+  }
+
+  /** Lets T3 delete an upload no message used. */
+  async discardAttachment(attachmentId: string): Promise<void> {
+    await this.rpc('attachments.delete', { attachmentId }).catch(() => undefined);
+  }
+
+  /** Whether T3 can transcribe speech now. */
+  async voiceStatus(): Promise<T3VoiceStatus> {
+    if (this.session === undefined) throw new Error('T3 Code is not connected.');
+    const { voice, session } = await voiceStatus(this.session);
+    this.session = session;
+    return voice;
+  }
+
+  /** A one-use address for T3's voice socket. */
+  async voiceSocket(): Promise<string> {
+    if (this.session === undefined) throw new Error('T3 Code is not connected.');
+    const { url, session } = await voiceSocketUrl(this.session);
+    this.session = session;
+    return url;
+  }
+
+  async launchThread(input: { projectId: string; model: ModelSelection; runtimeMode: string; text: string; attachments?: ChatAttachment[] }): Promise<string> {
     const title = input.text.split('\n')[0]?.trim().slice(0, 60) || 'New thread';
+    const attachments = input.attachments ?? [];
     const result = await this.rpc<{ threadId: string }>('orchestration.launchThread', {
       commandId: crypto.randomUUID(),
+      // T3 files uploaded attachments under the thread, so it needs the thread's id up front.
+      ...(attachments.length === 0 ? {} : { threadId: crypto.randomUUID() }),
       creationSource: 'web',
       projectId: input.projectId,
       title,
@@ -483,12 +585,12 @@ export class T3Client {
       runtimeMode: input.runtimeMode,
       interactionMode: 'default',
       workspaceStrategy: { type: 'root' },
-      initialMessage: { messageId: crypto.randomUUID(), text: input.text, attachments: [] },
+      initialMessage: { messageId: crypto.randomUUID(), text: input.text, attachments },
     });
     return result.threadId;
   }
 
-  async sendMessage(threadId: string, text: string, running: boolean): Promise<void> {
+  async sendMessage(threadId: string, text: string, running: boolean, attachments: ChatAttachment[] = []): Promise<void> {
     await this.rpc('orchestration.dispatchCommand', {
       type: 'message.dispatch',
       commandId: crypto.randomUUID(),
@@ -497,7 +599,7 @@ export class T3Client {
       threadId,
       messageId: crypto.randomUUID(),
       text,
-      attachments: [],
+      attachments,
       dispatchMode: running ? { type: 'queue_after_active' } : { type: 'start_immediately' },
     });
   }

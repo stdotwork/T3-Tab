@@ -1,8 +1,9 @@
 import type { AgentConversation } from '@t3-tab/protocol';
 import { Check, ChevronDown, CircleDashed, FolderPlus, Search } from 'lucide-react';
-import { useRef, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 
-import { Composer, ModelPicker, RuntimeMenu, TabChip } from './Composer';
+import { Composer, dictateInto, ModelPicker, TabChip, useComposerAttachments } from './Composer';
+import { useDictation } from './Dictation';
 import { askerName, Banner, bindClaim, TopBar, useCatalog, useNeedsOwner, withdrawClaim, type Screen } from './Frame';
 import { PromptCards } from './PromptCards';
 import { errorText, panel } from './lib/api';
@@ -159,6 +160,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
   const [shareTab, setShareTab] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
   const choice = resolveChoice(catalog.providers, savedChoice);
   const projects = pickableProjects(state.projects, state.scratchRoot);
   const noProject = state.scratchRoot !== undefined;
@@ -168,6 +170,11 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
   const shareable = tab !== undefined && /^https?:/.test(tab.url);
   const targets = useShareTargets(tab, live.changes);
   const needsYou = useNeedsOwner(live, state);
+  const latestText = useRef(text);
+  latestText.current = text;
+  const target = useMemo(() => (catalog.source === 't3' ? ({ kind: 't3' } as const) : ({ kind: 'direct', agent: provider?.name ?? 'this agent' } as const)), [catalog.source, provider?.name]);
+  const attachments = useComposerAttachments(target);
+  const dictation = useDictation(state, (spoken) => setText(dictateInto(latestText.current, spoken)), setNotice);
   // A direct agent has only the browser tools, so it is asked about the page rather than about building something.
   const heading = catalog.source === 't3' ? 'What should we build?' : !shareable || !shareTab ? 'What should we do?' : targets.tabs.length > 1 ? 'What should we do in these tabs?' : 'What should we do in this tab?';
   const chooseProject = (id: string): void => {
@@ -192,16 +199,21 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
           note = claim.note;
         }
         let threadId: string;
+        let uploaded: Awaited<ReturnType<typeof attachments.forT3>> = [];
         try {
-          threadId = await t3.launchThread({ projectId, model: selectionFor(choice), runtimeMode, text: `${message}${note}` });
+          uploaded = await attachments.forT3();
+          threadId = await t3.launchThread({ projectId, model: selectionFor(choice), runtimeMode, text: `${message}${note}`, attachments: uploaded });
         } catch (failure) {
+          for (const attachment of uploaded) await t3.discardAttachment(attachment.id);
           if (code !== undefined) await withdrawClaim(code);
           throw failure;
         }
         if (code !== undefined) await bindClaim(code, threadId);
         setText('');
+        attachments.clear();
         onOpen({ name: 'thread', id: threadId, source: 't3' });
       } else {
+        const images = await attachments.forDirect();
         const { conversation } = await panel<{ conversation: AgentConversation }>({
           type: 'panel.agentStart',
           via: choice.provider,
@@ -210,8 +222,10 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
           ...(choice.model === '' ? {} : { model: choice.model }),
           ...(tab === undefined ? {} : { tabId: tab.id }),
           ...(shareTab && shareable ? {} : { noTabs: true }),
+          ...(images.length === 0 ? {} : { images }),
         });
         setText('');
+        attachments.clear();
         await refreshRunsNow();
         onOpen({ name: 'thread', id: conversation.id, source: 'direct' });
       }
@@ -250,14 +264,18 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
           autoFocus
           placeholder="Ask anything"
           chip={shareable ? <TabChip title={tab.title} state={shareTab ? 'pending' : 'off'} tabs={targets.tabs} group={targets.groupTitle} onToggle={() => setShareTab(!shareTab)} /> : null}
-          picker={<ModelPicker providers={catalog.providers} choice={choice} onChoice={setSavedChoice} />}
+          picker={
+            <ModelPicker
+              providers={catalog.providers}
+              choice={choice}
+              onChoice={setSavedChoice}
+              access={catalog.source === 't3' ? { value: runtimeMode, modes: provider?.runtimeModes, onChange: setRuntimeMode } : undefined}
+            />
+          }
+          attachments={attachments}
+          dictation={dictation}
+          notice={notice}
         />
-        {catalog.source === 't3' ? (
-          <div className="under-composer">
-            <span />
-            <RuntimeMenu value={runtimeMode} modes={provider?.runtimeModes} onChange={setRuntimeMode} />
-          </div>
-        ) : null}
       </div>
     </div>
   );

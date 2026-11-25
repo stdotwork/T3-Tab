@@ -18,6 +18,7 @@ import type {
 import { stateDirectory } from '../state.js';
 import { CLAIM_CODE, claimFileWarning, writeClaimFile, type ClaimFile } from './claim-file.js';
 import { readCodexProvider } from './codex-provider.js';
+import { claudeUserLine, parseImages, writeImageFiles, type DirectImage, type ImageFiles } from './images.js';
 import {
   claimNote,
   claudeArgs,
@@ -174,11 +175,13 @@ export class Agents {
   }
 
   /** `claim` is a fresh code the extension issued for this turn of a direct run. */
-  async send(id: unknown, message: unknown, claim?: unknown): Promise<AgentConversation> {
+  async send(id: unknown, message: unknown, claim?: unknown, images?: unknown): Promise<AgentConversation> {
     const conversation = this.require(id);
     const text = parseMessage(message);
+    const attached = parseImages(images);
     if (claim !== undefined && (typeof claim !== 'string' || !CLAIM_CODE.test(claim))) throw new Error('Invalid claim code');
     if (conversation.view.via === 't3') {
+      if (attached.length > 0) throw new Error('Images go to a T3 thread through T3 Code, not here.');
       const threadId = conversation.view.threadId ?? '';
       const t3 = await this.requireT3();
       const result = await this.runT3(t3, t3SendArgs(threadId), text);
@@ -196,9 +199,9 @@ export class Agents {
     if (conversation.view.threadId === undefined) {
       throw new Error('This run printed no session id, so it cannot be continued. Start a new one.');
     }
-    this.push(conversation, { role: 'user', text });
-    this.pushItem(conversation, { kind: 'user', text });
-    await this.runDirect(conversation, text, conversation.view.threadId, claim);
+    this.push(conversation, { role: 'user', text: withImageNames(text, attached) });
+    this.pushItem(conversation, { kind: 'user', text: withImageNames(text, attached) });
+    await this.runDirect(conversation, text, attached, conversation.view.threadId, claim);
     return conversation.view;
   }
 
@@ -241,6 +244,7 @@ export class Agents {
 
   private async startT3(params: StartParams): Promise<AgentConversation> {
     if (params.project === undefined) throw new Error('Choose a T3 project: its id or a folder inside it.');
+    if (params.images.length > 0) throw new Error('Images go to a T3 thread through T3 Code, not here.');
     if ((params.provider === undefined) !== (params.model === undefined)) {
       throw new Error('Give both a provider instance and a model, or neither for the project default.');
     }
@@ -263,10 +267,10 @@ export class Agents {
     const conversation = this.add(params, {});
     conversation.cwd = cwd;
     conversation.view.project = cwd;
-    this.push(conversation, { role: 'user', text: params.message });
-    this.pushItem(conversation, { kind: 'user', text: params.message });
+    this.push(conversation, { role: 'user', text: withImageNames(params.message, params.images) });
+    this.pushItem(conversation, { kind: 'user', text: withImageNames(params.message, params.images) });
     try {
-      await this.runDirect(conversation, params.message, undefined, params.claim);
+      await this.runDirect(conversation, params.message, params.images, undefined, params.claim);
     } catch (error) {
       this.conversations.delete(conversation.view.id);
       throw error;
@@ -506,8 +510,8 @@ export class Agents {
   }
 
   /** Starts one turn of a direct run and returns once the process is running; replies arrive as it prints them. */
-  private async runDirect(conversation: Conversation, message: string, resume: string | undefined, claim: string | undefined): Promise<void> {
-    const setup = this.startTurn(conversation, message, resume, claim);
+  private async runDirect(conversation: Conversation, message: string, images: readonly DirectImage[], resume: string | undefined, claim: string | undefined): Promise<void> {
+    const setup = this.startTurn(conversation, message, images, resume, claim);
     this.setups.add(setup);
     try {
       await setup;
@@ -516,9 +520,10 @@ export class Agents {
     }
   }
 
-  private async startTurn(conversation: Conversation, message: string, resume: string | undefined, claim: string | undefined): Promise<void> {
+  private async startTurn(conversation: Conversation, message: string, images: readonly DirectImage[], resume: string | undefined, claim: string | undefined): Promise<void> {
     conversation.starting = true;
     let claimFile: ClaimFile | undefined;
+    let imageFiles: ImageFiles | undefined;
     let child: ChildProcess;
     const via = conversation.view.via as Exclude<AgentVia, 't3'>;
     try {
@@ -537,7 +542,10 @@ export class Agents {
         claimFile = await writeClaimFile(this.stateDir, claim);
         conversation.claimFile = claimFile.path;
       }
+      if (via === 'codex' && images.length > 0) imageFiles = await writeImageFiles(this.stateDir, images);
       const runOptions = {
+        imageInput: via === 'claude' && images.length > 0,
+        imageFiles: imageFiles?.paths,
         server: this.options.server,
         claimFile: claimFile?.path,
         env: this.options.env,
@@ -557,6 +565,7 @@ export class Agents {
       });
     } catch (error) {
       await claimFile?.remove().catch(() => undefined);
+      await imageFiles?.remove().catch(() => undefined);
       throw error;
     } finally {
       delete conversation.starting;
@@ -605,6 +614,7 @@ export class Agents {
       clearTimeout(timer);
       delete conversation.child;
       void claimFile?.remove().catch(() => undefined);
+      void imageFiles?.remove().catch(() => undefined);
       conversation.view.finishedAt = Date.now();
       if (conversation.userStopped === true && conversation.stopReason === undefined) {
         delete conversation.userStopped;
@@ -639,6 +649,7 @@ export class Agents {
         clearTimeout(timer);
         delete conversation.child;
         void claimFile?.remove().catch(() => undefined);
+        void imageFiles?.remove().catch(() => undefined);
         conversation.view.status = 'failed';
         conversation.view.error = hideCodes(error.message, conversation.codes);
         conversation.view.finishedAt = Date.now();
@@ -646,7 +657,8 @@ export class Agents {
       });
     });
     child.stdin?.on('error', () => undefined);
-    child.stdin?.end(message);
+    // With images, Claude Code reads one stream-json user message; otherwise the message is plain text.
+    child.stdin?.end(via === 'claude' && images.length > 0 ? claudeUserLine(message, images) : message);
   }
 }
 
@@ -665,6 +677,7 @@ interface Turn {
 interface StartParams {
   via: AgentVia;
   message: string;
+  images: DirectImage[];
   claim: string;
   project?: string;
   provider?: string;
@@ -677,7 +690,7 @@ export function parseStartParams(value: unknown): StartParams {
   const candidate = value as Partial<Record<keyof AgentStartParams, unknown>>;
   if (candidate.via !== 't3' && candidate.via !== 'claude' && candidate.via !== 'codex') throw new Error('Invalid agent');
   if (typeof candidate.claim !== 'string' || !CLAIM_CODE.test(candidate.claim)) throw new Error('Invalid claim code');
-  const params: StartParams = { via: candidate.via, message: parseMessage(candidate.message), claim: candidate.claim };
+  const params: StartParams = { via: candidate.via, message: parseMessage(candidate.message), images: parseImages(candidate.images), claim: candidate.claim };
   const project = optionalText(candidate.project);
   if (project !== undefined) {
     if (project.length > 4_096 || project.startsWith('-') || project.includes('\0')) throw new Error('Invalid project');
@@ -697,6 +710,11 @@ function parseMessage(value: unknown): string {
   if (typeof value !== 'string' || value.trim() === '') throw new Error('The message is empty');
   if (value.length > MAX_MESSAGE_CHARS) throw new Error(`The message is longer than ${MAX_MESSAGE_CHARS} characters`);
   return value;
+}
+
+/** The owner's message as the conversation shows it, naming the images that went with it. */
+function withImageNames(text: string, images: readonly DirectImage[]): string {
+  return images.length === 0 ? text : `${text}\n\n${images.map((image) => `[image: ${image.name}]`).join(' ')}`;
 }
 
 function optionalText(value: unknown): string | undefined {

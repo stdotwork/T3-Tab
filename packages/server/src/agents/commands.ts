@@ -129,6 +129,10 @@ export interface DirectRunOptions {
   model?: string | undefined;
   /** The CLI's session id to continue. */
   resume?: string | undefined;
+  /** Claude Code: the message and its images go on stdin as one stream-json user message. */
+  imageInput?: boolean | undefined;
+  /** Codex: private files holding this turn's images. */
+  imageFiles?: readonly string[] | undefined;
   /** Codex only: the owner's active custom provider, the one thing carried over from their config. */
   codexProvider?: CodexProvider | undefined;
 }
@@ -151,6 +155,7 @@ export function claudeArgs(options: DirectRunOptions): string[] {
   };
   return [
     '-p',
+    ...(options.imageInput === true ? ['--input-format', 'stream-json'] : []),
     '--output-format',
     'stream-json',
     '--verbose',
@@ -241,6 +246,8 @@ export function codexArgs(options: DirectRunOptions): string[] {
     '--ignore-rules',
     ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['--disable', feature]),
     ...config,
+    // `--image` takes several values, so each is joined to its flag: a bare one would take the session id and `-` too.
+    ...(options.imageFiles ?? []).map((path) => `--image=${path}`),
     ...(options.model === undefined ? [] : ['-m', options.model]),
     ...(options.resume === undefined ? [] : [options.resume]),
     '-',

@@ -116,6 +116,14 @@ async function pickModel(panelPage, name) {
   if (await panelPage.locator('.model-popover').isVisible()) await panelPage.keyboard.press('Escape');
 }
 
+/** The access level is in the model picker's footer, as in T3 Code. */
+async function chooseAccess(panelPage, name) {
+  await panelPage.locator('.model-chip').first().click();
+  await panelPage.locator('.model-popover .access-btn').click();
+  await panelPage.getByRole('menuitemradio', { name }).click();
+  await panelPage.keyboard.press('Escape');
+}
+
 async function send(panelPage, text) {
   await panelPage.getByLabel('Message', { exact: true }).fill(text);
   await panelPage.getByRole('button', { name: 'Send', exact: true }).click();
@@ -426,8 +434,7 @@ async function runT3Flow() {
 
     // 4. A Supervised thread: T3's approval card, a question, and a browser prompt in both places.
     await panelPage.getByRole('button', { name: 'New thread' }).click();
-    await panelPage.locator('.runtime-btn').click();
-    await panelPage.getByRole('menuitemradio', { name: /Supervised/ }).click();
+    await chooseAccess(panelPage, /Supervised/);
     await pickModel(panelPage, MODEL);
     // No browser work here, so no tab goes with it and the agent has no claim to make.
     await panelPage.getByRole('button', { name: "Don't share this tab" }).click();
@@ -522,8 +529,7 @@ async function runT3Flow() {
     extraSites.push(siteD);
     const before = ((await panelRequest(serviceWorker, { type: 'panel.state', tabId })).autoAllowed ?? []).length;
     await panelPage.getByRole('button', { name: 'New thread' }).click();
-    await panelPage.locator('.runtime-btn').click();
-    await panelPage.getByRole('menuitemradio', { name: /Full access/ }).click();
+    await chooseAccess(panelPage, /Full access/);
     await pickModel(panelPage, MODEL);
     await send(panelPage, `Use the t3-tab browser tools to open ${siteD.url} in a new tab and read it. Reply with the h1 text only.`);
     await finished(panelPage);

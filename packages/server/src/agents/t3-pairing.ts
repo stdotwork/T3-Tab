@@ -1,6 +1,6 @@
 import { spawn as spawnProcess } from 'node:child_process';
 
-import { T3_PANEL_CLIENT_LABEL, type T3Pairing, type T3SessionReply } from '@t3-tab/protocol';
+import { T3_PANEL_CLIENT_LABEL, type T3Pairing, type T3SessionReply, type T3VoiceStatus } from '@t3-tab/protocol';
 
 import { firstLine } from './commands.js';
 import { findT3 } from './locate.js';
@@ -18,6 +18,8 @@ const TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange';
 const ACCESS_TOKEN = 'urn:ietf:params:oauth:token-type:access_token';
 const BOOTSTRAP_TOKEN = 'urn:t3:params:oauth:token-type:environment-bootstrap';
 const REQUEST_TIMEOUT_MS = 10_000;
+const SESSION_KINDS = new Set(['renew', 'ticket', 'media-ticket', 'voice-status']);
+const TICKET_USE = { ticket: 'rpc', 'media-ticket': 'media' } as const;
 
 export interface T3PairingOptions {
   env: NodeJS.ProcessEnv;
@@ -72,10 +74,13 @@ export class T3PanelPairing {
     return { origin: environment.origin, accessToken: reply.accessToken, expiresIn: reply.expiresIn };
   }
 
-  /** Renews the panel's session or gets its WebSocket ticket. A stored address T3 no longer runs at gets nothing. */
+  /**
+   * Renews the panel's session, gets a WebSocket ticket for T3's RPC or voice socket, or reads whether T3 can transcribe
+   * speech. A stored address T3 no longer runs at gets nothing.
+   */
   async session(value: unknown): Promise<T3SessionReply> {
     const { kind, origin, accessToken, dpop } = (value ?? {}) as Record<string, unknown>;
-    if ((kind !== 'renew' && kind !== 'ticket') || typeof origin !== 'string') throw new Error('Invalid T3 session request');
+    if (typeof kind !== 'string' || !SESSION_KINDS.has(kind) || typeof origin !== 'string') throw new Error('Invalid T3 session request');
     if (typeof accessToken !== 'string' || !TOKEN.test(accessToken) || typeof dpop !== 'string' || !PROOF.test(dpop)) {
       throw new Error('Invalid T3 session request');
     }
@@ -90,7 +95,16 @@ export class T3PanelPairing {
         requested_token_type: ACCESS_TOKEN,
       });
     }
-    const response = await this.post(environment, '/api/auth/websocket-ticket/rpc', { authorization: `DPoP ${accessToken}`, dpop });
+    if (kind === 'voice-status') {
+      const response = await this.send(environment, 'GET', '/api/voice/status', { authorization: `DPoP ${accessToken}`, dpop });
+      if (!response.ok) {
+        await response.body?.cancel();
+        return { outcome: 'refused', status: response.status };
+      }
+      return { outcome: 'voice', voice: voiceStatus(await response.json().catch(() => undefined)) };
+    }
+    const use = TICKET_USE[kind as keyof typeof TICKET_USE];
+    const response = await this.post(environment, `/api/auth/websocket-ticket/${use}`, { authorization: `DPoP ${accessToken}`, dpop });
     if (!response.ok) {
       await response.body?.cancel();
       return { outcome: 'refused', status: response.status };
@@ -123,9 +137,13 @@ export class T3PanelPairing {
   }
 
   private async post(environment: T3Environment, path: string, headers: Record<string, string>, body?: string): Promise<Response> {
+    return await this.send(environment, 'POST', path, headers, body);
+  }
+
+  private async send(environment: T3Environment, method: 'GET' | 'POST', path: string, headers: Record<string, string>, body?: string): Promise<Response> {
     try {
       return await environment.fetch(`${environment.origin}${path}`, {
-        method: 'POST',
+        method,
         headers,
         ...(body === undefined ? {} : { body }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -173,6 +191,14 @@ export class T3PanelPairing {
     if (result.code !== 0) throw new Error(firstLine(result.stderr) || `t3 exited with code ${String(result.code)}`);
     return result;
   }
+}
+
+/** T3's voice status, kept to whether it works and why not; a reason is cut to one short line. */
+export function voiceStatus(value: unknown): T3VoiceStatus {
+  const { supported, reason, state } = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
+  if (supported === false) return { supported: false, reason: typeof reason === 'string' ? reason.replace(/\s+/g, ' ').slice(0, 200) : 'T3 Code cannot transcribe speech here.' };
+  if (supported !== true) return { supported: false, reason: 'T3 Code did not say whether it can transcribe speech.' };
+  return { supported: true, state: state === 'ready' || state === 'missing-model' || state === 'transcribing' ? state : 'other' };
 }
 
 function parseObject(text: string): Record<string, unknown> | undefined {

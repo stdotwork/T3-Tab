@@ -131,9 +131,9 @@ describe('parseStartParams', () => {
 
   it('accepts a valid request and trims optional fields', () => {
     expect(parseStartParams({ ...base, via: 't3', project: ' /p ', provider: 'inst', model: 'm' })).toEqual({
-      via: 't3', message: 'hi', claim: CLAIM, project: '/p', provider: 'inst', model: 'm',
+      via: 't3', message: 'hi', claim: CLAIM, images: [], project: '/p', provider: 'inst', model: 'm',
     });
-    expect(parseStartParams({ ...base, project: '  ', model: null })).toEqual(base);
+    expect(parseStartParams({ ...base, project: '  ', model: null })).toEqual({ ...base, images: [] });
   });
 
   it('rejects a project or model starting with a dash', () => {
@@ -960,5 +960,52 @@ describe('stopping a direct run from the panel', () => {
     const started = await make().start({ via: 't3', message: 'Hi', claim: CLAIM, project: '/p' });
     await expect(agents?.stop(started.id)).rejects.toThrow('stopped in T3 Code');
     await expect(agents?.stop('nope')).rejects.toThrow('No such conversation');
+  });
+});
+
+describe('direct runs with images', () => {
+  const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+  const images = [{ name: 'shot.png', mimeType: 'image/png', data: PNG.toString('base64') }];
+
+  it('sends Claude Code the message and images as one stream-json line and names them in the conversation', async () => {
+    await install('claude');
+    handler = () => ({
+      stdout: `${JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1' })}\n${JSON.stringify({ type: 'result', subtype: 'success', session_id: 's1', result: 'A logo' })}\n`,
+    });
+    const started = await make().start({ via: 'claude', message: 'What is this?', claim: CLAIM, images });
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+    const args = calls[0]?.args ?? [];
+    expect(args[args.indexOf('--input-format') + 1]).toBe('stream-json');
+    const line = JSON.parse(calls[0]?.stdin ?? '') as { message: { content: Array<{ type: string; text?: string; source?: { data: string } }> } };
+    expect(line.message.content[0]).toEqual({ type: 'text', text: 'What is this?' });
+    expect(line.message.content[1]?.source?.data).toBe(PNG.toString('base64'));
+    expect(view(started.id).messages[0]).toEqual({ role: 'user', text: 'What is this?\n\n[image: shot.png]' });
+
+    await agents?.send(started.id, 'And now?');
+    await waitFor(() => calls.length === 2 && view(started.id).status === 'idle', 'second turn');
+    expect(calls[1]?.args).not.toContain('--input-format');
+    expect(calls[1]?.stdin).toBe('And now?');
+  });
+
+  it('gives Codex private image files for the turn and removes them when it ends', async () => {
+    await install('codex');
+    let seen: { path: string; mode: number; bytes: Buffer } | undefined;
+    handler = async (call) => {
+      const path = call.args.find((value) => value.startsWith('--image='))?.slice('--image='.length) ?? '';
+      seen = { path, mode: (await stat(path)).mode & 0o777, bytes: await readFile(path) };
+      return { stdout: `${JSON.stringify({ type: 'thread.started', thread_id: 't1' })}\n${JSON.stringify({ type: 'turn.completed' })}\n` };
+    };
+    const started = await make().start({ via: 'codex', message: 'Look', claim: CLAIM, images });
+    await waitFor(() => view(started.id).status === 'idle', 'idle');
+    expect(seen?.mode).toBe(0o600);
+    expect(seen?.bytes.equals(PNG)).toBe(true);
+    expect(calls[0]?.stdin).toBe('Look');
+    await waitFor(() => !existsSync(seen?.path ?? ''), 'the image files removed');
+  });
+
+  it('refuses images for a T3 thread, which takes them through T3 Code', async () => {
+    await install('t3');
+    await expect(make().start({ via: 't3', message: 'Hi', claim: CLAIM, project: home, images })).rejects.toThrow('through T3 Code');
+    expect(calls).toEqual([]);
   });
 });

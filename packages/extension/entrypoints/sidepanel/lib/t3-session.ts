@@ -4,7 +4,7 @@
  * and stays in this extension's IndexedDB, so the stored token is useless without it. T3 renews such a session for up to
  * 30 days. The WebSocket is the one connection the helper cannot check, because the browser opens it.
  */
-import type { T3Pairing, T3SessionReply } from '@t3-tab/protocol';
+import type { T3Pairing, T3SessionReply, T3VoiceStatus } from '@t3-tab/protocol';
 
 import { panel, readStored, removeStored, writeStored } from './api';
 
@@ -143,4 +143,41 @@ export async function socketUrl(current: T3Session): Promise<{ url: string; sess
   socket.searchParams.set('clientSurface', 'web');
   socket.searchParams.set('dpop', await proof(keys, 'GET', `${session.origin}/ws`, reply.ticket));
   return { url: socket.href, session };
+}
+
+/** A one-use address for T3's voice socket, where T3 transcribes speech on this machine. */
+export async function voiceSocketUrl(current: T3Session): Promise<{ url: string; session: T3Session }> {
+  const keys = await proofKeys(false);
+  if (keys === undefined) throw new SessionRefused('The session key is gone. Connect again.', 401);
+  const session = await fresh(current, keys);
+  const reply = await panel<T3SessionReply>({
+    type: 'panel.t3Session',
+    kind: 'media-ticket',
+    origin: session.origin,
+    accessToken: session.accessToken,
+    dpop: await proof(keys, 'POST', `${session.origin}/api/auth/websocket-ticket/media`, session.accessToken),
+  });
+  if (reply.outcome === 'refused' || reply.outcome === 'moved') throw refusal(reply);
+  if (reply.outcome !== 'ticket') throw new Error('T3 sent no voice ticket.');
+  const socket = new URL(`${session.origin.replace(/^http/, 'ws')}/ws/voice`);
+  socket.searchParams.set('wsTicket', reply.ticket);
+  socket.searchParams.set('dpop', await proof(keys, 'GET', `${session.origin}/ws/voice`, reply.ticket));
+  return { url: socket.href, session };
+}
+
+/** Whether T3 can transcribe speech now: its platform, and whether a voice model is downloaded. */
+export async function voiceStatus(current: T3Session): Promise<{ voice: T3VoiceStatus; session: T3Session }> {
+  const keys = await proofKeys(false);
+  if (keys === undefined) throw new SessionRefused('The session key is gone. Connect again.', 401);
+  const session = await fresh(current, keys);
+  const reply = await panel<T3SessionReply>({
+    type: 'panel.t3Session',
+    kind: 'voice-status',
+    origin: session.origin,
+    accessToken: session.accessToken,
+    dpop: await proof(keys, 'GET', `${session.origin}/api/voice/status`, session.accessToken),
+  });
+  if (reply.outcome === 'refused' || reply.outcome === 'moved') throw refusal(reply);
+  if (reply.outcome !== 'voice') throw new Error('T3 did not say whether it can transcribe.');
+  return { voice: reply.voice, session };
 }

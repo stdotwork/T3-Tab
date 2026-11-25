@@ -5,7 +5,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import type { PanelTab, TabThread } from '../../src/panel';
 
 import { ApprovalCard, QuestionCard, QueuedMessages, Timeline } from './Thread';
-import { Composer, RuntimeMenu, TabChip } from './Composer';
+import { Composer, dictateInto, TabChip, ThreadModelPicker, useComposerAttachments } from './Composer';
+import { useDictation } from './Dictation';
 import { askerName, Banner, bindClaim, directRuns, TopBar, useCatalog, useNeedsOwner, useT3, useWakeClock, withdrawClaim, type Screen } from './Frame';
 import { NewThread } from './NewThread';
 import { PromptCards } from './PromptCards';
@@ -70,6 +71,13 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
   const [error, setError] = useState<string>();
   const catalog = useCatalog(live, state);
   const [shareTab, setShareTab] = useState(false);
+  const [notice, setNotice] = useState<string>();
+  const latestText = useRef(text);
+  latestText.current = text;
+  const directAgent = view?.provider === 'codex' ? 'Codex' : 'Claude Code';
+  const target = useMemo(() => (screen.source === 't3' ? ({ kind: 't3' } as const) : ({ kind: 'direct', agent: directAgent } as const)), [screen.source, directAgent]);
+  const attachments = useComposerAttachments(target);
+  const dictation = useDictation(state, (spoken) => setText(dictateInto(latestText.current, spoken)), setNotice);
   const tab = live.currentTab;
   const loadTabs = useCallback(async (): Promise<void> => {
     const { tabs } = await panel<{ tabs: PanelTab[] }>({ type: 'panel.conversationTabs', id: conversationKey });
@@ -103,19 +111,24 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
           code = claim.code;
           note = claim.note;
         }
+        let uploaded: Awaited<ReturnType<typeof attachments.forT3>> = [];
         try {
-          await t3.sendMessage(screen.id, `${message}${note}`, view.running);
+          uploaded = await attachments.forT3();
+          await t3.sendMessage(screen.id, `${message}${note}`, view.running, uploaded);
         } catch (failure) {
+          for (const attachment of uploaded) await t3.discardAttachment(attachment.id);
           if (code !== undefined) await withdrawClaim(code);
           throw failure;
         }
         if (code !== undefined) await bindClaim(code, screen.id);
         setShareTab(false);
       } else {
-        await panel({ type: 'panel.agentSend', id: screen.id, message });
+        const images = await attachments.forDirect();
+        await panel({ type: 'panel.agentSend', id: screen.id, message, ...(images.length === 0 ? {} : { images }) });
         await refreshRunsNow();
       }
       setText('');
+      attachments.clear();
     });
     setBusy(false);
   };
@@ -218,27 +231,28 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
             </>
           }
           picker={
-            <span className="model-chip static">
-              <ProviderIcon driver={directDriver} size={15} />
-              <span className="model-chip-name">{modelLabel?.name ?? ''}</span>
-              {modelLabel?.effort === undefined ? null : <span className="model-chip-effort">{modelLabel.effort}</span>}
-            </span>
-          }
-        />
-        {screen.source === 't3' && view?.runtimeMode !== undefined ? (
-          <div className="under-composer">
-            <span />
-            <RuntimeMenu
-              value={view.runtimeMode}
-              modes={provider?.runtimeModes}
-              onChange={(mode) =>
-                void guard(async () => {
-                  await t3.setRuntimeMode(screen.id, mode);
-                })
+            <ThreadModelPicker
+              name={modelLabel?.name ?? ''}
+              effort={modelLabel?.effort}
+              driver={directDriver}
+              access={
+                screen.source === 't3' && view?.runtimeMode !== undefined
+                  ? {
+                      value: view.runtimeMode,
+                      modes: provider?.runtimeModes,
+                      onChange: (mode) =>
+                        void guard(async () => {
+                          await t3.setRuntimeMode(screen.id, mode);
+                        }),
+                    }
+                  : undefined
               }
             />
-          </div>
-        ) : null}
+          }
+          attachments={attachments}
+          dictation={dictation}
+          notice={notice}
+        />
       </div>
     </div>
   );
