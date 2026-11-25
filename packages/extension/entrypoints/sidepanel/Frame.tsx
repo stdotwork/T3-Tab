@@ -1,7 +1,7 @@
 /** What the panel's screens share: where they can go, the top bar, the connection banner and the model catalog. */
 import type { ToolSession } from '@t3-tab/protocol';
 import { AlertCircle, History, Settings as SettingsIcon, SquarePen } from 'lucide-react';
-import { useMemo, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 
 import type { SettingsTab } from './Settings';
 import { helperNote } from './Setup';
@@ -9,6 +9,7 @@ import { panel } from './lib/api';
 import { directProviders, t3Providers, type PickerProvider } from './lib/catalog';
 import type { LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
+import { needsOwner, nextWake, threadSections, type DirectRun } from './lib/thread-sections';
 import { IconButton } from './ui';
 
 export type Screen =
@@ -18,9 +19,6 @@ export type Screen =
   | { name: 'settings'; tab: SettingsTab; connections?: boolean };
 
 export const useT3 = (): T3State => useSyncExternalStore(t3.subscribe, t3.snapshot);
-
-const RUNNING_STATUSES = new Set(['preparing', 'queued', 'starting', 'running']);
-export const isRunningStatus = (status: string | undefined): boolean => status !== undefined && RUNNING_STATUSES.has(status);
 
 export const withdrawClaim = async (code: string): Promise<void> => {
   await panel({ type: 'panel.t3ClaimRevoke', code }).catch(() => undefined);
@@ -47,12 +45,60 @@ export const askerName =
     return state.threads.find((thread) => thread.id === threadId)?.title ?? clientName(session.name);
   };
 
-export function TopBar({ title, onThreads, onNew, onSettings, sessions = 0 }: { title: ReactNode; onThreads: () => void; onNew?: () => void; onSettings: () => void; sessions?: number }): ReactNode {
+/** The direct Claude Code and Codex runs; a run through T3 is listed as its T3 thread. */
+export const directRuns = (live: LiveState): DirectRun[] =>
+  live.conversations
+    .filter((conversation) => conversation.via !== 't3')
+    .map((conversation) => ({
+      id: conversation.id,
+      title: conversation.title,
+      status: conversation.status,
+      updatedAt: conversation.updatedAt,
+      ...(conversation.startedAt === undefined ? {} : { startedAt: conversation.startedAt }),
+      ...(conversation.finishedAt === undefined ? {} : { finishedAt: conversation.finishedAt }),
+    }));
+
+/** The time the threads are grouped at. It draws again when a snoozed thread is due to wake, as T3's sidebar does. */
+export function useWakeClock(state: T3State): number {
+  const [, setTick] = useState(0);
+  const now = Date.now();
+  const wake = nextWake(state.threads, now);
+  useEffect(() => {
+    if (wake === undefined) return;
+    const timer = setTimeout(() => setTick((tick) => tick + 1), Math.max(0, wake - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [wake]);
+  return now;
+}
+
+/** Whether any thread waits on the owner's approval or answer: the one thread signal outside the list. */
+export function useNeedsOwner(live: LiveState, state: T3State): boolean {
+  const now = useWakeClock(state);
+  return needsOwner(threadSections(state.threads, directRuns(live), now));
+}
+
+export function TopBar({
+  title,
+  onThreads,
+  onNew,
+  onSettings,
+  sessions = 0,
+  needsYou = false,
+}: {
+  title: ReactNode;
+  onThreads: () => void;
+  onNew?: () => void;
+  onSettings: () => void;
+  sessions?: number;
+  /** A thread waits on the owner's approval or answer. */
+  needsYou?: boolean;
+}): ReactNode {
+  const label = [needsYou ? 'a thread needs you' : undefined, sessions === 0 ? undefined : `${sessions} using the browser`].filter((part) => part !== undefined).join(', ');
   return (
     <header className="topbar" data-chat-header>
-      <IconButton label={sessions === 0 ? 'Threads' : `Threads, ${sessions} using the browser`} id="btn-threads" onClick={onThreads}>
+      <IconButton label={label === '' ? 'Threads' : `Threads, ${label}`} id="btn-threads" onClick={onThreads}>
         <History size={16} />
-        {sessions === 0 ? null : <span className="session-dot" aria-hidden="true" />}
+        {needsYou ? <span className="needs-you-dot" aria-hidden="true" /> : sessions === 0 ? null : <span className="session-dot" aria-hidden="true" />}
       </IconButton>
       <span className="crumbs">{title}</span>
       <span className="topbar-spacer" />

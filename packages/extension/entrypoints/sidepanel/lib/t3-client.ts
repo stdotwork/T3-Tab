@@ -55,17 +55,50 @@ export interface ModelSelection {
   options?: Array<{ id: string; value: string | boolean }>;
 }
 
+/**
+ * One thread of T3's shell stream (`OrchestrationV2ThreadShell`). The stream sends every field; these are the ones the
+ * panel reads. Fields newer T3 servers added are optional, as in T3's own schema.
+ */
 export interface ThreadShell {
   id: string;
   projectId: string;
   title: string;
   status?: string;
   runtimeMode?: string;
+  interactionMode?: string;
   modelSelection?: ModelSelection;
   providerInstanceId?: string;
+  creationSource?: string;
+  createdAt?: string;
   updatedAt?: string;
   latestUserMessageAt?: string | null;
-  pendingRuntimeRequest?: { id: string; kind: string } | null;
+  latestUserAuthoredMessageAt?: string | null;
+  pendingRuntimeRequest?: { id: string; kind: string; createdAt?: string; blocking?: boolean; userOnly?: boolean } | null;
+  pendingGuestMessageCount?: number;
+  pendingBackgroundTasks?: Array<{ taskId?: string; kind: string; awaited?: boolean }>;
+  hasActionableProposedPlan?: boolean;
+  latestRunId?: string | null;
+  latestRunRequestedAt?: string | null;
+  latestRunStartedAt?: string | null;
+  latestRunCompletedAt?: string | null;
+  activeRunId?: string | null;
+  activityRunStatus?: string | null;
+  blockedOnThreadWait?: boolean;
+  lastErrorClass?: string | null;
+  lineage?: { relationshipToParent?: string | null; parentThreadId?: string | null; sideChat?: boolean; workflowStep?: boolean };
+  delegatedFrom?: { environmentId?: string; threadId: string };
+  archivedAt?: string | null;
+  deletedAt?: string | null;
+  /** `settled` when the owner or T3's auto-settle settled it; `active` when the owner took it back out. */
+  settledOverride?: 'settled' | 'active' | null;
+  settledAt?: string | null;
+  unsettledAt?: string | null;
+  snoozedUntil?: string | null;
+  snoozedAt?: string | null;
+  pinnedAt?: string | null;
+  pinOrderKey?: string | null;
+  activeOrderKey?: string | null;
+  lastVisitedAt?: string | null;
 }
 
 export type T3Status = 'off' | 'connecting' | 'ready' | 'lost';

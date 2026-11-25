@@ -279,6 +279,7 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
     await panelPage.evaluate((next) => globalThis.__t3tabRenderPanelState(next), realPanelState);
     console.log(`Panel screenshots: ${shotsDir}`);
   }
+  await checkThreadSections(livePanel, screenshotPath);
   await livePanel.close();
   console.log('Panel UI: tab chip, direct agents, conversation list and replies rendered from the real state');
 
@@ -288,6 +289,89 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   assert(state.status.t3.state === 'missing', `T3 missing: ${JSON.stringify(state.status.t3)}`);
   console.log('Panel with T3 missing: reported as not found');
   await ownerPage.close();
+}
+
+/**
+ * The thread list groups T3's threads as T3's sidebar does, and the threads button carries a dot only while a thread
+ * waits on the owner. The panel here is not signed in to T3, so the threads are handed to its T3 client as one shell
+ * snapshot, the way T3's shell stream would send them; the direct runs are the real ones from this run.
+ */
+async function checkThreadSections(livePanel, screenshotPath) {
+  const supply = async (threads) =>
+    await livePanel.evaluate((list) => {
+      const minutes = (count) => new Date(Date.now() + count * 60_000).toISOString();
+      const shell = (id, title, extra) => ({
+        id,
+        projectId: 'shot-project',
+        title,
+        status: 'completed',
+        interactionMode: 'default',
+        createdAt: minutes(-600),
+        updatedAt: minutes(-60),
+        latestRunId: `run-${id}`,
+        latestRunRequestedAt: minutes(-90),
+        latestRunStartedAt: minutes(-89),
+        latestRunCompletedAt: minutes(-60),
+        activeRunId: null,
+        activityRunStatus: null,
+        pendingRuntimeRequest: null,
+        lineage: { relationshipToParent: null, parentThreadId: null },
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        ...Object.fromEntries(Object.entries(extra).map(([key, value]) => [key, typeof value === 'number' ? minutes(value) : value])),
+      });
+      const threads = list.map(([id, title, extra]) => shell(id, title, extra));
+      window.__t3tabT3.onShell({ kind: 'snapshot', snapshot: { threads, projects: [{ id: 'shot-project', title: 'shop-site', workspaceRoot: '/tmp/shop-site' }] } });
+    }, threads);
+  const running = { status: 'running', activityRunStatus: 'running', activeRunId: 'run-busy', latestRunCompletedAt: null };
+  await supply([
+    ['pinned', 'Pinned plan', { pinnedAt: -500 }],
+    ['active', 'Fix the checkout form', { latestRunCompletedAt: -3, lastVisitedAt: -10 }],
+    ['asks', 'Pick a colour', { ...running, status: 'waiting', activityRunStatus: 'waiting', pendingRuntimeRequest: { id: 'q1', kind: 'user_input', createdAt: -1 } }],
+    ['busy', 'Refactor the cart', { ...running, latestUserAuthoredMessageAt: -2 }],
+    ['snoozed', 'Wait for the deploy', { snoozedAt: -5, snoozedUntil: 90 }],
+    ['settled', 'Old landing page', { settledOverride: 'settled', settledAt: -30 }],
+    ['archived', 'Archived thread', { archivedAt: -1 }],
+  ]);
+  await livePanel.locator('#btn-threads').click();
+  await livePanel.locator('.thread-row').filter({ hasText: 'Pick a colour' }).waitFor();
+  const shelves = await livePanel.locator('.shelf').evaluateAll((nodes) => nodes.map((node) => `${node.querySelector('.shelf-label').textContent} ${node.querySelector('.shelf-count').textContent}`));
+  assert(JSON.stringify(shelves) === JSON.stringify(['Working 1', 'Snoozed 1', 'Settled 1']), `Thread list shelves: ${JSON.stringify(shelves)}`);
+  const visibleRows = async () => await livePanel.locator('.thread-row').evaluateAll((nodes) => nodes.map((node) => `${node.dataset.section}:${node.querySelector('.thread-title').textContent}`));
+  let rows = await visibleRows();
+  assert(rows[0] === 'pinned:Pinned plan' && rows.includes('active:Pick a colour') && rows.includes('active:Fix the checkout form'), `Pinned and active rows: ${JSON.stringify(rows)}`);
+  assert(!rows.some((row) => /Refactor the cart|Wait for the deploy|Old landing page|Archived thread/.test(row)), `Closed shelves or an archived thread showed rows: ${JSON.stringify(rows)}`);
+  assert((await livePanel.locator('.thread-row').filter({ hasText: 'Pick a colour' }).locator('.thread-badge.input').textContent()) === 'Awaiting Input', 'The waiting thread does not say Awaiting Input');
+  for (const shelf of ['working', 'snoozed', 'settled']) await livePanel.locator(`.shelf[data-shelf="${shelf}"]`).click();
+  rows = await visibleRows();
+  const tail = rows.slice(rows.indexOf('working:Refactor the cart'));
+  assert(JSON.stringify(tail) === JSON.stringify(['working:Refactor the cart', 'snoozed:Wait for the deploy', 'settled:Old landing page']), `Opened shelves: ${JSON.stringify(rows)}`);
+  assert(/^\d+[mhd]$/.test((await livePanel.locator('.thread-row[data-section="snoozed"] .thread-badge.snoozed').textContent()).trim()), 'The snoozed row has no wake label');
+  if (screenshotPath !== undefined) {
+    // Tall enough for every row, from the pinned one at the top to the last shelf.
+    await livePanel.setViewportSize({ width: 360, height: 1200 });
+    await livePanel.locator('.thread-list').evaluate((node) => node.scrollTo(0, 0));
+    for (const scheme of ['light', 'dark']) {
+      await livePanel.emulateMedia({ colorScheme: scheme });
+      await sleep(300);
+      await livePanel.screenshot({ path: join(dirname(screenshotPath), `threads-360-${scheme}.png`), animations: 'disabled' });
+    }
+    await livePanel.emulateMedia({ colorScheme: 'light' });
+    await livePanel.setViewportSize({ width: 360, height: 800 });
+  }
+  // The dot: on while a thread waits for an answer, off once nothing does. Plain work shows only in the list, not on
+  // the new-thread screen.
+  await livePanel.keyboard.press('Escape');
+  await livePanel.locator('#btn-threads .needs-you-dot').waitFor();
+  await livePanel.locator('#btn-new').click();
+  await livePanel.locator('.hero h1').waitFor();
+  await livePanel.locator('#btn-threads .needs-you-dot').waitFor();
+  await supply([['busy', 'Refactor the cart', running]]);
+  await livePanel.locator('#btn-threads .needs-you-dot').waitFor({ state: 'detached' });
+  assert((await livePanel.getByText('Refactor the cart').count()) === 0, 'The new-thread screen shows a working thread');
+  await supply([]);
+  console.log(`Panel thread list: T3's sections in T3's order (${rows.length} rows with the shelves open); the needs-you dot follows a waiting question`);
 }
 
 /**

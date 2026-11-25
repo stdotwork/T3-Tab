@@ -70,7 +70,9 @@ used one are refused; T3 stopped and T3 missing are reported; direct Claude Code
 their isolating flags, read the tab, and are resumed with the session id they printed and a new claim code;
 Full access is confirmed with a fake T3 per request with no live panel, and an unbound claim, a lowered mode or a stopped T3 prompts; a tab the owner unshares during a direct turn is not shared with the next turn, and neither is one removed
 between turns with the conversation's Remove button; a missing, world-readable or replaced claim file warns in
-the conversation and in the agent's first tool reply. It renders the panel from that state and, when
+the conversation and in the agent's first tool reply. The thread list, given T3 threads as one shell snapshot, shows T3's
+sidebar sections in T3's order (pinned, active, then the Working, Snoozed and Settled shelves), leaves archived threads
+out, and the threads button carries a dot only while a thread waits on the owner's answer or approval. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
 variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long.

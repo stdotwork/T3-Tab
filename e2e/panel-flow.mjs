@@ -213,6 +213,8 @@ async function checkThreadFromT3({ home, t3, panelPage, serviceWorker, tabId, ex
     initialMessage: { messageId: crypto.randomUUID(), text: `Use the t3-tab browser tools to open ${fullSite.url} in a new tab and read it. Reply with the h1 text only.`, attachments: [] },
   });
   await panelPage.locator('#btn-threads').click();
+  // A running thread sits on the closed Working shelf, as in T3's sidebar; the search finds it in any section.
+  await panelPage.locator('.list-search input').fill('Started in T3');
   await panelPage.locator('.thread-row').filter({ hasText: 'Started in T3' }).click();
   await panelPage.locator(`.screen[data-thread-id="${threadId}"]`).waitFor();
   await shot('19-thread-from-t3-running');

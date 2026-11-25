@@ -1,16 +1,16 @@
 import type { AgentConversation } from '@t3-tab/protocol';
-import { Check, ChevronDown, CircleAlert, CircleDashed, FolderPlus, Search } from 'lucide-react';
+import { Check, ChevronDown, CircleDashed, FolderPlus, Search } from 'lucide-react';
 import { useRef, useState, type ReactNode } from 'react';
 
 import { Composer, ModelPicker, RuntimeMenu, TabChip } from './Composer';
-import { askerName, Banner, bindClaim, isRunningStatus, TopBar, useCatalog, withdrawClaim, type Screen } from './Frame';
+import { askerName, Banner, bindClaim, TopBar, useCatalog, useNeedsOwner, withdrawClaim, type Screen } from './Frame';
 import { PromptCards } from './PromptCards';
 import { errorText, panel } from './lib/api';
 import { resolveChoice, selectionFor, type Choice } from './lib/catalog';
 import { DEFAULT_PROJECT_KEY, NO_PROJECT, pickableProjects, resolveProject } from './lib/new-thread';
 import { refreshRunsNow, useShareTargets, useStored, useTabStored, type LiveState } from './lib/store';
 import { t3, type Project, type T3State } from './lib/t3-client';
-import { Spinner, useDismiss } from './ui';
+import { useDismiss } from './ui';
 
 function ProjectPicker({
   projects,
@@ -147,31 +147,6 @@ function FolderPicker({ value, onChange }: { value: string; onChange: (folder: s
   );
 }
 
-/** Threads working elsewhere stay one click away from a panel opened on another tab. */
-function RunningThreads({ live, state, onOpen }: { live: LiveState; state: T3State; onOpen: (screen: Screen) => void }): ReactNode {
-  const rows = [
-    ...state.threads
-      .filter((thread) => isRunningStatus(thread.status))
-      .map((thread) => {
-        const waiting = thread.pendingRuntimeRequest?.kind;
-        return { id: thread.id, title: thread.title, source: 't3' as const, note: waiting === undefined ? 'Working' : waiting === 'user_input' ? 'Needs an answer' : 'Needs approval' };
-      }),
-    ...live.conversations.filter((conversation) => conversation.via !== 't3' && conversation.status === 'running').map((conversation) => ({ id: conversation.id, title: conversation.title, source: 'direct' as const, note: 'Working' })),
-  ];
-  if (rows.length === 0) return null;
-  return (
-    <div className="running-strip" aria-label="Threads working">
-      {rows.slice(0, 3).map((row) => (
-        <button type="button" className="running-row" key={row.id} onClick={() => onOpen({ name: 'thread', id: row.id, source: row.source })}>
-          {row.note === 'Working' ? <Spinner size={13} /> : <CircleAlert size={13} className="running-waiting" aria-hidden="true" />}
-          <span className="running-title">{row.title}</span>
-          <small>{row.note}</small>
-        </button>
-      ))}
-    </div>
-  );
-}
-
 export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; state: T3State; onOpen: (screen: Screen) => void; onNav: (screen: Screen) => void }): ReactNode {
   const catalog = useCatalog(live, state);
   const [text, setText] = useTabStored('draft', '');
@@ -192,6 +167,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
   const tab = live.currentTab;
   const shareable = tab !== undefined && /^https?:/.test(tab.url);
   const targets = useShareTargets(tab, live.changes);
+  const needsYou = useNeedsOwner(live, state);
   // A direct agent has only the browser tools, so it is asked about the page rather than about building something.
   const heading = catalog.source === 't3' ? 'What should we build?' : !shareable || !shareTab ? 'What should we do?' : targets.tabs.length > 1 ? 'What should we do in these tabs?' : 'What should we do in this tab?';
   const chooseProject = (id: string): void => {
@@ -248,7 +224,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
 
   return (
     <div className="screen">
-      <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} />
+      <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} needsYou={needsYou} />
       <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />
       <main className="home">
         <div className="hero">
@@ -263,7 +239,6 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
         </div>
       </main>
       <div className="dock">
-        <RunningThreads live={live} state={state} onOpen={onOpen} />
         <PromptCards prompts={live.prompts} currentTabId={tab?.id} askerName={askerName(live, state)} onManageSites={() => onNav({ name: 'settings', tab: 'sites' })} />
         {error === undefined ? null : <p className="error-line">{error}</p>}
         <Composer
