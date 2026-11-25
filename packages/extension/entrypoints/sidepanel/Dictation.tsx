@@ -6,7 +6,7 @@ import { errorText } from './lib/api';
 import { canRecord, micError, micPermission, startCapture, type Capture } from './lib/mic';
 import { t3, type T3State } from './lib/t3-client';
 import { formatElapsed, MAX_RECORDING_MS, micPermissionNote, voiceBlock, VoiceStream, type MicPermission } from './lib/voice';
-import { ICON } from './ui';
+import { GLYPH_STROKE, ICON } from './ui';
 
 const STATUS_TTL_MS = 60_000;
 /** A note from the mic clears itself after this long. */
@@ -201,8 +201,8 @@ export function MicButton({ dictation }: { dictation: Dictation }): ReactNode {
         <span className="mic-time" aria-live="polite">
           {phase === 'finishing' ? 'Transcribing' : formatElapsed(dictation.elapsedMs)}
         </span>
-        <button type="button" className="composer-icon mic-btn recording" aria-label="Finish voice input" title="Finish voice input" disabled={phase === 'finishing'} onClick={dictation.toggle}>
-          {phase === 'finishing' ? <Loader2 size={ICON.md} className="spin" aria-hidden="true" /> : <Mic size={ICON.md} aria-hidden="true" />}
+        <button type="button" className="composer-icon mic-btn recording" data-ink="box" aria-label="Finish voice input" title="Finish voice input" disabled={phase === 'finishing'} onClick={dictation.toggle}>
+          {phase === 'finishing' ? <Loader2 size={ICON.md} strokeWidth={GLYPH_STROKE} className="spin" aria-hidden="true" /> : <Mic size={ICON.md} strokeWidth={GLYPH_STROKE} aria-hidden="true" />}
         </button>
       </span>
     );
@@ -213,12 +213,13 @@ export function MicButton({ dictation }: { dictation: Dictation }): ReactNode {
     <button
       type="button"
       className={off ? 'composer-icon mic-btn off' : 'composer-icon mic-btn'}
+      data-ink="box"
       aria-label={off ? `Voice input unavailable: ${note ?? ''}` : 'Start voice input'}
       title={note === undefined ? 'Start voice input' : note}
       onClick={dictation.toggle}
       disabled={phase === 'starting'}
     >
-      {phase === 'starting' ? <Loader2 size={ICON.md} className="spin" aria-hidden="true" /> : off ? <MicOff size={ICON.md} aria-hidden="true" /> : <Mic size={ICON.md} aria-hidden="true" />}
+      {phase === 'starting' ? <Loader2 size={ICON.md} strokeWidth={GLYPH_STROKE} className="spin" aria-hidden="true" /> : off ? <MicOff size={ICON.md} strokeWidth={GLYPH_STROKE} aria-hidden="true" /> : <Mic size={ICON.md} strokeWidth={GLYPH_STROKE} aria-hidden="true" />}
     </button>
   );
 }

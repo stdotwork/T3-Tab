@@ -2,10 +2,12 @@
 // the font's own metrics, painted boxes; see ./ink.mjs), never padding boxes, on each screen at 320, 360 and 400 px in
 // light and dark. It fails when
 // - a bar's (or the composer row's) first and last controls sit at different ink distances from its edges,
-// - the composer's bottom-row controls do not stand on one ink line, or its text does not start on the paperclip's,
+// - the composer's send circle is not as far from the frame's foot as the row's controls are from its sides,
+// - the composer's controls are not one size, or their ink (and the model chip's logo and words) is off one centre line,
+// - the composer's text does not start on the first control's ink,
 // - the new-thread hero's project line is off the heading's centre,
-// - the icon glyphs of one bar, or the bare icons of the composer row, are drawn at different sizes,
-// by more than 1 px.
+// - the icon glyphs of one bar, or of the composer row, are drawn at different sizes or stroke weights,
+// by more than 1 px (0.25 px for stroke weights).
 import { dirname, join } from 'node:path';
 
 import { assert, sleep } from './harness.mjs';
@@ -58,25 +60,36 @@ async function measure(page) {
     const row = document.querySelector('.composer-row');
     if (shown(form) && shown(row)) {
       const frame = form.getBoundingClientRect();
-      const controls = controlsOf(row);
+      // A picker is measured by its chip: its menu, open or not, floats over the row and is not part of it.
+      const sizer = (element) => element.querySelector(':scope > .model-chip') ?? element;
+      const controls = controlsOf(row).map(({ element }) => ({ element, ink: window.__ink(sizer(element)) })).filter((entry) => entry.ink !== null);
       const input = form.querySelector('.composer-input');
-      // A bare icon button: no painted background of its own (the send button's circle is its own ink).
-      const unpainted = (element) => {
-        const parts = getComputedStyle(element).backgroundColor.match(/rgba?\(([^)]+)\)/)?.[1].split(/[ ,/]+/).filter(Boolean) ?? [];
-        return parts.length === 4 && Number(parts[3]) === 0;
-      };
-      const bare = controls
-        .filter(({ element }) => element.matches('button') && unpainted(element))
-        .map(({ element }) => element.querySelector(':scope > svg'))
+      // Each control's own glyph, at its drawn size and stroke weight: the icons, the send arrow and the model's logo.
+      const glyphs = controls
+        .map(({ element }) => element.querySelector('svg'))
         .filter((svg) => svg !== null)
-        .map((svg) => Math.round(svg.getBoundingClientRect().width * 10) / 10);
+        .map((svg) => {
+          const line = svg.querySelector('path[stroke], path, line, polyline');
+          const stroke = getComputedStyle(line ?? svg).strokeWidth;
+          const strokeOn = getComputedStyle(line ?? svg).stroke !== 'none';
+          return {
+            size: Math.round(svg.getBoundingClientRect().width * 10) / 10,
+            stroke: strokeOn ? Math.round(Number.parseFloat(stroke) * (svg.getScreenCTM()?.a ?? 1) * 100) / 100 : null,
+          };
+        });
+      // The chip's own parts (its logo and its words) on the row's line too.
+      const chip = row.querySelector('.model-chip');
+      const parts = chip === null ? [] : [...chip.children].filter(shown).map((part) => window.__ink(part)).filter((ink) => ink !== null);
       result.composer = {
         controls: controls.map(({ element }) => name(element)),
         left: controls[0].ink.left - frame.left,
         right: frame.right - controls.at(-1).ink.right,
-        bottoms: controls.map(({ ink }) => Math.round(ink.bottom * 10) / 10),
+        foot: frame.bottom - controls.at(-1).ink.bottom,
+        centres: [...controls.map(({ ink }) => (ink.top + ink.bottom) / 2), ...parts.map((ink) => (ink.top + ink.bottom) / 2)].map((value) => Math.round(value * 10) / 10),
+        heights: controls.map(({ element }) => Math.round(sizer(element).getBoundingClientRect().height * 10) / 10),
         text: input === null ? null : window.__ink(input)?.left - frame.left,
-        glyphs: bare,
+        glyphs: glyphs.map((glyph) => glyph.size),
+        strokes: glyphs.map((glyph) => glyph.stroke).filter((stroke) => stroke !== null),
       };
     }
     const heading = document.querySelector('.hero h1');
@@ -107,9 +120,12 @@ function problems(screen, found) {
     const { composer } = found;
     const where = `${screen}: composer`;
     if (Math.abs(composer.left - composer.right) > TOLERANCE) out.push(`${where}: ink insets ${fixed(composer.left)} (${composer.controls[0]}) vs ${fixed(composer.right)} (${composer.controls.at(-1)}) px`);
-    if (spread(composer.bottoms) > TOLERANCE) out.push(`${where}: ink bottoms ${composer.bottoms.join(' / ')} (${composer.controls.join(', ')})`);
+    if (Math.abs(composer.foot - composer.right) > TOLERANCE) out.push(`${where}: ${composer.controls.at(-1)} ${fixed(composer.foot)} px from the foot, ${fixed(composer.right)} px from the side`);
+    if (spread(composer.centres) > TOLERANCE) out.push(`${where}: ink centres ${composer.centres.join(' / ')} (${composer.controls.join(', ')}, then the chip's logo and words)`);
+    if (spread(composer.heights) > TOLERANCE) out.push(`${where}: control heights ${composer.heights.join(' / ')} px`);
     if (composer.text !== null && Math.abs(composer.text - composer.left) > TOLERANCE) out.push(`${where}: text starts at ${fixed(composer.text)} px, the first control's ink at ${fixed(composer.left)} px`);
-    if (spread(composer.glyphs) > TOLERANCE) out.push(`${where}: bare icon glyphs of ${composer.glyphs.join(' / ')} px`);
+    if (spread(composer.glyphs) > TOLERANCE) out.push(`${where}: glyphs of ${composer.glyphs.join(' / ')} px`);
+    if (spread(composer.strokes) > 0.25) out.push(`${where}: glyph strokes of ${composer.strokes.join(' / ')} px`);
   }
   if (found.hero !== null && Math.abs(found.hero.headingCentre - found.hero.lineCentre) > TOLERANCE) {
     out.push(`${screen}: "${found.hero.line}" ink centre ${fixed(found.hero.lineCentre)} vs heading "${found.hero.heading}" ${fixed(found.hero.headingCentre)}`);
@@ -237,5 +253,5 @@ export async function checkLayout({ livePanel, serviceWorker, screenshotPath }) 
   const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
   for (const [screen, count] of Object.entries(counts)) assert(count > 0, `The layout check measured nothing on ${screen}`);
   assert(failures.length === 0, `Panel layout, measured on its ink (${failures.length} problems):\n${failures.join('\n')}`);
-  console.log(`Panel layout: ${total} bars, composers and heroes measured on ${Object.keys(counts).length} screens at ${WIDTHS.join('/')} px, light and dark; ink insets, bottoms, centres and glyph sizes within ${TOLERANCE} px`);
+  console.log(`Panel layout: ${total} bars, composers and heroes measured on ${Object.keys(counts).length} screens at ${WIDTHS.join('/')} px, light and dark; ink insets, centre lines, control sizes and glyph sizes within ${TOLERANCE} px`);
 }

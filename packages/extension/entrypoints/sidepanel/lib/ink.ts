@@ -13,8 +13,8 @@ export interface Ink {
 export interface InkAlign {
   /** The first and last controls' ink sit `--ink-inset` from the frame's edges. */
   edges?: boolean;
-  /** Every control's ink bottom sits on one line, the row's bottom. */
-  bottoms?: boolean;
+  /** Every control's ink centre sits on one line, the middle of the row's content box. */
+  centres?: boolean;
 }
 
 const SHAPES = 'path, circle, ellipse, rect, line, polyline, polygon';
@@ -84,16 +84,16 @@ export function inkOf(element: Drawn): Ink | undefined {
 }
 
 /** Sets margins on a row's controls so that their ink, not their boxes, meets the row's lines. */
-export function alignInk(row: HTMLElement, { edges = false, bottoms = false }: InkAlign): void {
+export function alignInk(row: HTMLElement, { edges = false, centres = false }: InkAlign): void {
   const controls = [...row.children].filter(
     (child): child is Drawn => (child instanceof HTMLElement || child instanceof SVGElement) && child.getClientRects().length > 0 && !child.hasAttribute('data-ink-skip'),
   );
   for (const control of controls) {
     control.style.removeProperty('margin-left');
     control.style.removeProperty('margin-right');
-    control.style.removeProperty('margin-bottom');
+    control.style.removeProperty('translate');
   }
-  const measured = controls.map((control) => ({ control, box: control.getBoundingClientRect(), ink: inkOf(control) })).filter((entry) => entry.ink !== undefined) as Array<{ control: Drawn; box: DOMRect; ink: Ink }>;
+  const measured = controls.map((control) => ({ control, ink: inkOf(control) })).filter((entry) => entry.ink !== undefined) as Array<{ control: Drawn; ink: Ink }>;
   if (measured.length === 0) return;
   if (edges) {
     const frame = (row.closest('[data-ink-frame]') ?? row).getBoundingClientRect();
@@ -103,8 +103,15 @@ export function alignInk(row: HTMLElement, { edges = false, bottoms = false }: I
     if (first !== undefined) first.control.style.marginLeft = `${Number.parseFloat(getComputedStyle(first.control).marginLeft) + inset - (first.ink.left - frame.left)}px`;
     if (last !== undefined) last.control.style.marginRight = `${Number.parseFloat(getComputedStyle(last.control).marginRight) + inset - (frame.right - last.ink.right)}px`;
   }
-  if (bottoms) {
-    for (const { control, box, ink } of measured) control.style.marginBottom = `${Number.parseFloat(getComputedStyle(control).marginBottom) - (box.bottom - ink.bottom)}px`;
+  if (centres) {
+    // Moved by `translate`, so the boxes (and what they hit) stay where the row put them.
+    const frame = row.getBoundingClientRect();
+    const style = getComputedStyle(row);
+    const line = (frame.top + Number.parseFloat(style.paddingTop) + Number.parseFloat(style.borderTopWidth) + frame.bottom - Number.parseFloat(style.paddingBottom) - Number.parseFloat(style.borderBottomWidth)) / 2;
+    for (const { control, ink } of measured) {
+      const shift = line - (ink.top + ink.bottom) / 2;
+      if (Math.abs(shift) >= 0.05) control.style.translate = `0 ${Math.round(shift * 100) / 100}px`;
+    }
   }
 }
 

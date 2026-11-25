@@ -9,13 +9,17 @@ import { choiceLabel, isModelName, reasoningOption, RUNTIME_MODES, type Choice, 
 import { compactModelName } from './lib/model-short-name';
 import { t3, type ChatAttachment } from './lib/t3-client';
 import { insertDictation } from './lib/voice';
-import { ICON, ProviderIcon, useDismiss, useInkAlign } from './ui';
+import { GLYPH_STROKE, ICON, ProviderIcon, useDismiss, useInkAlign } from './ui';
 
-/** T3 Code's send arrow (its composer's own 14 px glyph). */
+/** One row: every control in the same 32 px circle or pill, their ink on one centre line, 12 px from the frame. */
+const ROW_ALIGN = { edges: true, centres: true };
+/** The logo and the words of the model chip share the row's centre line. */
+const CHIP_ALIGN = { centres: true };
+/** T3 Code's composer send glyph, drawn at the row's 16 px with the row's 1.5 px stroke. */
 function SendArrow(): ReactNode {
   return (
-    <svg width={14} height={14} viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+    <svg width={ICON.md} height={ICON.md} viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" strokeWidth={1.3125} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -33,7 +37,7 @@ export function ModelPicker({
   access?: AccessControl | undefined;
 }): ReactNode {
   const [open, setOpen] = useState(false);
-  const chip = useInkAlign<HTMLButtonElement>({ bottoms: true });
+  const chip = useInkAlign<HTMLButtonElement>(CHIP_ALIGN);
   const [rail, setRail] = useState(choice?.provider);
   const [query, setQuery] = useState('');
   const box = useRef<HTMLDivElement>(null);
@@ -237,8 +241,8 @@ function AccessMenu({ value, modes, onChange }: AccessControl): ReactNode {
 export function ThreadModelPicker({ name, effort, driver, access }: { name: string; effort?: string | undefined; driver?: string | undefined; access?: AccessControl | undefined }): ReactNode {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
-  const button = useInkAlign<HTMLButtonElement>({ bottoms: true });
-  const fixed = useInkAlign<HTMLSpanElement>({ bottoms: true });
+  const button = useInkAlign<HTMLButtonElement>(CHIP_ALIGN);
+  const fixed = useInkAlign<HTMLSpanElement>(CHIP_ALIGN);
   useDismiss(box, open, () => setOpen(false));
   const mode = RUNTIME_MODES.find((entry) => entry.id === access?.value)?.label;
   const chip = (
@@ -465,7 +469,7 @@ export function Composer({
 }): ReactNode {
   const input = useRef<HTMLTextAreaElement>(null);
   // The paperclip's and send's ink sit the composer's inset from its edges, and every control's ink stands on one line.
-  const row = useInkAlign<HTMLDivElement>({ edges: true, bottoms: true });
+  const row = useInkAlign<HTMLDivElement>(ROW_ALIGN);
   const chooser = useRef<HTMLInputElement>(null);
   const dragging = usePanelDrop(attachments);
   useEffect(() => {
@@ -530,8 +534,8 @@ export function Composer({
         <div className="composer-row" ref={row}>
           {attachments === undefined ? null : (
             <>
-              <button type="button" className="composer-icon" aria-label="Attach files" title="Attach files" onClick={() => chooser.current?.click()}>
-                <Paperclip size={ICON.md} aria-hidden="true" />
+              <button type="button" className="composer-icon" data-ink="box" aria-label="Attach files" title="Attach files" onClick={() => chooser.current?.click()}>
+                <Paperclip size={ICON.md} strokeWidth={GLYPH_STROKE} aria-hidden="true" />
               </button>
               <input
                 ref={chooser}

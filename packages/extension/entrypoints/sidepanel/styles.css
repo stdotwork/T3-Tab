@@ -28,8 +28,10 @@
   --radius-xl: 16px;
   /* The screen's side inset, and where the ink of every bar's and the composer's first and last control sits. */
   --gutter: 12px;
-  /* Every icon button, the search field and the model chip. */
+  /* Every icon button and the search field. */
   --control: 28px;
+  /* The composer row's one control size: its circles, the model chip and send. */
+  --composer-control: 32px;
   /* Between controls in a bar or row. */
   --gap: 4px;
   --text-2xs: 11px;
@@ -101,15 +103,17 @@ ul { list-style: none; margin: 0; padding: 0; }
 .composer-input { display: block; width: 100%; resize: none; border: 0; background: transparent; padding: 10px calc(var(--gutter) - 1px) 4px; font-size: var(--text-sm); line-height: 1.5; max-height: 200px; min-height: 36px; outline: none; }
 .composer-chips { display: flex; flex-wrap: wrap; gap: var(--gap); min-width: 0; padding: 10px calc(var(--gutter) - 1px) 0; }
 .composer-chips + .composer-input { padding-top: 6px; }
-.composer-row { --ink-inset: var(--gutter); display: flex; align-items: flex-end; gap: var(--gap); min-width: 0; padding: 4px 0 calc(var(--gutter) - 1px); }
+/* One centre line and one control size: paperclip and mic in tinted 32 px circles mirroring send, the model chip a 32 px pill,
+   and the circles 12 px from the frame at the sides and the bottom, where the chips and the text start too. */
+.composer-row { --ink-inset: var(--gutter); display: flex; align-items: center; gap: var(--gap); min-width: 0; padding: 4px 0 calc(var(--gutter) - 1px); }
 .composer-spacer { flex: 1 1 0; min-width: 0; }
 .composer-row > .picker { min-width: 0; flex: 0 1 auto; }
-.composer-icon { display: inline-grid; place-items: center; width: var(--control); height: var(--control); flex: none; border-radius: 50%; color: var(--icon); transition: background 0.12s, color 0.12s; }
-.composer-icon:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+.composer-icon { display: inline-grid; place-items: center; width: var(--composer-control); height: var(--composer-control); flex: none; border-radius: 50%; background: color-mix(in srgb, var(--fg) 6%, transparent); color: var(--icon); transition: background 0.12s, color 0.12s; }
+.composer-icon:hover:not(:disabled) { background: color-mix(in srgb, var(--fg) 11%, transparent); color: var(--fg); }
 .composer-icon:disabled { cursor: default; }
-.mic-btn.off { opacity: 0.55; }
-.mic-btn.off:hover { opacity: 0.85; }
-.mic-pill { display: inline-flex; align-items: center; gap: 2px; height: 32px; padding-left: var(--gap); border-radius: var(--radius-xl); background: color-mix(in srgb, var(--app-theme-error) 12%, transparent); flex: none; }
+.mic-btn.off svg { opacity: 0.55; }
+.mic-btn.off:hover svg { opacity: 0.85; }
+.mic-pill { display: inline-flex; align-items: center; gap: 2px; height: var(--composer-control); padding-left: var(--gap); border-radius: var(--radius-xl); background: color-mix(in srgb, var(--app-theme-error) 12%, transparent); flex: none; }
 .mic-time { min-width: 34px; color: var(--fg); font-size: var(--text-xs); font-variant-numeric: tabular-nums; text-align: center; }
 .mic-cancel { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: var(--muted-fg); }
 .mic-cancel:hover { background: var(--hover); color: var(--fg); }
@@ -123,7 +127,7 @@ ul { list-style: none; margin: 0; padding: 0; }
 .file-chip button { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: var(--radius-xs); opacity: 0.7; flex: none; }
 .file-chip button:hover { opacity: 1; background: color-mix(in srgb, currentColor 14%, transparent); }
 .file-chip.problem { box-shadow: inset 0 0 0 1px var(--app-theme-error); color: var(--app-theme-error-foreground); }
-.send-btn { display: inline-grid; place-items: center; width: 32px; height: 32px; flex: none; border-radius: 50%; background: var(--action); color: var(--action-fg); transition: background 0.12s, opacity 0.12s; }
+.send-btn { display: inline-grid; place-items: center; width: var(--composer-control); height: var(--composer-control); flex: none; border-radius: 50%; background: var(--action); color: var(--action-fg); transition: background 0.12s, opacity 0.12s; }
 .send-btn:hover:not(:disabled) { background: var(--action-hover); }
 .send-btn:disabled { background: color-mix(in srgb, var(--fg) 12%, transparent); color: var(--muted-fg); }
 .send-btn.stop, .send-btn.stop:hover:not(:disabled) { background: var(--app-theme-error); color: #fff; }
@@ -140,9 +144,9 @@ ul { list-style: none; margin: 0; padding: 0; }
 .tab-chip.off:not(.static):hover { color: var(--fg); }
 
 .picker { position: relative; min-width: 0; }
-/* Its logo and words stand on one line 8 px above the chip's foot (useInkAlign), so the chip stands on the row's line. */
-.model-chip { display: inline-flex; align-items: flex-end; justify-content: center; gap: 6px; height: var(--control); padding: 0 8px 8px; border-radius: var(--radius); font-size: var(--text-sm); white-space: nowrap; max-width: 100%; min-width: 0; }
-.model-chip:not(.static):hover { background: var(--hover); }
+/* Its logo and words share the row's centre line (useInkAlign). */
+.model-chip { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--composer-control); padding: 0 8px; border-radius: calc(var(--composer-control) / 2); font-size: var(--text-sm); white-space: nowrap; max-width: 100%; min-width: 0; }
+.model-chip:not(.static):hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
 .model-chip.static { cursor: default; }
 .model-chip-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .model-chip-effort { color: var(--muted-fg); flex: none; }
@@ -540,3 +544,4 @@ button.session-text:hover strong { text-decoration: underline; text-underline-of
 .auto-list strong { color: var(--fg); font-weight: 500; }
 .site-list .segmented { margin-top: 6px; background: var(--bg); box-shadow: inset 0 0 0 1px var(--line); }
 .site-list .segmented button.active { background: var(--selected); box-shadow: none; }
+

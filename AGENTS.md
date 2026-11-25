@@ -81,9 +81,11 @@ the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e
 screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, Settings
 and a theme sheet at 320, 360 and 400 px in light and dark, and measures visible ink (SVG strokes and fills, text glyphs
 on their baseline, painted boxes), never padding boxes. It fails when a bar's or the composer row's first and last
-controls sit at ink distances from its edges more than 1 px apart, when the composer's controls do not stand on one ink
-line or its text does not start on the paperclip's, when the hero's project line is off the heading's ink centre, or
-when one bar's icons are drawn at different sizes. It renders the panel from that state and, when
+controls sit at ink distances from its edges more than 1 px apart, when the composer's send circle is not as far from
+the frame's foot as from its side, when the composer's controls are not one size or their ink (and the model chip's
+logo and words) is off one centre line, when its text does not start on the paperclip's ink, when the hero's project
+line is off the heading's ink centre, or when one bar's icons, or the composer row's glyphs, are drawn at different
+sizes or stroke weights. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
 variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once that the earlier one ended, and that `status` reports each state of its link.

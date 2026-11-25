@@ -217,11 +217,15 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   tab" ambiguous. Each tab now opens its own panel and keeps its own draft, project and screen. A thread keeps running when
   the owner moves away; other tabs' new-thread screens list it, and permission cards from other tabs say so.
 - **The panel lines up what people see, not boxes.** The first and last controls of every bar and of the composer's
-  row sit with their visible ink on the screen's 12 px gutter, the composer's controls stand on one line at their ink
-  (a bigger control is just taller, text stands on its baseline), and the hero's lines centre on the heading's ink. The
+  row sit with their visible ink on the screen's 12 px gutter, and the hero's lines centre on the heading's ink. The
   panel measures this when it lays out (`useInkAlign` and `useInkCentre`), so a new control needs no numbers of its
-  own; sizes come from shared tokens (one control size, one gap, one icon scale, one type scale). T3 Code itself puts
-  its paperclip's ink about twice as far from the edge as its send button; the panel does not copy that.
+  own; sizes come from shared tokens (one control size, one gap, one icon scale, one type scale).
+- **The composer row is one size on one centre line.** Paperclip and mic sit in tinted 32 px circles that mirror the
+  32 px send circle, the model chip is a 32 px pill, every glyph is 16 px at one 1.5 px stroke, and every control's
+  ink (and the chip's logo and words) is centred on one line. The circles sit 12 px from the frame at the sides and
+  the foot, where the chips and the text start. Standing the controls on one baseline instead left the small glyphs
+  hanging below the send circle's middle; T3 Code's own row at the panel's width (32 px ghost buttons with 18 px icons,
+  a 36 px send) puts its paperclip twice as far from the edge as send, so the panel does not copy it.
 - **The thread list follows T3's sidebar.** Rows carry T3's project avatar, status or time, title, the machine and the
   provider; hovering offers T3's snooze presets and Settle (Wake and Un-settle on the shelves), sent as T3's own client
   sends them. The Working, Snoozed and Settled shelves sit at the foot of the list as in T3. T3's custom snooze time is

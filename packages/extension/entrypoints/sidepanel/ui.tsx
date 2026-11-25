@@ -8,12 +8,15 @@ import { PROVIDER_LOGOS } from './lib/provider-logos';
  * The panel's icon sizes, and the only ones it uses: `md` in bars, on icon buttons and in the composer's row; `sm` beside
  * 14 px text in rows and menus; `xs` beside 12 px text in chips and labels; `lg` for the marks in the setup list.
  */
+/** The composer row's glyph weight: Lucide draws on a 24 px grid, so 2.25 there is a 1.5 px stroke at 16 px, the send arrow's. */
+export const GLYPH_STROKE = 2.25;
+
 export const ICON = { xs: 12, sm: 14, md: 16, lg: 20 } as const;
 
 /**
  * Puts the visible ink of a row's controls where the row's tokens say, whatever the glyph inside each box: the first
  * control's ink `--ink-inset` from the frame's left edge and the last one's the same from its right edge (`edges`), and
- * every control's ink bottom on one line (`bottoms`). The frame is the nearest `[data-ink-frame]`, else the row.
+ * every control's ink centre on the row's middle line (`centres`). The frame is the nearest `[data-ink-frame]`, else the row.
  */
 export function useInkAlign<T extends HTMLElement>(options: InkAlign): RefObject<T | null> {
   return useInkLayout<T>((row) => alignInk(row, options));
