@@ -75,7 +75,7 @@ sidebar sections in T3's order (pinned, active, then the Working, Snoozed and Se
 out, and the threads button carries a dot only while a thread waits on the owner's answer or approval. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
-variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long.
+variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once that the earlier one ended, and that `status` reports each state of its link.
 
 `e2e/panel-flow.mjs` (not part of `pnpm e2e`, because it needs a real agent login) walks the panel from first open to
 finished threads against a real throwaway T3 and again with T3 absent, and saves each screen at 400 px in light and
@@ -288,6 +288,18 @@ group. It can list and use only tabs in that group or tabs the owner shares from
 the page loads in a new tab behind the one the owner is on, with the debugger attached on `about:blank` first. If a
 redirect takes it to another origin, the tab stays in the session's group unapproved, and the reply names the origin and
 says to read it to ask for access; an origin that is already allowed just carries on.
+
+When the control connection closes (the daemon stopped or restarted), that session is over: the daemon forgot
+it, with its tab group, approvals and shared tabs. An MCP server does not resume it. A call that was in flight
+fails, and the next tool call starts a new session on a new connection, through `ensureDaemon`, which restarts
+the daemon if needed; if that fails, the error says why and the call after it tries again. The first browser
+tool reply after that says the earlier session ended and that its tabs and approvals are gone, so the agent
+opens tabs again or asks the owner to share one. A claim code, and a claim-file report, go with the first
+registration that succeeds and are never sent again, because a code works once: a direct run's new session
+starts without the owner's tabs. The new session id is bound to its new socket like any other. `status` adds
+one line for the MCP server's own link: connected, not started yet, or ended (the next browser tool call
+starts a new session); its other lines still come from a one-shot connection, so on its own they say nothing
+about this link.
 
 Site permissions are stored per HTTP(S) origin: `ask` by default, `read` or `allow`. `read` lets sessions
 read the site without a prompt and never covers opening, acting or `run_js`; `allow` covers all four. A read

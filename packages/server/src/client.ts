@@ -25,6 +25,8 @@ const LOCK_STALE_MS = 30_000;
 const CONTROL_TIMEOUT_MS = 5_000;
 // Longer than the daemon waits on the browser, so the daemon's own error arrives first.
 export const TOOL_TIMEOUT_MS = 310_000;
+const CONNECTION_CLOSED =
+  'The T3-Tab session connection closed, so this call did not finish and its result is unknown. The next tool call starts a new session.';
 
 export async function ensureDaemon(env: NodeJS.ProcessEnv = process.env): Promise<DaemonState> {
   const directory = stateDirectory(env);
@@ -74,20 +76,43 @@ export class DaemonSession {
   private socket: WebSocket | undefined;
   private session: ToolSession | undefined;
   private registration: Promise<ToolSession> | undefined;
-  private terminal = false;
+  /** True from the moment a registered session's connection closes until a new session registers. */
+  private ended = false;
+  /** Set when a new session registered after an earlier one ended; the next tool reply tells the agent once. */
+  private reconnected = false;
+  private claim: string | undefined;
+  private claimFileProblem: { file: string; problem: ClaimFileProblem } | undefined;
   private readonly pending = new Map<string, PendingControl>();
   private clientName = 'MCP client';
   private eventListener: ((event: ControlEvent) => void) | undefined;
 
   /**
    * `claim` is the side-panel code a direct run's MCP server read from its private file; `claimFileProblem` says
-   * why it could not, so the daemon can warn in that conversation.
+   * why it could not, so the daemon can warn in that conversation. Both go to the daemon with the first
+   * registration that succeeds and never again: a code works once, so a session that starts after the first one
+   * ended has no tabs until it opens some or the owner shares one.
    */
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
-    private readonly claim?: string,
-    private readonly claimFileProblem?: { file: string; problem: ClaimFileProblem },
-  ) {}
+    claim?: string,
+    claimFileProblem?: { file: string; problem: ClaimFileProblem },
+  ) {
+    this.claim = claim;
+    this.claimFileProblem = claimFileProblem;
+  }
+
+  /** This server's own link to the daemon, for `status`. */
+  link(): 'connected' | 'not-started' | 'ended' {
+    if (this.session !== undefined && this.socket?.readyState === WebSocket.OPEN) return 'connected';
+    return this.ended ? 'ended' : 'not-started';
+  }
+
+  /** True once after a new session registered because the earlier one ended. */
+  takeReconnected(): boolean {
+    const was = this.reconnected;
+    this.reconnected = false;
+    return was;
+  }
 
   /** Called with what the daemon tells this session unasked: its permission prompts opening and closing. */
   onEvent(listener: (event: ControlEvent) => void): void {
@@ -109,14 +134,19 @@ export class DaemonSession {
   }
 
   async register(): Promise<ToolSession> {
-    if (this.terminal) throw new Error('The session control connection closed; restart the MCP client.');
     if (this.session !== undefined) return this.session;
     if (this.registration !== undefined) return await this.registration;
-    this.registration = this.connectAndRegister();
+    // A session whose connection closed is not resumed: the daemon forgot it. This one registers a new session.
+    const registration = this.connectAndRegister();
+    this.registration = registration;
     try {
-      return await this.registration;
+      return await registration;
+    } catch (error) {
+      if (!this.ended) throw error;
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`The earlier T3-Tab session ended and a new one could not be started: ${reason}`);
     } finally {
-      this.registration = undefined;
+      if (this.registration === registration) this.registration = undefined;
     }
   }
 
@@ -145,9 +175,12 @@ export class DaemonSession {
     });
     this.socket = socket;
     try {
-      socket.on('message', (data) => this.handleMessage(data));
-      socket.on('error', (error) => this.failAll(error));
-      socket.on('close', () => this.failAll(new Error('The session control connection closed; restart the MCP client.')));
+      // A socket that is no longer this session's link must not end the session that replaced it.
+      socket.on('message', (data) => {
+        if (this.socket === socket) this.handleMessage(data);
+      });
+      socket.on('error', (error) => this.failAll(socket, error));
+      socket.on('close', () => this.failAll(socket, new Error(CONNECTION_CLOSED)));
       await new Promise<void>((resolve, reject) => {
         socket.once('open', () => resolve());
         socket.once('error', reject);
@@ -172,6 +205,10 @@ export class DaemonSession {
         throw new Error('T3-Tab daemon returned an invalid session');
       }
       this.session = session;
+      this.claim = undefined;
+      this.claimFileProblem = undefined;
+      if (this.ended) this.reconnected = true;
+      this.ended = false;
       return session;
     } catch (error) {
       if (this.socket === socket) this.socket = undefined;
@@ -183,7 +220,7 @@ export class DaemonSession {
   private async request(request: ControlRequest, timeoutMs: number): Promise<ControlResponse> {
     const socket = this.socket;
     if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
-      throw new Error('The session control connection is not open; restart the MCP client.');
+      throw new Error(CONNECTION_CLOSED);
     }
     return await new Promise<ControlResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -205,7 +242,7 @@ export class DaemonSession {
     try {
       response = JSON.parse(data.toString()) as ControlResponse;
     } catch {
-      this.failAll(new Error('T3-Tab daemon returned invalid JSON'));
+      if (this.socket !== undefined) this.failAll(this.socket, new Error('T3-Tab daemon returned invalid JSON'));
       return;
     }
     const event = response as unknown as ControlEvent;
@@ -221,8 +258,9 @@ export class DaemonSession {
     pending.resolve(response);
   }
 
-  private failAll(error: Error): void {
-    this.terminal = true;
+  private failAll(socket: WebSocket, error: Error): void {
+    if (this.socket !== socket) return;
+    if (this.session !== undefined) this.ended = true;
     this.session = undefined;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
@@ -230,6 +268,7 @@ export class DaemonSession {
     }
     this.pending.clear();
     this.socket = undefined;
+    socket.terminate();
   }
 }
 
