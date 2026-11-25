@@ -76,7 +76,8 @@ out, and the threads button carries a dot only while a thread waits on the owner
 keeps the paperclip, model, mic and send in that order at 320, 360 and 400 px with no access row under it; the mic says why it cannot record without T3; a PDF for a direct run is named and holds the message; a pasted image is attached; a PNG
 dragged over the heading shows the whole-panel drop overlay, is attached when dropped there and
 reaches the fake Claude Code as an image block, while a file dropped on Settings is refused; Settings has a 28 px
-color scheme row and a theme menu with swatches, Create theme and Add theme, and each theme's actions beside it; and with T3's config handed to the panel, the access level is chosen in
+color scheme row, T3 Code's built-in theme with T3's shared theme ignored, and a theme menu with swatches, Create
+theme and Add theme, and each theme's actions beside it; and with T3's config handed to the panel, the access level is chosen in
 the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e/ink.mjs`) walks the new-thread
 screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, Settings
 and a theme sheet at 320, 360 and 400 px in light and dark, and measures visible ink (SVG strokes and fills, text glyphs
@@ -457,11 +458,11 @@ directly through the daemon and feeds the same thread view.
   so instead of recording. A side panel cannot show the browser's microphone prompt, so the first press opens
   `microphone.html` in a tab, where the browser asks once for the extension; after that the panel records without asking.
   Nothing uses the browser's Web Speech service.
-- **Themes.** Settings shows the color scheme as one segmented row and the theme as one menu (Follow T3 Code, then
-  every theme with its light and dark swatches, then Create theme and Add theme); edit, duplicate, export and remove
-  for the current theme sit in a menu beside it. By default the panel follows T3's environment theme (`defaultTheme` and `defaultAppearance` in T3's
-  config, set with `t3 theme set` or T3's `t3_theme_set` tool). The theme picked inside T3's app stays in that window's
-  local storage and T3 offers no way to read it, so the panel cannot follow it. T3 theme files can be imported. The owner's themes can be
+- **Themes.** Settings shows the color scheme as one segmented row and the theme as one menu (every theme with its
+  light and dark swatches, then Create theme and Add theme); edit, duplicate, export and remove for the current theme
+  sit in a menu beside it. A fresh install uses T3 Code's built-in theme with the System scheme. The panel does not
+  follow T3's theme, and a stored "follow T3 Code" choice from an earlier version, or a theme that is gone, falls back
+  to that default (`known` in `lib/theme.ts`). T3 theme files can be imported. The owner's themes can be
   edited, and any theme can be duplicated with all its colours and both of its modes. A name already in use gets a number
   instead of replacing that theme. A change reaches panels open on other tabs through `chrome.storage.onChanged`. Custom
   CSS goes through T3's own filter, which removes rules that load remote files.

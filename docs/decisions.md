@@ -234,6 +234,8 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   grid of cards; in a side panel that pushed everything else off screen, so the panel uses one segmented row for the
   scheme and one select-style menu for the theme, as T3 uses for its other settings, with the current theme's actions
   in a menu beside it.
+- **The panel does not follow T3's theme** until T3's plugin system offers a supported way: T3 keeps the desktop's theme
+  in the app window's own storage, and clients cannot set the environment theme.
 - **Files can be dropped anywhere on a screen with a composer.** As in T3's workspace drop, a file dragged over the
   new-thread screen or a thread shows a dashed overlay over the whole panel and goes to the composer; on other screens a
   drop is refused so the panel never opens the file in its place.

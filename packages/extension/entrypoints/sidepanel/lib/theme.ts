@@ -1,16 +1,15 @@
 /**
- * Appearance: follows T3's active theme by default; T3 theme files can be imported and themes edited in full.
- * Colours are T3's 61 roles, applied as the same `--app-theme-*` variables T3 Code uses.
+ * Appearance: the panel's own theme (T3 Code's built-in one by default) and colour scheme; T3 theme files can be
+ * imported and themes edited in full. Colours are T3's 61 roles, applied as the same `--app-theme-*` variables T3 Code
+ * uses. The panel does not follow the theme picked in T3: T3 keeps it in the app window's own storage.
  */
 import { useSyncExternalStore } from 'react';
 
 import { applyThemeCss } from '../../../src/t3/theme-css';
 import {
   APP_THEME_VARIABLES,
-  environmentThemeDefinition,
   getThemeColorsForMode,
   themeIdFromName,
-  type EnvironmentTheme,
   type ThemeAppearance,
   type ThemeColors,
   type ThemeDefinition,
@@ -29,17 +28,15 @@ export const STOCK_THEME: ThemeDefinition = {
 export type SchemeChoice = 'system' | 'light' | 'dark';
 
 export interface AppearanceState {
-  /** `follow` uses T3's active theme; otherwise a theme id. */
+  /** The id of the theme in use. */
   theme: string;
   scheme: SchemeChoice;
   custom: ThemeDefinition[];
 }
 
 const KEY = 'appearance.v1';
-let state: AppearanceState = { theme: 'follow', scheme: 'system', custom: [] };
-let t3Theme = '';
-let t3Appearance = '';
-let t3Themes: ThemeDefinition[] = [];
+// A fresh install: T3 Code's built-in theme, light or dark as the system is.
+let state: AppearanceState = { theme: STOCK_THEME.id, scheme: 'system', custom: [] };
 let preview: { colors: ThemeColors; appearance: ThemeAppearance; css?: string } | undefined;
 const listeners = new Set<() => void>();
 const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -48,9 +45,11 @@ const notify = (): void => {
   for (const listener of listeners) listener();
 };
 
-export function allThemes(): ThemeDefinition[] {
+export const allThemes = (): ThemeDefinition[] => allThemesWith(state.custom);
+
+function allThemesWith(custom: readonly ThemeDefinition[]): ThemeDefinition[] {
   const seen = new Set<string>();
-  return [STOCK_THEME, ...BUILT_IN_THEMES, ...t3Themes, ...state.custom].filter((theme) => {
+  return [STOCK_THEME, ...BUILT_IN_THEMES, ...custom].filter((theme) => {
     if (seen.has(theme.id)) return false;
     seen.add(theme.id);
     return true;
@@ -58,13 +57,11 @@ export function allThemes(): ThemeDefinition[] {
 }
 
 function resolvedTheme(): ThemeDefinition {
-  const id = state.theme === 'follow' ? t3Theme : state.theme;
-  return allThemes().find((theme) => theme.id === id) ?? STOCK_THEME;
+  return allThemes().find((theme) => theme.id === state.theme) ?? STOCK_THEME;
 }
 
 function resolvedAppearance(theme: ThemeDefinition): ThemeAppearance {
-  const wanted = state.theme === 'follow' && (t3Appearance === 'light' || t3Appearance === 'dark') && state.scheme === 'system' ? t3Appearance : state.scheme;
-  const appearance: ThemeAppearance = wanted === 'system' ? (media.matches ? 'dark' : 'light') : wanted;
+  const appearance: ThemeAppearance = state.scheme === 'system' ? (media.matches ? 'dark' : 'light') : state.scheme;
   return getThemeColorsForMode(theme, appearance) === null ? theme.appearance : appearance;
 }
 
@@ -89,9 +86,18 @@ function paint(): void {
   applyThemeCss(css);
 }
 
+/**
+ * A stored choice the panel can still draw: the theme in use is T3 Code's built-in one when the choice was "follow T3
+ * Code" (which the panel no longer offers) or names a theme that is gone, such as one T3 used to share.
+ */
+function known(next: AppearanceState): AppearanceState {
+  const theme = allThemesWith(next.custom).some((entry) => entry.id === next.theme) ? next.theme : STOCK_THEME.id;
+  return theme === next.theme ? next : { ...next, theme };
+}
+
 export async function loadAppearance(): Promise<void> {
   const stored = await readStored<AppearanceState>(KEY);
-  if (stored !== undefined) state = { ...state, ...stored };
+  if (stored !== undefined) state = known({ ...state, ...stored });
   media.addEventListener('change', () => {
     paint();
     notify();
@@ -100,7 +106,7 @@ export async function loadAppearance(): Promise<void> {
   chrome.storage?.onChanged?.addListener((changes, area) => {
     const next = changes[KEY]?.newValue as AppearanceState | undefined;
     if (area !== 'local' || next === undefined || JSON.stringify(next) === JSON.stringify(state)) return;
-    state = { ...state, ...next };
+    state = known({ ...state, ...next });
     paint();
     notify();
   });
@@ -154,24 +160,13 @@ export function importCustomTheme(theme: ThemeDefinition): string {
 }
 
 export function removeCustomTheme(id: string): void {
-  save({ ...state, custom: state.custom.filter((entry) => entry.id !== id), theme: state.theme === id ? 'follow' : state.theme });
+  save({ ...state, custom: state.custom.filter((entry) => entry.id !== id), theme: state.theme === id ? STOCK_THEME.id : state.theme });
 }
 
 /** Draws a draft without saving it. Pass nothing to go back to the saved theme. */
 export function previewTheme(draft?: { colors: ThemeColors; appearance: ThemeAppearance; css?: string }): void {
   preview = draft;
   paint();
-}
-
-/** T3's active theme and its published themes, as they change. */
-export function syncT3Theme(defaultTheme: string, defaultAppearance: string, themes: readonly EnvironmentTheme[]): void {
-  const definitions = themes.map(environmentThemeDefinition);
-  if (defaultTheme === t3Theme && defaultAppearance === t3Appearance && JSON.stringify(definitions) === JSON.stringify(t3Themes)) return;
-  t3Theme = defaultTheme;
-  t3Appearance = defaultAppearance;
-  t3Themes = definitions;
-  paint();
-  notify();
 }
 
 let version = 0;

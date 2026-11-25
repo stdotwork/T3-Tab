@@ -250,7 +250,7 @@ function exportTheme(theme: ThemeDefinition): void {
   URL.revokeObjectURL(url);
 }
 
-function Appearance({ state }: { state: T3State }): ReactNode {
+function Appearance(): ReactNode {
   const appearance = useAppearance();
   const [sheet, setSheet] = useState<{ kind: 'create'; from?: ThemeDefinition; editing?: boolean } | { kind: 'add' }>();
   const [open, setOpen] = useState<'themes' | 'actions'>();
@@ -259,14 +259,13 @@ function Appearance({ state }: { state: T3State }): ReactNode {
   useDismiss(themesBox, open === 'themes', () => setOpen(undefined));
   useDismiss(actionsBox, open === 'actions', () => setOpen(undefined));
   const custom = new Set(appearance.custom.map((theme) => theme.id));
-  const following = appearance.theme === 'follow';
   // The owner's own themes come first, so one just made or imported is at the top of the menu.
   const themes = [...appearance.themes].sort((left, right) => Number(custom.has(right.id)) - Number(custom.has(left.id)));
   const activeTheme = appearance.themes.find((theme) => theme.id === appearance.activeId);
   const only = activeTheme === undefined ? null : singleAppearanceOf(activeTheme);
   const wanted = appearance.scheme === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : appearance.scheme;
-  const schemeMiss = !following && only !== null && wanted !== only;
-  const current = following ? 'Follow T3 Code' : (activeTheme?.label ?? 'Follow T3 Code');
+  const schemeMiss = only !== null && wanted !== only;
+  const current = activeTheme?.label ?? STOCK_THEME.label;
   const act = (run: () => void): void => {
     setOpen(undefined);
     run();
@@ -297,14 +296,8 @@ function Appearance({ state }: { state: T3State }): ReactNode {
             {open === 'themes' ? (
               <div className="popover setting-popover theme-popover">
                 <div className="theme-options" role="listbox" aria-label="Theme">
-                  <button type="button" role="option" aria-selected={following} className={following ? 'model-row active' : 'model-row'} onClick={() => act(() => setTheme('follow'))}>
-                    <Swatches theme={following ? activeTheme : (appearance.themes.find((theme) => theme.id === state.defaultTheme) ?? STOCK_THEME)} />
-                    <span className="project-name">Follow T3 Code</span>
-                    {following ? <Check size={ICON.sm} className="row-check" aria-hidden="true" /> : null}
-                  </button>
-                  <div className="picker-divider" />
                   {themes.map((theme) => {
-                    const active = !following && appearance.activeId === theme.id;
+                    const active = appearance.activeId === theme.id;
                     const single = singleAppearanceOf(theme);
                     return (
                       <button type="button" role="option" key={theme.id} data-theme-id={theme.id} aria-selected={active} className={active ? 'model-row active' : 'model-row'} onClick={() => act(() => setTheme(theme.id))}>
@@ -355,15 +348,6 @@ function Appearance({ state }: { state: T3State }): ReactNode {
           )}
         </span>
       </div>
-      {following ? (
-        <p className="muted-line">
-          {state.status !== 'ready'
-            ? 'Uses T3 Code’s default theme until T3 Code is connected.'
-            : state.defaultTheme === ''
-              ? 'T3 Code has no environment theme, so this is its default. T3 keeps the theme picked in its app to that app; run t3 theme set <theme> to share one.'
-              : 'Follows T3 Code’s environment theme (t3 theme set), not the theme picked inside a T3 window.'}
-        </p>
-      ) : null}
       {sheet?.kind === 'create' ? <ThemeEditor start={sheet.from} editing={sheet.editing === true} onClose={() => setSheet(undefined)} /> : null}
       {sheet?.kind === 'add' ? <ThemeImport onClose={() => setSheet(undefined)} /> : null}
     </div>
@@ -601,7 +585,7 @@ export function Settings({
               {state.status === 'ready' ? <DefaultProject state={state} /> : null}
               <Connections live={live} state={state} startOpen={connections === true} />
             </div>
-            <Appearance state={state} />
+            <Appearance />
           </>
         ) : null}
         {tab === 'sites' ? <Sites live={live} state={state} /> : null}

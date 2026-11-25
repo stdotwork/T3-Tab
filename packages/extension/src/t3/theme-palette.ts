@@ -25,20 +25,6 @@ function pipe<A>(value: A, ...steps: Array<(input: never) => unknown>): never {
   return steps.reduce<unknown>((current, step) => step(current as never), value) as never;
 }
 
-/** The theme a T3 environment publishes (T3's `EnvironmentTheme`). */
-export interface EnvironmentTheme {
-  readonly id: string;
-  readonly version?: 1;
-  readonly name: string;
-  readonly appearance: ThemeAppearance;
-  readonly canvas?: string;
-  readonly accent?: string;
-  readonly colors?: Readonly<Record<string, string>>;
-  readonly variants?: Readonly<Partial<Record<ThemeAppearance, Readonly<Record<string, string>>>>>;
-  readonly css?: string;
-  readonly background?: string;
-}
-
 export const THEME_FILE_VERSION = 1 as const;
 
 const THEME_COLOR_ROLE_SET: ReadonlySet<string> = new Set(THEME_COLOR_ROLES);
@@ -92,65 +78,6 @@ function parseThemeCollection(value: unknown): ThemeCollection | undefined {
     isThemeLabel(value.label)
     ? { id: value.id, label: value.label.trim() }
     : undefined;
-}
-
-function lenientThemeColorOverrides(
-  value: Readonly<Record<string, unknown>>,
-): Partial<Record<ThemeColorRole, string>> {
-  const overrides: Partial<Record<ThemeColorRole, string>> = {};
-  for (const [role, color] of Object.entries(value)) {
-    const normalized = toCanonicalThemeColor(color);
-    if (THEME_COLOR_ROLE_SET.has(role) && normalized) {
-      overrides[role as ThemeColorRole] = normalized;
-    }
-  }
-  return overrides;
-}
-
-function publishedThemeColors(
-  theme: EnvironmentTheme,
-  appearance: ThemeAppearance,
-  colors: Readonly<Record<string, string>> | undefined,
-): ThemeColors {
-  // A variant builds on that appearance's stock defaults: the generator follows
-  // the seed canvas's luminance, so dark seeds would give a light variant
-  // unreadable colors.
-  const base =
-    appearance === theme.appearance && theme.canvas !== undefined && theme.accent !== undefined
-      ? createVividThemeColors(appearance, theme.canvas, theme.accent)
-      : getDefaultThemeColors(appearance);
-  return { ...base, ...lenientThemeColorOverrides(colors ?? {}) };
-}
-
-export function environmentThemeDefinition(theme: EnvironmentTheme): ThemeDefinition {
-  const variants: Partial<Record<ThemeAppearance, ThemeColors>> = {};
-  for (const [variantAppearance, variantColors] of Object.entries(theme.variants ?? {})) {
-    if (variantAppearance === theme.appearance) continue;
-    variants[variantAppearance as ThemeAppearance] = publishedThemeColors(
-      theme,
-      variantAppearance as ThemeAppearance,
-      variantColors,
-    );
-  }
-
-  return {
-    id: theme.id,
-    label: theme.name,
-    appearance: theme.appearance,
-    colors: publishedThemeColors(theme, theme.appearance, theme.colors),
-    ...(Object.keys(variants).length > 0 ? { variants } : {}),
-    // Only the pure seeded form is guided-generator output. An exported file,
-    // or seeds carrying explicit role overrides, must open Duplicate in the
-    // advanced editor -- the guided one regenerates from canvas and accent and
-    // would discard whatever the machine hand-tuned.
-    ...(theme.canvas !== undefined &&
-    theme.accent !== undefined &&
-    theme.colors === undefined &&
-    theme.variants === undefined
-      ? { managed: true }
-      : {}),
-    ...(theme.css ? { css: theme.css } : {}),
-  };
 }
 
 type ThemeRgbColor = {

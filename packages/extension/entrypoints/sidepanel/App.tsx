@@ -15,7 +15,6 @@ import { errorText, panel } from './lib/api';
 import { choiceLabel } from './lib/catalog';
 import { headlessRender, refreshRunsNow, startPolling, useLive, useShareTargets, useStored, useTabStored, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
-import { syncT3Theme } from './lib/theme';
 import { directThreadView, type ThreadView } from './lib/thread-model';
 
 // Settings holds the theme editor and every site control, which a panel that is just running threads never opens.
@@ -295,7 +294,6 @@ export function App(): ReactNode {
     startPolling();
     void t3.start();
   }, []);
-  useEffect(() => syncT3Theme(state.defaultTheme, state.defaultAppearance, state.themes), [state.defaultTheme, state.defaultAppearance, state.themes]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {

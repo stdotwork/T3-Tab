@@ -592,19 +592,17 @@ async function runT3Flow() {
     const adopted = await panelPage.evaluate(() => [...document.adoptedStyleSheets].flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText)).join(' '));
     check('custom CSS applied with its remote loads stripped', adopted.includes('outline') && !/url\(|@import/.test(adopted), adopted.slice(0, 90));
     await panelPage.locator('.theme-trigger').click();
-    await panelPage.getByRole('option', { name: 'Follow T3 Code' }).click();
+    await panelPage.getByRole('option', { name: 'T3 Code', exact: true }).click();
+    const stockCanvas = await canvasColor(panelPage);
+    // The panel keeps its own theme: one set for T3's environment does not reach it.
     await new Promise((resolve, reject) => {
       const child = spawn('t3', ['theme', 'set', 'grove'], { env: home.childEnv, stdio: 'ignore' });
       child.once('error', reject);
       child.once('close', resolve);
     });
-    const groveCanvas = await until('T3 theme to arrive', async () => {
-      const value = await canvasColor(panelPage);
-      return value !== '32,48,64' && (await panelPage.evaluate(() => window.__t3tabT3.snapshot().defaultTheme)) === 'grove' ? value : undefined;
-    }, 8_000).catch(() => undefined);
-    check('the panel follows the theme set in T3', groveCanvas !== undefined, String(groveCanvas));
-    check('Follow T3 Code is the one marked selected', (await chosen()).includes('Follow T3 Code'));
-    await shot('16b-theme-follows-t3');
+    await sleep(3_000);
+    check('a theme set in T3 leaves the panel on its own', (await canvasColor(panelPage)) === stockCanvas && (await chosen()).includes('T3 Code'));
+    await shot('16b-theme-own');
     await panelPage.locator('.settings-tabs').getByRole('button', { name: 'Sites' }).click();
     await shot('17-settings-sites');
     await panelPage.locator('.settings-tabs').getByRole('button', { name: 'General' }).click();

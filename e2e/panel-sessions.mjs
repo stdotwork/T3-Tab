@@ -572,12 +572,22 @@ async function checkAppearance({ livePanel, screenshotPath }) {
   await scheme.getByRole('radio', { name: 'System' }).click();
 
   const trigger = livePanel.locator('.theme-trigger');
-  assert((await trigger.innerText()).includes('Follow T3 Code'), `The theme trigger reads ${await trigger.innerText()}`);
+  // A fresh install is on T3 Code's built-in theme; the theme T3 shares for its environment is not followed.
+  assert((await trigger.innerText()).trim() === 'T3 Code', `The theme trigger reads ${await trigger.innerText()}`);
+  const canvasBefore = await livePanel.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--app-theme-canvas'));
+  await livePanel.evaluate(() => {
+    const client = window.__t3tabT3;
+    client.onConfig({ type: 'settingsUpdated', payload: { settings: { defaultTheme: 'grove', defaultAppearance: 'dark' } } });
+    client.onConfig({ type: 'environmentThemesUpdated', payload: { themes: [{ id: 'shared', name: 'Shared by T3', appearance: 'dark', canvas: '#203040', accent: '#ff7a59' }] } });
+  });
+  await sleep(200);
+  const canvasAfter = await livePanel.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--app-theme-canvas'));
+  assert(canvasAfter === canvasBefore && (await trigger.innerText()).trim() === 'T3 Code', `T3's environment theme changed the panel: ${canvasBefore} -> ${canvasAfter}`);
   await trigger.click();
   const menu = livePanel.getByRole('listbox', { name: 'Theme' });
   const names = await menu.getByRole('option').allInnerTexts();
-  assert(names[0]?.includes('Follow T3 Code') && names.length >= 3 && (await menu.locator('.theme-orbs').count()) === names.length, `The theme menu: ${JSON.stringify(names)}`);
-  const pick = names[2].split('\n')[0].trim();
+  assert(names[0]?.trim() === 'T3 Code' && names.length >= 3 && !names.some((name) => /Follow|Shared by T3/.test(name)) && (await menu.locator('.theme-orbs').count()) === names.length, `The theme menu: ${JSON.stringify(names)}`);
+  const pick = names[1].split('\n')[0].trim();
   if (screenshotPath !== undefined) {
     for (const width of [320, 360, 400]) {
       await livePanel.setViewportSize({ width, height: 640 });
@@ -596,7 +606,7 @@ async function checkAppearance({ livePanel, screenshotPath }) {
   await livePanel.getByRole('button', { name: `Theme actions for ${pick}` }).click();
   await trigger.click();
   for (const name of ['Create theme', 'Add theme']) assert((await livePanel.locator('.theme-popover').getByRole('button', { name }).count()) === 1, `${name} is not in the theme menu`);
-  await menu.getByRole('option', { name: 'Follow T3 Code' }).click();
+  await menu.getByRole('option', { name: 'T3 Code', exact: true }).click();
   if (screenshotPath !== undefined) {
     for (const width of [320, 360, 400]) {
       await livePanel.setViewportSize({ width, height: 640 });
@@ -610,7 +620,7 @@ async function checkAppearance({ livePanel, screenshotPath }) {
     await livePanel.setViewportSize({ width: 360, height: 800 });
   }
   await livePanel.locator('#btn-settings-back').click();
-  console.log(`Settings appearance: a 28 px color scheme row, a theme menu of ${names.length} themes with swatches, ${pick} picked and its actions listed; a file dropped on Settings was refused`);
+  console.log(`Settings appearance: a 28 px color scheme row, T3 Code's theme by default and not T3's shared one, a theme menu of ${names.length} themes with swatches, ${pick} picked and its actions listed; a file dropped on Settings was refused`);
 }
 
 /**
