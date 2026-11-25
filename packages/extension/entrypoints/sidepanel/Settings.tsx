@@ -355,7 +355,15 @@ function Appearance({ state }: { state: T3State }): ReactNode {
           )}
         </span>
       </div>
-      {following ? <p className="muted-line">{state.status === 'ready' ? 'Follows the theme active in T3 Code.' : 'Uses T3 Code’s default theme until T3 Code is connected.'}</p> : null}
+      {following ? (
+        <p className="muted-line">
+          {state.status !== 'ready'
+            ? 'Uses T3 Code’s default theme until T3 Code is connected.'
+            : state.defaultTheme === ''
+              ? 'T3 Code has no environment theme, so this is its default. T3 keeps the theme picked in its app to that app; run t3 theme set <theme> to share one.'
+              : 'Follows T3 Code’s environment theme (t3 theme set), not the theme picked inside a T3 window.'}
+        </p>
+      ) : null}
       {sheet?.kind === 'create' ? <ThemeEditor start={sheet.from} editing={sheet.editing === true} onClose={() => setSheet(undefined)} /> : null}
       {sheet?.kind === 'add' ? <ThemeImport onClose={() => setSheet(undefined)} /> : null}
     </div>

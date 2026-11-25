@@ -459,7 +459,9 @@ directly through the daemon and feeds the same thread view.
   Nothing uses the browser's Web Speech service.
 - **Themes.** Settings shows the color scheme as one segmented row and the theme as one menu (Follow T3 Code, then
   every theme with its light and dark swatches, then Create theme and Add theme); edit, duplicate, export and remove
-  for the current theme sit in a menu beside it. The panel follows T3's active theme by default. T3 theme files can be imported. The owner's themes can be
+  for the current theme sit in a menu beside it. By default the panel follows T3's environment theme (`defaultTheme` and `defaultAppearance` in T3's
+  config, set with `t3 theme set` or T3's `t3_theme_set` tool). The theme picked inside T3's app stays in that window's
+  local storage and T3 offers no way to read it, so the panel cannot follow it. T3 theme files can be imported. The owner's themes can be
   edited, and any theme can be duplicated with all its colours and both of its modes. A name already in use gets a number
   instead of replacing that theme. A change reaches panels open on other tabs through `chrome.storage.onChanged`. Custom
   CSS goes through T3's own filter, which removes rules that load remote files.
