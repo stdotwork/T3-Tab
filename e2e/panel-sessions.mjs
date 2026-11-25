@@ -7,6 +7,7 @@ import { join, dirname } from 'node:path';
 
 import { createServer } from 'node:http';
 
+import { checkLayout, layoutProblems } from './checks-layout.mjs';
 import { assert, closeServer, connectMcp, listen, panelRequest, rootDir, sleep, text } from './harness.mjs';
 
 /**
@@ -281,6 +282,7 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   }
   await checkThreadSections(livePanel, screenshotPath);
   await checkComposer({ livePanel, fakes, screenshotPath });
+  await checkLayout({ livePanel, serviceWorker, screenshotPath });
   await livePanel.close();
   console.log('Panel UI: tab chip, direct agents, conversation list and replies rendered from the real state');
 
@@ -343,7 +345,7 @@ async function checkThreadSections(livePanel, screenshotPath) {
   let rows = await visibleRows();
   assert(rows[0] === 'pinned:Pinned plan' && rows.includes('active:Pick a colour') && rows.includes('active:Fix the checkout form'), `Pinned and active rows: ${JSON.stringify(rows)}`);
   assert(!rows.some((row) => /Refactor the cart|Wait for the deploy|Old landing page|Archived thread/.test(row)), `Closed shelves or an archived thread showed rows: ${JSON.stringify(rows)}`);
-  assert((await livePanel.locator('.thread-row').filter({ hasText: 'Pick a colour' }).locator('.thread-badge.input').textContent()) === 'Awaiting Input', 'The waiting thread does not say Awaiting Input');
+  assert((await livePanel.locator('.thread-row').filter({ hasText: 'Pick a colour' }).locator('.thread-badge.input').textContent()) === 'Input', 'The waiting thread does not say Input, as T3 does');
   for (const shelf of ['working', 'snoozed', 'settled']) await livePanel.locator(`.shelf[data-shelf="${shelf}"]`).click();
   rows = await visibleRows();
   const tail = rows.slice(rows.indexOf('working:Refactor the cart'));
@@ -537,38 +539,9 @@ async function setT3Mode(fakes, mode) {
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', 'base64');
 const PDF = Buffer.from('%PDF-1.7\n%fake\n');
 
-/** Where the bottom row's controls sit in the composer box, in CSS pixels. */
-async function composerGeometry(page) {
-  return await page.evaluate(() => {
-    const box = (selector) => document.querySelector(selector)?.getBoundingClientRect();
-    const form = box('.composer');
-    const controls = {
-      clip: box('.composer-row [aria-label="Attach files"]'),
-      model: box('.composer-row .model-chip'),
-      mic: box('.composer-row .mic-btn'),
-      send: box('.composer-row .send-btn'),
-    };
-    const missing = Object.entries(controls).filter(([, rect]) => rect === undefined).map(([name]) => name);
-    if (form === undefined || missing.length > 0) return { missing };
-    const { clip, model, mic, send } = controls;
-    return {
-      missing,
-      left: Math.round(clip.left - form.left),
-      right: Math.round(form.right - send.right),
-      bottom: Math.round(form.bottom - send.bottom),
-      clipBottom: Math.round(form.bottom - clip.bottom),
-      heights: [clip, model, mic, send].map((rect) => Math.round(rect.height)),
-      centers: [clip, model, mic, send].map((rect) => Math.round(rect.top + rect.height / 2)),
-      order: [clip, model, mic, send].map((rect) => Math.round(rect.left)),
-      overflow: document.documentElement.scrollWidth > window.innerWidth,
-      height: Math.round(form.height),
-    };
-  });
-}
-
 /**
- * The composer as T3 Code lays it out: the paperclip at the left end, then the model, the mic and send, all 32 px and
- * on one line, with the paperclip and send the same distance from the box's edges; no access row under the box. A
+ * The composer as T3 Code lays it out: the paperclip at the left end, then the model, the mic and send; no access row
+ * under the box. A
  * file a direct run cannot take is named and holds the message; an image goes to the agent with the message; the mic
  * says why it cannot record when T3 is not connected. With T3 connected, the access level is in the model picker.
  */
@@ -577,16 +550,16 @@ async function checkComposer({ livePanel, fakes, screenshotPath }) {
   // The new-thread button is off on the new-thread screen itself.
   if (await livePanel.locator('#btn-new').isEnabled()) await livePanel.locator('#btn-new').click();
   await livePanel.locator('.hero h1').waitFor();
+  // Where its controls' ink sits is checkLayout's (checks-layout.mjs); here, that every control is there in order and
+  // nothing scrolls sideways.
   for (const width of [320, 360, 400]) {
     await livePanel.setViewportSize({ width, height: 760 });
     await sleep(100);
-    const geometry = await composerGeometry(livePanel);
-    assert(geometry.missing.length === 0, `Composer controls missing at ${width}px: ${geometry.missing.join(', ')}`);
-    assert(geometry.left === geometry.right && geometry.right === geometry.bottom && geometry.clipBottom === geometry.bottom, `Composer insets at ${width}px: ${JSON.stringify(geometry)}`);
-    assert(new Set(geometry.heights).size === 1 && geometry.heights[0] === 32 && new Set(geometry.centers).size === 1, `Composer row at ${width}px: ${JSON.stringify(geometry)}`);
-    assert(geometry.order.every((left, index) => index === 0 || left > geometry.order[index - 1]), `Composer order at ${width}px: ${JSON.stringify(geometry)}`);
-    assert(!geometry.overflow, `The panel scrolls sideways at ${width}px`);
-    console.log(`Composer at ${width}px: insets ${geometry.left}/${geometry.right}/${geometry.bottom}, row ${geometry.heights.join('/')} px, box ${geometry.height} px`);
+    const order = await livePanel.evaluate(() =>
+      ['[aria-label="Attach files"]', '.model-chip', '.mic-btn', '.send-btn'].map((selector) => document.querySelector(`.composer-row ${selector}`)?.getBoundingClientRect().left ?? null),
+    );
+    assert(order.every((left, index) => left !== null && (index === 0 || left > order[index - 1])), `Composer controls at ${width}px: ${JSON.stringify(order)}`);
+    assert(!(await livePanel.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `The panel scrolls sideways at ${width}px`);
   }
   await livePanel.setViewportSize({ width: 360, height: 800 });
   assert((await livePanel.locator('.under-composer, .runtime-btn').count()) === 0, 'The access row is still under the composer');
@@ -708,8 +681,8 @@ async function checkComposer({ livePanel, fakes, screenshotPath }) {
     await livePanel.keyboard.press('Escape');
   }
   await livePanel.keyboard.press('Escape');
-  const t3Geometry = await composerGeometry(livePanel);
-  assert(t3Geometry.left === t3Geometry.right && t3Geometry.right === t3Geometry.bottom && new Set(t3Geometry.centers).size === 1, `T3 composer: ${JSON.stringify(t3Geometry)}`);
+  const t3Layout = await layoutProblems(livePanel, 'T3 composer');
+  assert(t3Layout.length === 0, t3Layout.join('\n'));
   if (screenshotPath !== undefined) {
     for (const width of [320, 360, 400]) {
       await livePanel.setViewportSize({ width, height: 640 });

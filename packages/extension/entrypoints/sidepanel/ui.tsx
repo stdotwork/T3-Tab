@@ -1,8 +1,51 @@
-import { Bot, Check, Copy, Loader2 } from 'lucide-react';
-import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { Bot, Check, Cloud, Copy, Laptop, Loader2, Monitor, Server } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode, type RefObject } from 'react';
 
+import { alignInk, centreInk, type InkAlign } from './lib/ink';
 import { PROVIDER_LOGOS } from './lib/provider-logos';
 
+/**
+ * The panel's icon sizes, and the only ones it uses: `md` in bars, on icon buttons and in the composer's row; `sm` beside
+ * 14 px text in rows and menus; `xs` beside 12 px text in chips and labels; `lg` for the marks in the setup list.
+ */
+export const ICON = { xs: 12, sm: 14, md: 16, lg: 20 } as const;
+
+/**
+ * Puts the visible ink of a row's controls where the row's tokens say, whatever the glyph inside each box: the first
+ * control's ink `--ink-inset` from the frame's left edge and the last one's the same from its right edge (`edges`), and
+ * every control's ink bottom on one line (`bottoms`). The frame is the nearest `[data-ink-frame]`, else the row.
+ */
+export function useInkAlign<T extends HTMLElement>(options: InkAlign): RefObject<T | null> {
+  return useInkLayout<T>((row) => alignInk(row, options));
+}
+
+/** Centres a centred block's lines on its first line's ink (`centreInk`). */
+export function useInkCentre<T extends HTMLElement>(): RefObject<T | null> {
+  return useInkLayout<T>(centreInk);
+}
+
+/** Runs an ink layout before every paint of its element, once the fonts are in, and when the element resizes. */
+function useInkLayout<T extends HTMLElement>(layout: (element: T) => void): RefObject<T | null> {
+  const ref = useRef<T>(null);
+  useLayoutEffect(() => {
+    if (ref.current !== null) layout(ref.current);
+  });
+  useEffect(() => {
+    const row = ref.current;
+    if (row === null) return;
+    let live = true;
+    void document.fonts.ready.then(() => {
+      if (live) layout(row);
+    });
+    const observer = new ResizeObserver(() => layout(row));
+    observer.observe(row);
+    return () => {
+      live = false;
+      observer.disconnect();
+    };
+  }, []);
+  return ref;
+}
 
 const initials = (name: string): string =>
   name
@@ -15,7 +58,7 @@ const initials = (name: string): string =>
 const themed = (fill: { light: string; dark: string }): CSSProperties => ({ '--logo-light': fill.light, '--logo-dark': fill.dark }) as CSSProperties;
 
 /** T3's logo for a provider. A provider T3 has none for shows its initials, as T3 does. */
-export function ProviderIcon({ driver, name, size = 16 }: { driver?: string | undefined; name?: string | undefined; size?: number }): ReactNode {
+export function ProviderIcon({ driver, name, size = ICON.md }: { driver?: string | undefined; name?: string | undefined; size?: number }): ReactNode {
   const gradientId = useId();
   const logo = PROVIDER_LOGOS[driver === 'claude' ? 'claudeAgent' : (driver ?? '')];
   if (logo === undefined) {
@@ -55,8 +98,49 @@ export function ProviderIcon({ driver, name, size = 16 }: { driver?: string | un
   );
 }
 
+const MONOGRAM_HUES = ['gray', 'red', 'orange', 'amber', 'yellow', 'lime', 'green', 'emerald', 'teal', 'cyan', 'sky', 'blue', 'indigo', 'violet', 'purple', 'fuchsia', 'pink', 'rose'] as const;
+
+/** A project's two letters, as T3 Code's `ProjectMonogram` takes them: the first letter, then a digit of that word, else the last word's first letter, else the word's last letter. */
+export function projectInitials(name: string): string {
+  const words = name.normalize('NFKC').trim().match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (words.length === 0) return 'PR';
+  const first = [...(words[0] ?? '')];
+  const digit = first.slice(1).find((char) => /\p{N}/u.test(char));
+  const second = digit ?? (words.length >= 2 ? [...(words.at(-1) ?? '')][0] : first.at(-1));
+  return `${first[0] ?? ''}${second ?? ''}`.toUpperCase().slice(0, 2);
+}
+
+/** The project's colour, from T3's hash of its lower-cased name over the same eighteen hues. */
+export function projectHue(name: string): (typeof MONOGRAM_HUES)[number] {
+  let hash = 0;
+  for (const char of name.toLocaleLowerCase('en-US') || 'project') hash = (hash * 31 + (char.codePointAt(0) ?? 0)) % MONOGRAM_HUES.length;
+  return MONOGRAM_HUES[hash] ?? 'gray';
+}
+
+/** T3 Code's project avatar: a rounded square in the project's colour with its two letters. */
+export function ProjectAvatar({ name }: { name: string }): ReactNode {
+  const initials = projectInitials(name);
+  return (
+    <span className="project-avatar" data-hue={projectHue(name)} aria-hidden="true">
+      <svg viewBox="0 0 16 16">
+        <text x="8" y="10.8" textAnchor="middle" fill="currentColor" fontSize="8.25" fontWeight="700" textLength={[...initials].length === 1 ? 6 : 12} lengthAdjust="spacingAndGlyphs" textRendering="geometricPrecision">
+          {initials}
+        </text>
+      </svg>
+    </span>
+  );
+}
+
+const MACHINE_ICONS = { desktop: Monitor, laptop: Laptop, server: Server, cloud: Cloud } as const;
+
+/** T3's icon for the kind of machine an environment runs on; the kinds it draws itself fall back to a monitor. */
+export function MachineIcon({ kind, size = ICON.sm }: { kind?: string | undefined; size?: number }): ReactNode {
+  const Icon = MACHINE_ICONS[kind as keyof typeof MACHINE_ICONS] ?? Monitor;
+  return <Icon size={size} aria-hidden="true" />;
+}
+
 /** T3 Code's mark (MIT, from T3 Code's `assets/prod/logo.svg`, recoloured with the theme). Names T3 Code, never T3-Tab. */
-export function T3Mark({ size = 18 }: { size?: number }): ReactNode {
+export function T3Mark({ size = ICON.lg }: { size?: number }): ReactNode {
   return (
     <svg className="t3-mark" width={size} height={size} viewBox="0 0 128 128" aria-hidden="true">
       <rect width="128" height="128" rx="24" />
@@ -92,7 +176,7 @@ export function IconButton({ label, children, ...props }: { label: string; child
   );
 }
 
-export function Spinner({ size = 14 }: { size?: number }): ReactNode {
+export function Spinner({ size = ICON.sm }: { size?: number }): ReactNode {
   return <Loader2 size={size} className="spin" aria-hidden="true" />;
 }
 

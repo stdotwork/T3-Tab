@@ -17,7 +17,7 @@ import {
 import { lazy, memo, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 
 import type { PendingApproval, PendingQuestion, QueuedMessage, Row, ThreadView, WorkEntry, WorkIcon } from './lib/thread-model';
-import { clockTime, CopyButton, formatDuration } from './ui';
+import { clockTime, CopyButton, formatDuration, ICON } from './ui';
 
 // The markdown parser is about a quarter of the panel's script, and a new thread has nothing to render with it.
 const Markdown = lazy(() => import('./Markdown'));
@@ -67,7 +67,7 @@ function Entry({ entry }: { entry: WorkEntry }): ReactNode {
   return (
     <div className="work-item">
       <button type="button" className={className} disabled={!expandable} aria-expanded={expandable ? open : undefined} onClick={() => setOpen(!open)}>
-        <Icon size={15} aria-hidden="true" />
+        <Icon size={ICON.sm} aria-hidden="true" />
         <span className={entry.status === 'running' ? 'work-label shimmer' : 'work-label'}>{entry.label}</span>
       </button>
       {open && entry.detail !== undefined ? <pre className="work-detail">{entry.detail}</pre> : null}
@@ -96,7 +96,7 @@ function WorkGroup({ row }: { row: Extract<Row, { kind: 'work' }> }): ReactNode 
     <section className="work-group" data-timeline-row-kind="work">
       <button type="button" className="work-head toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
         {duration === undefined ? 'Worked' : `Worked for ${duration}`}
-        <ChevronRight size={14} className={open ? 'chev open' : 'chev'} aria-hidden="true" />
+        <ChevronRight size={ICON.sm} className={open ? 'chev open' : 'chev'} aria-hidden="true" />
       </button>
       {open ? (
         <div className="work-entries">
@@ -186,7 +186,7 @@ export function ApprovalCard({ approval, onAnswer }: { approval: PendingApproval
   return (
     <div className="approval-card" role="group" aria-label="Approval" data-approval-kind={approval.kind}>
       <div className="approval-head">
-        <ShieldAlert size={14} aria-hidden="true" />
+        <ShieldAlert size={ICON.sm} aria-hidden="true" />
         {kind.head}
       </div>
       {kind.code ? <pre className="approval-code">{approval.title}</pre> : <p className="approval-title">{approval.title}</p>}
@@ -219,7 +219,7 @@ export function QueuedMessages({ queued, running, onCancel, onStart }: { queued:
             </button>
           ) : null}
           <button type="button" className="queued-x" aria-label={`Remove queued message: ${entry.text.slice(0, 40)}`} title="Remove" onClick={() => onCancel(entry.runId)}>
-            <X size={13} aria-hidden="true" />
+            <X size={ICON.xs} aria-hidden="true" />
           </button>
         </li>
       ))}
@@ -274,7 +274,7 @@ export function QuestionCard({
   return (
     <div className="question-card" role="group" aria-label="Question">
       <div className="question-head">
-        <CircleHelp size={14} aria-hidden="true" />
+        <CircleHelp size={ICON.sm} aria-hidden="true" />
         <span>{question.header}</span>
         {pending.questions.length > 1 ? (
           <small>

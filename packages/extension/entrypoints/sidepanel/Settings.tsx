@@ -22,9 +22,22 @@ import { t3, type T3State } from './lib/t3-client';
 import { freeThemeName, importCustomTheme, previewTheme, removeCustomTheme, saveCustomTheme, setScheme, setTheme, STOCK_THEME, useAppearance, type SchemeChoice } from './lib/theme';
 import { SITE_CHOICES, siteStatus } from './prompt-choices';
 import { AgentRow, HelperStep, T3Row } from './Setup';
-import { IconButton, timeAgo, useDismiss } from './ui';
+import { ICON, IconButton, timeAgo, useDismiss, useInkAlign } from './ui';
 
 export type SettingsTab = 'general' | 'sites';
+
+/** A sheet's title bar: its heading and Close, with their ink at the bar's inset like every other bar. */
+function SheetHead({ title, onClose }: { title: string; onClose: () => void }): ReactNode {
+  const bar = useInkAlign<HTMLElement>({ edges: true });
+  return (
+    <header className="sheet-head" ref={bar}>
+      <h2>{title}</h2>
+      <IconButton label="Close" onClick={onClose}>
+        <X size={ICON.md} />
+      </IconButton>
+    </header>
+  );
+}
 
 function Orb({ colors }: { colors: ThemeColors | null }): ReactNode {
   if (colors === null) return <span className="theme-orb empty" />;
@@ -110,12 +123,7 @@ function ThemeEditor({ start, editing, onClose, onSaved }: { start: ThemeDefinit
   const heading = editing ? 'Edit theme' : start === undefined ? 'Create theme' : 'Duplicate theme';
   return (
     <div className="sheet" role="dialog" aria-label={heading}>
-      <header className="sheet-head">
-        <h2>{heading}</h2>
-        <IconButton label="Close" onClick={onClose}>
-          <X size={16} />
-        </IconButton>
-      </header>
+      <SheetHead title={heading} onClose={onClose} />
       <div className="sheet-body">
         <label className="field">
           Name
@@ -135,7 +143,7 @@ function ThemeEditor({ start, editing, onClose, onSaved }: { start: ThemeDefinit
                 setDrafts((current) => (current[value] !== undefined ? current : { ...current, [value]: stockDraft(value) }));
               }}
             >
-              {value === 'light' ? <Sun size={13} /> : <Moon size={13} />} {value === 'light' ? 'Light' : 'Dark'}
+              {value === 'light' ? <Sun size={ICON.xs} /> : <Moon size={ICON.xs} />} {value === 'light' ? 'Light' : 'Dark'}
             </button>
           ))}
         </div>
@@ -200,12 +208,7 @@ function ThemeImport({ onClose, onSaved }: { onClose: () => void; onSaved: (id: 
   };
   return (
     <div className="sheet" role="dialog" aria-label="Add theme">
-      <header className="sheet-head">
-        <h2>Add theme</h2>
-        <IconButton label="Close" onClick={onClose}>
-          <X size={16} />
-        </IconButton>
-      </header>
+      <SheetHead title="Add theme" onClose={onClose} />
       <div className="sheet-body">
         <p className="muted-line">Import a theme file exported from T3 Code.</p>
         <input
@@ -218,7 +221,7 @@ function ThemeImport({ onClose, onSaved }: { onClose: () => void; onSaved: (id: 
           }}
         />
         <button type="button" className="row-btn wide" onClick={() => file.current?.click()}>
-          <Download size={14} aria-hidden="true" /> Choose a file
+          <Download size={ICON.sm} aria-hidden="true" /> Choose a file
         </button>
         <label className="field">
           Or paste its JSON
@@ -265,10 +268,10 @@ function Appearance({ state }: { state: T3State }): ReactNode {
       <h3>Themes</h3>
       <div className="theme-actions">
         <button type="button" className="row-btn" onClick={() => setSheet({ kind: 'create' })}>
-          <Paintbrush size={14} aria-hidden="true" /> Create theme
+          <Paintbrush size={ICON.sm} aria-hidden="true" /> Create theme
         </button>
         <button type="button" className="row-btn" onClick={() => setSheet({ kind: 'add' })}>
-          <Plus size={14} aria-hidden="true" /> Add theme
+          <Plus size={ICON.sm} aria-hidden="true" /> Add theme
         </button>
       </div>
       <button type="button" className={following ? 'theme-card follow active' : 'theme-card follow'} aria-pressed={following} onClick={() => setTheme('follow')}>
@@ -276,7 +279,7 @@ function Appearance({ state }: { state: T3State }): ReactNode {
           Follow T3 Code
           <small>{state.status === 'ready' ? 'Uses the theme active in T3 Code' : 'Uses T3 Code’s default until connected'}</small>
         </span>
-        {following ? <Check size={15} aria-hidden="true" /> : null}
+        {following ? <Check size={ICON.sm} aria-hidden="true" /> : null}
       </button>
       <div className="theme-list" ref={list}>
         {themes.map((theme) => {
@@ -295,14 +298,14 @@ function Appearance({ state }: { state: T3State }): ReactNode {
                 </span>
               </button>
               <span className="theme-card-tools">
-                {active ? <Check size={15} className="theme-card-check" aria-hidden="true" /> : null}
+                {active ? <Check size={ICON.sm} className="theme-card-check" aria-hidden="true" /> : null}
                 {custom.has(theme.id) ? (
                   <IconButton label={`Edit ${theme.label}`} onClick={() => setSheet({ kind: 'create', from: theme, editing: true })}>
-                    <Pencil size={14} />
+                    <Pencil size={ICON.md} />
                   </IconButton>
                 ) : null}
                 <IconButton label={`Duplicate ${theme.label}`} onClick={() => setSheet({ kind: 'create', from: theme })}>
-                  <Copy size={14} />
+                  <Copy size={ICON.md} />
                 </IconButton>
                 <IconButton
                   label={`Export ${theme.label}`}
@@ -315,11 +318,11 @@ function Appearance({ state }: { state: T3State }): ReactNode {
                     URL.revokeObjectURL(url);
                   }}
                 >
-                  <Download size={14} />
+                  <Download size={ICON.md} />
                 </IconButton>
                 {custom.has(theme.id) ? (
                   <IconButton label={`Remove ${theme.label}`} onClick={() => removeCustomTheme(theme.id)}>
-                    <Trash2 size={14} />
+                    <Trash2 size={ICON.md} />
                   </IconButton>
                 ) : null}
               </span>
@@ -435,7 +438,7 @@ function Connections({ live, state, startOpen }: { live: LiveState; state: T3Sta
           Connections
           <small>{summary}</small>
         </span>
-        <ChevronDown size={15} className={open ? 'disclosure-chev open' : 'disclosure-chev'} aria-hidden="true" />
+        <ChevronDown size={ICON.sm} className={open ? 'disclosure-chev open' : 'disclosure-chev'} aria-hidden="true" />
       </button>
       {open ? (
         <div className="disclosure-body">
@@ -489,7 +492,7 @@ function DefaultProject({ state }: { state: T3State }): ReactNode {
       <div className="picker" ref={box}>
         <button type="button" className="row-btn" aria-haspopup="listbox" aria-expanded={open} aria-label="Project on a new tab" onClick={() => setOpen(!open)}>
           <span className="setting-value">{current?.label}</span>
-          <ChevronDown size={13} aria-hidden="true" />
+          <ChevronDown size={ICON.xs} aria-hidden="true" />
         </button>
         {open ? (
           <div className="popover setting-popover" role="listbox" aria-label="Project on a new tab">
@@ -507,7 +510,7 @@ function DefaultProject({ state }: { state: T3State }): ReactNode {
                   }}
                 >
                   <span className="project-name">{option.label}</span>
-                  {option.id === current?.id ? <Check size={14} className="row-check" aria-hidden="true" /> : null}
+                  {option.id === current?.id ? <Check size={ICON.sm} className="row-check" aria-hidden="true" /> : null}
                 </button>
               </div>
             ))}
@@ -538,15 +541,16 @@ export function Settings({
   onTab: (tab: SettingsTab) => void;
   onClose: () => void;
 }): ReactNode {
+  const bar = useInkAlign<HTMLElement>({ edges: true });
   return (
     <div className="screen">
-      <header className="topbar">
+      <header className="topbar" ref={bar}>
         <span className="crumbs">
           <strong>Settings</strong>
         </span>
         <span className="topbar-spacer" />
         <IconButton label="Close settings" id="btn-settings-back" onClick={onClose}>
-          <X size={16} />
+          <X size={ICON.md} />
         </IconButton>
       </header>
       <nav className="settings-tabs" aria-label="Settings">

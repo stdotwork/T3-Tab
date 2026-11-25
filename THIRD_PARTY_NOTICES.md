@@ -35,7 +35,10 @@ T3-Tab is Apache-2.0 licensed. Files copied or adapted from another project are 
   from that group, and the OpenRouter logo here comes from `providerClients.ts` instead. The T3 Code mark in
   `packages/extension/entrypoints/sidepanel/ui.tsx` (`T3Mark`) is the glyph path of T3 Code's `assets/prod/logo.svg`,
   changed to a rounder background drawn in the active theme's colours. It names T3 Code on the setup and connection rows
-  and is not T3-Tab's icon.
+  and is not T3-Tab's icon. `ProjectAvatar`, `projectInitials` and `projectHue` in the same file follow T3 Code's
+  `ProjectMonogram` (its letters, its hash over the same eighteen Tailwind hues, and its SVG text), `SendArrow` in
+  `Composer.tsx` is the path of T3 Code's composer send glyph, and `lib/snooze.ts` follows the presets, labels and times
+  of T3 Code's `threadSettled` module; all are rewritten from T3 Code's built client (nightly 0.1.12, 2026-11-24).
 
 ## Lucide
 

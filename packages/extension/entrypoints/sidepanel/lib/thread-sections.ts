@@ -13,16 +13,17 @@ export type Section = 'pinned' | 'active' | 'working' | 'snoozed' | 'settled';
 /** The status T3 shows on a sidebar row, or none. */
 export type RowStatus = 'approval' | 'input' | 'guest' | 'working' | 'connecting' | 'waiting' | 'failed' | 'plan' | 'completed';
 
+/** The status a row shows, in the words of T3's current sidebar (T3 Code nightly 0.1.12, 2026-11-24). */
 export const STATUS_LABEL: Record<RowStatus, string> = {
-  approval: 'Pending Approval',
-  input: 'Awaiting Input',
-  guest: 'Guest Request',
+  approval: 'Approval',
+  input: 'Input',
+  guest: 'Request',
   working: 'Working',
-  connecting: 'Connecting',
+  connecting: 'Setting up',
   waiting: 'Waiting',
   failed: 'Failed',
-  plan: 'Plan Ready',
-  completed: 'Completed',
+  plan: 'Plan ready',
+  completed: 'Done',
 };
 
 export const SHELF_LABEL: Record<'working' | 'snoozed' | 'settled', string> = { working: 'Working', snoozed: 'Snoozed', settled: 'Settled' };

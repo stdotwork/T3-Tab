@@ -73,10 +73,15 @@ between turns with the conversation's Remove button; a missing, world-readable o
 the conversation and in the agent's first tool reply. The thread list, given T3 threads as one shell snapshot, shows T3's
 sidebar sections in T3's order (pinned, active, then the Working, Snoozed and Settled shelves), leaves archived threads
 out, and the threads button carries a dot only while a thread waits on the owner's answer or approval. The composer
-keeps the paperclip, model, mic and send on one 32 px row with equal insets at 320, 360 and 400 px and no access row
-under it; the mic says why it cannot record without T3; a PDF for a direct run is named and holds the message; a PNG
+keeps the paperclip, model, mic and send in that order at 320, 360 and 400 px with no access row under it; the mic says why it cannot record without T3; a PDF for a direct run is named and holds the message; a PNG
 reaches the fake Claude Code as an image block; and with T3's config handed to the panel, the access level is chosen in
-the model picker. It renders the panel from that state and, when
+the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e/ink.mjs`) walks the new-thread
+screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, Settings
+and a theme sheet at 320, 360 and 400 px in light and dark, and measures visible ink (SVG strokes and fills, text glyphs
+on their baseline, painted boxes), never padding boxes. It fails when a bar's or the composer row's first and last
+controls sit at ink distances from its edges more than 1 px apart, when the composer's controls do not stand on one ink
+line or its text does not start on the paperclip's, when the hero's project line is off the heading's ink centre, or
+when one bar's icons are drawn at different sizes. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
 variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once that the earlier one ended, and that `status` reports each state of its link.

@@ -11,6 +11,7 @@ import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import type { PermissionDecision, PermissionPrompt } from '../../src/permissions';
 import { errorText, panel } from './lib/api';
 import { promptChoices, rowsShifted, type PromptChoice } from './prompt-choices';
+import { ICON } from './ui';
 
 export const BUTTON_DELAY_MS = 500;
 
@@ -83,11 +84,11 @@ function PromptCard({
   return (
     <li className="prompt-card" data-prompt-id={prompt.id} data-tab-id={tab?.id}>
       <div className="prompt-head">
-        <Hand size={15} aria-hidden="true" />
+        <Hand size={ICON.sm} aria-hidden="true" />
         <span>{here ? 'Permission needed' : 'Permission needed on another tab'}</span>
         {here || tab === undefined ? null : (
           <button type="button" className="prompt-goto" onClick={() => showTab(tab.id)}>
-            Go to tab <ArrowUpRight size={12} aria-hidden="true" />
+            Go to tab <ArrowUpRight size={ICON.xs} aria-hidden="true" />
           </button>
         )}
       </div>

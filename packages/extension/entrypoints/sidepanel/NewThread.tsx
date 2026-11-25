@@ -1,5 +1,5 @@
 import type { AgentConversation } from '@t3-tab/protocol';
-import { Check, ChevronDown, CircleDashed, FolderPlus, Search } from 'lucide-react';
+import { Check, FolderPlus, Search } from 'lucide-react';
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { Composer, dictateInto, ModelPicker, TabChip, useComposerAttachments } from './Composer';
@@ -11,7 +11,7 @@ import { resolveChoice, selectionFor, type Choice } from './lib/catalog';
 import { DEFAULT_PROJECT_KEY, NO_PROJECT, pickableProjects, resolveProject } from './lib/new-thread';
 import { refreshRunsNow, useShareTargets, useStored, useTabStored, type LiveState } from './lib/store';
 import { t3, type Project, type T3State } from './lib/t3-client';
-import { useDismiss } from './ui';
+import { ICON, ProjectAvatar, useDismiss, useInkCentre } from './ui';
 
 function ProjectPicker({
   projects,
@@ -50,36 +50,22 @@ function ProjectPicker({
   };
   return (
     <div className="picker hero-picker" ref={box}>
-      <button type="button" className={value === undefined ? 'project-btn none' : 'project-btn'} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(!open)}>
-        {value === undefined ? <CircleDashed size={14} aria-hidden="true" /> : <span className="project-badge">{value.title.slice(0, 2).toUpperCase()}</span>}
+      {/* T3 names the project in plain text that underlines on hover and while its list is open: no icon or chevron to pull it off centre. */}
+      <button type="button" className={value === undefined ? 'inline-picker' : 'inline-picker named'} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(!open)}>
         {value?.title ?? (noProject ? 'No project' : 'Choose a project')}
-        <ChevronDown size={14} aria-hidden="true" />
       </button>
       {open ? (
         <div className="popover project-popover">
-          {noProject ? (
-            <>
-              <button type="button" className={value === undefined ? 'model-row no-project active' : 'model-row no-project'} onClick={() => pick(NO_PROJECT)}>
-                <CircleDashed size={16} aria-hidden="true" />
-                <span className="no-project-text">
-                  No project
-                  <small>Starts in T3's scratch folder</small>
-                </span>
-                {value === undefined ? <Check size={14} className="row-check" aria-hidden="true" /> : null}
-              </button>
-              <div className="picker-divider" />
-            </>
-          ) : null}
           <label className="model-search">
-            <Search size={14} aria-hidden="true" />
+            <Search size={ICON.md} aria-hidden="true" />
             <input autoFocus placeholder="Search projects…" value={query} onChange={(event) => setQuery(event.target.value)} />
           </label>
           <div className="project-list" role="listbox" aria-label="Projects">
             {shown.map((project) => (
               <button type="button" role="option" aria-selected={project.id === value?.id} key={project.id} className={project.id === value?.id ? 'model-row active' : 'model-row'} title={project.workspaceRoot} onClick={() => pick(project.id)}>
-                <span className="project-badge">{project.title.slice(0, 2).toUpperCase()}</span>
+                <ProjectAvatar name={project.title} />
                 <span className="project-name">{project.title}</span>
-                {project.id === value?.id ? <Check size={14} className="row-check" aria-hidden="true" /> : null}
+                {project.id === value?.id ? <Check size={ICON.sm} className="row-check" aria-hidden="true" /> : null}
               </button>
             ))}
             {shown.length === 0 ? <p className="model-note">{needle === '' ? 'No projects yet.' : 'No projects found.'}</p> : null}
@@ -99,8 +85,8 @@ function ProjectPicker({
             </form>
           ) : (
             <button type="button" className="model-row add" onClick={() => setAdding(true)}>
-              <FolderPlus size={15} aria-hidden="true" />
-              Add a project
+              <FolderPlus size={ICON.md} aria-hidden="true" />
+              Add project
             </button>
           )}
           {error === undefined ? null : <p className="error-line">{error}</p>}
@@ -119,7 +105,7 @@ function FolderPicker({ value, onChange }: { value: string; onChange: (folder: s
     <div className="picker hero-picker" ref={box}>
       <button
         type="button"
-        className="project-btn"
+        className="inline-picker"
         aria-expanded={open}
         onClick={() => {
           setDraft(value);
@@ -127,7 +113,6 @@ function FolderPicker({ value, onChange }: { value: string; onChange: (folder: s
         }}
       >
         {value === '' ? 'Home folder' : (value.replace(/\/+$/, '').split('/').at(-1) ?? value)}
-        <ChevronDown size={14} aria-hidden="true" />
       </button>
       {open ? (
         <form
@@ -172,11 +157,13 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
   const needsYou = useNeedsOwner(live, state);
   const latestText = useRef(text);
   latestText.current = text;
+  const hero = useInkCentre<HTMLDivElement>();
   const target = useMemo(() => (catalog.source === 't3' ? ({ kind: 't3' } as const) : ({ kind: 'direct', agent: provider?.name ?? 'this agent' } as const)), [catalog.source, provider?.name]);
   const attachments = useComposerAttachments(target);
   const dictation = useDictation(state, (spoken) => setText(dictateInto(latestText.current, spoken)), setNotice);
   // A direct agent has only the browser tools, so it is asked about the page rather than about building something.
-  const heading = catalog.source === 't3' ? 'What should we build?' : !shareable || !shareTab ? 'What should we do?' : targets.tabs.length > 1 ? 'What should we do in these tabs?' : 'What should we do in this tab?';
+  // T3 asks what to work on while no project is chosen, and what to build once one is.
+  const heading = catalog.source === 't3' ? (project === undefined ? 'What should we work on?' : 'What should we build?') : !shareable || !shareTab ? 'What should we do?' : targets.tabs.length > 1 ? 'What should we do in these tabs?' : 'What should we do in this tab?';
   const chooseProject = (id: string): void => {
     setTabProject(id);
     if (id !== NO_PROJECT) setLastProject(id);
@@ -241,7 +228,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
       <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} needsYou={needsYou} />
       <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />
       <main className="home">
-        <div className="hero">
+        <div className="hero" ref={hero}>
           <h1>{heading}</h1>
           {catalog.source === 't3' ? <ProjectPicker projects={projects} value={project} noProject={noProject} onChange={chooseProject} /> : <FolderPicker value={folder} onChange={setFolder} />}
           {catalog.source === 't3' && noProject && project !== undefined ? (

@@ -4,6 +4,7 @@ import type { T3VoiceStatus } from '@t3-tab/protocol';
 import type { EnvironmentTheme } from '../../../src/t3/theme-palette';
 import { errorText } from './api';
 import { t3Kind, type DraftAttachment } from './attachments';
+import { DEFAULT_SNOOZE_PRESETS, snoozePresets, type SnoozePreset } from './snooze';
 import { RpcSocket } from './t3-rpc';
 import { forgetSession, pairWithT3, SessionRefused, socketUrl, storedSession, voiceSocketUrl, voiceStatus, type T3Session } from './t3-session';
 import { t3ThreadView, type T3Projection, type ThreadView } from './thread-model';
@@ -124,7 +125,7 @@ export interface SpeechOptions {
   speechSilenceFiltering: boolean;
 }
 
-type ServerSettings = { defaultTheme?: string; defaultAppearance?: string } & Partial<SpeechOptions>;
+type ServerSettings = { defaultTheme?: string; defaultAppearance?: string; snoozePresets?: unknown } & Partial<SpeechOptions>;
 
 export const DEFAULT_SPEECH: SpeechOptions = {
   speechLanguage: 'auto',
@@ -163,10 +164,15 @@ export interface T3State {
   /** T3 can transcribe speech on this machine (its `voiceTranscription` capability). */
   voice: boolean;
   speech: SpeechOptions;
+  /** This T3's name for its machine, which its sidebar shows under each thread, and the kind of machine it is. */
+  environmentLabel?: string;
+  environmentMachine?: string;
+  /** The snooze menu's presets: the owner's own from T3's settings, else T3's defaults. */
+  snoozePresets: readonly SnoozePreset[];
 }
 
 type ConfigEvent =
-  | { type: 'snapshot'; config: { providers: Provider[]; scratchWorkspaceRoot?: string; settings: ServerSettings; environment?: { capabilities?: { threadStop?: boolean; voiceTranscription?: boolean } } } }
+  | { type: 'snapshot'; config: { providers: Provider[]; scratchWorkspaceRoot?: string; settings: ServerSettings; environment?: { label?: string; platform?: { machine?: string }; capabilities?: { threadStop?: boolean; voiceTranscription?: boolean } } } }
   | { type: 'providerStatuses'; payload: { providers: Provider[] } }
   | { type: 'settingsUpdated'; payload: { settings: ServerSettings } }
   | { type: 'environmentThemesUpdated'; payload: { themes: EnvironmentTheme[] } }
@@ -192,7 +198,7 @@ interface Watch {
   listeners: Set<(view: ThreadView) => void>;
 }
 
-const EMPTY: T3State = { status: 'off', providers: [], projects: [], threads: [], defaultTheme: '', defaultAppearance: '', themes: [], threadStop: false, voice: false, speech: DEFAULT_SPEECH };
+const EMPTY: T3State = { status: 'off', providers: [], projects: [], threads: [], defaultTheme: '', defaultAppearance: '', themes: [], threadStop: false, voice: false, speech: DEFAULT_SPEECH, snoozePresets: DEFAULT_SNOOZE_PRESETS };
 
 const SUBSCRIBE_TIMEOUT_MS = 15_000;
 
@@ -463,13 +469,16 @@ export class T3Client {
         threadStop: config.environment?.capabilities?.threadStop === true,
         voice: config.environment?.capabilities?.voiceTranscription === true,
         speech: speechOptions(config.settings),
+        snoozePresets: snoozePresets(config.settings.snoozePresets),
+        ...(typeof config.environment?.label === 'string' && config.environment.label.trim() !== '' ? { environmentLabel: config.environment.label } : {}),
+        ...(typeof config.environment?.platform?.machine === 'string' ? { environmentMachine: config.environment.platform.machine } : {}),
         ...(config.scratchWorkspaceRoot === undefined ? {} : { scratchRoot: config.scratchWorkspaceRoot }),
       });
     } else if (event.type === 'providerStatuses') {
       this.set({ providers: (event as Extract<ConfigEvent, { type: 'providerStatuses' }>).payload.providers });
     } else if (event.type === 'settingsUpdated') {
       const { settings } = (event as Extract<ConfigEvent, { type: 'settingsUpdated' }>).payload;
-      this.set({ defaultTheme: settings.defaultTheme ?? '', defaultAppearance: settings.defaultAppearance ?? '', speech: speechOptions(settings) });
+      this.set({ defaultTheme: settings.defaultTheme ?? '', defaultAppearance: settings.defaultAppearance ?? '', speech: speechOptions(settings), snoozePresets: snoozePresets(settings.snoozePresets) });
     } else if (event.type === 'environmentThemesUpdated') {
       this.set({ themes: [...(event as Extract<ConfigEvent, { type: 'environmentThemesUpdated' }>).payload.themes] });
     }
@@ -634,6 +643,25 @@ export class T3Client {
 
   async setRuntimeMode(threadId: string, runtimeMode: string): Promise<void> {
     await this.rpc('orchestration.dispatchCommand', { type: 'thread.runtime-mode.set', commandId: crypto.randomUUID(), threadId, runtimeMode });
+  }
+
+  /** Settles a thread, as T3's sidebar Settle does: it leaves the list for the Settled shelf. */
+  async settle(threadId: string): Promise<void> {
+    await this.rpc('orchestration.dispatchCommand', { type: 'thread.settle', commandId: crypto.randomUUID(), threadId });
+  }
+
+  async unsettle(threadId: string): Promise<void> {
+    await this.rpc('orchestration.dispatchCommand', { type: 'thread.unsettle', commandId: crypto.randomUUID(), threadId, reason: 'user' });
+  }
+
+  /** Snoozes a thread until a time from the snooze menu; it comes back to the list then. */
+  async snooze(threadId: string, snoozedUntil: string): Promise<void> {
+    await this.rpc('orchestration.dispatchCommand', { type: 'thread.snooze', commandId: crypto.randomUUID(), threadId, snoozedUntil });
+  }
+
+  /** Wakes a snoozed thread now. */
+  async unsnooze(threadId: string): Promise<void> {
+    await this.rpc('orchestration.dispatchCommand', { type: 'thread.unsnooze', commandId: crypto.randomUUID(), threadId, reason: 'user' });
   }
 
   /** Finds or creates T3's Scratch project, where a thread with no project runs. */

@@ -6,6 +6,7 @@ import { errorText } from './lib/api';
 import { canRecord, micError, micPermission, startCapture, type Capture } from './lib/mic';
 import { t3, type T3State } from './lib/t3-client';
 import { formatElapsed, MAX_RECORDING_MS, micPermissionNote, voiceBlock, VoiceStream, type MicPermission } from './lib/voice';
+import { ICON } from './ui';
 
 const STATUS_TTL_MS = 60_000;
 /** A note from the mic clears itself after this long. */
@@ -193,15 +194,15 @@ export function MicButton({ dictation }: { dictation: Dictation }): ReactNode {
   const { phase, blocked, permission } = dictation;
   if (phase === 'recording' || phase === 'finishing') {
     return (
-      <span className="mic-pill" style={{ '--mic-level': String(dictation.level) } as CSSProperties}>
+      <span className="mic-pill" data-ink="box" style={{ '--mic-level': String(dictation.level) } as CSSProperties}>
         <button type="button" className="mic-cancel" aria-label="Cancel voice input" title="Cancel voice input" onClick={dictation.cancel}>
-          <X size={13} aria-hidden="true" />
+          <X size={ICON.xs} aria-hidden="true" />
         </button>
         <span className="mic-time" aria-live="polite">
           {phase === 'finishing' ? 'Transcribing' : formatElapsed(dictation.elapsedMs)}
         </span>
         <button type="button" className="composer-icon mic-btn recording" aria-label="Finish voice input" title="Finish voice input" disabled={phase === 'finishing'} onClick={dictation.toggle}>
-          {phase === 'finishing' ? <Loader2 size={16} className="spin" aria-hidden="true" /> : <Mic size={16} aria-hidden="true" />}
+          {phase === 'finishing' ? <Loader2 size={ICON.md} className="spin" aria-hidden="true" /> : <Mic size={ICON.md} aria-hidden="true" />}
         </button>
       </span>
     );
@@ -217,7 +218,7 @@ export function MicButton({ dictation }: { dictation: Dictation }): ReactNode {
       onClick={dictation.toggle}
       disabled={phase === 'starting'}
     >
-      {phase === 'starting' ? <Loader2 size={16} className="spin" aria-hidden="true" /> : off ? <MicOff size={16} aria-hidden="true" /> : <Mic size={16} aria-hidden="true" />}
+      {phase === 'starting' ? <Loader2 size={ICON.md} className="spin" aria-hidden="true" /> : off ? <MicOff size={ICON.md} aria-hidden="true" /> : <Mic size={ICON.md} aria-hidden="true" />}
     </button>
   );
 }

@@ -10,7 +10,7 @@ import { directProviders, t3Providers, type PickerProvider } from './lib/catalog
 import type { LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
 import { needsOwner, nextWake, threadSections, type DirectRun } from './lib/thread-sections';
-import { IconButton } from './ui';
+import { ICON, IconButton, useInkAlign } from './ui';
 
 export type Screen =
   | { name: 'home' }
@@ -93,20 +93,21 @@ export function TopBar({
   /** A thread waits on the owner's approval or answer. */
   needsYou?: boolean;
 }): ReactNode {
+  const bar = useInkAlign<HTMLElement>({ edges: true });
   const label = [needsYou ? 'a thread needs you' : undefined, sessions === 0 ? undefined : `${sessions} using the browser`].filter((part) => part !== undefined).join(', ');
   return (
-    <header className="topbar" data-chat-header>
+    <header className="topbar" data-chat-header ref={bar}>
       <IconButton label={label === '' ? 'Threads' : `Threads, ${label}`} id="btn-threads" onClick={onThreads}>
-        <History size={16} />
+        <History size={ICON.md} />
         {needsYou ? <span className="needs-you-dot" aria-hidden="true" /> : sessions === 0 ? null : <span className="session-dot" aria-hidden="true" />}
       </IconButton>
       <span className="crumbs">{title}</span>
       <span className="topbar-spacer" />
       <IconButton label="New thread" id="btn-new" disabled={onNew === undefined} onClick={onNew}>
-        <SquarePen size={16} />
+        <SquarePen size={ICON.md} />
       </IconButton>
       <IconButton label="Settings" id="btn-settings" onClick={onSettings}>
-        <SettingsIcon size={16} />
+        <SettingsIcon size={ICON.md} />
       </IconButton>
     </header>
   );
@@ -120,7 +121,7 @@ export function Banner({ live, state, onConnections }: { live: LiveState; state:
   if (text === undefined) return null;
   return (
     <button type="button" className="banner" onClick={onConnections}>
-      <AlertCircle size={13} aria-hidden="true" />
+      <AlertCircle size={ICON.sm} aria-hidden="true" />
       {text}
     </button>
   );

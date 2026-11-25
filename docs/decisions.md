@@ -216,6 +216,16 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **The side panel stays on the tab it was opened on.** A window-wide panel followed the owner to every tab and made "this
   tab" ambiguous. Each tab now opens its own panel and keeps its own draft, project and screen. A thread keeps running when
   the owner moves away; other tabs' new-thread screens list it, and permission cards from other tabs say so.
+- **The panel lines up what people see, not boxes.** The first and last controls of every bar and of the composer's
+  row sit with their visible ink on the screen's 12 px gutter, the composer's controls stand on one line at their ink
+  (a bigger control is just taller, text stands on its baseline), and the hero's lines centre on the heading's ink. The
+  panel measures this when it lays out (`useInkAlign` and `useInkCentre`), so a new control needs no numbers of its
+  own; sizes come from shared tokens (one control size, one gap, one icon scale, one type scale). T3 Code itself puts
+  its paperclip's ink about twice as far from the edge as its send button; the panel does not copy that.
+- **The thread list follows T3's sidebar.** Rows carry T3's project avatar, status or time, title, the machine and the
+  provider; hovering offers T3's snooze presets and Settle (Wake and Un-settle on the shelves), sent as T3's own client
+  sends them. The Working, Snoozed and Settled shelves sit at the foot of the list as in T3. T3's custom snooze time is
+  left out; its presets, including the owner's own list from T3's settings, are offered.
 - **A new tab starts in no project.** That is T3's Scratch project. The default can be changed in Settings to the last used
   project or a fixed one. A pick made on a tab holds for that tab only.
 - **T3 credentials travel on checked connections.** The daemon spends the pairing credential and sends token renewals

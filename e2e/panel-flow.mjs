@@ -390,18 +390,19 @@ async function runT3Flow() {
     await panelPage.getByRole('button', { name: 'Start', exact: true }).click();
 
     // 2. Home is a new thread.
-    await panelPage.getByText('What should we build?').waitFor();
+    // With no project chosen T3 asks what to work on.
+    await panelPage.getByText('What should we work on?').waitFor();
     await panelPage.reload();
-    await panelPage.getByText('What should we build?').waitFor();
+    await panelPage.getByText('What should we work on?').waitFor();
     check('setup does not come back after a reload', !(await panelPage.getByText('Welcome to T3-Tab').isVisible()));
-    await panelPage.locator('.project-btn').click();
-    await panelPage.getByRole('button', { name: 'Add a project' }).click();
+    await panelPage.locator('.hero-picker > button').click();
+    await panelPage.getByRole('button', { name: 'Add project' }).click();
     await panelPage.getByPlaceholder('/path/to/folder').fill(projectDir);
     await panelPage.getByRole('button', { name: 'Add', exact: true }).click();
-    await panelPage.locator('.project-btn').filter({ hasText: 'demo-project' }).waitFor({ timeout: 15_000 });
+    await panelPage.locator('.hero-picker > button').filter({ hasText: 'demo-project' }).waitFor({ timeout: 15_000 });
     await panelPage.locator('.tab-chip').filter({ hasText: 'Flow test page' }).waitFor();
     await shot('04-home');
-    await panelPage.locator('.project-btn').click();
+    await panelPage.locator('.hero-picker > button').click();
     await shot('05-project-picker');
     await panelPage.keyboard.press('Escape');
     await panelPage.locator('.model-chip').first().click();

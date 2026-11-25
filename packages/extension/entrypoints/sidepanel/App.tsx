@@ -1,5 +1,4 @@
 import type { AgentConversation } from '@t3-tab/protocol';
-import { AlarmClock, ChevronDown, History, Pin, Plus, Search } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { PanelTab, TabThread } from '../../src/panel';
@@ -7,19 +6,17 @@ import type { PanelTab, TabThread } from '../../src/panel';
 import { ApprovalCard, QuestionCard, QueuedMessages, Timeline } from './Thread';
 import { Composer, dictateInto, TabChip, ThreadModelPicker, useComposerAttachments } from './Composer';
 import { useDictation } from './Dictation';
-import { askerName, Banner, bindClaim, directRuns, TopBar, useCatalog, useNeedsOwner, useT3, useWakeClock, withdrawClaim, type Screen } from './Frame';
+import { askerName, Banner, bindClaim, TopBar, useCatalog, useNeedsOwner, useT3, withdrawClaim, type Screen } from './Frame';
 import { NewThread } from './NewThread';
 import { PromptCards } from './PromptCards';
-import { ActiveSessions } from './Sessions';
 import { Setup } from './Setup';
+import { ThreadList } from './ThreadList';
 import { errorText, panel } from './lib/api';
 import { choiceLabel } from './lib/catalog';
 import { headlessRender, refreshRunsNow, startPolling, useLive, useShareTargets, useStored, useTabStored, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
 import { syncT3Theme } from './lib/theme';
 import { directThreadView, type ThreadView } from './lib/thread-model';
-import { SETTLED_FIRST, SETTLED_MORE, SHELF_LABEL, STATUS_LABEL, threadSections, wakeLabel, type ListRow } from './lib/thread-sections';
-import { IconButton, ProviderIcon, timeAgo } from './ui';
 
 // Settings holds the theme editor and every site control, which a panel that is just running threads never opens.
 const Settings = lazy(async () => ({ default: (await import('./Settings')).Settings }));
@@ -253,146 +250,6 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
           dictation={dictation}
           notice={notice}
         />
-      </div>
-    </div>
-  );
-}
-
-function Shelf({ id, label, count, open, onToggle, className }: { id: string; label: string; count: number; open: boolean; onToggle: () => void; className?: string }): ReactNode {
-  return (
-    <button type="button" className={className === undefined ? 'shelf' : `shelf ${className}`} data-shelf={id} aria-expanded={open} onClick={onToggle}>
-      <span className="shelf-label">{label}</span>
-      <span className="shelf-line" aria-hidden="true" />
-      <span className="shelf-count">{count}</span>
-      <ChevronDown size={12} className={open ? 'shelf-chevron' : 'shelf-chevron closed'} aria-hidden="true" />
-    </button>
-  );
-}
-
-function ThreadList({ live, state, onOpen, onClose }: { live: LiveState; state: T3State; onOpen: (screen: Screen) => void; onClose: () => void }): ReactNode {
-  const [query, setQuery] = useState('');
-  // T3 keeps its shelves closed until the owner opens them, and remembers that; so does the panel.
-  const [workingOpen, setWorkingOpen] = useStored('threads.workingOpen', false);
-  const [snoozedOpen, setSnoozedOpen] = useStored('threads.snoozedOpen', false);
-  const [settledOpen, setSettledOpen] = useStored('threads.settledOpen', false);
-  const [settledShown, setSettledShown] = useState(SETTLED_FIRST);
-  const now = useWakeClock(state);
-  const needle = query.trim().toLowerCase();
-  const projects = new Map(state.projects.map((project) => [project.id, project]));
-  const providers = new Map(state.providers.map((provider) => [provider.instanceId, provider]));
-  const sections = threadSections(state.threads, directRuns(live), now);
-  const describe = (row: ListRow): { title: string; project: string; driver: string | undefined } => {
-    if (row.source === 'direct') {
-      const via = live.conversations.find((conversation) => conversation.id === row.id)?.via;
-      return { title: row.run.title, project: via === 'claude' ? 'Claude Code' : 'Codex', driver: via === 'claude' ? 'claudeAgent' : 'codex' };
-    }
-    const project = projects.get(row.shell.projectId);
-    return {
-      title: row.shell.title,
-      project: project !== undefined && project.workspaceRoot === state.scratchRoot ? 'No project' : (project?.title ?? 'T3 Code'),
-      driver: providers.get(row.shell.modelSelection?.instanceId ?? row.shell.providerInstanceId ?? '')?.driver,
-    };
-  };
-  const renderRow = (row: ListRow): ReactNode => {
-    const { title, project, driver } = describe(row);
-    const lastAt = row.source === 'direct' ? row.run.updatedAt : Date.parse(row.shell.latestUserMessageAt ?? row.shell.updatedAt ?? '');
-    return (
-      <button
-        type="button"
-        className="thread-row"
-        data-thread-item
-        data-section={row.section}
-        key={`${row.source}:${row.id}`}
-        onClick={() => onOpen({ name: 'thread', id: row.id, source: row.source })}
-      >
-        <span className="thread-row-top">
-          {row.pinned ? <Pin size={11} className="thread-pin" aria-label="Pinned" /> : null}
-          <span className="thread-project">{project}</span>
-          {row.status !== undefined ? (
-            <span className={`thread-badge ${row.status}`}>{STATUS_LABEL[row.status]}</span>
-          ) : row.source === 't3' && row.wakesAt !== undefined ? (
-            <span className="thread-badge snoozed" title="Wakes">
-              <AlarmClock size={11} aria-hidden="true" />
-              {wakeLabel(row.wakesAt, now)}
-            </span>
-          ) : (
-            <time>{timeAgo(lastAt)}</time>
-          )}
-        </span>
-        <span className="thread-row-main">
-          <span className="thread-title">{title}</span>
-          <ProviderIcon driver={driver} size={14} />
-        </span>
-      </button>
-    );
-  };
-
-  const searching = needle !== '';
-  // A search looks through every section, in T3's order, whether its shelf is open or not.
-  const matches = searching
-    ? [...sections.pinned, ...sections.active, ...sections.working, ...sections.snoozed, ...sections.settled].filter((row) => {
-        const { title, project } = describe(row);
-        return title.toLowerCase().includes(needle) || project.toLowerCase().includes(needle);
-      })
-    : [];
-  const total = sections.pinned.length + sections.active.length + sections.working.length + sections.snoozed.length + sections.settled.length;
-  const settledRows = sections.settled.slice(0, settledShown);
-  const settledHidden = sections.settled.length - settledRows.length;
-  return (
-    <div className="screen thread-list-screen" data-slot="sidebar">
-      <header className="topbar">
-        <IconButton label="Close threads" onClick={onClose}>
-          <History size={16} />
-        </IconButton>
-        <label className="list-search">
-          <Search size={14} aria-hidden="true" />
-          <input autoFocus placeholder="Search" value={query} onChange={(event) => setQuery(event.target.value)} />
-        </label>
-        <IconButton label="New thread" onClick={() => onOpen({ name: 'home' })}>
-          <Plus size={16} />
-        </IconButton>
-      </header>
-      <div className="thread-list">
-        <ActiveSessions live={live} state={state} onOpen={onOpen} />
-        {searching ? (
-          <>
-            {matches.map(renderRow)}
-            {matches.length === 0 ? <p className="empty-line">No threads match.</p> : null}
-          </>
-        ) : (
-          <>
-            {sections.pinned.map(renderRow)}
-            {sections.pinned.length > 0 && sections.active.length > 0 ? <div className="pinned-divider" aria-hidden="true" /> : null}
-            {sections.active.map(renderRow)}
-            {total === 0 ? <p className="empty-line">No threads yet.</p> : null}
-            <div className="shelves">
-              {sections.working.length > 0 ? (
-                <section aria-label={SHELF_LABEL.working}>
-                  <Shelf id="working" label={SHELF_LABEL.working} count={sections.working.length} open={workingOpen} onToggle={() => setWorkingOpen(!workingOpen)} />
-                  {workingOpen ? sections.working.map(renderRow) : null}
-                </section>
-              ) : null}
-              {sections.snoozed.length > 0 ? (
-                <section aria-label={SHELF_LABEL.snoozed}>
-                  <Shelf id="snoozed" label={SHELF_LABEL.snoozed} count={sections.snoozed.length} open={snoozedOpen} onToggle={() => setSnoozedOpen(!snoozedOpen)} />
-                  {snoozedOpen ? sections.snoozed.map(renderRow) : null}
-                </section>
-              ) : null}
-              {state.status === 'off' && sections.settled.length === 0 ? null : (
-                <section aria-label={SHELF_LABEL.settled}>
-                  <Shelf id="settled" label={SHELF_LABEL.settled} count={sections.settled.length} open={settledOpen} onToggle={() => setSettledOpen(!settledOpen)} />
-                  {settledOpen ? settledRows.map(renderRow) : null}
-                  {settledOpen && settledHidden > 0 ? (
-                    <button type="button" className="shelf-more" onClick={() => setSettledShown(settledShown + SETTLED_MORE)}>
-                      <ChevronDown size={14} aria-hidden="true" />
-                      Show {Math.min(settledHidden, SETTLED_MORE)} more
-                    </button>
-                  ) : null}
-                </section>
-              )}
-            </div>
-          </>
-        )}
       </div>
     </div>
   );

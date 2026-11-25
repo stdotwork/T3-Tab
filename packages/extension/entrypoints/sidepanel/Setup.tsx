@@ -7,11 +7,11 @@ import { errorText, panel } from './lib/api';
 import type { LiveState } from './lib/store';
 import { refreshSetup, useFreshSetup } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
-import { ProviderIcon, Spinner, T3Mark } from './ui';
+import { ProviderIcon, Spinner, T3Mark, ICON } from './ui';
 
 const Ready = ({ text = 'Ready' }: { text?: string }): ReactNode => (
   <span className="state-ready">
-    <Check size={14} aria-hidden="true" />
+    <Check size={ICON.sm} aria-hidden="true" />
     {text}
   </span>
 );
@@ -40,7 +40,7 @@ export function CommandLine(): ReactNode {
           });
         }}
       >
-        {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+        {copied ? <Check size={ICON.sm} aria-hidden="true" /> : <Copy size={ICON.sm} aria-hidden="true" />}
       </button>
     </div>
   );
@@ -101,7 +101,7 @@ export function HelperStep({ live, icon = true }: { live: LiveState; icon?: bool
       <div className={note.command ? 'setup-row helper-row' : 'setup-row'}>
         {icon ? (
           <span className="setup-icon">
-            <Plug size={17} aria-hidden="true" />
+            <Plug size={ICON.lg} aria-hidden="true" />
           </span>
         ) : null}
         <span className="setup-text">
@@ -136,7 +136,7 @@ export function AgentRow({ id, live }: { id: 'claude' | 'codex'; live: LiveState
   return (
     <div className="setup-row">
       <span className="setup-icon">
-        <ProviderIcon driver={id === 'claude' ? 'claudeAgent' : 'codex'} size={18} />
+        <ProviderIcon driver={id === 'claude' ? 'claudeAgent' : 'codex'} size={ICON.lg} />
       </span>
       <span className="setup-text">
         <strong>{name}</strong>
@@ -186,7 +186,7 @@ export function T3Row({ live, state }: { live: LiveState; state: T3State }): Rea
   return (
     <div className="setup-row">
       <span className="setup-icon">
-        <T3Mark size={20} />
+        <T3Mark size={ICON.lg} />
       </span>
       <span className="setup-text">
         <strong>T3 Code</strong>

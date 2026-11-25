@@ -1,5 +1,5 @@
 import type { AgentImage } from '@t3-tab/protocol';
-import { ArrowUp, Check, ChevronUp, FileText, Globe, Lock, Paperclip, PenLine, Search, ShieldCheck, ShieldOff, Square, X } from 'lucide-react';
+import { Check, ChevronUp, FileText, Globe, Lock, Paperclip, PenLine, Search, ShieldCheck, ShieldOff, Square, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
 
 import { MicButton, type Dictation } from './Dictation';
@@ -8,7 +8,16 @@ import { choiceLabel, isModelName, reasoningOption, RUNTIME_MODES, type Choice, 
 import { compactModelName } from './lib/model-short-name';
 import { t3, type ChatAttachment } from './lib/t3-client';
 import { insertDictation } from './lib/voice';
-import { ProviderIcon, useDismiss } from './ui';
+import { ICON, ProviderIcon, useDismiss, useInkAlign } from './ui';
+
+/** T3 Code's send arrow (its composer's own 14 px glyph). */
+function SendArrow(): ReactNode {
+  return (
+    <svg width={14} height={14} viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 export function ModelPicker({
   providers,
@@ -23,6 +32,7 @@ export function ModelPicker({
   access?: AccessControl | undefined;
 }): ReactNode {
   const [open, setOpen] = useState(false);
+  const chip = useInkAlign<HTMLButtonElement>({ bottoms: true });
   const [rail, setRail] = useState(choice?.provider);
   const [query, setQuery] = useState('');
   const box = useRef<HTMLDivElement>(null);
@@ -48,13 +58,14 @@ export function ModelPicker({
       <button
         type="button"
         className="model-chip"
+        ref={chip}
         aria-haspopup="dialog"
         aria-expanded={open}
         title={access === undefined ? undefined : `${label.name}${label.effort === undefined ? '' : ` · ${label.effort}`} · ${RUNTIME_MODES.find((mode) => mode.id === access.value)?.label ?? access.value}`}
         onClick={() => setOpen(!open)}
         disabled={providers.length === 0}
       >
-        <ProviderIcon driver={label.driver} size={15} />
+        <ProviderIcon driver={label.driver} size={ICON.md} />
         <span className="model-chip-name">{label.name}</span>
         {label.effort === undefined ? null : <span className="model-chip-effort">{label.effort}</span>}
       </button>
@@ -74,14 +85,14 @@ export function ModelPicker({
                     className={entry.id === provider?.id ? 'rail-btn active' : 'rail-btn'}
                     onClick={() => setRail(entry.id)}
                   >
-                    <ProviderIcon driver={entry.driver} name={entry.name} size={18} />
+                    <ProviderIcon driver={entry.driver} name={entry.name} size={ICON.md} />
                   </button>
                 ))}
               </div>
             )}
             <div className="model-main">
               <label className="model-search">
-                <Search size={14} aria-hidden="true" />
+                <Search size={ICON.md} aria-hidden="true" />
                 <input
                   autoFocus
                   placeholder={provider?.customModels === true ? 'Search or type a model…' : 'Search models…'}
@@ -112,9 +123,9 @@ export function ModelPicker({
                         if (reasoningOption(model) === undefined) setOpen(false);
                       }}
                     >
-                      <ProviderIcon driver={provider?.driver} name={provider?.name} size={15} />
+                      <ProviderIcon driver={provider?.driver} name={provider?.name} size={ICON.sm} />
                       <span>{compactModelName(model, provider?.driver)}</span>
-                      {active ? <Check size={14} className="row-check" aria-hidden="true" /> : null}
+                      {active ? <Check size={ICON.sm} className="row-check" aria-hidden="true" /> : null}
                     </button>
                   );
                 })}
@@ -129,7 +140,7 @@ export function ModelPicker({
                       setOpen(false);
                     }}
                   >
-                    <ProviderIcon driver={provider?.driver} name={provider?.name} size={15} />
+                    <ProviderIcon driver={provider?.driver} name={provider?.name} size={ICON.sm} />
                     <span className="project-name">Use “{typed}”</span>
                   </button>
                 ) : null}
@@ -186,9 +197,9 @@ function AccessMenu({ value, modes, onChange }: AccessControl): ReactNode {
   return (
     <div className="access" ref={box}>
       <button type="button" className="access-btn" aria-haspopup="menu" aria-expanded={open} aria-label={`Access: ${current?.label ?? value}`} onClick={() => setOpen(!open)}>
-        <ModeIcon size={13} aria-hidden="true" />
+        <ModeIcon size={ICON.xs} aria-hidden="true" />
         {current?.label ?? value}
-        <ChevronUp size={12} aria-hidden="true" />
+        <ChevronUp size={ICON.xs} aria-hidden="true" />
       </button>
       {open ? (
         <div className="popover access-popover" role="menu" aria-label="Access">
@@ -206,12 +217,12 @@ function AccessMenu({ value, modes, onChange }: AccessControl): ReactNode {
                   setOpen(false);
                 }}
               >
-                <Icon size={14} className="menu-icon" aria-hidden="true" />
+                <Icon size={ICON.sm} className="menu-icon" aria-hidden="true" />
                 <span>
                   <strong>{mode.label}</strong>
                   <small>{mode.hint}</small>
                 </span>
-                {mode.id === value ? <Check size={14} className="row-check" aria-hidden="true" /> : null}
+                {mode.id === value ? <Check size={ICON.sm} className="row-check" aria-hidden="true" /> : null}
               </button>
             );
           })}
@@ -225,25 +236,32 @@ function AccessMenu({ value, modes, onChange }: AccessControl): ReactNode {
 export function ThreadModelPicker({ name, effort, driver, access }: { name: string; effort?: string | undefined; driver?: string | undefined; access?: AccessControl | undefined }): ReactNode {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
+  const button = useInkAlign<HTMLButtonElement>({ bottoms: true });
+  const fixed = useInkAlign<HTMLSpanElement>({ bottoms: true });
   useDismiss(box, open, () => setOpen(false));
   const mode = RUNTIME_MODES.find((entry) => entry.id === access?.value)?.label;
   const chip = (
     <>
-      <ProviderIcon driver={driver} size={15} />
+      <ProviderIcon driver={driver} size={ICON.md} />
       <span className="model-chip-name">{name}</span>
       {effort === undefined ? null : <span className="model-chip-effort">{effort}</span>}
     </>
   );
-  if (access === undefined) return <span className="model-chip static">{chip}</span>;
+  if (access === undefined)
+    return (
+      <span className="model-chip static" ref={fixed}>
+        {chip}
+      </span>
+    );
   return (
     <div className="picker" ref={box}>
-      <button type="button" className="model-chip" aria-haspopup="dialog" aria-expanded={open} title={`${name}${effort === undefined ? '' : ` · ${effort}`}${mode === undefined ? '' : ` · ${mode}`}`} onClick={() => setOpen(!open)}>
+      <button type="button" className="model-chip" ref={button} aria-haspopup="dialog" aria-expanded={open} title={`${name}${effort === undefined ? '' : ` · ${effort}`}${mode === undefined ? '' : ` · ${mode}`}`} onClick={() => setOpen(!open)}>
         {chip}
       </button>
       {open ? (
         <div className="popover model-popover" role="dialog" aria-label="This thread's model and access">
           <div className="model-fixed">
-            <ProviderIcon driver={driver} size={15} />
+            <ProviderIcon driver={driver} size={ICON.md} />
             <span className="model-chip-name">{name}</span>
             {effort === undefined ? null : <span className="model-chip-effort">{effort}</span>}
             <small>This thread keeps its model</small>
@@ -282,7 +300,7 @@ export function TabChip({
   if (state === 'off') {
     return (
       <button type="button" className="tab-chip off" onClick={onToggle} title={`Share ${noun} when you send`}>
-        <Globe size={12} aria-hidden="true" />
+        <Globe size={ICON.xs} aria-hidden="true" />
         <span>{count > 1 ? `Share ${count} tabs` : 'Share this tab'}</span>
       </button>
     );
@@ -291,11 +309,11 @@ export function TabChip({
   const hint = state === 'held' ? `"${title}" is shared with this thread` : count > 1 ? `Shared when you send:\n${(tabs ?? []).map((tab) => tab.title || 'Untitled').join('\n')}` : `"${title}" is shared when you send`;
   return (
     <span className={state === 'pending' && nextMessage === true ? 'tab-chip pending' : 'tab-chip'} title={hint}>
-      <Globe size={12} aria-hidden="true" />
+      <Globe size={ICON.xs} aria-hidden="true" />
       <span className="tab-chip-title">{name}</span>
       {state === 'pending' && nextMessage === true ? <small>next message</small> : null}
       <button type="button" aria-label={removeLabel ?? (count > 1 ? "Don't share these tabs" : "Don't share this tab")} onClick={onToggle}>
-        <X size={12} aria-hidden="true" />
+        <X size={ICON.xs} aria-hidden="true" />
       </button>
     </span>
   );
@@ -305,10 +323,10 @@ export function TabChip({
 function AttachmentChip({ attachment, problem, onRemove }: { attachment: DraftAttachment; problem?: string | undefined; onRemove: () => void }): ReactNode {
   return (
     <span className={problem === undefined ? 'file-chip' : 'file-chip problem'} title={problem ?? attachment.name}>
-      {attachment.preview === undefined ? <FileText size={13} aria-hidden="true" /> : <img src={attachment.preview} alt="" />}
+      {attachment.preview === undefined ? <FileText size={ICON.xs} aria-hidden="true" /> : <img src={attachment.preview} alt="" />}
       <span className="file-chip-name">{attachment.name}</span>
       <button type="button" aria-label={`Remove ${attachment.name}`} onClick={onRemove}>
-        <X size={12} aria-hidden="true" />
+        <X size={ICON.xs} aria-hidden="true" />
       </button>
     </span>
   );
@@ -358,6 +376,8 @@ export function Composer({
   notice?: string | undefined;
 }): ReactNode {
   const input = useRef<HTMLTextAreaElement>(null);
+  // The paperclip's and send's ink sit the composer's inset from its edges, and every control's ink stands on one line.
+  const row = useInkAlign<HTMLDivElement>({ edges: true, bottoms: true });
   const chooser = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   useEffect(() => {
@@ -395,6 +415,7 @@ export function Composer({
       <form
         className={dragging ? 'composer dragging' : 'composer'}
         data-chat-composer-form
+        data-ink-frame
         onSubmit={(event) => {
           event.preventDefault();
           if (canSend) onSend();
@@ -432,11 +453,11 @@ export function Composer({
           onKeyDown={onKeyDown}
           onPaste={onPaste}
         />
-        <div className="composer-row">
+        <div className="composer-row" ref={row}>
           {attachments === undefined ? null : (
             <>
               <button type="button" className="composer-icon" aria-label="Attach files" title="Attach files" onClick={() => chooser.current?.click()}>
-                <Paperclip size={16} aria-hidden="true" />
+                <Paperclip size={ICON.md} aria-hidden="true" />
               </button>
               <input
                 ref={chooser}
@@ -456,13 +477,13 @@ export function Composer({
           {picker}
           {dictation === undefined ? null : <MicButton dictation={dictation} />}
           {running && onStop !== undefined ? (
-            <button type="button" className="send-btn stop" aria-label="Stop" title="Stop" onClick={onStop}>
-              <Square size={12} fill="currentColor" aria-hidden="true" />
+            <button type="button" className="send-btn stop" data-ink="box" aria-label="Stop" title="Stop" onClick={onStop}>
+              <Square size={ICON.xs} fill="currentColor" aria-hidden="true" />
             </button>
           ) : null}
           {!running || onStop === undefined || (canQueue === true && value.trim() !== '') ? (
-            <button type="submit" className="send-btn" aria-label={running ? 'Queue message' : 'Send'} title={running ? 'Queue for when this turn ends' : undefined} disabled={!canSend}>
-              <ArrowUp size={16} aria-hidden="true" />
+            <button type="submit" className="send-btn" data-ink="box" aria-label={running ? 'Queue message' : 'Send'} title={running ? 'Queue for when this turn ends' : undefined} disabled={!canSend}>
+              <SendArrow />
             </button>
           ) : null}
         </div>
