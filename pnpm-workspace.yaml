@@ -1,2 +1,15 @@
 packages:
   - packages/*
+minimumReleaseAgeExclude:
+  - '@agent-browser/cli-darwin-arm64@0.45.0'
+  - '@agent-browser/cli-darwin-x64@0.45.0'
+  - '@agent-browser/cli-linux-arm64-gnu@0.45.0'
+  - '@agent-browser/cli-linux-arm64-musl@0.45.0'
+  - '@agent-browser/cli-linux-x64-gnu@0.45.0'
+  - '@agent-browser/cli-linux-x64-musl@0.45.0'
+  - '@agent-browser/cli-win32-x64-msvc@0.45.0'
+  - agent-browser@0.45.0
+allowBuilds:
+  agent-browser: false
+  chrome-devtools-mcp: false
+  dev-browser: false
