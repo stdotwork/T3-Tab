@@ -43,6 +43,10 @@ const PAGES = {
     'Jump select',
     '<select aria-label="Section" onchange="location.href = \'/landing\'"><option>Pick</option><option>Landing</option></select><label>Note <input id="note"></label>',
   ),
+  '/debounced': page(
+    'Debounced',
+    '<label>Code <input id="code" oninput="clearTimeout(window.later); window.later = setTimeout(() => { send.disabled = false }, 100)"></label><button id="send" disabled onclick="fetch(\'/submitted\')">Send</button>',
+  ),
   '/slow-field': page(
     'Slow field',
     '<label>Code <input id="code" oninput="fetch(\'/hint\').then(() => { hint.textContent = \'checked\' })"></label><button onclick="seen.textContent = hint.textContent">Send</button><p id="hint">unchecked</p><p id="seen">nothing</p>',
@@ -375,6 +379,7 @@ export async function checkAgentTools() {
         ],
       });
       assert(/no longer on the page/.test(acted.text), `the second step ran on the old page: ${acted.text}`);
+      assert(/step 1 \(select\) replaced the page/.test(acted.text), `the error does not name the step that moved the page: ${acted.text}`);
       assert(acted.text.includes('Landing'), `the reply is not the new page: ${acted.text}`);
       await closeTab(tab);
     });
@@ -392,6 +397,23 @@ export async function checkAgentTools() {
       assert(!acted.error, `act: ${acted.text}`);
       const seen = await call('run_js', { tab, expression: 'seen.textContent' });
       assert(seen.text === '"checked"', `the click ran before the server's answer was in: ${seen.text}`);
+      await closeTab(tab);
+    });
+
+    await check('a click waits for a check the page runs a moment after a field change', async () => {
+      const tab = await openAllowed('/debounced');
+      const read = await call('read', { tab });
+      const before = hits.allowed.filter((hit) => hit === '/submitted').length;
+      const acted = await call('act', {
+        tab,
+        steps: [
+          { action: 'fill', ref: refFor(read.text, 'textbox "Code"'), text: '123' },
+          { action: 'click', ref: refFor(read.text, 'button "Send"') },
+        ],
+      });
+      assert(!acted.error, `act: ${acted.text}`);
+      for (let attempt = 0; attempt < 40 && hits.allowed.filter((hit) => hit === '/submitted').length === before; attempt += 1) await sleep(50);
+      assert(hits.allowed.filter((hit) => hit === '/submitted').length === before + 1, 'the click ran before the page enabled Send, so nothing was sent');
       await closeTab(tab);
     });
 

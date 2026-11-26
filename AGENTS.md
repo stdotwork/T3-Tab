@@ -243,8 +243,11 @@ action cannot land on a tab the agent did not mean.
 is one object so the tool definition stays small, and `convertStep` there refuses a step that is missing a
 field its action needs, carries one it does not take, or is out of range, then turns the step into the
 nested form the extension runs (`ActStep` in `packages/protocol`). It resolves refs to backend DOM node ids,
-runs its steps through Chrome DevTools Protocol input and DOM commands, and settles after every step by
-waiting for network, DOM and layout activity to stay quiet. A navigation invalidates refs held from before
+runs its steps through Chrome DevTools Protocol input and DOM commands, and settles after a click, a key press, a
+scroll, a hover, a wait and the last step by waiting for network, DOM and layout activity to stay quiet. A `fill`, `type` or
+`select` between other steps does not settle on its own: the batch settles once before the next step of the kinds above, so a
+check the page runs a moment after the field change is in before the click. A field step settles at once when a document was
+replaced or a request began while it ran, and the stale-ref error then names that step. A navigation invalidates refs held from before
 it. `run_js` evaluates an expression or async function body in the page for cases the structured tools do
 not cover. The extension sends a WebSocket ping every 20 seconds while the daemon is connected so Chrome
 does not stop its service worker.

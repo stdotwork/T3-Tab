@@ -10,10 +10,13 @@ import { FakeBrowser } from './fake-browser';
 /** Settling and the closing read are stand-ins: the first runs `duringSettle` once, the second echoes the tab. */
 let duringSettle: (() => void) | undefined;
 let settleCalls = 0;
+/** For each settle, how many key presses had been sent by then. */
+const keysAtSettle: number[] = [];
 vi.mock('../src/settle', () => ({
   sleep: async () => undefined,
   settlePage: async () => {
     settleCalls += 1;
+    keysAtSettle.push(browser.commands.filter((command) => command.method === 'Input.dispatchKeyEvent').length);
     const run = duringSettle;
     duringSettle = undefined;
     run?.();
@@ -45,6 +48,7 @@ beforeEach(() => {
   browser.reset();
   duringSettle = undefined;
   settleCalls = 0;
+  keysAtSettle.length = 0;
   tabId += 10;
   browser.addTab({ id: tabId, groupId: 5, url: `${A}/form`, title: 'Form' });
 });
@@ -97,13 +101,21 @@ describe('act steps and document replacement', () => {
   describe('settling', () => {
     const typed = [{ type: { text: 'a' } }, { type: { text: 'b' } }, { type: { text: 'c' } }];
 
-    it('settles after a step that can start work and at the end, not after a field change between them', async () => {
+    it('settles once before a step that acts on the page, not after each field change', async () => {
       const steps = [...typed, { press: { key: 'Enter' } }, { type: { text: 'd' } }];
       const result = await actOnPage(session, tabId, steps, [null, null, null, null, null], 0, A, reload);
       expect(result.failure).toBeUndefined();
-      // The press, and the last step (a type); the three before the press and none of them settled.
-      expect(settleCalls).toBe(2);
+      // Before the press (for the three field changes), after the press, and after the last step.
+      expect(settleCalls).toBe(3);
+      expect(keysAtSettle).toEqual([0, 2, 2]);
       expect(browser.commands.filter((command) => command.method === 'Input.insertText')).toHaveLength(4);
+    });
+
+    it('settles before a click that follows field changes the page has not answered yet', async () => {
+      const result = await actOnPage(session, tabId, [typed[0]!, typed[1]!, { press: { key: 'Enter' } }], [null, null, null], 0, A, reload);
+      expect(result.failure).toBeUndefined();
+      expect(keysAtSettle[0]).toBe(0);
+      expect(settleCalls).toBe(2);
     });
 
     it('settles once for a batch of field changes, at its end', async () => {
@@ -147,6 +159,20 @@ describe('act steps and document replacement', () => {
       expect(result.failure).toMatchObject({ step: 2, action: 'type' });
       expect(result.failure?.error).toMatch(/e1 is no longer on the page/);
       expect(browser.commands.filter((command) => command.method === 'Input.insertText')).toHaveLength(1);
+    });
+
+    it('names the field step that replaced the page when a later step finds its ref gone', async () => {
+      await ensureAttached(tabId);
+      const epoch = documentEpoch(tabId);
+      browser.beforeCommand = (id, method) => {
+        if (id !== tabId || method !== 'Input.insertText') return;
+        browser.beforeCommand = undefined;
+        browser.navigate(id, `${A}/next`, '');
+      };
+      const steps = [{ type: { text: 'x' } }, { type: { ref: 'e1', text: 'y' } }];
+      const result = await actOnPage(session, tabId, steps, [null, 7], epoch, A, reload);
+      expect(result.failure).toMatchObject({ step: 2, action: 'type' });
+      expect(result.failure?.error).toMatch(/step 1 \(type\) replaced the page/);
     });
   });
 });
