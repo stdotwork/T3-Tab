@@ -246,7 +246,8 @@ last saw that same title and address for the tab, it starts with `tab <id>` alon
 Text is cut for display, never for search. The extension keeps each name up to 8,000 characters (2 MB a page, then 300
 each) and drops the line-wrap boxes the reader never prints; the reader prints a line of text up to 1,000 and a name up to 160, and `find` searches all of it
 and prints a window around the match. A run of text longer than a line is split into lines of up to 1,000 between its pieces
-(text nodes, links, text-level elements); only one piece longer than a line is cut. Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
+(text nodes, links, text-level elements); only one piece longer than a line is cut. `find` prints a matching line up to
+320 characters whole (a longer one around its match) and a context line up to 120 (a longer one keeps its start). Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
 site) when another link of the same name goes elsewhere, when it has no name, when it is the element a `ref` read asks
 for, and in `find`. With `depth`, an element with more inside ends in `…`.
 
@@ -284,7 +285,7 @@ not filtered for iframes.
 The default view shows the page's text as well as its elements and headings (`format.ts`): paragraphs, list items, and
 a table row of text cells as one line with its cells apart by `|`. A link inside running text (its parent holds text of
 its own) is written into that line as `[name](e12)`, with the ref its own line would carry (and its address, `[name](e12 →
-/path)`, where a link's line would show one), when the line is prose: it does not start with a link, and the letters and digits outside its links are at least as many
+/path)`, only where its name is ambiguous, in `find` too), when the line is prose: it does not start with a link, and the letters and digits outside its links are at least as many
 as those in its links. Otherwise (a story line on a news site, a menu with `|` between its links, a product's link and
 the line about it) the links print on lines of their own as before, between the text around them. The text of a block is run together while it fits on
 one 1,000-character line: with no space added where it flows as one line (the parent holds text of its own, or both

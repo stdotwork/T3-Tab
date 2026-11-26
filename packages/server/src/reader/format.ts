@@ -302,11 +302,13 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
   const seen = new Set<string>();
   const limit = (text: string, max: number): string => (options.uncut === true ? text : truncate(text, max));
   const showAddress = addressRule(nodes, options);
-  // A link in a line of text is written into it, `[name](e12)`; its ref is the one its own line would carry.
+  // A link in a line of text is written into it, `[name](e12)`; its ref is the one its own line would carry. Its address
+  // shows only where its name is ambiguous, in a search too: prose holds many links, and reading one's ref shows it.
+  const markAddress = options.linkAddresses === 'all' ? addressRule(nodes, { ...options, linkAddresses: 'ambiguous' }) : showAddress;
   const linkMark = (node: AxNode): string | undefined => {
     const name = normalize(node.name);
     if (name === '' || node.backendId === undefined || flagList(node.props).length > 0) return undefined;
-    const address = showAddress(node);
+    const address = markAddress(node);
     return `[${limit(name, MAX_NAME)}](${refs.refFor(node.backendId)}${address === undefined ? '' : ` → ${address}`})`;
   };
   const inline = inlineText(byId, options.all, linkMark);

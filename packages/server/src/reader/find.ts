@@ -6,8 +6,10 @@ export const MAX_QUERY_LENGTH = 200;
 const REGEX_TIMEOUT_MS = 500;
 /** Characters of a long line kept on each side of its match. */
 const MATCH_WINDOW = 120;
-/** Longest line printed whole; a context line beyond it keeps its start. */
+/** Longest matching line printed whole. */
 const MAX_LINE = 320;
+/** Longest context line printed whole; a longer one (a paragraph beside the match) keeps its start. */
+const MAX_CONTEXT = 120;
 
 export interface FindOptions {
   /** Opt in to a regular expression. The default is a literal, case-insensitive search. */
@@ -61,10 +63,10 @@ export async function findLines(lines: string[], query: string, options: FindOpt
 
 /** A line short enough to print: around its match, or from its start for a context line. Every cut is marked. */
 function clipLine(line: string, match: LineMatch | undefined): string {
-  if (line.length <= MAX_LINE) return line;
   const indent = line.length - line.trimStart().length;
+  if (line.length - indent <= (match === undefined ? MAX_CONTEXT : MAX_LINE)) return line;
   const from = match === undefined ? indent : Math.max(indent, match.start - MATCH_WINDOW);
-  const to = match === undefined ? indent + MAX_LINE : Math.min(line.length, match.start + match.length + MATCH_WINDOW);
+  const to = match === undefined ? indent + MAX_CONTEXT : Math.min(line.length, match.start + match.length + MATCH_WINDOW);
   return `${line.slice(0, indent)}${from > indent ? '…' : ''}${line.slice(from, to)}${to < line.length ? '…' : ''}`;
 }
 

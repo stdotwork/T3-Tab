@@ -357,11 +357,14 @@ describe('tree to text', () => {
     expect(lines[0]?.text).toBe(true);
     // The ref is the link's own: reading it shows the link.
     expect(renderTree(nodes, refs, { all: false, target: 8 })).toEqual(['e2 link "websites"']);
-    // A search shows where each link goes.
+    // A search shows a link's address in text only where its name is ambiguous, as the default view does.
     nodes[3] = { ...nodes[3]!, props: { url: 'https://a.test/wiki/Application' } };
-    expect(renderTree(nodes, new RefTable(), { all: true, uncut: true, linkAddresses: 'all', pageUrl: 'https://a.test/wiki/Browser' })[0]).toBe(
-      '"A web browser is an [application](e1 → /wiki/Application) for reading [websites](e2)"',
-    );
+    nodes[5] = { ...nodes[5]!, props: { url: 'https://a.test/wiki/Website' } };
+    const search = { all: true, uncut: true, linkAddresses: 'all', pageUrl: 'https://a.test/wiki/Browser' } as const;
+    expect(renderTree(nodes, new RefTable(), search)[0]).toBe('"A web browser is an [application](e1) for reading [websites](e2)"');
+    nodes.push(ax(11, 'link', 'application', [], { props: { url: 'https://a.test/wiki/Application_software' } }));
+    nodes[0] = { ...nodes[0]!, children: [...nodes[0]!.children, '11'] };
+    expect(renderTree(nodes, new RefTable(), search)[0]).toBe('"A web browser is an [application](e1 → /wiki/Application) for reading [websites](e2)"');
   });
 
   it('keeps a line of links with a few words between them as a list of links', () => {
