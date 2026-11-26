@@ -13,7 +13,7 @@ export const tabsShape = {
   action: z.enum(['list', 'open', 'goto', 'back', 'forward', 'reload', 'switch', 'close']).optional().describe('Default list.'),
   url: z.string().optional().describe('For open, goto.'),
   tab: tab.describe('Default: current.'),
-  find: find.describe('Only matching lines of the loaded page.'),
+  find,
   // No description: only a thread started from the side panel uses it, and its message says what to pass.
   claim: z.string().optional(),
 };
