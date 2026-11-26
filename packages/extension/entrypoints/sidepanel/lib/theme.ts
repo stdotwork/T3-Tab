@@ -182,6 +182,13 @@ export function removeCustomTheme(id: string): void {
   save({ ...state, custom: state.custom.filter((entry) => entry.id !== id), theme: state.theme === id ? STOCK_THEME.id : state.theme });
 }
 
+/** The theme in use as the panel paints it now: which one, in which scheme, and the colours it draws with. */
+export function currentPalette(): { theme: ThemeDefinition; appearance: ThemeAppearance; colors: ThemeColors } {
+  const theme = resolvedTheme();
+  const appearance = resolvedAppearance(theme);
+  return { theme, appearance, colors: getThemeColorsForMode(theme, appearance) ?? theme.colors };
+}
+
 /** Draws a draft without saving it. Pass nothing to go back to the saved theme. */
 export function previewTheme(draft?: { colors: ThemeColors; appearance: ThemeAppearance; css?: string }): void {
   preview = draft;
