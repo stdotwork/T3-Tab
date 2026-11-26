@@ -39,6 +39,54 @@ async function waitForHelper(serviceWorker, connected, timeoutMs = RECONNECT_MAX
   throw new Error(`The panel never showed the helper as ${connected ? 'connected' : 'missing'}; last: ${JSON.stringify(last)}`);
 }
 
+/**
+ * The real side panel open on a tab. Playwright does not list a side panel among its pages, so this reaches it over the
+ * DevTools protocol, through a page of the same browser. `evaluate` runs an expression there and returns its value.
+ */
+async function sidePanelOn(page, tabId, timeoutMs = 10_000) {
+  const cdp = await page.context().newCDPSession(page);
+  const deadline = Date.now() + timeoutMs;
+  let target;
+  while (target === undefined && Date.now() < deadline) {
+    target = (await cdp.send('Target.getTargets')).targetInfos.find((info) => info.url.endsWith(`/sidepanel.html?tabId=${tabId}`));
+    if (target === undefined) await sleep(100);
+  }
+  assert(target !== undefined, `No side panel opened on tab ${tabId}`);
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: target.targetId, flatten: false });
+  let nextId = 0;
+  const waiting = new Map();
+  cdp.on('Target.receivedMessageFromTarget', (event) => {
+    if (event.sessionId !== sessionId) return;
+    const message = JSON.parse(event.message);
+    waiting.get(message.id)?.(message);
+    waiting.delete(message.id);
+  });
+  const send = (method, params = {}) =>
+    new Promise((resolve, reject) => {
+      nextId += 1;
+      waiting.set(nextId, (message) => (message.error === undefined ? resolve(message.result) : reject(new Error(`${method}: ${message.error.message}`))));
+      void cdp.send('Target.sendMessageToTarget', { sessionId, message: JSON.stringify({ id: nextId, method, params }) }).catch(reject);
+    });
+  const evaluate = async (expression) => {
+    const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    if (result.exceptionDetails !== undefined) throw new Error(`In the side panel: ${result.exceptionDetails.exception?.description ?? result.exceptionDetails.text}`);
+    return result.result.value;
+  };
+  const until = async (what, expression, waitMs = 15_000) => {
+    const end = Date.now() + waitMs;
+    while (Date.now() < end) {
+      if ((await evaluate(expression).catch(() => false)) === true) return;
+      await sleep(100);
+    }
+    throw new Error(`The side panel never showed ${what}; it shows: ${await evaluate('document.body.innerText').catch(() => '(unreadable)')}`);
+  };
+  return { url: target.url, send, evaluate, until };
+}
+
+const SETUP_CARD = "document.querySelector('[data-setup-card]')";
+const COMPOSER = "document.querySelector('.composer-input')";
+const SEND = "document.querySelector('.send-btn')";
+
 /** The environment a user's terminal has: the home's own, with `npx` on PATH and a cache of its own. */
 export function userEnv(home) {
   return cleanEnv({
@@ -82,10 +130,45 @@ export async function checkProductInstall() {
     assert(before.problem === 'missing', `Before setup the panel should call the helper missing: ${JSON.stringify(before)}`);
     console.log(`Product install: before setup the panel says the helper is "${before.problem}"`);
 
+    // 1b. The extension opened its welcome tab by itself. Its one button copies the setup command and opens the real side
+    // panel on that tab, which is the new-thread screen with the setup card: no setup screen, no Start, the composer usable.
+    let welcome;
+    for (let attempt = 0; attempt < 100 && welcome === undefined; attempt += 1) {
+      welcome = context.pages().find((page) => page.url().endsWith('/welcome.html'));
+      if (welcome === undefined) await sleep(100);
+    }
+    assert(welcome !== undefined, `The extension opened no welcome tab on install: ${JSON.stringify(context.pages().map((page) => page.url()))}`);
+    await welcome.evaluate(() => {
+      const write = navigator.clipboard.writeText.bind(navigator.clipboard);
+      window.__copied = [];
+      navigator.clipboard.writeText = async (value) => {
+        window.__copied.push(value);
+        await write(value);
+      };
+    });
+    await welcome.getByRole('button', { name: 'Copy the command and open T3-Tab' }).click();
+    await welcome.getByText('Copied.', { exact: false }).waitFor({ timeout: 5_000 });
+    const shownCommand = (await welcome.locator('.command-line code').textContent())?.trim();
+    const copied = await welcome.evaluate(() => window.__copied);
+    assert(copied.length === 1 && copied[0] === shownCommand, `The welcome button copied ${JSON.stringify(copied)}, not the command it shows (${shownCommand})`);
+    const welcomeTab = await welcome.evaluate(async () => (await chrome.tabs.getCurrent()).id);
+    const sidePanel = await sidePanelOn(welcome, welcomeTab);
+    await sidePanel.until('the setup card with the command over a composer', `${SETUP_CARD}?.querySelector('.command-line') != null && ${SETUP_CARD}.textContent.includes('Run this in a terminal') && ${COMPOSER} != null`);
+    const startOrWelcome = await sidePanel.evaluate("[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Start') || document.body.innerText.includes('Welcome to T3-Tab') || document.body.innerText.includes('Your own agents')");
+    assert(startOrWelcome === false, 'The side panel still shows a setup screen, a Start button or the agents section');
+    // The owner writes the task while the helper is not there yet; Send waits for it.
+    const task = 'Which of these cables is cheapest?';
+    await sidePanel.evaluate(`${COMPOSER}.focus()`);
+    await sidePanel.send('Input.insertText', { text: task });
+    await sidePanel.until('the typed task in the composer', `${COMPOSER}.value === ${JSON.stringify(task)}`);
+    assert((await sidePanel.evaluate(`${SEND}.disabled`)) === true, 'Send is enabled before the helper is there');
+    console.log(`Product install: the welcome tab opened on install; its button copied the command and opened the side panel on it (${sidePanel.url}): the new-thread screen with the setup card and no Start; a task typed before the helper exists waits with Send off`);
+
     // 2. One command from a folder that is not the repository.
     const printed = await run(join(nodeDir, 'npx'), ['--yes', `--package=${tarball}`, 't3-tab', 'setup', '--print']);
     assert(printed.includes('Would install T3-Tab') && !(await exists(root)), `setup --print changed something or said nothing:\n${printed}`);
     const installed = await run(join(nodeDir, 'npx'), ['--yes', `--package=${tarball}`, 't3-tab', 'setup']);
+    const setupExited = Date.now();
     assert(installed.includes('Registered the browser link'), `setup registered no browser:\n${installed}`);
     for (const file of ['cli.js', 't3-tab', 'native-host', 'install.json']) assert(await exists(join(root, file)), `setup did not write ${file}`);
     const launcher = await readFile(join(root, 't3-tab'), 'utf8');
@@ -99,6 +182,13 @@ export async function checkProductInstall() {
     const state = JSON.parse(await readFile(home.statePath, 'utf8'));
     assert(state.helperVersion === JSON.parse(await readFile(join(home.rootDir, 'packages/helper/package.json'), 'utf8')).version, `The daemon does not report the helper version: ${JSON.stringify({ ...state, token: undefined })}`);
     console.log(`Product install: the running browser found the helper without a reload (${JSON.stringify(found)}); daemon pid ${state.pid} started by the browser`);
+
+    // 3b. The side panel moves on by itself: the setup card goes, the task typed before is still there, and Send works.
+    await sidePanel.until('the setup card gone', `${SETUP_CARD} === null && ${COMPOSER} != null`, RECONNECT_MAX_MS + 10_000);
+    const cardGoneMs = Date.now() - setupExited;
+    assert((await sidePanel.evaluate(`${COMPOSER}.value`)) === task, 'The task typed before the helper arrived was lost');
+    await sidePanel.until('Send enabled for the typed task', `${SEND}.disabled === false`);
+    console.log(`Product install: with no click in the panel, the setup card went ${cardGoneMs} ms after setup exited, the task typed before is kept and Send is on`);
 
     // 4. The panel's Add for Claude Code writes an entry that points at the installed helper, and that entry runs.
     await panelRequest(serviceWorker, { type: 'panel.addAgent', agent: 'claude' });

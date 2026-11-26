@@ -356,45 +356,37 @@ async function runT3Flow() {
     const shot = shooter(panelPage, 't3');
     panelPage.on('pageerror', (error) => check('no page error', false, error.message));
 
-    // 1. First open: the helper is not installed yet.
-    await panelPage.getByText('Welcome to T3-Tab').waitFor();
-    await panelPage.locator('.command-line code').waitFor();
-    check('first open shows the setup list with the one command', true);
+    // 1. First open: the helper is not installed yet. The panel is on the new-thread screen, with one setup card.
+    await panelPage.locator('[data-setup-card] .command-line code').waitFor();
+    check('first open is the new-thread screen with the setup card and the one command', await panelPage.locator('.composer-input').isVisible());
     await shot('01-setup-no-helper');
     // The helper goes in the way a user installs it: the packed tarball, run from outside the repository.
     const packed = await packHelper(home.rootDir);
     await runSetupFromTarball(home, packed.tarball);
     await rm(packed.out, { recursive: true, force: true });
-    await panelPage.locator('.setup-row').filter({ hasText: 'T3-Tab helper' }).getByText('Ready').waitFor({ timeout: 60_000 });
-    check('the helper row turned ready by itself', true);
-    await panelPage.locator('.setup-row').filter({ hasText: 'T3 Code' }).getByRole('button', { name: 'Connect' }).waitFor({ timeout: 30_000 });
+    await panelPage.locator('[data-setup-card]').waitFor({ state: 'detached', timeout: 60_000 });
+    check('the setup card went by itself', true);
+    const connectRow = panelPage.locator('.setup-card.connect-row');
+    await connectRow.getByRole('button', { name: 'Connect' }).waitFor({ timeout: 30_000 });
     await shot('02-setup-helper-ready');
 
-    for (const name of ['Claude Code', 'Codex']) {
-      const row = panelPage.locator('.setup-row').filter({ hasText: name });
-      const add = row.getByRole('button', { name: 'Add' });
-      if (await add.isVisible()) {
-        await add.click();
-        await row.getByText('Ready').waitFor({ timeout: 30_000 });
-      }
-      check(`browser tools added to ${name}`, await row.getByText('Ready').isVisible());
-    }
-    await panelPage.locator('.setup-row').filter({ hasText: 'T3 Code' }).getByRole('button', { name: 'Connect' }).click();
-    await panelPage.locator('.setup-row').filter({ hasText: 'T3 Code' }).getByText('Connected').waitFor({ timeout: 30_000 });
+    // The browser tools for the owner's own agents are added in Settings → Connections, not in first run.
+    await addAgentsInSettings(panelPage);
+    await connectRow.getByRole('button', { name: 'Connect' }).click();
+    await connectRow.waitFor({ state: 'detached', timeout: 30_000 });
     check('one click connected the panel to T3', true);
     await shot('03-setup-all-ready');
     if (which === 'setup') {
       await panelRequest(serviceWorker, { type: 'panel.t3Unpair' }).catch(() => undefined);
       return;
     }
-    await panelPage.getByRole('button', { name: 'Start', exact: true }).click();
 
     // 2. Home is a new thread.
     // With no project chosen T3 asks what to work on.
     await panelPage.getByText('What should we work on?').waitFor();
     await panelPage.reload();
     await panelPage.getByText('What should we work on?').waitFor();
-    check('setup does not come back after a reload', !(await panelPage.getByText('Welcome to T3-Tab').isVisible()));
+    check('the setup card does not come back after a reload', (await panelPage.locator('[data-setup-card]').count()) === 0);
     await panelPage.locator('.hero-picker > button').click();
     await panelPage.getByRole('button', { name: 'Add project' }).click();
     await panelPage.getByPlaceholder('/path/to/folder').fill(projectDir);
@@ -633,6 +625,22 @@ async function runT3Flow() {
   }
 }
 
+/** Settings → Connections: Add for Claude Code and Codex, when each is found, then back to the screen before. */
+async function addAgentsInSettings(panelPage) {
+  await panelPage.locator('#btn-settings').click();
+  await panelPage.getByRole('button', { name: /^Connections/ }).click();
+  for (const name of ['Claude Code', 'Codex']) {
+    const row = panelPage.locator('.setup-row').filter({ hasText: name });
+    const add = row.getByRole('button', { name: 'Add' });
+    if (await add.isVisible()) {
+      await add.click();
+      await row.getByText('Ready').waitFor({ timeout: 30_000 });
+    }
+    check(`browser tools added to ${name}`, await row.getByText('Ready').isVisible());
+  }
+  await panelPage.locator('#btn-settings-back').click();
+}
+
 async function which3() {
   const child = spawn('sh', ['-c', 'command -v t3'], { stdio: ['ignore', 'pipe', 'ignore'] });
   let out = '';
@@ -659,15 +667,20 @@ async function runDirectFlow() {
     const shot = shooter(panelPage, 'direct');
     panelPage.on('pageerror', (error) => check('no page error', false, error.message));
 
-    await panelPage.locator('.setup-row').filter({ hasText: 'T3-Tab helper' }).getByText('Ready').waitFor({ timeout: 60_000 });
-    await panelPage.getByText(/Not installed\. Threads use Claude Code or Codex directly/).waitFor({ timeout: 30_000 });
-    check('with T3 absent, setup says threads run directly', true);
+    // The helper is installed before the browser starts: the panel opens on the new-thread screen with no setup card.
+    await panelPage.getByText('What should we do in this tab?').waitFor({ timeout: 60_000 });
+    await panelPage.locator('[data-setup-card]').waitFor({ state: 'detached', timeout: 30_000 });
+    check('with the helper installed, the panel opens on a new thread with no setup card', true);
     await shot('01-setup');
+    await panelPage.locator('#btn-settings').click();
+    await panelPage.getByRole('button', { name: /^Connections/ }).click();
+    await panelPage.getByText(/Not installed\. Threads use Claude Code or Codex directly/).waitFor({ timeout: 30_000 });
+    check('with T3 absent, Connections says threads run directly', true);
     const claudeRow = panelPage.locator('.setup-row').filter({ hasText: 'Claude Code' });
     const add = claudeRow.getByRole('button', { name: 'Add' });
     if (await add.isVisible()) await add.click();
     await claudeRow.getByText('Ready').waitFor({ timeout: 30_000 });
-    await panelPage.getByRole('button', { name: 'Start', exact: true }).click();
+    await panelPage.locator('#btn-settings-back').click();
     await panelPage.getByText('What should we do in this tab?').waitFor();
     await shot('02-home');
     await panelPage.locator('.model-chip').first().click();

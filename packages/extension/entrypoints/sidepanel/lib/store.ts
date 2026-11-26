@@ -33,7 +33,8 @@ export interface LiveState {
   build?: WorkerBuild;
   loaded: boolean;
   helper: HelperState;
-  setup?: SetupState;
+  /** Unset until the helper first answers; the headless render can clear it again. */
+  setup?: SetupState | undefined;
   currentTab?: PanelTab;
   /** The thread that holds this panel's tab, if any, so opening the panel there shows it. */
   tabThread?: TabThread;
@@ -229,7 +230,7 @@ function refreshSoon(): void {
 }
 
 /** Keys the panel writes for itself. A change to one says nothing about the browser's state. */
-const OWN_KEY = /^(panel\.tab\.|composer\.|appearance\.|setup\.)/;
+const OWN_KEY = /^(panel\.tab\.|composer\.|appearance\.)/;
 
 export function startPolling(): void {
   if (started || headlessRender) return;
@@ -277,9 +278,13 @@ export async function refreshRunsNow(): Promise<void> {
   if (started) schedulePolls();
 }
 
-export function applyHeadlessState(state: { currentTab?: PanelTab; pending: PermissionPrompt[]; sites: StoredSitePermission[]; sessions?: StoredSession[]; autoAllowed?: AutoAllowed[] }): void {
+export function applyHeadlessState(state: { currentTab?: PanelTab; pending: PermissionPrompt[]; sites: StoredSitePermission[]; sessions?: StoredSession[]; autoAllowed?: AutoAllowed[]; helper?: HelperState; setup?: SetupState | null }): void {
   const next: Partial<LiveState> = { prompts: state.pending, sites: state.sites, sessions: state.sessions ?? [], autoAllowed: state.autoAllowed ?? [], loaded: true, tabLoaded: true };
   if (state.currentTab !== undefined) next.currentTab = state.currentTab;
+  // The harness reads this state from a worker that is linked to the helper, so the helper counts as connected unless the
+  // state says otherwise (as it does to draw the setup card).
+  next.helper = state.helper ?? { connected: true };
+  if (state.setup !== undefined) next.setup = state.setup ?? undefined;
   merge(next);
 }
 

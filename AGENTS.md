@@ -45,8 +45,12 @@ the developer path; users get the helper from `t3-tab setup` (see "Installing th
 `pnpm e2e` first installs the helper the way a user does (`e2e/checks-product-install.mjs`): `npm pack` of
 `packages/helper`, then `npx --package <tarball> t3-tab setup` run from a temporary folder outside the repository
 with a temporary HOME, into a headless Chromium that is already running with the extension and no helper. It checks
-that the panel's helper state goes from missing to connected with no reload and the background program started by
-the browser, that Add for Claude Code writes an entry naming the installed launcher and that entry's `mcp` server
+that the extension opened its welcome tab on install and that the tab's one button copies the command it shows and
+opens the real side panel on that tab (read over the DevTools protocol, since Playwright does not list side panels):
+the new-thread screen with the setup card and no setup screen or Start, where a task typed before the helper exists
+waits with Send off; that the panel's helper state goes from missing to connected with no reload and the background
+program started by the browser, and that the side panel's setup card then goes by itself with the typed task kept and
+Send on; that Add for Claude Code writes an entry naming the installed launcher and that entry's `mcp` server
 sees the browser, that running `setup` again over a daemon of another version stops it and the browser reconnects
 to a new one, that `uninstall` removes the helper folder, manifest, state and agent entry and stops the daemon,
 that `scripts/install-test-build.sh` (through a `file://` address) installs the same helper, and that a browser
@@ -86,15 +90,17 @@ theme and Add theme, and each theme's actions beside it; and with T3's config ha
 the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e/ink.mjs`) walks the new-thread
 screen (direct, with no mic, and T3, with the mic, with and without a project), the model and project pickers, the thread list, a thread, a T3
 thread waiting on an approval (at its work-log row and above the composer), a running thread (its composer's Stop at the size of the icons beside it), three browser prompts on the new-thread
-screen (one a `goto` on another tab), Settings and a theme sheet at 320, 360 and 400 px in light and dark (and the sheet opened from each scheme, which must open on that scheme's tab with every panel role unchanged and its fields painted with the panel's surface and border), and measures visible ink (SVG strokes and fills, text glyphs
+screen (one a `goto` on another tab), the new-thread screen's setup card (helper missing) and Connect row (T3 Code
+running, not connected) drawn on the headless panel, Settings and a theme sheet at 320, 360 and 400 px in light and dark (and the sheet opened from each scheme, which must open on that scheme's tab with every panel role unchanged and its fields painted with the panel's surface and border), and measures visible ink (SVG strokes and fills, text glyphs
 on their baseline, painted boxes), never padding boxes. It fails when a bar's or the composer row's first and last
 controls sit at ink distances from its edges more than 1 px apart, when the composer's send circle is not as far from
 the frame's foot as from its side, when the composer's controls are not one size or their ink (and the model chip's
 logo and words) is off one centre line, when its text does not start on the paperclip's ink, when the hero's project
 line is off the heading's ink centre, when one bar's icons, or the composer row's glyphs, are drawn at different
 sizes or stroke weights, when an approval card's ink is over 160 px tall or its three answers are not on one row of
-one-line 28 px buttons inside it, or when browser prompts on the new-thread screen move its heading or composer or
-cover the composer. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
+one-line 28 px buttons inside it, when the setup card or the Connect row is not in the composer's column between the
+heading and the composer, cuts off any of its content, or is over 260 px tall (the Connect row: over 42 px or more than
+one line), or when browser prompts on the new-thread screen move its heading or composer or cover the composer. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
 each width and scheme the bars of all those screens must agree within 1 px (0.25 px for strokes): height, first and last
 ink insets, icon size and stroke, the thread toggle's ink, and the breadcrumb's start and baseline.
 `e2e/checks-approval-keys.mjs` then, on the headless panel with the panel's answers recorded,
@@ -113,7 +119,7 @@ variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is 
 finished threads against a real throwaway T3 and again with T3 absent, and saves each screen at 400 px in light and
 dark to the folder named by `T3_TAB_FLOW_SHOTS`.
 
-`pnpm captures` (after `pnpm build`, with `T3_TAB_CAPTURES_DIR` naming an output folder; not part of `pnpm e2e`) renders every panel view at 400 x 800 in light and dark from one fixed shopping scenario with the e2e fakes and the product's `npx t3-tab@latest setup` command, and writes it three ways: `panel/` as drawn, `framed/` on one browser-window frame with the product's and T3 Code's names masked (for blind rating beside other products), `framed-named/` on the same frame unmasked (`e2e/captures.mjs`).
+`pnpm captures` (after `pnpm build`, with `T3_TAB_CAPTURES_DIR` naming an output folder; not part of `pnpm e2e`) renders every panel view at 400 x 800 in light and dark from one fixed shopping scenario with the e2e fakes and the product's `npx t3-tab@latest setup` command, and writes it three ways: `panel/` as drawn, `framed/` on one browser-window frame with the product's and T3 Code's names masked (for blind rating beside other products), `framed-named/` on the same frame unmasked, and the welcome tab as a 1280 x 800 browser tab in `welcome/` (`e2e/captures.mjs`).
 
 `pnpm bench` (after `pnpm build`) measures what an agent is sent, in characters and estimated tokens: the
 `tools/list` payload (total and per tool) and each tool reply on four fixed tasks over three local pages
@@ -145,9 +151,19 @@ because this machine registers Claude in Chrome system-wide and a browser with a
 
 ## Installing the helper
 
-Users add the extension from the browser's store and run one command from any folder: `npx t3-tab@latest setup`
-(the panel shows it with a copy button; `packages/extension/src/helper-command.ts` holds it, with the test command
-the prototype build shows until the package is published, behind one constant, `HELPER_CHANNEL`). It needs Node.js
+Users add the extension from the browser's store and run one command from any folder: `npx t3-tab@latest setup`.
+On a fresh install (`runtime.onInstalled` with reason `install`) the extension opens a tab of its own, `welcome.html`,
+whose one button, "Copy the command and open T3-Tab", copies the command and opens the side panel on that tab, so the
+owner does not have to find the toolbar icon, which the browser keeps under the puzzle piece until it is pinned. The
+browser opens a side panel only from a user gesture: called from the service worker with none, `sidePanel.open` fails
+with "may only be called in response to a user gesture", so `onInstalled` cannot open the panel itself; from a click on
+the extension's own page it opens, also after an `await` of 200 ms (checked in headless Chromium; a `--load-extension`
+browser counts every launch as an install, so every test browser gets the tab). The panel opens on
+the new-thread screen; while the helper is not connected, one setup card above the composer says why, shows the command
+with a copy button and the live state, and the composer stays usable: a task typed meanwhile is kept, Send waits, and the
+card goes by itself once the helper connects (`SetupCard` in `Setup.tsx`; there is no setup screen and no Start). The
+command is held in `packages/extension/src/helper-command.ts`, with the test command the prototype build shows until the
+package is published, behind one constant, `HELPER_CHANNEL`. It needs Node.js
 20 or newer; without it the shell reports `npx` or `node` not found and the panel keeps showing the command.
 `setup` runs from the bundled file (an unbundled build refuses; `__T3_TAB_VERSION__` is set only by the bundler):
 
@@ -195,7 +211,8 @@ daemon link's 20-second ping keeps it alive), so after a rebuild a new panel can
 The write comes first and a reload already tried for the same panel build in the last five minutes is not repeated, so
 it cannot loop: the panel then says the extension is still an old build and to reload it on the extensions page. A
 failed request (the worker restarting) is asked again later and reloads nothing. Whatever the helper connection last
-hit is shown in the helper row (`helperNote` in `Setup.tsx`, from `HelperState` in `daemon-link.ts`): a native
+hit is shown in the setup card and in the helper row of Settings → Connections (`helperNote` in `Setup.tsx`, from
+`HelperState` in `daemon-link.ts`): a native
 messaging error, a `native.error` from the host, or a WebSocket that never opened or was closed, with its code and
 reason (`noteSocketClosed`), each with its one action; "Run this in a terminal" appears only when the browser reports
 no helper registered, and "Connecting" while no attempt has failed yet. `e2e/checks-stale-worker.mjs` swaps the files
@@ -437,7 +454,8 @@ steps is refused until its new origin is approved. Site setting writes are seria
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
 `view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel lives in
-`packages/extension/entrypoints/sidepanel` (React: first-run setup, a new-thread screen, the thread view, and the
+`packages/extension/entrypoints/sidepanel` (React: a new-thread screen, which carries the setup card until the helper
+connects, the thread view, and the
 thread list and settings behind icons, coloured only from T3's theme roles);
 every screen has the same top bar in T3's anatomy (`Bar` in `Frame.tsx`): T3's sidebar toggle, which opens and closes
 the thread list, then a breadcrumb, then the screen's icons (New thread and Settings), or, on Settings and its sheets,
@@ -547,7 +565,10 @@ The side panel starts and continues agents with the owner's tabs; T3-Tab never r
 connected the panel is a T3 client and T3 starts and runs every thread. When it is not, the picked provider runs
 directly through the daemon and feeds the same thread view.
 
-- **The panel's T3 session.** Connect signs a DPoP proof and calls the daemon's `t3.pair`. The daemon checks that the
+- **The panel's T3 session.** While T3 runs on this machine and the panel holds no session, the new-thread screen shows
+  one row, "T3 Code is running", with Connect (Settings → Connections has the same button). Every Connect goes through
+  `connectT3` in `lib/t3-connect.ts`; `CONNECT_T3_BY_ITSELF` there, off until the owner decides it, would make the panel
+  connect once per panel page with no click. Connect signs a DPoP proof and calls the daemon's `t3.pair`. The daemon checks that the
   recorded T3 process owns the listener, mints a five-minute pairing credential with `t3 auth pairing create`, and spends
   it at T3's `/oauth/token` itself, so the credential never reaches the extension. The result is a DPoP-bound session with
   T3's default client scopes, the same access T3's own apps get. The signing key is non-extractable and stays in the
@@ -598,7 +619,7 @@ directly through the daemon and feeds the same thread view.
   edited, and any theme can be duplicated with all its colours and both of its modes. A name already in use gets a number
   instead of replacing that theme. A change reaches panels open on other tabs through `chrome.storage.onChanged`. Custom
   CSS goes through T3's own filter, which removes rules that load remote files.
-- **Adding the tools to the owner's agents.** Add in setup registers `t3-tab mcp` for the owner's own Claude Code and Codex
+- **Adding the tools to the owner's agents.** Add in Settings → Connections registers `t3-tab mcp` for the owner's own Claude Code and Codex
   sessions; threads started in the panel do not need it. The panel has no Remove button, so it never edits agent configuration
   itself. Connections shows the command that removes the entry: `claude mcp remove -s user t3-tab` or
   `codex mcp remove t3-tab` (or `t3-tab uninstall --claude` / `--codex`).

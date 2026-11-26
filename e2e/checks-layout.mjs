@@ -14,6 +14,9 @@
 // - the theme sheet does not open on the colour scheme in force, in the panel's own palette (see `themeSheetProblems`), or
 // - an approval card (a browser prompt or a T3 approval) is more than 160 px tall, its answers are not on one row of
 //   one-line buttons inside the card, or a card on the new-thread screen moves the hero or the composer or covers it.
+// - the new-thread screen's setup card (helper missing) or Connect row (T3 Code running, not connected) is not in the
+//   composer's column above it and below the heading, cuts off any of its content, is over 260 px tall, or, for the
+//   Connect row, is more than one line or 42 px.
 import { dirname, join } from 'node:path';
 
 import { assert, panelRequest, sleep } from './harness.mjs';
@@ -24,6 +27,12 @@ const SCHEMES = ['light', 'dark'];
 const TOLERANCE = 1;
 const CARD_MAX = 160;
 const ANSWER_HEIGHT = 28;
+/**
+ * The tallest the new-thread screen's setup card may be, and the Connect row. The card is tallest at 320 px with the test
+ * build's install command, which wraps to five lines there (246 px measured); the product's command is one line.
+ */
+const SETUP_CARD_MAX = 260;
+const CONNECT_ROW_MAX = 42;
 
 /** Measures every bar, the composer and the hero on the page as it stands. */
 async function measure(page) {
@@ -288,6 +297,55 @@ async function themeSheetProblems(page) {
   return out;
 }
 
+/**
+ * The new-thread screen's setup card and Connect row: the kinds expected and no others, each in the composer's column and
+ * above it, clear of the heading, nothing in it cut off or scrolled sideways; the card at most SETUP_CARD_MAX px tall, and
+ * the Connect row one line of text with its button on that line, at most CONNECT_ROW_MAX px.
+ */
+async function setupCardProblems(page, where, kinds) {
+  const out = [];
+  const found = await page.evaluate(() => {
+    const rect = (element) => {
+      const box = element?.getBoundingClientRect();
+      return box === undefined ? null : { top: box.top, bottom: box.bottom, left: box.left, right: box.right, height: box.height };
+    };
+    const composer = rect(document.querySelector('.composer'));
+    const heading = rect(document.querySelector('.hero h1'));
+    const cards = [...document.querySelectorAll('.setup-card')].map((card) => {
+      const line = card.querySelector('.setup-card-line');
+      const button = card.querySelector('button');
+      return {
+        kind: card.classList.contains('connect-row') ? 'connect' : 'helper',
+        box: rect(card),
+        cut: [card, ...card.querySelectorAll('*')].some((element) => element.scrollWidth > element.clientWidth + 1 && getComputedStyle(element).overflowX !== 'visible' && element !== line),
+        lineRects: line === null ? 0 : line.getClientRects().length,
+        lineCut: line === null ? false : line.scrollWidth > line.clientWidth + 1,
+        button: rect(button),
+        lineBox: rect(line),
+      };
+    });
+    return { composer, heading, cards };
+  });
+  const got = found.cards.map((card) => card.kind);
+  if (JSON.stringify(got) !== JSON.stringify(kinds)) out.push(`${where}: setup cards ${got.join(', ') || 'none'}, expected ${kinds.join(', ')}`);
+  for (const card of found.cards) {
+    const name = `${where}: the ${card.kind === 'connect' ? 'Connect row' : 'setup card'}`;
+    if (found.composer !== null) {
+      if (Math.abs(card.box.left - found.composer.left) > TOLERANCE || Math.abs(card.box.right - found.composer.right) > TOLERANCE) out.push(`${name} spans ${fixed(card.box.left)}–${fixed(card.box.right)}, the composer ${fixed(found.composer.left)}–${fixed(found.composer.right)}`);
+      if (card.box.bottom > found.composer.top + 0.5) out.push(`${name} reaches ${fixed(card.box.bottom)}, over the composer at ${fixed(found.composer.top)}`);
+    }
+    if (found.heading !== null && card.box.top < found.heading.bottom - 0.5) out.push(`${name} starts at ${fixed(card.box.top)}, over the heading that ends at ${fixed(found.heading.bottom)}`);
+    if (card.cut) out.push(`${name} cuts off or scrolls some of its content sideways`);
+    if (card.kind === 'helper' && card.box.height > SETUP_CARD_MAX) out.push(`${name} is ${fixed(card.box.height)} px tall, over ${SETUP_CARD_MAX}`);
+    if (card.kind === 'connect') {
+      if (card.box.height > CONNECT_ROW_MAX) out.push(`${name} is ${fixed(card.box.height)} px tall, over ${CONNECT_ROW_MAX}`);
+      if (card.lineRects !== 1 || card.lineCut) out.push(`${name}'s text is not one whole line`);
+      if (card.button === null || card.lineBox === null || card.button.top > card.lineBox.bottom || card.button.bottom < card.lineBox.top) out.push(`${name}'s Connect is not on the line of its text`);
+    }
+  }
+  return out;
+}
+
 /** Measures one screen at every width and scheme; returns its problems, how many things it measured and its bars. */
 async function checkScreen(page, screen, shotsDir, bars, expect) {
   const failures = [];
@@ -309,6 +367,10 @@ async function checkScreen(page, screen, shotsDir, bars, expect) {
       // Which composer controls the screen draws: Stop in a running composer, the mic only where T3 can transcribe.
       for (const label of expect?.controls ?? []) if (!found.composer?.controls.includes(label)) failures.push(`${screen} @${width} ${scheme}: the composer has no "${label}" (it has ${found.composer?.controls.join(', ') ?? 'nothing'})`);
       for (const label of expect?.without ?? []) if (found.composer?.controls.some((control) => control.startsWith(label))) failures.push(`${screen} @${width} ${scheme}: the composer draws "${label}", which cannot work here`);
+      if (expect?.setupCards !== undefined) {
+        failures.push(...(await setupCardProblems(page, `${screen} @${width} ${scheme}`, expect.setupCards)));
+        measured += expect.setupCards.length;
+      }
       if (shotsDir !== undefined) await page.screenshot({ path: join(shotsDir, `layout-${screen}-${width}-${scheme}.png`), animations: 'disabled' });
     }
   }
@@ -522,6 +584,24 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
   await page.setViewportSize({ width: 360, height: 800 });
   await page.emulateMedia({ colorScheme: 'light' });
 
+  // First run on the headless panel, from supplied state: the setup card while the helper is missing, then, with the helper
+  // there and T3 Code running but not connected, the one Connect row. Both are walked screens with the one bar.
+  if (panelPage !== undefined) {
+    const render = async (state) => await panelPage.evaluate((next) => globalThis.__t3tabRenderPanelState(next), { ...(await panelRequest(serviceWorker, { type: 'panel.state' })), ...state });
+    await render({ helper: { connected: false, problem: 'missing' }, setup: null });
+    await panelPage.locator('[data-setup-card] .command-line').waitFor();
+    const runOn = async (screen, expect) => {
+      const { failures: found, measured } = await checkScreen(panelPage, screen, shotsDir, bars, expect);
+      counts[screen] = measured;
+      failures.push(...found);
+    };
+    await runOn('home-setup-card', { setupCards: ['helper'] });
+    await render({ helper: { connected: true }, setup: { agents: [{ id: 'claude', found: true, registered: false }], t3: { state: 'running' } } });
+    await panelPage.locator('.setup-card.connect-row').waitFor();
+    await runOn('home-connect-t3', { setupCards: ['connect'] });
+    await render({ helper: { connected: true }, setup: null });
+  }
+
   // The prompt cards are drawn on the headless panel, which is not one of the screens walked above, so they are counted on
   // their own and the walked screens' one-bar check does not include it.
   let promptCards = 0;
@@ -544,5 +624,5 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
   for (const [key, list] of Object.entries(bars)) failures.push(...barProblems(key, list));
   const barCount = Object.values(bars).reduce((sum, list) => sum + list.length, 0);
   assert(failures.length === 0, `Panel layout, measured on its ink (${failures.length} problems):\n${failures.join('\n')}`);
-  console.log(`Panel layout: ${total} bars, composers, heroes and approval cards measured on ${Object.keys(counts).length} screens at ${WIDTHS.join('/')} px, light and dark (and ${promptCards} prompt cards on the headless new-thread screen); ink insets, centre lines, control sizes and glyph sizes within ${TOLERANCE} px; the ${barCount} top bars are the one bar and agree across screens in height, insets, icon size and stroke, toggle and breadcrumb position; approval cards at most ${CARD_MAX} px with one row of answers, and prompts on the new-thread screen move neither the hero nor the composer`);
+  console.log(`Panel layout: ${total} bars, composers, heroes and approval cards measured on ${Object.keys(counts).length} screens at ${WIDTHS.join('/')} px, light and dark (and ${promptCards} prompt cards on the headless new-thread screen); ink insets, centre lines, control sizes and glyph sizes within ${TOLERANCE} px; the ${barCount} top bars are the one bar and agree across screens in height, insets, icon size and stroke, toggle and breadcrumb position; approval cards at most ${CARD_MAX} px with one row of answers, the setup card at most ${SETUP_CARD_MAX} px and the Connect row one line in the composer's column, and prompts on the new-thread screen move neither the hero nor the composer`);
 }
