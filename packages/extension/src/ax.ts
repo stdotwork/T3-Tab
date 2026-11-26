@@ -20,6 +20,8 @@ const KEPT_PROPS = new Set([
   'invalid',
   'level',
   'url',
+  // On the root of an `aria-live` region: the reader always shows the text it announces.
+  'live',
 ]);
 
 /** What the browser says about one frame of the page. */

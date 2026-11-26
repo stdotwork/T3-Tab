@@ -18,7 +18,8 @@ work, with the browser tools injected.
 - `docs/decisions.md` — lasting v1 design decisions, tradeoffs and out-of-scope boundaries.
 - `e2e/` — the Playwright end-to-end harness; `e2e/harness.mjs` holds the setup the end-to-end run and the
   benchmark share (temporary HOME, headless Chromium with the extension, MCP clients).
-- `bench/` — the token benchmark, its fixed pages and its budget.
+- `bench/` — the token benchmark, its fixed pages and its budget; `bench/compare` (T3-Tab against other browser MCP
+  servers, scripted calls) and `bench/agent` (the same, with a real model in the loop).
 - `.github/workflows/ci.yml` — the pull request and `main` checks.
 
 ## Commands
@@ -33,6 +34,8 @@ pnpm test
 pnpm build
 pnpm e2e
 pnpm bench
+pnpm bench:compare
+pnpm bench:agent
 ```
 
 `pnpm build` writes the Chromium extension to `packages/extension/.output/chrome-mv3` and the packed helper's
@@ -126,6 +129,19 @@ has no limit, or when a limit measures nothing. `pnpm bench --update-budget` rew
 current run (the measured number plus 5%, plus 40% for JPEG bytes, which vary with fonts); commit that
 change only on purpose and give the reason in the PR. `pnpm bench --check results.json` judges a saved
 results file without a browser. Changing `bench/pages.mjs` changes every number, so redo the budget with it.
+
+`pnpm bench:compare` and `pnpm bench:agent` (after `pnpm build`) set T3-Tab against `chrome-devtools-mcp` (default and
+`--slim`), Playwright MCP, agent-browser and Playwriter; neither is part of CI or `pnpm test`, and each has a README in its folder.
+`bench:compare` sends each tool a fixed call sequence, no model, and counts what comes back. `bench:agent` runs a real model
+(headless Claude Code, Haiku 5.5 by default, one MCP server and no built-in tools, a temporary HOME) on ten local tasks, or with
+`--sites real` on the frozen held-out set of eight public-site tasks (`bench/agent/real-tasks.mjs`: change a task only because
+its site changed, never to suit a tool; needs network and keeps the rate low). Success is checked from the page or a known answer,
+never from the model's words. Every run is also measured net of a no-tool baseline run on the same task, so a tool is judged on
+tool-attributable tokens (a run's tokens minus the input of the baseline's first request, not the baseline's whole run: with no tools the model improvises and Claude Code continues it, so a whole baseline run makes several requests and its total moves by thousands of tokens) and model requests, as the geometric mean over tasks of
+per-task ratios against T3-Tab with a 90% bootstrap interval; `--repeats` defaults to 5. It needs a model route in the
+environment (`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN`) and spends real quota: run it
+with a small `--repeats`, `--tools` and `--tasks` while developing. The other tools' browsers start with `--disable-extensions`,
+because this machine registers Claude in Chrome system-wide and a browser with a new profile would install it.
 
 ## Installing the helper
 
@@ -241,7 +257,7 @@ same tab do not take each other's diffs. A reply starts with `tab <id>: <title> 
 last saw that same title and address for the tab, it starts with `tab <id>` alone.
 
 Text is cut for display, never for search. The extension keeps each name up to 8,000 characters (2 MB a page, then 300
-each) and drops the line-wrap boxes the reader never prints; the reader prints up to 300, and `find` searches all of it
+each) and drops the line-wrap boxes the reader never prints; the reader prints a line of text up to 1,000 and a name up to 160, and `find` searches all of it
 and prints a window around the match. Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
 site) when another link of the same name goes elsewhere, when it has no name, when it is the element a `ref` read asks
 for, and in `find`. With `depth`, an element with more inside ends in `…`.
@@ -277,9 +293,25 @@ A child frame of another origin, or one the browser cannot name (a sandboxed fra
 `frame omitted: <origin>` in its place (`restrictToOriginFrames` in `packages/extension/src/ax.ts`). Screenshots are
 not filtered for iframes.
 
-With `all`, images are listed with a ref, named or not, so they can be hovered or clicked. The default view leaves
-plain text out but still tracks it: a read or `act` whose only change is plain text replies `Text changed since the
-last read:` with that diff, and a reply about changed elements adds up to 10 lines of `New text:`.
+The default view shows the page's text as well as its elements and headings (`format.ts`): paragraphs, list items, and
+a table row of text cells as one line with its cells apart by `|`. The text of a block is run together while it fits on
+one 1,000-character line: with no space added where it flows as one line (the parent holds text of its own, or both
+pieces are text-level elements such as `<em>` or `<sub>`), because Chromium keeps the real spaces of inline text in the
+text (`$<span>1,284</span>.50` is `"$1,284.50"`); with a space between boxes side by side, such as flex items or block
+`<div>`s, which Chromium gives no space between (`"Price $5"`); a line break is a space. Each node's text is built once
+and never past a line, so a page of many small text nodes (highlighted code) reads in time proportional to its size.
+Separators with no letter or digit (`|`, `(`) and icon-font glyphs are left out, and so is text inside a field that only
+repeats the field's value (an editable combobox's text). A live region (`alert`, `status`, `log` or `aria-live`) and a
+dialog always print; an `alert` or `status` that says one short thing is one line with no ref, `alert "Incorrect
+username or password."`, and an empty one prints nothing. Text is held to `TEXT_BUDGET` (4,000 characters, `page.ts`)
+and gets only the room the 12,000-character cap leaves after every element and heading, so text never pushes an element
+past the cut. Within it, the text of live regions and dialogs comes first (a `log` from its newest entry back, others from
+their start), then the page's `main` or `article`, then the rest. What is left out is said in one last line, `(N text
+lines left out, M characters: find searches them, read a ref for one part, all for the whole page)`, which stays even
+when the reply is cut; the whole reply, notes included, stays within the cap. A `ref` read and `all` have no text budget,
+only the cap. The diff baseline holds every line, text left out included; a diff's text lines are held to the same
+budget and to the room its other lines leave, live-region and dialog lines (judged on both sides of the diff) first, with
+the same kind of note. With `all`, images are also listed with a ref, named or not, so they can be hovered or clicked.
 An `act` reply leaves out what the batch itself set: a changed line whose only change is the value a `fill`, a `type` with a
 ref or a `select` gave it (`packages/server/src/reader/echo.ts`) is settled against the earlier read, so it is not a change, and
 the reply names those refs on one line (`Set e7, e8, e10.`). A line the page changed in any other way, or to another value
@@ -650,7 +682,8 @@ plugin are proprietary: study their behaviour and tool design, never copy their 
 - Before merge: the end-to-end run (Chromium with the extension loaded, driving a local test page through
   the real tools).
 - When the tools or page reading change: the token benchmark (`pnpm bench`), with its results in the PR
-  and the change from the base branch's numbers. CI runs it and fails when a number is over its budget.
+  and the change from the base branch's numbers. CI runs it and fails when a number is over its budget. For a change
+  meant to make agents cheaper, also `pnpm bench:agent` (local, then `--sites real`).
 
 Browser checks run headless or on another machine, never on the owner's desktop display.
 

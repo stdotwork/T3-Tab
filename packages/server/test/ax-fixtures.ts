@@ -48,3 +48,39 @@ export function buttonPage(count: number, prefix = 'Button'): AxNode[] {
     ...ids.map((id, index) => ax(id, 'button', `${prefix} ${index + 1}`)),
   ];
 }
+
+/**
+ * A page with a link, an article region of `sentences` paragraphs, a button, a footer with text and an alert: e1 the
+ * link, e2 the button, e3 the article.
+ */
+export function longArticle(sentences: number): AxNode[] {
+  const ids = Array.from({ length: sentences }, (_, index) => 1_000 + index * 2);
+  return [
+    ax(1, 'RootWebArea', 'Article', [2, 3, 4, 5, 6, 8]),
+    ax(2, 'link', 'Home'),
+    ax(3, 'button', 'Subscribe'),
+    ax(4, 'contentinfo', '', [10]),
+    ax(5, 'alert', '', [12]),
+    ax(6, 'main', '', [7]),
+    ax(7, 'article', 'Story', ids),
+    ax(8, 'paragraph', '', [11]),
+    ax(10, 'StaticText', 'Footer text, after the article in the tree order only.'),
+    ax(11, 'StaticText', 'Closing words outside the article.'),
+    ax(12, 'StaticText', 'Saved.'),
+    ...ids.flatMap((id, index) => [
+      ax(id, 'paragraph', '', [id + 1]),
+      ax(id + 1, 'StaticText', `Sentence ${index + 1} of the article, long enough to be a real line of prose.`),
+    ]),
+  ];
+}
+
+/** An activity feed: a named list of `count` text entries and a button. */
+export function feed(count: number): AxNode[] {
+  const ids = Array.from({ length: count }, (_, index) => 1_000 + index * 2);
+  return [
+    ax(1, 'RootWebArea', 'Feed', [2, 3]),
+    ax(2, 'list', 'Entries', ids),
+    ax(3, 'button', 'Load more'),
+    ...ids.flatMap((id, index) => [ax(id, 'listitem', '', [id + 1]), ax(id + 1, 'StaticText', `#${index + 1} · Entry`)]),
+  ];
+}

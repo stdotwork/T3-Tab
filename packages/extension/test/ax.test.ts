@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { restrictToOriginFrames, slimAxNodes, type FramePolicy } from '../src/ax.js';
 
 describe('slimming the accessibility tree', () => {
-  it('keeps role, name, value, backend id, children and the flags the reader prints', () => {
+  it('keeps role, name, value, backend id, children and the properties the reader uses', () => {
     const nodes = slimAxNodes([
       {
         nodeId: '5',
@@ -15,6 +15,7 @@ describe('slimming the accessibility tree', () => {
           { name: 'checked', value: { type: 'tristate', value: 'true' } },
           { name: 'focusable', value: { type: 'booleanOrUndefined', value: true } },
           { name: 'level', value: { type: 'integer', value: 2 } },
+          { name: 'live', value: { type: 'token', value: 'polite' } },
         ],
         childIds: ['6', 7],
         backendDOMNodeId: 42,
@@ -27,7 +28,7 @@ describe('slimming the accessibility tree', () => {
         role: 'checkbox',
         name: 'Agree',
         value: 'on',
-        props: { checked: 'true', level: 2 },
+        props: { checked: 'true', level: 2, live: 'polite' },
         children: ['6'],
         backendId: 42,
       },

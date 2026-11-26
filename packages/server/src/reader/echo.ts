@@ -16,8 +16,6 @@ export interface ElidedEchoes {
   previous: string;
   /** The refs whose lines were left out, in the order the steps named them. */
   refs: string[];
-  /** Each echoed line before and after, without its ref, to settle the plain-text view the same way. */
-  pairs: Array<{ before: string; after: string }>;
 }
 
 const REF_LINE = /^(\s*)(e\d+) /;
@@ -35,11 +33,6 @@ export function elideEchoes(previous: string, current: string, sets: SetValue[])
   const beforeAt = refIndex(before);
   const afterAt = refIndex(after);
   const refs: string[] = [];
-  const pairs: Array<{ before: string; after: string }> = [];
-  const settle = (index: number, line: string): void => {
-    pairs.push({ before: withoutRef(before[index] ?? ''), after: withoutRef(line) });
-    before[index] = line;
-  };
 
   // A ref set twice in one batch (a fill, then a type) ends at a value the lines cannot tell us.
   const counts = new Map<string, number>();
@@ -55,24 +48,10 @@ export function elideEchoes(previous: string, current: string, sets: SetValue[])
         ? valueEcho(before[from] ?? '', after[to] ?? '', set)
         : selectEcho(before, after, from, to, set);
     if (settled === undefined || settled.length === 0) continue;
-    for (const [offset, line] of settled) settle(from + offset, line);
+    for (const [offset, line] of settled) before[from + offset] = line;
     refs.push(set.ref);
   }
-  return { previous: before.join('\n'), refs, pairs };
-}
-
-/** Puts the settled lines of the refs' plain-text view in place, where each of them is the only line of its kind. */
-export function elideTextEchoes(previous: string, current: string, pairs: ElidedEchoes['pairs']): string {
-  if (pairs.length === 0) return previous;
-  const lines = previous.split('\n');
-  const now = current.split('\n');
-  for (const pair of pairs) {
-    const at = onlyIndex(lines, pair.before);
-    const into = onlyIndex(now, pair.after);
-    if (at === undefined || into === undefined) continue;
-    lines[at] = now[into] ?? '';
-  }
-  return lines.join('\n');
+  return { previous: before.join('\n'), refs };
 }
 
 /** The lines (offset below the element's line, and the page's line) that a fill or type leaves as an echo, if it is one. */
@@ -153,23 +132,8 @@ function refOf(line: string): string | undefined {
   return REF_LINE.exec(line)?.[2];
 }
 
-function withoutRef(line: string): string {
-  return line.replace(REF_LINE, '$1');
-}
-
 function indentOf(line: string): number {
   return line.length - line.trimStart().length;
-}
-
-function onlyIndex(lines: string[], wanted: string): number | undefined {
-  const target = wanted.trim();
-  let found: number | undefined;
-  for (const [index, line] of lines.entries()) {
-    if (line.trim() !== target) continue;
-    if (found !== undefined) return undefined;
-    found = index;
-  }
-  return found;
 }
 
 /** A line without its value, the value as printed (`value="…"`), and what it says unquoted. */

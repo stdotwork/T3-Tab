@@ -62,7 +62,7 @@ export async function runMcpServer(options: { claimFile?: string } = {}): Promis
       'read',
       {
         description:
-          'Read a page as text: interactive elements with refs (e12), plus headings. Later reads return only changes.',
+          "Read a page as text: interactive elements with refs (e12), headings, and the page's text up to a budget. Later reads return only changes.",
         inputSchema: readShape,
       },
       browserTool('read'),

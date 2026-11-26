@@ -105,7 +105,7 @@ export interface AxNode {
   name: string;
   value?: string;
   ignored?: true;
-  /** Flags the reader prints, such as `checked`, `disabled`, `expanded`, `level`, and a link's `url`. */
+  /** Properties the reader uses, such as `checked`, `disabled`, `expanded`, `level`, a link's `url` and `live`. */
   props?: Record<string, string | number | boolean>;
   children: string[];
   /** Stable for the life of one document; the key of a ref. */

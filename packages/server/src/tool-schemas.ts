@@ -18,7 +18,7 @@ export const tabsShape = {
 
 export const readShape = {
   tab: tab.describe(currentTab),
-  all: z.boolean().optional().describe('Include all text, not only interactive elements.'),
+  all: z.boolean().optional().describe('All text, no budget; images too.'),
   find: z.string().max(200).optional().describe('Case-insensitive literal text; returns only matching lines.'),
   regex: z.boolean().optional().describe('find is a regular expression.'),
   ref: z.string().optional().describe("Read only this element's subtree."),
