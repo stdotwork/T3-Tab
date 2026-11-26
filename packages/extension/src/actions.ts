@@ -13,9 +13,10 @@ import {
   sendCommand,
   setRecoveryOrigin,
 } from './cdp';
-import { readPage } from './page';
+import { readPage, rememberPageSecrets } from './page';
 import { originOf } from './permissions';
 import { scrollWithWheel } from './scroll';
+import { scrubReported } from './secret-text';
 import type { StoredSession } from './sessions';
 import { resolveSessionTab } from './tabs';
 import { settlePage, sleep } from './settle';
@@ -127,6 +128,9 @@ export async function actOnPage(
       await assertActAccess(activeSession, tabId, expectedOrigin);
       const ref = actStepRef(step);
       const dialog = openDialog(tabId);
+      // A click or a key press can send a form, and a form that sends a field's value in the address puts it in the title and
+      // address this reply shows: note the page's secret values first, as of this moment.
+      if (dialog === undefined && (action === 'click' || action === 'press')) await rememberPageSecrets(tabId);
       if (dialog !== undefined) {
         await answerDialogStep(tabId, step, expectedOrigin);
       } else if (ref !== undefined) {
@@ -195,8 +199,8 @@ export async function actOnPage(
     const tab = await resolveSessionTab(activeSession, tabId);
     return {
       tab: tabId,
-      title: tab.title ?? '',
-      url: tab.url ?? tab.pendingUrl ?? '',
+      title: scrubReported(tabId, tab.title ?? '', false),
+      url: scrubReported(tabId, tab.url ?? tab.pendingUrl ?? '', true),
       epoch: documentEpoch(tabId),
       nodes: [],
       dialog: dialogNotice(tabId, waiting),

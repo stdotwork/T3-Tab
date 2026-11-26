@@ -28,6 +28,7 @@ vi.mock('../src/page', () => ({
     const current = await chrome.tabs.get(tab);
     return { tab, title: current.title ?? '', url: current.url ?? '', epoch: 0, nodes: [] };
   },
+  rememberPageSecrets: async (): Promise<void> => undefined,
 }));
 
 const A = 'http://a.test';
