@@ -84,7 +84,8 @@ export async function checkAgentTools() {
         response.end(
           page(
             'Opener',
-            `<a href="/landing" target="_blank">Same site report</a><button onclick="window.open('${urls.ask}/private')">Other site</button><p id="state">ready</p>`,
+            `<a href="/landing" target="_blank">Same site report</a><button onclick="window.open('${urls.ask}/private')">Other site</button>` +
+              '<a href="/to-other" target="_blank">Redirected report</a><button onclick="window.open(\'\')">Blank</button><p id="state">ready</p>',
           ),
         );
         return;
@@ -609,8 +610,18 @@ export async function checkAgentTools() {
       const otherId = Number(/^Opened tab (\d+)/.exec(otherLine ?? '')?.[1]);
       for (let attempt = 0; attempt < 40 && hits.ask.length === hitsBefore; attempt += 1) await sleep(50);
       assert(hits.ask.includes('/private'), 'the window.open page never loaded');
-      await closeTab(otherId);
-      await closeTab(sameId);
+
+      // A tab that opens on this site and is redirected to another one shows only where it ended up.
+      const redirected = await call('act', { tab, steps: [{ action: 'click', ref: refFor(loaded, 'link "Redirected report"') }] });
+      const redirectedLine = redirected.text.split('\n').find((line) => line.startsWith('Opened tab'));
+      assert(redirectedLine?.endsWith(`[needs approval] ${urls.other}`), `a tab redirected to another origin: ${redirected.text}`);
+      assert(!redirected.text.includes('landed'), `the redirected tab's page is in the reply: ${redirected.text}`);
+      // A tab left on the blank page it was created with is said to be loading, not refused.
+      const blank = await call('act', { tab, steps: [{ action: 'click', ref: refFor(loaded, 'button "Blank"') }] });
+      assert(/^Opened tab \d+ \[needs approval\] about:blank\nIt is still loading\.$/m.test(blank.text), `a blank tab: ${blank.text}`);
+      assert((await pending()).length === 0, 'naming the opened tabs asked the owner');
+      const ids = [redirected.text, blank.text].map((reply) => Number(/^Opened tab (\d+)/m.exec(reply)?.[1]));
+      for (const id of [otherId, sameId, ...ids]) if (Number.isInteger(id)) await closeTab(id);
       await closeTab(tab);
     });
 
@@ -623,41 +634,6 @@ export async function checkAgentTools() {
       const read = await call('read', { tab });
       assert(read.text.includes('pressed'), `the read after an act find: ${read.text}`);
       await closeTab(tab);
-    });
-
-    await check('an act with js asks what run_js asks, and returns its result after the steps', async () => {
-      const opening = call('tabs', { action: 'open', url: `${urls.ask}/red` });
-      await decide(await waitPrompt((item) => item.tool === 'open' && item.origin === urls.ask), 'allow-once');
-      const loaded = await opening;
-      const tab = opened(loaded);
-      const press = { action: 'click', ref: refFor(loaded.text, 'button "Press"') };
-      const plain = call('act', { tab, steps: [press] });
-      const actPrompt = await waitPrompt((item) => item.tool === 'act' && item.origin === urls.ask);
-      await decide(actPrompt, 'decline');
-      assert((await plain).error, 'a declined act ran');
-
-      const withJs = call('act', { tab, steps: [press], js: "document.querySelector('button').textContent" });
-      const jsPrompt = await waitPrompt((item) => item.origin === urls.ask);
-      assert(jsPrompt.tool === 'run_js', `an act with js asked as ${jsPrompt.tool}`);
-      await decide(jsPrompt, 'decline');
-      const declined = await withJs;
-      assert(declined.error && /declined/i.test(declined.text), `a declined act with js: ${declined.text}`);
-      const untouched = await call('read', { tab });
-      assert(untouched.error || !untouched.text.includes('pressed'), `the steps of a declined act with js ran: ${untouched.text}`);
-      for (const prompt of await pending()) await decide(prompt, 'decline');
-
-      const allowed = call('act', { tab, steps: [press], js: "document.querySelector('button').textContent" });
-      await decide(await waitPrompt((item) => item.tool === 'run_js' && item.origin === urls.ask), 'allow-once');
-      const ran = await allowed;
-      assert(!ran.error && ran.text.endsWith('\njs: "pressed"'), `act with js: ${ran.text}`);
-      await closeTab(tab);
-
-      // On a site the owner allows, neither asks.
-      const { tab: free, text: freeText } = await openAllowedPage('/red');
-      const quiet = await call('act', { tab: free, steps: [{ action: 'click', ref: refFor(freeText, 'button "Press"') }], js: 'location.pathname' });
-      assert(!quiet.error && quiet.text.endsWith('\njs: "/red"'), `act with js on an allowed site: ${quiet.text}`);
-      assert((await pending()).length === 0, 'an allowed site asked');
-      await closeTab(free);
     });
 
     await check('depth marks elements with more inside', async () => {

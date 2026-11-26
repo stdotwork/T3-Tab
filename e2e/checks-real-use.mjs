@@ -28,6 +28,11 @@ const LOGIN = '<form action="/secure" method="get"><label>Username <input name="
 const pages = (otherSite) => ({
   '/plain': page('Plain', '<button onclick="r.textContent=\'You clicked: Ok\'">Go</button><p id="r">before</p>'),
   '/login': page('Login', LOGIN),
+  // The same form sent into a new tab, with a field marked as the account's password.
+  '/login-new-tab': page(
+    'Login in a new tab',
+    '<form action="/secure" method="get" target="_blank"><label>Username <input name="username" type="text"></label><label>Password <input name="password" type="text" autocomplete="current-password"></label><button type="submit">Log in</button></form>',
+  ),
   '/secure': page('Secure', '<p>Signed in</p>'),
   // Every way a field hides what it holds: a password input under another ARIA role, and text fields a style masks.
   '/secrets': page(
@@ -566,6 +571,25 @@ export async function checkRealUse() {
       assert(!listed.error && !/GETLOGIN-SECRET-61/i.test(listed.text) && listed.text.includes('password=<redacted>'), `tabs list:\n${listed.text}`);
       const again = await read(tab, { all: true });
       assert(!/GETLOGIN-SECRET-61/i.test(again.text), `a later read shows the address:\n${again.text}`);
+    });
+
+    await check('a password a form sends into a new tab stays out of that tab\'s title and address in the act reply and tabs list', async () => {
+      const tab = await open('/login-new-tab');
+      const first = await read(tab);
+      const clicked = await act(
+        tab,
+        { action: 'fill', ref: refFor(first.text, 'textbox "Username"'), text: 'ada' },
+        { action: 'fill', ref: refFor(first.text, 'textbox "Password"'), text: 'NEWTAB-SECRET-73' },
+        { action: 'click', ref: refFor(first.text, 'button "Log in"') },
+      );
+      assert(!clicked.error, `click: ${clicked.text}`);
+      const opened = Number(/^Opened tab (\d+)/m.exec(clicked.text)?.[1]);
+      assert(Number.isInteger(opened), `the reply does not name the new tab:\n${clicked.text}`);
+      assert((await js(opened, 'location.search')).includes('NEWTAB-SECRET-73'), 'the form did not send the value in the new tab\'s address');
+      assert(!/NEWTAB-SECRET-73/i.test(clicked.text) && clicked.text.includes('password=<redacted>'), `the act reply shows the address:\n${clicked.text}`);
+      const listed = await call('tabs', { action: 'list' });
+      assert(!listed.error && !/NEWTAB-SECRET-73/i.test(listed.text) && listed.text.includes('password=<redacted>'), `tabs list:\n${listed.text}`);
+      await call('tabs', { action: 'close', tab: opened });
     });
 
     await check('a page of 3,000 masked fields and 200 buttons named from them is read in bounded time with no value in it', async () => {

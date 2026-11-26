@@ -16,10 +16,13 @@ const reader = vi.hoisted(() => ({
   reads: [] as number[],
   clock: 0,
   duringRead: undefined as ((tab: number) => void) | undefined,
+  /** Runs at each wait, after the clock moved: the place for a loading tab to commit. */
+  onSleep: undefined as (() => void) | undefined,
 }));
 vi.mock('../src/settle', () => ({
   sleep: async (ms: number) => {
     reader.clock += ms;
+    reader.onSleep?.();
   },
   settlePage: async () => ({ settled: true, timedOut: false, elapsedMs: 0 }),
   pageTextLength: async () => reader.textLength,
@@ -57,6 +60,7 @@ async function load() {
    * it, and the worker adopts it into its opener's group, as `background.ts` does with the browser's event.
    */
   const opensOnKey = (source: number, fields: { url: string; title?: string; status?: 'loading'; pendingUrl?: string }): number => {
+    // One more than the tabs there are now, so two tabs opened in one test get two ids.
     const id = 700 + browser.tabs.size;
     browser.beforeCommand = (tabId, method) => {
       if (tabId !== source || method !== 'Input.dispatchKeyEvent') return;
@@ -102,7 +106,7 @@ beforeEach(() => {
   const fake = (globalThis as unknown as { chrome: Record<string, unknown> }).chrome;
   fake.storage = { session: storage({}), local: storage({}) };
   fake.webNavigation = { onCommitted: { addListener: () => undefined } };
-  Object.assign(reader, { textLength: 100, reads: [], clock: 1_000_000, duringRead: undefined });
+  Object.assign(reader, { textLength: 100, reads: [], clock: 1_000_000, duringRead: undefined, onSleep: undefined });
   vi.spyOn(Date, 'now').mockImplementation(() => reader.clock);
 });
 
@@ -203,87 +207,92 @@ describe('a tab a step opened', () => {
   });
 });
 
-describe('js after the steps', () => {
-  it('is asked for as run_js, runs in the main world of the approved origin once the steps ran, and gives its value', async () => {
-    const { shopTab, act, allowOnce, sessionStore } = await load();
-    await sessionStore.register(alice);
-    const tab = await shopTab();
-    const fake = browser.tabs.get(tab);
-    if (fake !== undefined) fake.title = 'Cart (2)';
-    const acting = act(tab, { expression: 'document.title' });
-    expect(await allowOnce()).toBe('run_js');
-    const result = await acting;
-    expect(result.evaluated).toEqual({ value: 'Cart (2)' });
-    const ran = browser.commands.filter((command) => command.method === 'Runtime.evaluate' && String(command.params?.expression).includes('document.title'));
-    expect(ran).toHaveLength(1);
-    expect(ran[0]?.params?.uniqueContextId).toBe(fake?.context.uniqueId);
-    // After the batch's key press.
-    const order = browser.commands.map((command) => command.method);
-    expect(order.lastIndexOf('Input.dispatchKeyEvent')).toBeLessThan(browser.commands.indexOf(ran[0] ?? browser.commands[0]!));
-  });
-
-  it('does not run when a step took the page to another origin', async () => {
-    const { shopTab, act, allowOnce, sessionStore } = await load();
-    await sessionStore.register(alice);
-    const tab = await shopTab();
-    browser.beforeCommand = (tabId, method) => {
-      if (tabId !== tab || method !== 'Input.dispatchKeyEvent') return;
-      browser.beforeCommand = undefined;
-      browser.navigate(tab, `${OTHER}/inbox`, '');
-    };
-    const acting = act(tab, { expression: 'document.title' });
-    await allowOnce();
-    await expect(acting).rejects.toThrow(/left the page outside the approved session origin/);
-    expect(browser.evaluated.filter((entry) => entry.expression.includes('document.title'))).toEqual([]);
-  });
-
-  it('reports a script error as its outcome, not as the batch\'s failure', async () => {
-    const { shopTab, act, allowOnce, sessionStore } = await load();
-    await sessionStore.register(alice);
-    const tab = await shopTab();
-    const acting = act(tab, { expression: 'missingThing.value' });
-    await allowOnce();
-    const result = await acting;
-    expect(result.failure).toBeUndefined();
-    expect(result.evaluated).toMatchObject({ error: expect.stringMatching(/^run_js failed: .*missingThing/) as string });
-  });
-
-  it('is not asked for at all on a site the owner allows, as run_js is not', async () => {
-    const { shopTab, act, sessionStore, siteStore, permissionPrompts } = await load();
+describe('a tab a step opened, further', () => {
+  it('that redirected from the batch\'s origin to one the session may not read shows that origin only', async () => {
+    const { shopTab, opensOnKey, act, allowOnce, sessionStore, siteStore } = await load();
     await sessionStore.register(alice);
     const tab = await shopTab();
     await siteStore.set(SHOP, 'allow');
-    expect((await act(tab, { expression: '1 + 1' })).evaluated).toEqual({ value: 2 });
-    expect(permissionPrompts.list()).toEqual([]);
+    const popup = opensOnKey(tab, { url: '', status: 'loading', pendingUrl: `${SHOP}/go` });
+    // The shop's address answers with a redirect: the tab commits on the other site.
+    reader.onSleep = () => {
+      const fake = browser.tabs.get(popup);
+      if (fake === undefined || fake.pendingUrl === undefined) return;
+      Object.assign(fake, { url: `${OTHER}/inbox`, title: 'Inbox (3)', pendingUrl: undefined, status: 'complete' });
+    };
+    const result = await act(tab);
+    expect(result.opened).toEqual([{ tab: { id: popup, title: '', url: OTHER, active: false, needsApproval: true, groupId: 1000 } }]);
+    expect(reader.reads).not.toContain(popup);
+    void allowOnce;
   });
 
-  it('on a site set to read is still asked for, as run_js', async () => {
-    const { shopTab, act, allowOnce, sessionStore, siteStore } = await load();
+  it('still on the blank page it was created with is said to be loading, not refused', async () => {
+    const { shopTab, opensOnKey, act, sessionStore, siteStore } = await load();
+    await sessionStore.register(alice);
+    const tab = await shopTab();
+    await siteStore.set(SHOP, 'allow');
+    const popup = opensOnKey(tab, { url: 'about:blank' });
+    const started = reader.clock;
+    expect((await act(tab)).opened).toEqual([
+      { tab: { id: popup, title: '', url: 'about:blank', active: false, needsApproval: true }, unread: 'It is still loading.' },
+    ]);
+    // Given a second to start loading something, not the whole wait.
+    expect(reader.clock - started).toBeLessThan(2_000);
+  });
+
+  it('from a GET form the batch sent does not show the password it carries in its address or title', async () => {
+    const { shopTab, opensOnKey, act, allowOnce, sessionStore, siteStore } = await load();
+    const secrets = await import('../src/secret-text');
     await sessionStore.register(alice);
     const tab = await shopTab();
     await siteStore.set(SHOP, 'read');
-    const acting = act(tab, { expression: '1 + 1' });
-    expect(await allowOnce()).toBe('run_js');
-    expect((await acting).evaluated).toEqual({ value: 2 });
+    // What a read or the click step itself noted of the opener's form.
+    secrets.rememberSecrets(tab, ['hunter2-secret']);
+    const popup = opensOnKey(tab, { url: `${SHOP}/login?user=ada&pw=hunter2-secret`, title: 'Welcome hunter2-secret' });
+    const acting = act(tab);
+    await allowOnce();
+    const [described] = (await acting).opened ?? [];
+    expect(described?.tab.id).toBe(popup);
+    // The page itself is a stand-in here; the real read scrubs its title and address as `tabs list` does.
+    expect(described?.tab.url).not.toContain('hunter2-secret');
+    expect(described?.tab.title).not.toContain('hunter2-secret');
+    expect(described?.tab.url).toContain('pw=');
   });
 
-  it('does not run when the thread left Full access while the steps ran', async () => {
-    const { shopTab, act, sessionStore, permissionPrompts } = await load();
-    await sessionStore.register(alice, 'th1');
-    const tab = await shopTab();
-    let mode = 'full-access';
-    daemon.askDaemon.mockImplementation(async () => ({ runtimeMode: mode }));
-    let now = 0;
-    vi.spyOn(performance, 'now').mockImplementation(() => now);
-    browser.beforeCommand = (tabId, method) => {
-      if (tabId !== tab || method !== 'Input.dispatchKeyEvent') return;
-      browser.beforeCommand = undefined;
-      mode = 'approval-required';
-      now += 10_000;
-    };
-    const result = await act(tab, { expression: 'document.title' });
-    expect(permissionPrompts.list()).toEqual([]);
-    expect(result.evaluated).toEqual({ skipped: 'T3 no longer confirms Full access for this thread, so it did not run.' });
-    expect(browser.evaluated.filter((entry) => entry.expression.includes('document.title'))).toEqual([]);
+  describe('under Full access', () => {
+    async function fullAccess() {
+      const runtime = await load();
+      await runtime.sessionStore.register(alice, 'th1');
+      daemon.askDaemon.mockImplementation(async () => ({ runtimeMode: 'full-access' }));
+      return runtime;
+    }
+
+    it('comes with its page on the batch\'s own origin, and is listed with what Full access let through', async () => {
+      const { shopTab, opensOnKey, act, permissionPrompts } = await fullAccess();
+      const tab = await shopTab();
+      const before = permissionPrompts.autoAllowed().length;
+      const popup = opensOnKey(tab, { url: `${SHOP}/receipt`, title: 'Receipt' });
+      const [described] = (await act(tab)).opened ?? [];
+      expect(described).toMatchObject({ tab: { id: popup, title: 'Receipt' }, page: { url: `${SHOP}/receipt` } });
+      const listed = permissionPrompts.autoAllowed().slice(before);
+      expect(listed.map((entry) => entry.tool)).toEqual(['act', 'read']);
+      expect(listed[1]).toMatchObject({ origin: SHOP, tabId: popup, tabTitle: 'Receipt' });
+    });
+
+    it('does not count on another origin, which needs its own site setting', async () => {
+      const { shopTab, opensOnKey, act, permissionPrompts, siteStore } = await fullAccess();
+      const tab = await shopTab();
+      const before = permissionPrompts.autoAllowed().length;
+      const popup = opensOnKey(tab, { url: `${OTHER}/inbox`, title: 'Inbox' });
+      const [described] = (await act(tab)).opened ?? [];
+      expect(described).toEqual({ tab: { id: popup, title: '', url: OTHER, active: false, needsApproval: true, groupId: 1000 } });
+      expect(reader.reads).not.toContain(popup);
+      expect(permissionPrompts.autoAllowed().slice(before).map((entry) => entry.tool)).toEqual(['act']);
+
+      await siteStore.set(OTHER, 'read');
+      const second = opensOnKey(tab, { url: `${OTHER}/inbox`, title: 'Inbox' });
+      const [shown] = (await act(tab)).opened ?? [];
+      expect(shown).toMatchObject({ tab: { id: second, title: 'Inbox' }, page: { url: `${OTHER}/inbox` } });
+    });
   });
 });

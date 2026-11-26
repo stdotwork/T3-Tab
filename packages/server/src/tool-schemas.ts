@@ -144,7 +144,6 @@ export const actShape = {
     ),
   // Its length is checked when the call runs: the schema stays smaller.
   find: z.string().optional().describe('Only matching lines.'),
-  js: z.string().optional().describe('run_js expression after the steps.'),
 };
 
 export const runJsShape = {

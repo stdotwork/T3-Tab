@@ -104,6 +104,12 @@ export class PermissionPrompts {
     return [...this.autoAllowedLog];
   }
 
+  /** Lists a request Full access let through without a prompt, here or where a caller checked the mode itself. */
+  noteAutoAllowed(tool: PromptKind, origin: string, tab: PromptTab | undefined, url?: string): void {
+    this.autoAllowedLog.push({ tool, origin, tabId: tab?.id ?? -1, tabTitle: tab?.title ?? url ?? origin, at: Date.now() });
+    if (this.autoAllowedLog.length > MAX_AUTO_ALLOWED) this.autoAllowedLog.splice(0, this.autoAllowedLog.length - MAX_AUTO_ALLOWED);
+  }
+
   /** Whether T3 confirms Full access for this session now. */
   async hasFullAccess(sessionId: string): Promise<boolean> {
     return (await this.options.fullAccess?.(sessionId)) === true;
@@ -117,8 +123,7 @@ export class PermissionPrompts {
     const setting = await this.store.get(origin);
     if (settingCovers(setting, tool)) return 'approved';
     if (await this.hasFullAccess(session.id)) {
-      this.autoAllowedLog.push({ tool, origin, tabId: tab?.id ?? -1, tabTitle: tab?.title ?? url ?? origin, at: Date.now() });
-      if (this.autoAllowedLog.length > MAX_AUTO_ALLOWED) this.autoAllowedLog.splice(0, this.autoAllowedLog.length - MAX_AUTO_ALLOWED);
+      this.noteAutoAllowed(tool, origin, tab, url);
       return 'full-access';
     }
     if (this.pendingFor(session.id).length >= MAX_PENDING_PER_SESSION) {

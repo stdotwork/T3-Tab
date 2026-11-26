@@ -370,17 +370,21 @@ describe('act follow-through', () => {
     expect(link.calls.find((call) => call.startsWith('page.act'))).toContain('"skipReadOver":4000');
   });
 
-  it('leaves the opened tab\'s page to a read when the reply has no room left, and sets no baseline for it', async () => {
-    const big = page(buttonPage(600), { tab: 7 });
+  it('keeps the whole reply, the opened tab and its page included, within the cap', async () => {
+    const big = page(buttonPage(900), { tab: 7 });
+    const longReport = page(buttonPage(140), { tab: 12, title: 'Annual report', url: 'http://localhost/report' });
     const link = fakeBrowser({
       'page.read': (params) => (params.tab === 12 ? reportPage() : page(buttonPage(1))),
-      'page.act': () => ({ ...big, opened: [{ tab: report, page: reportPage() }] }),
+      'page.act': () => ({ ...big, opened: [{ tab: report, page: longReport }, { tab: { ...report, id: 13 }, unread: 'x'.repeat(5_000) }], openedElsewhere: 3 }),
     });
     await runTool(link, SESSION, 'read', { tab: 7 });
     const reply = text(await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'press', key: 'Enter' }] }));
-    expect(reply.length).toBeLessThanOrEqual(12_000 + 300);
-    expect(reply).toMatch(/Opened tab 12: Annual report — http:\/\/localhost\/report\n\(The page is [\d,]+ characters, too long for this reply/);
-    expect(text(await runTool(link, SESSION, 'read', { tab: 12 }))).toContain('# Sign in');
+    expect(reply.length).toBeLessThanOrEqual(12_000);
+    expect(reply).toMatch(/… truncated at \d+ characters/);
+    expect(reply).toContain('Opened tab 12: Annual report — http://localhost/report\n# Buttons');
+    expect(reply).toContain('button "Button 140"');
+    expect(reply).toContain('Opened tab 13 Annual report');
+    expect(reply.endsWith('3 more tabs opened that this session does not hold.')).toBe(true);
   });
 
   it('says how to see a tab it could not read yet, and counts tabs opened outside the session', async () => {
@@ -392,7 +396,7 @@ describe('act follow-through', () => {
       'read it for the page.',
       'Opened tab 13 Annual report — http://localhost/report',
       'It is still loading.',
-      '2 tabs were opened outside this session (from a tab the owner shared).',
+      '2 more tabs opened that this session does not hold.',
     ]);
   });
 
@@ -400,7 +404,7 @@ describe('act follow-through', () => {
     const link = await afterRead({
       'page.act': () => ({ ...page(signInPage()), failure: { step: 1, action: 'click', error: 'boom' }, openedElsewhere: 1 }),
     });
-    await expect(runTool(link, SESSION, 'act', click)).rejects.toThrow(/Step 1 \(click\) failed: boom[\s\S]*A tab was opened outside this session/);
+    await expect(runTool(link, SESSION, 'act', click)).rejects.toThrow(/Step 1 \(click\) failed: boom[\s\S]*\n1 more tab opened that this session does not hold\.$/);
   });
 
   it('replies with only the lines find matches, leaving the diff baseline where it was', async () => {
@@ -422,45 +426,15 @@ describe('act follow-through', () => {
     );
   });
 
-  it('sends js with the batch and ends the reply with its result, or why it did not run', async () => {
-    const results: Array<BrowserMethods['page.act']['result']['evaluated']> = [
-      { value: { code: 'ZEBRA' } },
-      { error: 'run_js failed: ReferenceError: nope is not defined' },
-      { skipped: 'T3 no longer confirms Full access for this thread, so it did not run.' },
-      undefined,
-    ];
-    const link = await afterRead({
-      'page.act': () => {
-        const evaluated = results.shift();
-        return { ...page(signInPage()), ...(evaluated === undefined ? {} : { evaluated }) };
-      },
-    });
-    const run = async (): Promise<string> => text(await runTool(link, SESSION, 'act', { ...click, js: 'document.title' }));
-    expect(await run()).toBe('tab 7\nNo changes since the last read.\njs: {"code":"ZEBRA"}');
-    expect(await run()).toMatch(/\njs failed: ReferenceError: nope is not defined$/);
-    expect(await run()).toMatch(/\njs did not run: T3 no longer confirms Full access for this thread, so it did not run\.$/);
-    expect(await run()).toMatch(/\njs did not run: the browser extension is older than the helper/);
-    expect(link.calls.at(-1)).toContain('"expression":"document.title"');
+  it('treats an empty find as none, so the reply is the diff with what the batch set left out', async () => {
+    const after = signInPage().map((node) => (node.id === '5' ? { ...node, value: 'grace@example.com' } : node));
+    const link = await afterRead({ 'page.act': () => page(after) });
+    const reply = text(await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'fill', ref: 'e2', text: 'grace@example.com' }], find: '' }));
+    expect(reply).toBe('tab 7\nSet e2. Nothing else changed.');
   });
 
-  it('says nothing about js when the batch failed, since it did not run', async () => {
-    const link = await afterRead({
-      'page.act': () => ({ ...page(signInPage()), failure: { step: 1, action: 'click', error: 'boom' } }),
-    });
-    const message = await runTool(link, SESSION, 'act', { ...click, js: '1' }).catch((error: Error) => error.message);
-    expect(message).not.toContain('js');
-  });
-
-  it('caps a long js result to what is left of the reply, keeping at least a short line', async () => {
-    const link = await afterRead({ 'page.act': () => ({ ...page(signInPage()), evaluated: { value: 'x'.repeat(20_000) } }) });
-    const reply = text(await runTool(link, SESSION, 'act', { ...click, js: 'document.body.innerText' }));
-    expect(reply.length).toBeLessThan(12_200);
-    expect(reply).toMatch(/… truncated at \d+ characters/);
-  });
-
-  it('refuses an empty js and an overlong find before asking the browser', async () => {
+  it('refuses an overlong find before asking the browser', async () => {
     const link = await afterRead({});
-    await expect(runTool(link, SESSION, 'act', { ...click, js: ' ' })).rejects.toThrow('Invalid arguments: js is empty');
     await expect(runTool(link, SESSION, 'act', { ...click, find: 'x'.repeat(201) })).rejects.toThrow('Invalid arguments: find: at most 200 characters');
     expect(link.calls.filter((call) => call.startsWith('page.act'))).toEqual([]);
   });
