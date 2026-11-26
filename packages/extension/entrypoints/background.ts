@@ -14,6 +14,7 @@ import { defineBackground } from 'wxt/utils/define-background';
 
 import { initCdp } from '../src/cdp';
 import { handleDaemonReply, noteDaemonClose, noteDaemonProblem, noteSocketClosed, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
+import { forgetOpener, noteOpenedTab } from '../src/opened-tabs';
 import { handlePanelRequest } from '../src/panel';
 import { isSidePanelSender } from '../src/panel-security';
 import { forgetPanelTab, keepPanelOnItsTab, openPanelOn } from '../src/panel-tab';
@@ -161,8 +162,9 @@ export default defineBackground(() => {
   });
   chrome.tabs.onCreated.addListener(() => reportTabCount());
   // The browser names the tab a new tab was opened from; only that tab's session may adopt it.
+  // An `act` batch on the opener says which tabs its steps opened, once they are adopted.
   chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
-    void adoptPopupTab(details.tabId, details.sourceTabId, sessionStore);
+    noteOpenedTab(details.sourceTabId, details.tabId, adoptPopupTab(details.tabId, details.sourceTabId, sessionStore));
   });
   chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
     if (change.url === undefined) return;
@@ -172,6 +174,7 @@ export default defineBackground(() => {
   chrome.tabs.onRemoved.addListener(reportTabClosed);
   chrome.tabs.onRemoved.addListener((tabId) => void sessionStore.forgetTab(tabId));
   chrome.tabs.onRemoved.addListener((tabId) => forgetSecrets(tabId));
+  chrome.tabs.onRemoved.addListener((tabId) => forgetOpener(tabId));
   chrome.tabs.onRemoved.addListener((tabId) => void forgetPanelTab(tabId).catch(() => undefined));
   chrome.tabs.onReplaced.addListener(reportTabCount);
   chrome.tabs.onAttached.addListener(reportTabCount);

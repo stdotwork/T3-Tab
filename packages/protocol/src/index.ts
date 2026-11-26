@@ -192,6 +192,18 @@ export interface PageActionResult extends PageReadResult {
   dialog?: string;
 }
 
+/**
+ * What a batch did beyond its own tab. `opened` lists the tabs its steps (or its `expression`) opened that joined the
+ * session, each as a load describes it: only the origin and `needsApproval` until the session may read it, and its page
+ * when a read would need no prompt. `openedElsewhere` counts new tabs that stayed out of the session. `evaluated` is the
+ * outcome of the batch's `expression`, run once the steps settled: its value, or why it failed or did not run.
+ */
+export interface ActFollowThrough {
+  opened?: TabLoadResult[];
+  openedElsewhere?: number;
+  evaluated?: { value: unknown } | { error: string } | { skipped: string };
+}
+
 export interface ScreenshotResult {
   tab: number;
   /** Base64 JPEG. */
@@ -263,9 +275,13 @@ export interface BrowserMethods {
   'tabs.close': { params: { tab: number }; result: { closed: number } };
   'page.read': { params: { tab?: number }; result: PageReadResult };
   'page.screenshot': { params: { tab?: number; maxEdge: number }; result: ScreenshotResult };
+  /**
+   * With `expression`, the batch is asked for as `run_js` is, and the expression runs after its steps, as `page.eval` does.
+   * `skipReadOver` is for the tabs the batch opened, as for a load.
+   */
   'page.act': {
-    params: { tab?: number; steps: ActStep[]; backendIds: Array<number | null>; epoch: number };
-    result: PageActionResult;
+    params: LoadOptions & { tab?: number; steps: ActStep[]; backendIds: Array<number | null>; epoch: number; expression?: string };
+    result: PageActionResult & ActFollowThrough;
   };
   'page.eval': { params: { tab?: number; expression: string }; result: { value: unknown } };
   /**

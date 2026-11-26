@@ -15,6 +15,10 @@ export interface FakeTab {
   context: { id: number; uniqueId: string };
   /** Whether the tab is the active one of its window. Left out, the tab does not say. */
   active?: boolean;
+  /** What the browser says of its loading: `complete` unless set. */
+  status?: 'loading' | 'complete';
+  /** The address a tab that has not committed yet is loading. */
+  pendingUrl?: string;
 }
 
 type EventListener = (source: { tabId?: number }, method: string, params?: unknown) => void;
@@ -209,6 +213,8 @@ export class FakeBrowser {
       groupId: tab.groupId,
       url: tab.url,
       title: tab.title,
+      status: tab.status ?? 'complete',
+      ...(tab.pendingUrl === undefined ? {} : { pendingUrl: tab.pendingUrl }),
       ...(tab.active === undefined ? {} : { active: tab.active, windowId: 1 }),
     } as chrome.tabs.Tab;
   }

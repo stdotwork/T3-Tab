@@ -1,4 +1,5 @@
 import {
+  type ActFollowThrough,
   type ActStep,
   actStepRef,
   DEFAULT_SCREENSHOT_MAX_EDGE,
@@ -16,9 +17,13 @@ import type { BrowserLink } from './browser-link.js';
 import type { SetValue } from './reader/echo.js';
 import { truncate } from './reader/format.js';
 import { formatRead, LOAD_REPLY_MAX, MAX_OUTPUT_CHARS, type ReadOptions } from './reader/page.js';
-import { actParams, convertStep, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
+import { actParams, convertStep, MAX_FIND, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
 
 const MAX_TAB_TITLE = 80;
+/** Room a batch's `js` result always gets, however long the reply before it. */
+const MIN_JS_ROOM = 1_000;
+/** Kept under the cap for each opened tab's own line when the page of one goes with the reply of a batch. */
+const OPENED_ROOM = 2_000;
 const MAX_TAB_URL = 150;
 const NAVIGATED: Record<TabNavigation, string> = { goto: 'Loaded', back: 'Back in', forward: 'Forward in', reload: 'Reloaded' };
 
@@ -163,6 +168,9 @@ async function runAct(
   session: ToolSession,
   params: z.infer<typeof actParams>,
 ): Promise<string> {
+  // Checked here, not in the schema the agent reads on every turn.
+  if (params.js?.trim() === '') throw new Error('Invalid arguments: js is empty');
+  if ((params.find?.length ?? 0) > MAX_FIND) throw new Error(`Invalid arguments: find: at most ${MAX_FIND} characters`);
   const tabId = params.tab ?? (await currentTabId(link, session));
   const state = link.tabState(tabId);
   const steps = params.steps.map((flat) => {
@@ -182,16 +190,51 @@ async function runAct(
     steps,
     backendIds,
     epoch: state.currentEpoch,
+    skipReadOver: LOAD_REPLY_MAX,
+    ...(params.js === undefined ? {} : { expression: params.js }),
   });
-  // A page paused on a dialog has nothing to read, and its refs and diff baselines stay as they were.
-  const reply =
-    page.dialog === undefined
-      ? await formatRead(state, session.id, page, { echoed: setValues(steps.slice(0, page.failure === undefined ? undefined : page.failure.step - 1)) })
-      : `tab ${page.tab}\n${page.dialog}`;
+  const done = page.failure === undefined && page.dialog === undefined;
+  // A page paused on a dialog has nothing to read, and its refs and diff baselines stay as they were. A search, as `read`
+  // with `find` gives it, answers only a batch that went through.
+  let reply =
+    page.dialog !== undefined
+      ? `tab ${page.tab}\n${page.dialog}`
+      : done && params.find !== undefined
+        ? await formatRead(state, session.id, page, { find: params.find })
+        : await formatRead(state, session.id, page, { echoed: setValues(steps.slice(0, page.failure === undefined ? undefined : page.failure.step - 1)) });
+  if (params.js !== undefined && done) reply += `\n${evaluatedLine(page.evaluated, MAX_OUTPUT_CHARS - reply.length)}`;
+  reply += await openedLines(link, session, page, reply.length);
   if (page.failure !== undefined) {
     throw new Error(`Step ${page.failure.step} (${page.failure.action}) failed: ${page.failure.error}\n${reply}`);
   }
   return reply;
+}
+
+/** The outcome of a batch's `js`, within `room` characters (at least a short line's worth). */
+function evaluatedLine(evaluated: ActFollowThrough['evaluated'], room: number): string {
+  // An extension older than this server does not know the field and runs only the steps.
+  if (evaluated === undefined) return 'js did not run: the browser extension is older than the helper. Update it, or use run_js.';
+  if ('skipped' in evaluated) return `js did not run: ${evaluated.skipped}`;
+  if ('error' in evaluated) return `js failed: ${evaluated.error.replace(/^run_js failed: /, '')}`;
+  const json = JSON.stringify(evaluated.value);
+  return `js: ${limitJson(json === undefined ? 'null' : json, Math.max(MIN_JS_ROOM, room - 4))}`;
+}
+
+/**
+ * The tabs a batch opened, each as a load's reply shows it: by origin, with `[needs approval]`, until the session may
+ * read it, and the first readable one with its page if what is left of the cap holds it.
+ */
+async function openedLines(link: BrowserLink, session: ToolSession, page: ActFollowThrough, used: number): Promise<string> {
+  let lines = '';
+  for (const opened of page.opened ?? []) {
+    const room = MAX_OUTPUT_CHARS - used - lines.length - OPENED_ROOM;
+    lines += `\n${await loadReply(link, session, 'Opened', opened, { load: true, loadMax: Math.min(LOAD_REPLY_MAX, Math.max(0, room)) })}`;
+  }
+  const elsewhere = page.openedElsewhere ?? 0;
+  if (elsewhere > 0) {
+    lines += `\n${elsewhere === 1 ? 'A tab was' : `${elsewhere} tabs were`} opened outside this session (from a tab the owner shared).`;
+  }
+  return lines;
 }
 
 /** The values a batch's steps set on elements, for the reply to leave out what the page shows back. */
@@ -221,9 +264,9 @@ async function currentTabId(link: BrowserLink, session: ToolSession): Promise<nu
   return front.id;
 }
 
-function limitJson(text: string): string {
-  if (text.length <= MAX_OUTPUT_CHARS) return text;
-  return `${text.slice(0, MAX_OUTPUT_CHARS)}\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use a narrower expression.`;
+function limitJson(text: string, max = MAX_OUTPUT_CHARS): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}\n… truncated at ${max} characters. Use a narrower expression.`;
 }
 
 function tabLine(tab: TabInfo): string {

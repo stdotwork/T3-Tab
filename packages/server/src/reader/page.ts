@@ -38,6 +38,8 @@ export interface ReadOptions {
    * is the baseline, and a `full` read right after it that finds nothing changed says so instead of sending it again.
    */
   load?: boolean | undefined;
+  /** For a load's reply: the most characters of page it may carry, when less than `LOAD_REPLY_MAX` is left. */
+  loadMax?: number | undefined;
 }
 
 /** Longest whole page a load's reply carries, in characters; a longer one is left to `read` or `find`. */
@@ -207,7 +209,7 @@ export async function formatRead(
   const wholeReply = (): string => {
     const reply = whole();
     if (options.load !== true || all || options.ref !== undefined) return reply;
-    if (reply.length - header.length > LOAD_REPLY_MAX) {
+    if (reply.length - header.length > Math.min(LOAD_REPLY_MAX, options.loadMax ?? LOAD_REPLY_MAX)) {
       state.restoreBaseline(session, key, last);
       return `${header}\n(The page is ${(reply.length - header.length - 1).toLocaleString('en-US')} characters, too long for this reply: read shows it, find searches it.)`;
     }
