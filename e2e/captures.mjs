@@ -307,13 +307,16 @@ try {
   await shoot(panel, '10-permission-card-new-thread');
 
   // ---- Threads, as T3 reports them -----------------------------------------------------------------------------------
+  // Each carries the model it runs on, as T3's shell always does; one runs on Codex.
+  const claude = { modelSelection: { instanceId: 'claudeAgent', model: 'claude-opus-5-5' } };
+  const codex = { modelSelection: { instanceId: 'codex', model: 'gpt-5.5-codex' } };
   const rows = [
-    ['busy', CASE_TITLE, 'p0', { status: 'running', activityRunStatus: 'running', activeRunId: 'run-busy', latestRunCompletedAt: null, latestUserAuthoredMessageAt: -2 }],
-    ['done', TITLE, 'p0', { latestRunCompletedAt: -3, lastVisitedAt: -10 }],
-    ['asks', 'Add a monthly summary to the budget view', 'p1', { status: 'waiting', activityRunStatus: 'waiting', activeRunId: 'run-asks', latestRunCompletedAt: null, pendingRuntimeRequest: { id: 'q1', kind: 'approval', createdAt: -1 } }],
-    ['older', 'Fix the failing import test', 'p1', { latestRunCompletedAt: -300 }],
-    ['snz', 'Check if the Bolt Pro is back in stock', 'p0', { snoozedAt: -5, snoozedUntil: 90 }],
-    ['old', 'Set up the new terminal prompt', 'p2', { settledOverride: 'settled', settledAt: -30 }],
+    ['busy', CASE_TITLE, 'p0', { ...claude, status: 'running', activityRunStatus: 'running', activeRunId: 'run-busy', latestRunCompletedAt: null, latestUserAuthoredMessageAt: -2 }],
+    ['done', TITLE, 'p0', { ...claude, latestRunCompletedAt: -3, lastVisitedAt: -10 }],
+    ['asks', 'Add a monthly summary to the budget view', 'p1', { ...claude, status: 'waiting', activityRunStatus: 'waiting', activeRunId: 'run-asks', latestRunCompletedAt: null, pendingRuntimeRequest: { id: 'q1', kind: 'approval', createdAt: -1 } }],
+    ['older', 'Fix the failing import test', 'p1', { ...codex, latestRunCompletedAt: -300 }],
+    ['snz', 'Check if the Bolt Pro is back in stock', 'p0', { ...claude, snoozedAt: -5, snoozedUntil: 90 }],
+    ['old', 'Set up the new terminal prompt', 'p2', { ...codex, settledOverride: 'settled', settledAt: -30 }],
   ];
   const seed = async (page, id, view) =>
     await page.evaluate(([threadId, value]) => {
@@ -401,7 +404,7 @@ try {
   await sleep(300);
   await shoot(panel, '20-settings-theme-menu');
   await panel.locator('.theme-popover').getByRole('button', { name: 'Create theme' }).click();
-  await panel.locator('.sheet-head').waitFor();
+  await panel.locator('.sheet [data-bar]').waitFor();
   await sleep(400);
   // The sheet edits one mode at a time and shows that mode's colours whatever the browser's scheme is, so each capture
   // opens the tab for its own scheme.

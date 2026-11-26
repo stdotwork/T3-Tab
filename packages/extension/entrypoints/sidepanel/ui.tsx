@@ -1,4 +1,4 @@
-import { Bot, Check, Cloud, Copy, Laptop, Loader2, Monitor, Server } from 'lucide-react';
+import { Bot, Check, Copy, Loader2 } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode, type RefObject } from 'react';
 
 import { alignInk, centreInk, type InkAlign } from './lib/ink';
@@ -132,14 +132,6 @@ export function ProjectAvatar({ name }: { name: string }): ReactNode {
       </svg>
     </span>
   );
-}
-
-const MACHINE_ICONS = { desktop: Monitor, laptop: Laptop, server: Server, cloud: Cloud } as const;
-
-/** T3's icon for the kind of machine an environment runs on; the kinds it draws itself fall back to a monitor. */
-export function MachineIcon({ kind, size = ICON.sm }: { kind?: string | undefined; size?: number }): ReactNode {
-  const Icon = MACHINE_ICONS[kind as keyof typeof MACHINE_ICONS] ?? Monitor;
-  return <Icon size={size} aria-hidden="true" />;
 }
 
 /** T3 Code's mark (MIT, from T3 Code's `assets/prod/logo.svg`, recoloured with the theme). Names T3 Code, never T3-Tab. */

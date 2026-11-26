@@ -169,17 +169,7 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
     >
     <div className="screen" data-thread-id={screen.id}>
       <TopBar
-        title={
-          <>
-            {project === undefined ? null : (
-              <>
-                <span className="crumb-muted">{project.title}</span>
-                <span className="sep">/</span>
-              </>
-            )}
-            <strong>{view?.title ?? 'Thread'}</strong>
-          </>
-        }
+        crumbs={project === undefined ? [view?.title ?? 'Thread'] : [project.title, view?.title ?? 'Thread']}
         onThreads={() => onNav({ name: 'threads' })}
         onNew={() => onNav({ name: 'home' })}
         onSettings={() => onNav({ name: 'settings', tab: 'general' })}
@@ -334,7 +324,7 @@ export function App(): ReactNode {
       </Suspense>
     );
   }
-  if (screen.name === 'threads') return <ThreadList live={live} state={state} onOpen={show} onClose={() => setScreen(backRef.current)} />;
+  if (screen.name === 'threads') return <ThreadList live={live} state={state} onOpen={show} onClose={() => setScreen(backRef.current)} onSettings={() => nav({ name: 'settings', tab: 'general' })} />;
   if (screen.name === 'thread') return <ThreadScreen key={screen.id} screen={screen} live={live} state={state} onNav={nav} />;
   return <NewThread live={live} state={state} onOpen={show} onNav={nav} />;
 }

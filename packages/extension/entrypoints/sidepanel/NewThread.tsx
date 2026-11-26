@@ -229,7 +229,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
   return (
     <ApprovalStack order={live.prompts.map((prompt) => promptCardId(prompt.id))} keys={live.prompts.map((prompt) => promptCardId(prompt.id))}>
     <div className="screen">
-      <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} needsYou={needsYou} />
+      <TopBar crumbs={['New thread']}onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} needsYou={needsYou} />
       <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />
       <main className="home">
         <div className="hero" ref={hero}>

@@ -72,6 +72,19 @@ describe('the panel theme', () => {
     expect(ids.at(-1)).toBe('custom-mine');
   });
 
+  it("paints the built-in theme as T3 Code does: the thread list lighter than the canvas in dark, darker in light", async () => {
+    const grey = (hex: string | undefined): number => Number.parseInt((hex ?? '').slice(1, 3), 16);
+    await load({ theme: 't3-code', scheme: 'dark', custom: [] });
+    // T3's own app: a black canvas and the sidebar on the card surface (#111111), not the palette file's #0a0a0a and #000000.
+    expect(painted.get('--app-theme-canvas')).toBe('#000000');
+    expect(painted.get('--app-theme-sidebar')).toBe('#111111');
+    expect(grey(painted.get('--app-theme-sidebar-row-hover'))).toBeGreaterThan(grey(painted.get('--app-theme-sidebar')));
+    vi.resetModules();
+    painted.clear();
+    await load({ theme: 't3-code', scheme: 'light', custom: [] });
+    expect(grey(painted.get('--app-theme-sidebar'))).toBeLessThan(grey(painted.get('--app-theme-canvas')));
+  });
+
   it('goes back to the built-in theme when the theme in use is removed', async () => {
     const theme = await load({ theme: 'custom-mine', scheme: 'system', custom: [own] });
     theme.removeCustomTheme('custom-mine');
