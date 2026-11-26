@@ -157,8 +157,9 @@ the prototype build shows until the package is published, behind one constant, `
 - `--agents` also adds T3-Tab to Claude Code and Codex when found; the panel's Add buttons do the same one agent at
   a time (`Setup.addAgent`). The entry is the launcher with `mcp` (`mcpCommand`), or Node and the installed file on
   Windows, never a checkout path or the npx cache. `--print` describes without writing.
-- `uninstall` (also from the installed `t3-tab`) stops the daemon, removes agent entries, every registration in
-  `install.json` and the usual places, the helper folder and the state folder; a manifest that is not T3-Tab's is
+- `uninstall` (also from the installed `t3-tab`) first removes every registration in `install.json` and the usual places and
+  the native host launcher, so the browser can no longer start the helper, then stops the daemon, removes agent entries, the
+  helper folder, stops a daemon that started in between, and removes the state folder; a manifest that is not T3-Tab's is
   left alone. With `--claude` or `--codex` it removes only those agents' entries and keeps the rest, which the other
   agent and the browser still use.
 - With no browser link written, `setup` says how to name one (`--browser`, `--user-data-dir`) and exits 1. `--help`,
