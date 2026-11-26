@@ -29,6 +29,21 @@ const pages = (otherSite) => ({
   '/plain': page('Plain', '<button onclick="r.textContent=\'You clicked: Ok\'">Go</button><p id="r">before</p>'),
   '/login': page('Login', LOGIN),
   '/secure': page('Secure', '<p>Signed in</p>'),
+  // Every way a field hides what it holds: a password input under another ARIA role, and text fields a style masks.
+  '/secrets': page(
+    'Secrets',
+    `<style>.disc{-webkit-text-security:disc}.sq{-webkit-text-security:square}</style>
+     <label>PW combo <input type="password" role="combobox"></label>
+     <label>PW search <input type="password" role="searchbox"></label>
+     <label>PW button <input type="password" role="button" id="pwbutton"></label>
+     <label>PW plain <input type="password"></label>
+     <label>PIN disc <input type="text" class="disc"></label>
+     <label>PIN square <input type="text" class="sq"></label>
+     <label for="inherited">PIN inherited</label><div class="disc"><input type="text" id="inherited"></div>
+     <label>PIN area <textarea class="disc"></textarea></label>
+     <label>Plain text <input type="text" value="visible-ok"></label>
+     <iframe title="pin frame" srcdoc="<!doctype html><style>.disc{-webkit-text-security:disc}</style><label>Frame PIN <input type='text' class='disc'></label>"></iframe>`,
+  ),
   '/keys': page('Keys', '<p id="k">0</p><script>addEventListener("keydown",(e)=>{if(e.key==="/")k.textContent=+k.textContent+1})</script>'),
   '/dialogs': page(
     'Dialogs',
@@ -254,6 +269,58 @@ export async function checkRealUse() {
       const filled = await act(tab, { action: 'fill', ref: refFor(first.text, 'textbox "Password"'), text: 'FRAME-PASSWORD' });
       assert(!filled.error, filled.text);
       assert(!(await read(tab, { all: true })).text.includes('FRAME-PASSWORD'), 'the password was printed');
+    });
+
+    await check('every password field and masked text field stays redacted in read, find, diffs and act replies', async () => {
+      const tab = await open('/secrets');
+      const first = await read(tab, { all: true });
+      const secrets = {
+        'combobox "PW combo"': 'COMBO-SECRET-1',
+        'searchbox "PW search"': 'SEARCH-SECRET-2',
+        'textbox "PW plain"': 'PLAIN-SECRET-3',
+        'textbox "PIN disc"': 'DISC-PIN-4',
+        'textbox "PIN square"': 'SQUARE-PIN-5',
+        'textbox "PIN inherited"': 'INHERIT-PIN-6',
+        'textbox "PIN area"': 'AREA-PIN-7',
+        'textbox "Frame PIN"': 'FRAME-PIN-8',
+      };
+      for (const label of Object.keys(secrets)) {
+        const line = first.text.split('\n').find((candidate) => candidate.includes(label));
+        assert(line !== undefined && line.trim().endsWith('value=<redacted>'), `${label} is not marked redacted when empty:\n${first.text}`);
+      }
+      assert(first.text.includes('textbox "Plain text" value="visible-ok"'), `an ordinary text field lost its value:\n${first.text}`);
+      const filled = await act(
+        tab,
+        ...Object.entries(secrets).map(([label, secret]) => ({ action: 'fill', ref: refFor(first.text, label), text: secret })),
+      );
+      assert(!filled.error, `fill: ${filled.text}`);
+      // The role-button password input cannot be filled by ref; set it from the page, as a script or autofill would.
+      await js(tab, 'pwbutton.value = "BUTTON-SECRET-9"');
+      assert(!/SECRET|PIN-\d|•/.test(filled.text), `the fill reply shows a value or its length:\n${filled.text}`);
+      const views = {
+        'all read': await read(tab, { all: true }),
+        'full read': await read(tab),
+        'find by name': await call('read', { tab, find: 'PW' }),
+        'find by pin': await call('read', { tab, find: 'PIN' }),
+        'find by value': await call('read', { tab, find: 'SECRET', regex: false }),
+        'find by bullets': await call('read', { tab, find: '•' }),
+        'find by regex': await call('read', { tab, find: '(SECRET|PIN)-\\d', regex: true }),
+        'diff read': await call('read', { tab }),
+      };
+      for (const [name, view] of Object.entries(views)) {
+        assert(!view.error, `${name}: ${view.text}`);
+        // A find that matches nothing repeats the query, which is not the page's text.
+        const shown = view.text.replace(/No matches for ".*"\./, '');
+        assert(!/SECRET|PIN-\d|•|■/.test(shown), `${name} shows a value or its length:\n${view.text}`);
+      }
+      for (const label of [...Object.keys(secrets), 'button "PW button"']) {
+        assert(views['all read'].text.includes(label), `${label} is missing from the read:\n${views['all read'].text}`);
+      }
+      assert(views['all read'].text.includes('textbox "Plain text" value="visible-ok"'), 'the plain field lost its value after the others were filled');
+      // A change to an already redacted field answers with the field, never its new value.
+      const again = await act(tab, { action: 'fill', ref: refFor(first.text, 'combobox "PW combo"'), text: 'NEW-SECRET-10' });
+      assert(!again.error && !/SECRET|•/.test(again.text), `refilling a redacted field: ${again.text}`);
+      assert(!/SECRET|PIN-\d|•/.test((await call('read', { tab, all: true, full: true })).text), 'a later read shows a value');
     });
 
     await check('a modifier key can be pressed on its own', async () => {

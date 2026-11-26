@@ -1,7 +1,7 @@
 import type { PageReadResult } from '@t3-tab/protocol';
 
 import { restrictToOriginFrames, slimAxNodes, type FrameInfo, type FramePolicy } from './ax';
-import { DialogOpenError, documentEpoch, ensureAttached, sendCommand, setRecoveryOrigin } from './cdp';
+import { DialogOpenError, documentEpoch, ensureAttached, privateWorld, sendCommand, setRecoveryOrigin } from './cdp';
 import { redactPasswordValues } from './password';
 import { originOf } from './permissions';
 import type { StoredSession } from './sessions';
@@ -29,7 +29,7 @@ export async function readPage(
   const withFrames = await addSameOriginFrames(tabId, tree.nodes, frames, expectedOrigin);
   const after = await resolveSessionTab(await reloadSession(), tabId);
   assertOrigin(after, expectedOrigin);
-  const nodes = slimAxNodes(
+  const slim = slimAxNodes(
     await restrictToOriginFrames(withFrames, {
       origin: expectedOrigin,
       mainFrameId: frames.mainFrameId,
@@ -37,7 +37,7 @@ export async function readPage(
       ownerOrigin: async (backendId) => await ownerFrameOrigin(tabId, backendId, frames.byId, expectedOrigin),
     } satisfies FramePolicy),
   );
-  await redactPasswordValues(nodes, async (backendId) => isPasswordInput(await describeNode(tabId, backendId)));
+  const nodes = await redactPasswordValues(slim, (backendIds) => inspectFields(tabId, backendIds));
   return { tab: tabId, title: after.title ?? '', url: after.url ?? after.pendingUrl ?? '', epoch, nodes };
 }
 
@@ -163,21 +163,60 @@ async function ownerFrameOrigin(
   return undefined;
 }
 
-interface DescribedNode {
-  node?: { nodeName?: string; attributes?: string[] };
-}
-
-async function describeNode(tabId: number, backendId: number): Promise<DescribedNode['node']> {
-  const described = await sendCommand<DescribedNode>(tabId, 'DOM.describeNode', { backendNodeId: backendId });
-  return described.node;
-}
-
-function isPasswordInput(node: DescribedNode['node']): boolean {
-  if (node?.nodeName?.toUpperCase() !== 'INPUT' || !Array.isArray(node.attributes)) return false;
-  for (let index = 0; index + 1 < node.attributes.length; index += 2) {
-    if (node.attributes[index]?.toLowerCase() === 'type' && node.attributes[index + 1]?.toLowerCase() === 'password') {
+/** Runs in T3-Tab's own world, so a page cannot change what `type` or `getComputedStyle` answer for its fields. */
+const INSPECT_FIELDS = `function (...fields) {
+  return fields.map((field) => {
+    try {
+      if (field.nodeName === 'INPUT' && String(field.type).toLowerCase() === 'password') return true;
+      const view = field.ownerDocument && field.ownerDocument.defaultView;
+      if (!view) return true;
+      const security = view.getComputedStyle(field).getPropertyValue('-webkit-text-security');
+      return security !== 'none';
+    } catch (error) {
       return true;
     }
+  });
+}`;
+
+let inspections = 0;
+
+/**
+ * For each field, whether its value must be hidden: a password input, whatever its role, or a field masked with
+ * `-webkit-text-security` (a PIN or card number typed into `type=text`). One round trip per field to find it and one for
+ * the whole batch to ask, and the answer is true for a field the browser could not resolve.
+ */
+async function inspectFields(tabId: number, backendIds: number[]): Promise<boolean[]> {
+  const context = await privateWorld(tabId);
+  const group = `t3tab-fields-${(inspections += 1)}`;
+  try {
+    const resolved = await Promise.all(
+      backendIds.map(async (backendNodeId) => {
+        try {
+          const reply = await sendCommand<{ object?: { objectId?: unknown } }>(tabId, 'DOM.resolveNode', {
+            backendNodeId,
+            executionContextId: context,
+            objectGroup: group,
+          });
+          return typeof reply.object?.objectId === 'string' ? reply.object.objectId : undefined;
+        } catch (error) {
+          if (error instanceof DialogOpenError) throw error;
+          return undefined;
+        }
+      }),
+    );
+    const found = resolved.filter((objectId): objectId is string => objectId !== undefined);
+    if (found.length === 0) return backendIds.map(() => true);
+    const answer = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.callFunctionOn', {
+      objectId: found[0],
+      functionDeclaration: INSPECT_FIELDS,
+      arguments: found.map((objectId) => ({ objectId })),
+      returnByValue: true,
+    });
+    const flags = answer.result?.value;
+    if (!Array.isArray(flags) || flags.length !== found.length) return backendIds.map(() => true);
+    let next = 0;
+    return resolved.map((objectId) => (objectId === undefined ? true : flags[next++] !== false));
+  } finally {
+    await sendCommand(tabId, 'Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined);
   }
-  return false;
 }
