@@ -16,6 +16,11 @@ export interface FindOptions {
   regex?: boolean | undefined;
   /** Bound for one regular-expression search. */
   timeoutMs?: number | undefined;
+  /**
+   * The lines as printed beside a match, when `lines` (searched, and printed where they match) hold more: the
+   * addresses of the links written into text, which a read prints only where a name is ambiguous.
+   */
+  context?: string[] | undefined;
 }
 
 /** Where a line first matched. */
@@ -52,7 +57,10 @@ export async function findLines(lines: string[], query: string, options: FindOpt
     const start = Math.max(0, index - CONTEXT_LINES);
     const end = Math.min(lines.length - 1, index + CONTEXT_LINES);
     if (previousEnd >= 0 && start > previousEnd + 1) out.push('--');
-    for (let line = Math.max(start, previousEnd + 1); line <= end; line += 1) out.push(clipLine(lines[line] ?? '', matchAt.get(line)));
+    for (let line = Math.max(start, previousEnd + 1); line <= end; line += 1) {
+      const match = matchAt.get(line);
+      out.push(clipLine((match === undefined ? options.context?.[line] : undefined) ?? lines[line] ?? '', match));
+    }
     previousEnd = Math.max(previousEnd, end);
   }
   if (matching.length > shown.length) {

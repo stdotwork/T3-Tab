@@ -161,6 +161,8 @@ const CHROME_ROLES = new Set(['navigation', 'banner', 'contentinfo', 'complement
 const MIN_GROUP = 8;
 /** Characters of names a folded list's line shows. */
 const GROUP_PREVIEW = 80;
+/** The name of a link that moves on through a list: its next page, more of it. */
+const ONWARD = /\b(next|more|older|newer|previous|prev|load|show all|see all|view all|page \d+)\b|[›»→]/i;
 /** Least text outside a list in the main content that folding the list makes room for. */
 const MIN_TEXT_ROOM = 1_000;
 /** What a folded list may hold: elements an agent finds again by reading its ref or with `find`. */
@@ -220,6 +222,8 @@ export interface RenderedLine {
   keep: Keep;
   /** Inside the page's `main` or an `article`. */
   main: boolean;
+  /** In a search, the line with the address of every link written into it, which `find` searches. */
+  search?: string | undefined;
 }
 
 /** Where a node sits: what its lines inherit from the nodes above it. */
@@ -305,11 +309,17 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
   // A link in a line of text is written into it, `[name](e12)`; its ref is the one its own line would carry. Its address
   // shows only where its name is ambiguous, in a search too: prose holds many links, and reading one's ref shows it.
   const markAddress = options.linkAddresses === 'all' ? addressRule(nodes, { ...options, linkAddresses: 'ambiguous' }) : showAddress;
+  /** In a search, the address of each link written into text without one, so the search still finds it. */
+  const searchAddress = new Map<string, string>();
   const linkMark = (node: AxNode): string | undefined => {
     const name = normalize(node.name);
     if (name === '' || node.backendId === undefined || flagList(node.props).length > 0) return undefined;
+    const ref = refs.refFor(node.backendId);
     const address = markAddress(node);
-    return `[${limit(name, MAX_NAME)}](${refs.refFor(node.backendId)}${address === undefined ? '' : ` → ${address}`})`;
+    const full = showAddress(node);
+    if (address === undefined && full !== undefined) searchAddress.set(ref, full);
+    // The name is escaped like all text, so neither a page's text nor a link's name can pass for a link.
+    return `[${escapeMarks(limit(name, MAX_NAME))}](${ref}${address === undefined ? '' : ` → ${address}`})`;
   };
   const inline = inlineText(byId, options.all, linkMark);
   /** How many nodes the depth limit has hidden so far. */
@@ -333,7 +343,7 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
       if (child === undefined) continue;
       const role = child.ignored === true ? '' : child.role.toLowerCase();
       if (TEXT_ROLES.has(role)) {
-        run.push({ inline: plainInline(role === 'linebreak' ? ' ' : collapse(child.name)) });
+        run.push({ inline: plainInline(role === 'linebreak' ? ' ' : escapeMarks(collapse(child.name))) });
         continue;
       }
       const joins = flows && !BLOCKS.has(role) ? inline.of(child, true) : undefined;
@@ -383,8 +393,9 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
 
   const emitText = (inline: Inline, at: Context): void => {
     const text = normalize(inline.text);
+    const plain = unescapeMarks(text);
     // Separators such as `|`, `(` or `·` between links say nothing on a line of their own.
-    if (!/[\p{L}\p{N}]/u.test(text) || (at.ancestorName !== '' && at.ancestorName.includes(text)) || text === at.value) return;
+    if (!/[\p{L}\p{N}]/u.test(text) || (at.ancestorName !== '' && at.ancestorName.includes(plain)) || plain === at.value) return;
     if (options.depth !== undefined && at.level > options.depth) {
       hidden += 1;
       return;
@@ -393,7 +404,7 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
       indent: at.level,
       line: JSON.stringify(limit(text, MAX_TEXT)),
       isText: true,
-      name: text,
+      name: plain,
       keep: at.keep,
       main: at.main,
       role: '',
@@ -457,7 +468,7 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
         if (!emitInline(node, at)) visitChildren(node, at);
         return;
       case 'text':
-        emitText(plainInline(node.name), at);
+        emitText(plainInline(escapeMarks(node.name)), at);
         return;
       default: {
         if (options.depth !== undefined && at.level > options.depth) {
@@ -497,6 +508,16 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
   visit(root, { level: 0, ancestorName: '', value: '', axDepth: 0, keep: false, main: false, chrome: false }, options.target !== undefined);
   const kept = dropLabelEchoes(items);
   const lines = kept.map(renderedLine);
+  if (searchAddress.size > 0) {
+    for (const line of lines) {
+      if (!line.text) continue;
+      const search = line.line.replace(LINK_MARK, (mark: string, ref: string) => {
+        const address = searchAddress.get(ref);
+        return address === undefined ? mark : `${mark} → ${address}`;
+      });
+      if (search !== line.line) line.search = search;
+    }
+  }
   return { lines, groups: findGroups(items, kept, spans.filter((span) => span.node !== root), refs) };
 }
 
@@ -582,7 +603,10 @@ function groupSummary(node: AxNode, first: Item, actions: Item[], refs: RefTable
     names.push(name);
     length += name.length + 2;
   }
-  const more = names.length < actions.length ? ', …' : '';
+  // A list's last link often moves on (Next, More, Older): it stays named, so folding never hides the way forward.
+  const last = actions.at(-1);
+  const onward = last !== undefined && last.name !== '' && names.length < actions.length && ONWARD.test(last.name);
+  const more = names.length < actions.length ? `, …${onward && last !== undefined ? `, ${JSON.stringify(truncate(last.name, 40))}` : ''}` : '';
   const line = `${head} (${count}; read ${ref})${names.length > 0 ? `: ${names.join(', ')}${more}` : ''}`;
   return { line: `${'  '.repeat(first.indent)}${line}`, text: false, keep: false, main: first.main };
 }
@@ -592,8 +616,9 @@ function groupSummary(node: AxNode, first: Item, actions: Item[], refs: RefTable
  * text (or all of it, if less) to fit in `room`: first those outside the page's main content, then the rest, largest
  * first. A group in the main content is folded only to make room for text outside it: where the page is mostly its
  * links (the stories of a news site, the results of a search), they stay, and a cut at the cap still shows the first.
+ * Also returns the text lines inside the folded groups, which the reply counts as left out.
  */
-export function collapseGroups(view: View, room: number, textBudget: number): RenderedLine[] {
+export function collapseGroups(view: View, room: number, textBudget: number): { lines: RenderedLine[]; folded: string[] } {
   const size = (line: RenderedLine): number => line.line.length + 1;
   let elements = 0;
   let text = 0;
@@ -602,7 +627,7 @@ export function collapseGroups(view: View, room: number, textBudget: number): Re
     else elements += size(line);
   }
   const fits = (): boolean => elements + Math.min(textBudget, text) <= room;
-  if (fits()) return view.lines;
+  if (fits()) return { lines: view.lines, folded: [] };
   const measured = view.groups.map((group) => {
     let groupElements = 0;
     let groupText = 0;
@@ -624,8 +649,10 @@ export function collapseGroups(view: View, room: number, textBudget: number): Re
     elements -= item.elements - size(summary);
     text -= item.text;
   }
-  if (folded.size === 0) return view.lines;
+  if (folded.size === 0) return { lines: view.lines, folded: [] };
   const out: RenderedLine[] = [];
+  // The text a folded list held, for the note that says what a reply left out.
+  const foldedText: string[] = [];
   for (let at = 0; at < view.lines.length; at += 1) {
     const summary = folded.get(at);
     const line = view.lines[at];
@@ -634,9 +661,11 @@ export function collapseGroups(view: View, room: number, textBudget: number): Re
       continue;
     }
     out.push(summary);
-    at = (view.groups.find((group) => group.start === at)?.end ?? at + 1) - 1;
+    const end = view.groups.find((group) => group.start === at)?.end ?? at + 1;
+    for (const inside of view.lines.slice(at, end)) if (inside.text) foldedText.push(inside.line);
+    at = end - 1;
   }
-  return out;
+  return { lines: out, folded: foldedText };
 }
 
 /** An `aria-live` region that announces its changes, or a role that does. */
@@ -719,7 +748,7 @@ function inlineText(
     else if (SKIP.has(role)) result = plainInline('');
     else if (role === 'statictext') {
       const text = collapse(node.name);
-      result = text.trim().length > MAX_TEXT ? undefined : plainInline(text);
+      result = text.trim().length > MAX_TEXT ? undefined : plainInline(escapeMarks(text));
     } else if (role === 'link') result = inFlow ? linkInline(node, contents(node, depth, false), linkMark) : undefined;
     else if (classify(node, all) === 'hoist') result = contents(node, depth, inFlow);
     busy.delete(node.id);
@@ -871,7 +900,7 @@ function elementLine(
   if (kind === 'heading') {
     const level = node.props?.level;
     const marks = typeof level === 'number' ? Math.min(Math.max(Math.trunc(level), 1), 6) : 2;
-    return `${'#'.repeat(marks)} ${limit(name, MAX_NAME)}`;
+    return `${'#'.repeat(marks)} ${escapeMarks(limit(name, MAX_NAME))}`;
   }
   const parts: string[] = [];
   if ((kind === 'interactive' || kind === 'container' || role === 'image') && node.backendId !== undefined) {
@@ -929,6 +958,25 @@ function dropLabelEchoes(items: Item[]): Item[] {
 function stripColon(value: string): string {
   return value.endsWith(':') ? value.slice(0, -1).trimEnd() : value;
 }
+
+/**
+ * Text with `[`, `]` and `\\` escaped by a backslash. Text lines and headings are escaped, so only T3-Tab's own marks,
+ * `[name](e12)`, read as links: a page that writes `[Cancel](e2)` gets `\\[Cancel\\](e2)`.
+ */
+export function escapeMarks(value: string): string {
+  return value.replace(/[\\[\]]/g, '\\$&');
+}
+
+function unescapeMarks(value: string): string {
+  return value.replace(/\\([\\[\]])/g, '$1');
+}
+
+/**
+ * A link written into a printed line of text: `](e12)` or `](e12 → /path)` closing a name. A printed text line is a JSON
+ * string, which doubles every backslash, so a bracket the escaping kept (`\\]`) prints after 2, 6, 10… backslashes and a
+ * mark's own after 0, 4, 8….
+ */
+export const LINK_MARK = /(?<!\\)(?:\\{4})*\]\((e\d+)(?=\)| →)/g;
 
 /** Whitespace collapsed, and no private-use characters: icon fonts draw those, and they mean nothing as text. */
 function normalize(value: string): string {

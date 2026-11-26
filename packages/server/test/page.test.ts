@@ -216,6 +216,37 @@ describe('text in the default view', () => {
     expect(await formatRead(state, 's1', page(docsPage(500, 60)), {})).toBe('tab 7\nNo changes since the last read.');
   });
 
+  it('counts the text of a folded list as left out', async () => {
+    const nodes = docsPage(500, 60);
+    const sidebar = nodes.find((node) => node.id === '2')!;
+    sidebar.children.push('9000');
+    nodes.push(ax(9000, 'StaticText', 'Version 4.2 of the guides'));
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).not.toContain('Version 4.2');
+    const [, lines] = /\((\d+) text lines left out/.exec(reply.split('\n').at(-1)!)!;
+    const withoutIt = await formatRead(new TabState(), 's1', page(docsPage(500, 60)), {});
+    const [, before] = /\((\d+) text lines left out/.exec(withoutIt.split('\n').at(-1)!)!;
+    expect(Number(lines)).toBe(Number(before) + 1);
+  });
+
+  it('finds a link written into text by its address, and prints the address on the matching line only', async () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 6]),
+      ax(2, 'paragraph', '', [3, 4, 5]),
+      ax(3, 'StaticText', 'The first browser was written in 1990 by '),
+      ax(4, 'link', 'Tim Berners-Lee', [], { props: { url: 'http://localhost/wiki/Tim_Berners-Lee' } }),
+      ax(5, 'StaticText', ' at CERN, as a tool for sharing papers.'),
+      ax(6, 'paragraph', '', [7]),
+      ax(7, 'StaticText', 'It ran on NeXT computers.'),
+    ];
+    const state = new TabState();
+    expect(await formatRead(state, 's1', page(nodes), {})).toContain('[Tim Berners-Lee](e1) at CERN');
+    const found = await formatRead(state, 's1', page(nodes), { find: '/wiki/Tim_Berners' });
+    expect(found).toContain('[Tim Berners-Lee](e1 → /wiki/Tim_Berners-Lee) at CERN');
+    // A search for the text prints the line as a read does, around its match.
+    expect(await formatRead(state, 's1', page(nodes), { find: 'NeXT' })).toContain('"The first browser was written in 1990 by [Tim Berners-Lee](e1) at CERN');
+  });
+
   it('leaves a page that fits as it is', async () => {
     const reply = await formatRead(new TabState(), 's1', page(docsPage(20, 3)), {});
     expect(reply).toContain('  e2 link "Guide to topic 0"');

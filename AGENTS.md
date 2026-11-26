@@ -301,7 +301,11 @@ a table row of text cells as one line with its cells apart by `|`. A link inside
 its own) is written into that line as `[name](e12)`, with the ref its own line would carry (and its address, `[name](e12 →
 /path)`, only where its name is ambiguous, in `find` too), when the line is prose: it does not start with a link, and the letters and digits outside its links are at least as many
 as those in its links. Otherwise (a story line on a news site, a menu with `|` between its links, a product's link and
-the line about it) the links print on lines of their own as before, between the text around them. The text of a block is run together while it fits on
+the line about it) the links print on lines of their own as before, between the text around them. Text lines and headings
+escape `[`, `]` and `\` with a backslash (a link's name inside its mark too), so a page that writes `[Cancel](e3)` or names
+a link `Continue](e3)` cannot pass for a mark; a printed text line is a JSON string, so the escape shows doubled
+(`\\[Cancel\\](e3)`), and `LINK_MARK` in `format.ts` finds the real marks. In `find`, a matching line also carries
+the address of every link written into it, so a search for an address finds a link in text; the lines beside it do not. The text of a block is run together while it fits on
 one 1,000-character line: with no space added where it flows as one line (the parent holds text of its own, or both
 pieces are text-level elements such as `<em>` or `<sub>`), because Chromium keeps the real spaces of inline text in the
 text (`$<span>1,284</span>.50` is `"$1,284.50"`); with a space between boxes side by side, such as flex items or block
@@ -330,7 +334,8 @@ to one line each until they do: first those around the content (in a `navigation
 in the content folds only when at least 1,000 characters of text lie outside it, so a page that is mostly its links (a
 news site's stories, search results) keeps them, and a cut at the cap still shows the first. The folded line is the
 group's own line, or a ref for its node, then the count and the first names: `e14 navigation "Docs sidebar" (66 links, 5
-buttons; read e14): "Getting Started", "Installation", …`. Reading that ref lists them with the refs they already had, and
+buttons; read e14): "Getting Started", "Installation", …`, and the last name too when it moves on (`Next`, `More`, `Older`,
+`»`). The text a folded list held counts in the note on what was left out. Reading that ref lists them with the refs they already had, and
 `find` searches them. Only the default view of a whole page folds; a `ref` read, `depth`, `all`, `find` and diffs do not,
 and the diff baseline holds every line.
 An `act` reply leaves out what the batch itself set: a changed line whose only change is the value a `fill`, a `type` with a
