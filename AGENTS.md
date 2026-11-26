@@ -263,6 +263,10 @@ not filtered for iframes.
 With `all`, images are listed with a ref, named or not, so they can be hovered or clicked. The default view leaves
 plain text out but still tracks it: a read or `act` whose only change is plain text replies `Text changed since the
 last read:` with that diff, and a reply about changed elements adds up to 10 lines of `New text:`.
+An `act` reply leaves out what the batch itself set: a changed line whose only change is the value a `fill`, a `type` with a
+ref or a `select` gave it (`packages/server/src/reader/echo.ts`) is settled against the earlier read, so it is not a change, and
+the reply names those refs on one line (`Set e7, e8, e10.`). A line the page changed in any other way, or to another value
+(a mask, a rejected option, an `invalid` flag), and any line it cannot match to the step, stays in the reply.
 
 **JavaScript dialogs.** A dialog pauses the page, so every command that reaches it would hang. `cdp.ts` tracks
 `Page.javascriptDialogOpening` and fails such commands at once with a notice naming the dialog. `act` answers it:
@@ -278,6 +282,15 @@ already had open, the tool says to ask the owner to answer it.
 an `act` batch on a hidden tab turns on `Emulation.setFocusEmulationEnabled` while its steps run and off afterwards.
 So do a screenshot and a load through `tabs`, because a hidden page gets no animation frames and would stay blank if it
 renders from script. A load replies after the first two frames and holds the tab visible until the page settles. The page sees itself as visible and focused for that long.
+A tab the owner cannot see (not the active tab of its window, or in a window that is minimised, `visibility.ts`;
+a window that is merely not in focus is still on screen) that has been in the background for a few seconds can ignore the mouse wheel and draw no frame. There a
+wheel scroll reads the scroll position of the page and of the elements under the pointer (`scroll.ts`, in T3-Tab's own
+world) before and after, and the step fails with a reason when nothing moved although the page or one of them had room. The
+reading stops at a scroller that overflows on the wheel's axis and whose `overscroll-behavior` keeps the wheel, and treats a page with `overflow` hidden or clipped
+as having no room; a page at its end or one that does not scroll is not an error. In a tab the owner can see a scroll is never
+failed, because a page may take the wheel itself. A screenshot of a tab the owner cannot see gives up after 3 seconds
+(a `CommandTimeoutError` for `Page.captureScreenshot`) and says the tab is in the background; a tab the owner can see keeps the
+browser's 15 second limit. The messages do not tell the agent to `tabs switch`, which moves the owner's view.
 The settle probe runs in an isolated world (`privateWorld` in `cdp.ts`), so its observer and counter are not on the page.
 
 **Other extensions' frames.** Chromium drops `chrome.debugger` from a tab, and refuses to attach, while any frame in
