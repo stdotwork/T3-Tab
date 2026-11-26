@@ -78,7 +78,7 @@ export async function runMcpServer(options: { claimFile?: string } = {}): Promis
   withoutExecution(
     server.registerTool(
       'act',
-      { description: 'Run ordered page steps; settles, returns the change and new tabs. No read needed.', inputSchema: actShape },
+      { description: 'Run ordered steps on an open tab; settles, then returns the change and new tabs, so no read after.', inputSchema: actShape },
       browserTool('act'),
     ),
   );
