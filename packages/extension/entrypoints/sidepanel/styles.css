@@ -247,41 +247,62 @@ ul { list-style: none; margin: 0; padding: 0; }
 .chat-markdown th, .chat-markdown td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
 .md-image { color: var(--muted-fg); font-style: italic; }
 
-.dock { display: flex; flex-direction: column; gap: 6px; padding: 0 var(--gutter) 8px; flex: none; }
+.dock { display: flex; flex-direction: column; gap: 6px; padding: 0 var(--gutter) 8px; flex: none; position: relative; }
 
 /* Cards */
-.prompt-list { display: flex; flex-direction: column; gap: 8px; max-height: 58vh; overflow-y: auto; flex: none; }
-.prompt-card, .approval-card, .question-card { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--raised); box-shadow: 0 2px 10px rgb(0 0 0 / 8%); }
-.prompt-card { padding: 0; overflow: hidden; }
-.prompt-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: var(--text-sm); font-weight: 500; }
-.prompt-head > span { flex: 1; min-width: 0; }
-.prompt-goto { display: inline-flex; align-items: center; gap: 2px; flex: none; padding: 2px 6px; border-radius: var(--radius-sm); color: var(--muted-fg); font-size: var(--text-xs); font-weight: 400; }
-.prompt-goto:hover { color: var(--fg); background: var(--hover); }
-.prompt-body { padding: 12px 12px 10px; display: flex; flex-direction: column; gap: 2px; }
-.prompt-who { font-size: var(--text-sm); color: var(--fg); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-.prompt-who strong { font-weight: 500; }
-.prompt-host { font: 400 var(--text-sm) ui-monospace, 'SF Mono', Menlo, Consolas, monospace; color: var(--fg); overflow-wrap: anywhere; }
-.prompt-address { color: var(--muted-fg); font: var(--text-xs) ui-monospace, 'SF Mono', Menlo, Consolas, monospace; overflow-wrap: anywhere; max-height: 54px; overflow-y: auto; }
-.prompt-tab { color: var(--muted-fg); font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.prompt-actions { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 10px; }
-.prompt-always { padding: 10px; border-top: 1px solid var(--line); }
+.prompt-list { display: flex; flex-direction: column; gap: 6px; max-height: 58vh; overflow-y: auto; flex: none; }
+/* On the new-thread screen the cards float over the hero's lower part, just above the composer, so nothing moves. */
+.prompt-list.overlay { position: absolute; left: var(--gutter); right: var(--gutter); bottom: 100%; max-height: min(58vh, calc(100vh - 220px)); padding-bottom: 6px; z-index: 5; }
+.approval-card.dock, .question-card { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--raised); box-shadow: 0 2px 10px rgb(0 0 0 / 8%); }
 .prompt-btn { display: flex; flex-direction: column; justify-content: center; width: 100%; min-height: 36px; padding: 4px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); font-size: var(--text-sm); font-weight: 500; line-height: 1.3; text-align: left; transition: background 0.12s, opacity 0.12s; }
-.prompt-btn small { color: var(--muted-fg); font-size: var(--text-xs); font-weight: 400; }
-.prompt-btn.primary small { color: inherit; opacity: 0.8; }
-.prompt-error { padding: 0 12px 8px; }
-.prompt-foot { padding: 0 12px 10px; color: var(--muted-fg); font-size: var(--text-xs); line-height: 1.4; }
-.prompt-link { color: var(--muted-fg); text-decoration: underline; text-underline-offset: 2px; font-size: var(--text-xs); }
-.prompt-link:hover { color: var(--fg); }
 .prompt-btn:hover:not(:disabled) { background: var(--hover); }
 .prompt-btn:disabled { opacity: 0.55; }
 .prompt-btn.primary { background: var(--action); border-color: transparent; color: var(--action-fg); }
 .prompt-btn.primary:hover:not(:disabled) { background: var(--action-hover); }
-.prompt-btn.subtle { border-color: transparent; background: transparent; color: var(--muted-fg); font-weight: 400; font-size: var(--text-xs); line-height: 1.35; }
-.approval-card { padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
-.approval-head { display: inline-flex; align-items: center; gap: 6px; color: var(--app-theme-warning-foreground); font-size: var(--text-xs); }
-.approval-title { font-size: var(--text-sm); overflow-wrap: anywhere; max-height: 90px; overflow-y: auto; white-space: pre-wrap; }
-.approval-code { margin: 0; padding: 8px 8px; max-height: 130px; overflow: auto; border-radius: var(--radius); background: var(--app-theme-code-background); color: var(--app-theme-code-foreground); font: var(--text-xs)/1.5 ui-monospace, 'SF Mono', Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-.approval-detail { font-size: var(--text-xs); color: var(--muted-fg); }
+
+/* The one approval card, in T3 Code's anatomy: the icon, then what is asked, where, and one row of answers under it.
+   Docked above the composer it is a card; in the work log (inline) it is the row T3 draws, with the work log's insets. */
+.approval-card { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 10px; align-items: start; font-size: var(--text-sm); }
+.approval-card.dock { padding: 10px; }
+/* In a card the answers take the full width, so the longest once answer fits on one row at 320 px. */
+.approval-card.dock .approval-actions { margin-left: -24px; }
+.approval-card.inline { padding: 4px; }
+.approval-icon { margin-top: 3px; color: var(--app-theme-warning-foreground); }
+.approval-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* Where, and Go to tab beside it for a card about another tab, so the ask above keeps the full width. */
+.approval-where-row { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.approval-where-row > .approval-where { flex: 1; min-width: 0; }
+/* What is asked is never cut: a long command scrolls inside three lines, as T3's own detail scrolls. */
+.approval-ask { flex: 1; min-width: 0; max-height: 60px; overflow-y: auto; line-height: 20px; color: var(--fg); overflow-wrap: anywhere; white-space: pre-wrap; }
+.approval-ask strong { font-weight: 500; }
+code.approval-subject { font: 400 var(--text-xs)/20px ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+.approval-goto { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 18px; padding: 0 4px; border-radius: var(--radius-sm); color: var(--muted-fg); font-size: var(--text-xs); }
+.approval-goto:hover { color: var(--fg); background: var(--hover); }
+.approval-where { color: var(--muted-fg); font-size: var(--text-xs); line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* An address an open would load is shown whole, scrolling past two lines. */
+.approval-where.mono { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; white-space: normal; overflow-wrap: anywhere; max-height: 36px; overflow-y: auto; text-overflow: clip; }
+.approval-elsewhere { font-family: var(--font-sans); }
+/* T3's answers at this width: 28 px buttons, outline for Decline, filled for the primary one, an icon button for More. */
+.approval-actions { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; margin-top: 6px; }
+.answer-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: none; height: 28px; padding: 0 7px; border: 1px solid var(--app-theme-input); border-radius: var(--radius); background: var(--surface); color: var(--fg); font-size: var(--text-sm); font-weight: 500; white-space: nowrap; transition: background 0.12s, opacity 0.12s; }
+.answer-btn:hover:not(:disabled) { background: var(--hover); }
+.answer-btn:disabled { opacity: 0.55; }
+.answer-btn.primary { border-color: transparent; background: var(--action); color: var(--action-fg); }
+.answer-btn.primary:hover:not(:disabled) { background: var(--action-hover); }
+.answer-btn.icon { width: 28px; padding: 0; color: var(--icon); }
+.key-hint { font: 400 var(--text-2xs)/1 var(--font-sans); opacity: 0.7; }
+/* T3's caution on an answer: its triangle, in the button's own colour, and in the warning colour in the More menu. */
+.answer-warning { flex: none; }
+.approval-menu .answer-warning { color: var(--app-theme-warning-foreground); }
+/* Below 360 px the hints would push the row onto two lines; the keys still work. */
+@media (max-width: 359px) { .key-hint { display: none; } }
+.approval-more { position: relative; flex: none; }
+.approval-menu { width: min(272px, calc(100vw - 2 * var(--gutter))); padding: 4px; z-index: 60; }
+.approval-menu .menu-row:disabled { opacity: 0.55; }
+.approval-menu .menu-row:disabled:hover { background: none; }
+.approval-manage { color: var(--muted-fg); font-size: var(--text-sm); }
+.approval-error { margin-top: 4px; }
+.approval-unanswerable { margin-top: 4px; color: var(--app-theme-warning-foreground); font-size: var(--text-xs); }
 .queued-list { display: flex; flex-direction: column; gap: 1px; padding: 4px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); max-height: 132px; overflow-y: auto; flex: none; }
 .queued-list li { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 2px 4px 2px 8px; border-radius: var(--radius); font-size: var(--text-sm); }
 .queued-list small { flex: none; color: var(--muted-fg); }
@@ -290,8 +311,6 @@ ul { list-style: none; margin: 0; padding: 0; }
 .queued-send:hover { background: var(--hover); }
 .queued-x { display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: var(--radius-sm); color: var(--icon); }
 .queued-x:hover { background: var(--hover); color: var(--fg); }
-.approval-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; margin-top: 2px; }
-.approval-actions .prompt-btn { width: auto; align-items: center; text-align: center; }
 .question-card { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; }
 .question-head { display: flex; align-items: center; gap: 6px; color: var(--muted-fg); font-size: var(--text-xs); }
 .question-head small { margin-left: auto; }

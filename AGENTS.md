@@ -60,8 +60,10 @@ read and action prompts, cross-origin navigation and `window.open`, restricted p
 and a regex timeout. It also checks the review fixes: a read-only site grant that act, run_js and open
 still prompt past, a `run_js` escape expression, a screenshot and a key press that land on a page that
 changed, popups opened by the owner and by a session tab, member tabs shown only by origin until approved,
-a cross-origin iframe left out of `read`, and prompt buttons locked when rows shift. Existing tool checks
-run with the site still set to ask and the harness answering prompts with Allow once. The action run fills and submits the
+a cross-origin iframe left out of `read`, and prompt buttons locked when rows shift. Three act prompts are answered
+from the panel's own card: Enter allows once and Escape declines (each after the same key typed in the composer
+answered nothing), and the More menu's "Always allow everything on this site" sets the site to `allow`. Other tool
+checks run with the site still set to ask and the harness answering prompts with Allow once. The action run fills and submits the
 test form, checks a stale ref after navigation, evaluates page JavaScript and waits past the extension
 worker's idle timeout before another `status` call. It checks the install command through direct config
 edits, `--print`, a second install, uninstall and, when both agent CLIs are available, their CLI path and
@@ -82,16 +84,27 @@ reaches the fake Claude Code as an image block, while a file dropped on Settings
 color scheme row, T3 Code's built-in theme with T3's shared theme ignored, and a theme menu with swatches, Create
 theme and Add theme, and each theme's actions beside it; and with T3's config handed to the panel, the access level is chosen in
 the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e/ink.mjs`) walks the new-thread
-screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, Settings
-and a theme sheet at 320, 360 and 400 px in light and dark, and measures visible ink (SVG strokes and fills, text glyphs
+screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, a T3
+thread waiting on an approval (at its work-log row and above the composer), three browser prompts on the new-thread
+screen (one a `goto` on another tab), Settings and a theme sheet at 320, 360 and 400 px in light and dark, and measures visible ink (SVG strokes and fills, text glyphs
 on their baseline, painted boxes), never padding boxes. It fails when a bar's or the composer row's first and last
 controls sit at ink distances from its edges more than 1 px apart, when the composer's send circle is not as far from
 the frame's foot as from its side, when the composer's controls are not one size or their ink (and the model chip's
 logo and words) is off one centre line, when its text does not start on the paperclip's ink, when the hero's project
-line is off the heading's ink centre, or when one bar's icons, or the composer row's glyphs, are drawn at different
-sizes or stroke weights. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
+line is off the heading's ink centre, when one bar's icons, or the composer row's glyphs, are drawn at different
+sizes or stroke weights, when an approval card's ink is over 160 px tall or its three answers are not on one row of
+one-line 28 px buttons inside it, or when browser prompts on the new-thread screen move its heading or composer or
+cover the composer. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
 each width and scheme the bars of all those screens must agree within 1 px (0.25 px for strokes): height, first and last
-ink insets, icon size and stroke, the thread toggle's ink, and the breadcrumb's start and baseline. It renders the panel from that state and, when
+ink insets, icon size and stroke, the thread toggle's ink, and the breadcrumb's start and baseline.
+`e2e/checks-approval-keys.mjs` then, on the headless panel with the panel's answers recorded,
+checks that a T3 approval under a browser prompt is locked when the prompt goes (a second click and an Enter at once
+answer nothing) and takes no keys at all, only a click; that an Enter held through the change of card answers nothing
+until released; that Enter answers nothing while a popover is open; that showing the panel again locks its cards; that a
+card scrolled out of the prompt list takes no key; that a T3 approval without `accept` or `decline` draws only More;
+that one T3 cannot take an answer for (not `live`) has its answers disabled and says why; that Escape on another control
+does nothing; that T3's warning shows on its answer; and that a `goto` card names its address, its tab and that it is
+another tab. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
 variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once that the earlier one ended, and that `status` reports each state of its link.
@@ -157,8 +170,9 @@ the prototype build shows until the package is published, behind one constant, `
 - `--agents` also adds T3-Tab to Claude Code and Codex when found; the panel's Add buttons do the same one agent at
   a time (`Setup.addAgent`). The entry is the launcher with `mcp` (`mcpCommand`), or Node and the installed file on
   Windows, never a checkout path or the npx cache. `--print` describes without writing.
-- `uninstall` (also from the installed `t3-tab`) stops the daemon, removes agent entries, every registration in
-  `install.json` and the usual places, the helper folder and the state folder; a manifest that is not T3-Tab's is
+- `uninstall` (also from the installed `t3-tab`) first removes every registration in `install.json` and the usual places and
+  the native host launcher, so the browser can no longer start the helper, then stops the daemon, removes agent entries, the
+  helper folder, stops a daemon that started in between, and removes the state folder; a manifest that is not T3-Tab's is
   left alone. With `--claude` or `--codex` it removes only those agents' entries and keeps the rest, which the other
   agent and the browser still use.
 - With no browser link written, `setup` says how to name one (`--browser`, `--user-data-dir`) and exits 1. `--help`,
@@ -400,7 +414,9 @@ from a tab of a session, through `chrome.webNavigation.onCreatedNavigationTarget
 group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own
 (shared or not), is left alone. A prompt names its site and its tab's title, or, for a page being opened (which has no tab yet), the address it would load; it can time out or be declined, and one session may
 have at most three waiting prompts. The side panel keeps prompt rows stable and disables a prompt's buttons
-for 500 ms when it appears and again whenever a row is removed or inserted above another.
+for 500 ms when it appears, again whenever a row is removed or inserted above another, whenever it becomes the card
+Enter and Escape answer, and when the panel is shown again after it was hidden. A thread's T3 approval is in the same
+lock list as the browser prompts (after them), so a prompt answered above it locks it too.
 
 Membership, restricted-page and approved-origin checks run again after every permission wait and before
 every `act` step. `run_js` runs only in the main frame's JavaScript context after the browser reports that
@@ -452,8 +468,29 @@ session is connected.
 
 A thread shows why a turn failed, using T3's failure message or the direct run's error. Follow-ups queued in a T3 thread
 are listed above the composer, where they can be removed; after a Stop, T3 holds them and the first has a Send now button.
-A direct run cannot queue, so its composer says to wait and keeps Stop visible. Approval cards name what is asked (a
-command, a file read, a file change or a permission) and show the command or path. In a question card, keys 1 to 9 choose
+A direct run cannot queue, so its composer says to wait and keeps Stop visible.
+
+Browser prompts and a T3 thread's approvals share one card (`Approval.tsx`, built from `approval-model.ts`) in T3 Code's
+anatomy: a line saying what is asked (who asks, the action and the site, or the command or path T3 asks about), then
+the address a prompt would load or T3's reason, then the tab it is about by its title (`in "<title>"` under an
+address, as for `goto`, `back`, `forward` and `reload`), then Decline, the primary answer (the once answer or Approve)
+and More, in T3's order on one row. More holds the other answers with what each grants: for a browser prompt the
+lasting choice and Manage sites, for T3 its own (such as Always allow this session and Cancel), with T3's warning on an
+answer shown as T3 shows it. A T3 approval draws only the answers T3 offers: with no `accept` there is no primary
+answer, with no `decline` no Decline; with no options at all it offers T3's own defaults. Unless T3 reports the request's
+`responseCapability` as `live`, its answers are disabled and the card says, in T3's words, that the provider process is
+gone. A card about another tab says so and has a Go to tab button.
+
+The cards of a screen share one `ApprovalStack`: their locks are one list. Only browser prompts take keys: a T3 approval
+is answered by click, as in T3's own client. Enter (the primary answer) and Escape (Decline) answer only the keyed
+card, the first browser prompt that is at least 98% on screen (an `IntersectionObserver`, so a card scrolled out of the
+prompt list is never answered). A key answers only a press that began after that card became keyed: an Enter or Escape
+still held from before the change answers nothing until it is released. Keys never act while a popover, menu or dialog
+is open, from a text field (the composer included), during composition, with a modifier, held down, or while the card
+is locked; Enter on a button is that button's own, and Escape declines only from the panel's body or from inside the
+card. The keyed card shows the two keys, hidden below 360 px. A T3 approval is drawn at its row in the running work log, as T3 does, and above the composer when that
+row is not among the last eight steps shown; browser prompts sit above the composer, and on the new-thread screen they
+float over the hero's lower part so nothing moves. In a question card, keys 1 to 9 choose
 an option unless the owner is typing, and Enter in the answer box moves on or submits. Browser steps name the action and
 site, and never the text typed into a field.
 

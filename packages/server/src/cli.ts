@@ -154,6 +154,11 @@ async function runAgentUninstall(args: string[]): Promise<void> {
     stateDir: stateDirectory(),
     agents: selectedAgents,
     say: (line) => process.stdout.write(`${line}\n`),
+    // Only the end-to-end run sets this, to hold each stage open long enough for the browser to act in the gap.
+    pause: async () => {
+      const ms = Number(process.env.T3_TAB_TEST_UNINSTALL_PAUSE_MS);
+      if (Number.isFinite(ms) && ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
+    },
     removeAgent: async (agent) => {
       const result = await uninstallAgent({ agent, home: homeDirectory(), env: process.env });
       const detail = result.removed ? 'removed t3-tab from' : 'no t3-tab entry in';

@@ -5,7 +5,8 @@ import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Composer, dictateInto, ModelPicker, TabChip, useComposerAttachments } from './Composer';
 import { useDictation } from './Dictation';
 import { askerName, Banner, bindClaim, TopBar, useCatalog, useNeedsOwner, withdrawClaim, type Screen } from './Frame';
-import { PromptCards } from './PromptCards';
+import { ApprovalStack } from './Approval';
+import { promptCardId, PromptCards } from './PromptCards';
 import { errorText, panel } from './lib/api';
 import { resolveChoice, selectionFor, type Choice } from './lib/catalog';
 import { DEFAULT_PROJECT_KEY, NO_PROJECT, pickableProjects, resolveProject } from './lib/new-thread';
@@ -55,7 +56,7 @@ function ProjectPicker({
         {value?.title ?? (noProject ? 'No project' : 'Choose a project')}
       </button>
       {open ? (
-        <div className="popover project-popover">
+        <div className="popover project-popover" role="dialog" aria-label="Choose a project">
           <label className="model-search">
             <Search size={ICON.md} aria-hidden="true" />
             <input autoFocus placeholder="Search projects…" value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -117,6 +118,8 @@ function FolderPicker({ value, onChange }: { value: string; onChange: (folder: s
       {open ? (
         <form
           className="popover project-popover project-add"
+          role="dialog"
+          aria-label="Working folder"
           onSubmit={(event) => {
             event.preventDefault();
             onChange(draft.trim());
@@ -224,6 +227,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
   };
 
   return (
+    <ApprovalStack order={live.prompts.map((prompt) => promptCardId(prompt.id))} keys={live.prompts.map((prompt) => promptCardId(prompt.id))}>
     <div className="screen">
       <TopBar crumbs={['New thread']}onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} needsYou={needsYou} />
       <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />
@@ -240,7 +244,8 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
         </div>
       </main>
       <div className="dock">
-        <PromptCards prompts={live.prompts} currentTabId={tab?.id} askerName={askerName(live, state)} onManageSites={() => onNav({ name: 'settings', tab: 'sites' })} />
+        {/* Over the hero's lower part, so a prompt arriving never moves the heading or the composer. */}
+        <PromptCards prompts={live.prompts} currentTabId={tab?.id} askerName={askerName(live, state)} onManageSites={() => onNav({ name: 'settings', tab: 'sites' })} overlay />
         {error === undefined ? null : <p className="error-line">{error}</p>}
         <Composer
           value={text}
@@ -265,5 +270,6 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
         />
       </div>
     </div>
+    </ApprovalStack>
   );
 }
