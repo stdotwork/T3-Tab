@@ -6,7 +6,8 @@ import { classifyHelperProblem } from '../../src/helper-problem';
 import { errorText, panel } from './lib/api';
 import type { LiveState } from './lib/store';
 import { refreshSetup, useFreshSetup } from './lib/store';
-import { t3, type T3State } from './lib/t3-client';
+import { connectT3, type T3Connect } from './lib/t3-connect';
+import type { T3State } from './lib/t3-client';
 import { ProviderIcon, Spinner, T3Mark, ICON } from './ui';
 
 const Ready = ({ text = 'Ready' }: { text?: string }): ReactNode => (
@@ -88,7 +89,7 @@ export function helperNote(live: LiveState): HelperNote {
       return { text: 'The browser reported a problem with the helper. Running this again usually fixes it:', short: detail ?? 'the browser reported a problem', command: true, ...(detail === undefined ? {} : { detail }) };
     default:
       // The usual first run: nothing has failed, so the browser's "host not found" is not worth showing.
-      return { text: `Run this in a terminal, from any folder. ${HELPER_REQUIREMENT}`, short: 'it is not installed', command: true };
+      return { text: `It connects this browser to your agents. Run this in a terminal, from any folder. ${HELPER_REQUIREMENT}`, short: 'it is not installed', command: true };
   }
 }
 
@@ -161,7 +162,7 @@ export function T3Row({ live, state }: { live: LiveState; state: T3State }): Rea
     setBusy(true);
     setError(undefined);
     try {
-      await t3.pair();
+      await connectT3();
     } catch (failure) {
       setError(errorText(failure));
     } finally {
@@ -203,35 +204,53 @@ export function T3Row({ live, state }: { live: LiveState; state: T3State }): Rea
   );
 }
 
-export function Setup({ live, state, onDone }: { live: LiveState; state: T3State; onDone: () => void }): ReactNode {
+/** Nothing is left for the setup card to say: the helper is connected and the worker is this panel's build. */
+export const helperReady = (live: LiveState): boolean => live.helper.connected && live.build !== 'stuck' && live.build !== 'reloading';
+
+/**
+ * The new-thread screen's setup card while the helper is not connected: why, the command with Copy, and the live state.
+ * The composer under it stays usable, so the owner can write the task while the helper installs, and the card goes by
+ * itself once the helper connects.
+ */
+export function SetupCard({ live }: { live: LiveState }): ReactNode {
   useFreshSetup();
-  const helperReady = live.helper.connected;
-  const anyAgent = live.setup?.agents.some((agent) => agent.found) === true || state.status === 'ready';
+  const note = helperNote(live);
   return (
-    <main className="setup">
-      <header>
-        <h1>Welcome to T3-Tab</h1>
-        <p>Your browser, as tools for your agents.</p>
-      </header>
-      <section>
-        <h2>Helper</h2>
-        <HelperStep live={live} />
-      </section>
-      <section>
-        <h2>Your own agents</h2>
-        <p className="setup-hint">Optional. Threads started in this panel work without it.</p>
-        <AgentRow id="claude" live={live} />
-        <AgentRow id="codex" live={live} />
-      </section>
-      <section>
-        <h2>T3 Code</h2>
-        <T3Row live={live} state={state} />
-      </section>
-      <footer>
-        <button type="button" className="primary-btn" disabled={!helperReady || !anyAgent} onClick={onDone}>
-          Start
-        </button>
-      </footer>
-    </main>
+    <section className="setup-card" aria-label="T3-Tab helper" data-setup-card>
+      <Plug size={14} className="setup-card-icon" aria-hidden="true" />
+      <div className="setup-card-main">
+        <div className="setup-card-head">
+          <strong>T3-Tab helper</strong>
+          {note.waiting === true ? <Spinner /> : null}
+        </div>
+        <p className="setup-card-text">{note.text}</p>
+        {note.detail === undefined ? null : <p className="setup-card-text helper-detail">The browser said: {note.detail}</p>}
+        {note.command ? <CommandLine /> : null}
+        {note.command ? (
+          <p className="setup-card-wait" role="status">
+            <Spinner />
+            Waiting for the helper. Send works once it connects.
+          </p>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+/** One row on the new-thread screen while T3 Code runs on this machine and the panel is not connected to it: Connect starts threads there. */
+export function T3ConnectRow({ connect }: { connect: T3Connect }): ReactNode {
+  return (
+    <section className="setup-card connect-row" aria-label="T3 Code" title="Connect to start threads in T3 Code">
+      <span className="setup-card-icon">
+        <T3Mark size={14} />
+      </span>
+      <div className="setup-card-main">
+        <strong className="setup-card-line">T3 Code is running</strong>
+        {connect.error === undefined ? null : <p className="setup-card-text problem">{connect.error}</p>}
+      </div>
+      <button type="button" className="answer-btn" disabled={connect.busy} onClick={connect.connect}>
+        {connect.busy ? <Spinner /> : 'Connect'}
+      </button>
+    </section>
   );
 }

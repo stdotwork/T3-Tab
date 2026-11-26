@@ -11,6 +11,8 @@ import { errorText, panel } from './lib/api';
 import { resolveChoice, selectionFor, type Choice } from './lib/catalog';
 import { DEFAULT_PROJECT_KEY, NO_PROJECT, pickableProjects, resolveProject } from './lib/new-thread';
 import { refreshRunsNow, useShareTargets, useStored, useTabStored, type LiveState } from './lib/store';
+import { useT3Connect } from './lib/t3-connect';
+import { helperReady, SetupCard, T3ConnectRow } from './Setup';
 import { t3, type Project, type T3State } from './lib/t3-client';
 import { ICON, ProjectAvatar, useDismiss, useInkCentre } from './ui';
 
@@ -158,6 +160,9 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
   const shareable = tab !== undefined && /^https?:/.test(tab.url);
   const targets = useShareTargets(tab, live.changes);
   const needsYou = useNeedsOwner(live, state);
+  // No setup screen: until the helper connects, one card above the composer says what to run, and the composer stays usable.
+  const setupCard = !helperReady(live);
+  const t3Connect = useT3Connect(live, state);
   const latestText = useRef(text);
   latestText.current = text;
   const hero = useInkCentre<HTMLDivElement>();
@@ -230,7 +235,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
     <ApprovalStack order={live.prompts.map((prompt) => promptCardId(prompt.id))} keys={live.prompts.map((prompt) => promptCardId(prompt.id))}>
     <div className="screen">
       <TopBar crumbs={['New thread']}onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} needsYou={needsYou} />
-      <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />
+      {setupCard ? null : <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />}
       <main className="home">
         <div className="hero" ref={hero}>
           <h1>{heading}</h1>
@@ -246,13 +251,14 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
       <div className="dock">
         {/* Over the hero's lower part, so a prompt arriving never moves the heading or the composer. */}
         <PromptCards prompts={live.prompts} currentTabId={tab?.id} askerName={askerName(live, state)} onManageSites={() => onNav({ name: 'settings', tab: 'sites' })} overlay />
+        {setupCard ? <SetupCard live={live} /> : t3Connect.offered ? <T3ConnectRow connect={t3Connect} /> : null}
         {error === undefined ? null : <p className="error-line">{error}</p>}
         <Composer
           value={text}
           onChange={setText}
           onSend={() => void send()}
           running={false}
-          busy={busy || choice === undefined}
+          busy={busy || choice === undefined || setupCard}
           autoFocus
           placeholder="Ask anything"
           chip={shareable ? <TabChip title={tab.title} state={shareTab ? 'pending' : 'off'} tabs={targets.tabs} group={targets.groupTitle} onToggle={() => setShareTab(!shareTab)} /> : null}

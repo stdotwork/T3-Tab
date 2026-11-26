@@ -395,11 +395,10 @@ async function checkThreadSections(livePanel, screenshotPath) {
 
 /**
  * A second panel page for the owner's view of a conversation. Pages in a tab are refused by the worker's sender
- * check, so the harness carries the page's requests to the same handler (as e2e/panel-flow.mjs does); `setup.done`
- * is set first so the page skips the setup screen, and it runs its normal poll.
+ * check, so the harness carries the page's requests to the same handler (as e2e/panel-flow.mjs does), and it runs its
+ * normal poll.
  */
 async function openLivePanel(browserContext, serviceWorker, tabId) {
-  await serviceWorker.evaluate(() => chrome.storage.local.set({ 'setup.done': true }));
   const page = await browserContext.newPage();
   await page.setViewportSize({ width: 360, height: 800 });
   await page.exposeFunction('__t3tabPanelBridge', async (request) => {

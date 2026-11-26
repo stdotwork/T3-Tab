@@ -10,11 +10,10 @@ import { useDictation } from './Dictation';
 import { askerName, Banner, bindClaim, TopBar, useCatalog, useNeedsOwner, useT3, withdrawClaim, type Screen } from './Frame';
 import { NewThread } from './NewThread';
 import { promptCardId, PromptCards } from './PromptCards';
-import { Setup } from './Setup';
 import { ThreadList } from './ThreadList';
 import { errorText, panel } from './lib/api';
 import { choiceLabel } from './lib/catalog';
-import { headlessRender, refreshRunsNow, startPolling, useLive, useShareTargets, useStored, useTabStored, type LiveState } from './lib/store';
+import { headlessRender, refreshRunsNow, startPolling, useLive, useShareTargets, useTabStored, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
 import { directThreadView, type ThreadView } from './lib/thread-model';
 
@@ -261,7 +260,6 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
 export function App(): ReactNode {
   const live = useLive();
   const state = useT3();
-  const [setupDone, setSetupDone, setupLoaded] = useStored('setup.done', false);
   const [screen, setScreen] = useState<Screen>({ name: 'home' });
   const [tabScreen, setTabScreen, tabScreenReady] = useTabStored<TabScreen | undefined>('screen', undefined);
   const backRef = useRef<Screen>({ name: 'home' });
@@ -308,8 +306,8 @@ export function App(): ReactNode {
     return () => document.removeEventListener('keydown', onKey);
   }, [screen]);
 
-  if (!setupLoaded || !live.loaded) return <div className="screen" />;
-  if (!setupDone && !headlessRender) return <Setup live={live} state={state} onDone={() => setSetupDone(true)} />;
+  // No setup screen: the panel opens on the new-thread screen, which carries the setup card until the helper connects.
+  if (!live.loaded) return <div className="screen" />;
 
   const nav = (next: Screen): void => {
     if (next.name === 'settings' || next.name === 'threads') {

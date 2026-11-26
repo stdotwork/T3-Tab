@@ -91,7 +91,14 @@ async function untilTrue(what, probe, timeoutMs = 20_000) {
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-const helperRow = (page) => page.locator('.setup-row').filter({ hasText: 'T3-Tab helper' });
+/** The new-thread screen's setup card, which says what the helper hit while it is not connected. */
+const helperRow = (page) => page.locator('[data-setup-card]').filter({ hasText: 'T3-Tab helper' });
+
+/** The helper is connected: the panel is on the new-thread screen and its setup card has gone by itself. */
+async function helperConnected(page) {
+  await page.locator('.composer-input').waitFor({ timeout: 25_000 });
+  await page.locator('[data-setup-card]').waitFor({ state: 'detached', timeout: 25_000 });
+}
 
 const reloads = (page) => page.evaluate(() => window.__reloadRequested ?? 0);
 
@@ -151,10 +158,10 @@ export async function checkStaleWorker(builtDir) {
       const after = (await panelRequest(await currentWorker(browser.context), { type: 'panel.build' })).buildId;
       assert(after === `next-${before}`, `After the reload the worker is ${after}, not the new build`);
       const reopened = await openPanel(browser.context, browser.extensionId);
-      await helperRow(reopened).getByText('Ready').waitFor({ timeout: 25_000 });
+      await helperConnected(reopened);
       await sleep(4_500);
       assert((await reloads(reopened)) === 0, 'The panel asked for a second reload');
-      console.log(`Stale worker: files swapped under a running browser (${before} to ${after}); the panel asked for the extension to be reloaded; after it, the reopened panel shows the helper Ready, with no second reload`);
+      console.log(`Stale worker: files swapped under a running browser (${before} to ${after}); the panel asked for the extension to be reloaded; after it, the reopened panel is on the new-thread screen with the setup card gone by itself, with no second reload`);
     });
 
     // 2. A worker that predates the build check cannot answer it, and counts as another build.
@@ -168,7 +175,7 @@ export async function checkStaleWorker(builtDir) {
       await openUntilReloadRequested(browser);
       await browser.reload();
       const reopened = await openPanel(browser.context, browser.extensionId);
-      await helperRow(reopened).getByText('Ready').waitFor({ timeout: 25_000 });
+      await helperConnected(reopened);
       console.log('Stale worker: a worker too old to answer the build question counts as another build; the panel asked for a reload and, after it, ends up connected');
     });
 
@@ -187,7 +194,7 @@ export async function checkStaleWorker(builtDir) {
       console.log('Stale worker: when a reload leaves the worker old, the panel asks for one reload, then says to reload it on the extensions page and does not loop');
     });
 
-    // 4. The helper row names the error the connection hit.
+    // 4. The new-thread screen's setup card names the error the connection hit.
     await withBrowser(builtDir, async ({ home, context, extensionId }) => {
       // No real helper is installed, so the worker's link never opens and every answer below is the stub's.
       const manifestPath = join(home.profileDir, 'NativeMessagingHosts', 'com.t3tab.native.json');
@@ -207,7 +214,7 @@ export async function checkStaleWorker(builtDir) {
       await helperRow(panel).getByText('Reload T3-Tab on your browser').waitFor({ timeout: 25_000 });
       await helperRow(panel).getByText('The browser said: The T3-Tab extension is older than the helper.').waitFor();
       assert(!(await helperRow(panel).locator('.command-line').count()) && (await panel.locator('.command-line').count()) === 0, 'A behind extension should not be told to run the command');
-      console.log('Helper row: a native.error from the host is shown in words, with the one action (reload the extension) and what the browser said');
+      console.log('Setup card: a native.error from the host is shown in words, with the one action (reload the extension) and what the browser said');
 
       await useHost({ type: 'native.daemon', protocolVersion: 5, port: await closedPort(), token: 'x' });
       await helperRow(panel).getByText('could not connect to it').waitFor({ timeout: 25_000 });
@@ -221,17 +228,17 @@ export async function checkStaleWorker(builtDir) {
           await panel.screenshot({ path: join(process.env.T3_TAB_E2E_SHOTS, `helper-connection-refused-${scheme}.png`) });
         }
       }
-      console.log('Helper row: a refused WebSocket is shown with its code, and the command that restarts the helper');
+      console.log('Setup card: a refused WebSocket is shown with its code, and the command that restarts the helper');
 
       await writeFile(launcher, '#!/bin/sh\nexit 1\n');
       await helperRow(panel).getByText('started the helper and it stopped').waitFor({ timeout: 25_000 });
-      console.log('Helper row: a native host that exits is shown as such, with the Node requirement');
+      console.log('Setup card: a native host that exits is shown as such, with the Node requirement');
 
       await writeFile(manifestPath, JSON.stringify({ ...manifest, allowed_origins: ['chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/'] }));
       await helperRow(panel).getByText('does not know this extension').waitFor({ timeout: 25_000 });
       await rm(manifestPath);
       await helperRow(panel).getByText('Run this in a terminal').waitFor({ timeout: 25_000 });
-      console.log('Helper row: a manifest for another extension ID, and no manifest at all, are told apart');
+      console.log('Setup card: a manifest for another extension ID, and no manifest at all, are told apart');
     });
   } finally {
     await rm(scratch, { recursive: true, force: true });

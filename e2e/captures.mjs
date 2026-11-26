@@ -8,6 +8,7 @@
 //   panel/         the panel alone, 400 x 800, as the browser draws it
 //   framed/        the same images in the browser-window frame, the product's name and T3 Code's masked (for a blind set)
 //   framed-named/  the same frame with the names left visible
+//   welcome/       the welcome tab the extension opens on install, as a 1280 x 800 browser tab, not framed
 //   manifest.json  every image with what was masked on it
 //
 // The scenario: someone on a headphone shop's page asks an agent to compare two products and add the better value one to the
@@ -193,31 +194,46 @@ try {
   };
 
   // ---- First run ---------------------------------------------------------------------------------------------------
+  // The welcome tab the extension opens on install, as a browser tab, not framed: its one button opens the panel there.
+  const welcome = context.pages().find((page) => page.url().endsWith('/welcome.html'));
+  if (welcome === undefined) throw new Error('The extension opened no welcome tab');
+  await mkdir(join(OUT, 'welcome'), { recursive: true });
+  await welcome.setViewportSize({ width: 1280, height: 800 });
+  await welcome.getByRole('button', { name: 'Copy the command and open T3-Tab' }).waitFor();
+  for (const scheme of SCHEMES) {
+    await welcome.emulateMedia({ colorScheme: scheme });
+    await sleep(300);
+    await welcome.screenshot({ path: join(OUT, 'welcome', `00-welcome-tab-${scheme}.png`), animations: 'disabled' });
+  }
+  await welcome.close();
+  console.log('captured 00-welcome-tab');
+
+  // The panel opens on the new-thread screen; until the helper connects, one setup card sits over a usable composer.
   const panel = await open();
-  await panel.locator('.setup').waitFor();
-  await panel.getByText('Run this in a terminal').waitFor({ timeout: 20_000 });
+  await panel.locator('[data-setup-card]').getByText('Run this in a terminal').waitFor({ timeout: 20_000 });
   await shoot(panel, '01-first-run-helper-missing');
+  await panel.locator('.composer-input').fill(MESSAGE);
+  await shoot(panel, '02-first-run-task-typed');
 
   await installNativeHost(home); // what `t3-tab setup` does for the panel: registers the native host
-  await panel.locator('.state-ready').first().waitFor({ timeout: 40_000 });
-  await panel.getByRole('button', { name: 'Add' }).first().waitFor({ timeout: 20_000 }).catch(() => undefined);
-  await sleep(1500);
-  await shoot(panel, '02-first-run-helper-ready');
-
-  await panel.getByRole('button', { name: 'Start', exact: true }).click();
-  await panel.locator('.hero h1').waitFor();
+  await panel.locator('[data-setup-card]').waitFor({ state: 'detached', timeout: 40_000 });
+  await panel.locator('.send-btn:not([disabled])').waitFor({ timeout: 20_000 });
   await sleep(500);
+  await shoot(panel, '05-new-thread-direct-typed');
+  await panel.locator('.composer-input').fill('');
   await shoot(panel, '03-new-thread-direct');
   await panel.locator('.model-chip').first().click();
   await panel.locator('.model-popover').waitFor();
   await shoot(panel, '04-model-picker-direct');
   await panel.keyboard.press('Escape');
-  await panel.locator('.composer-input').fill(MESSAGE);
-  await shoot(panel, '05-new-thread-direct-typed');
-  await panel.locator('.composer-input').fill('');
+
+  // ---- T3 running, not connected: the new-thread screen's one Connect row ---------------------------------------------
+  await writeFile(join(fakes.fakeDir, 't3-mode'), 'running');
+  await panel.reload(); // a fresh panel asks the helper about T3 at once
+  await panel.locator('.setup-card.connect-row').getByRole('button', { name: 'Connect' }).waitFor({ timeout: 30_000 });
+  await shoot(panel, '05b-new-thread-t3-connect');
 
   // ---- T3 connected: hero, project picker, model picker with the access footer ----------------------------------------
-  await writeFile(join(fakes.fakeDir, 't3-mode'), 'running');
   const injectT3 = async (page, threads = []) =>
     await page.evaluate(
       ([list, now]) => {
