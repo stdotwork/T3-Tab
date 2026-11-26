@@ -2,20 +2,20 @@
   "comment": "Limits for `pnpm bench`: each is the measured number plus 5% (40% for JPEG bytes, which vary with fonts). Raise one only on purpose, with the reason in the PR.",
   "limits": {
     "definitions.total": {
-      "chars": 3256,
-      "tokens": 784
+      "chars": 3397,
+      "tokens": 823
     },
     "definitions.status": {
       "chars": 136,
       "tokens": 31
     },
     "definitions.tabs": {
-      "chars": 470,
-      "tokens": 114
+      "chars": 580,
+      "tokens": 141
     },
     "definitions.read": {
-      "chars": 890,
-      "tokens": 202
+      "chars": 920,
+      "tokens": 214
     },
     "definitions.screenshot": {
       "chars": 363,
@@ -30,12 +30,8 @@
       "tokens": 94
     },
     "form.open": {
-      "chars": 75,
-      "tokens": 30
-    },
-    "form.read-first": {
-      "chars": 698,
-      "tokens": 225
+      "chars": 705,
+      "tokens": 226
     },
     "form.act-fill-submit": {
       "chars": 154,
@@ -48,12 +44,8 @@
       "imageTokens": 1311
     },
     "hidden.open": {
-      "chars": 75,
-      "tokens": 30
-    },
-    "hidden.read-first": {
-      "chars": 698,
-      "tokens": 225
+      "chars": 705,
+      "tokens": 226
     },
     "hidden.act-click": {
       "chars": 204,
@@ -72,12 +64,8 @@
       "tokens": 17
     },
     "navigate.open": {
-      "chars": 80,
-      "tokens": 29
-    },
-    "navigate.read-first": {
-      "chars": 631,
-      "tokens": 194
+      "chars": 639,
+      "tokens": 195
     },
     "navigate.act-click-link": {
       "chars": 328,
@@ -87,25 +75,29 @@
       "chars": 174,
       "tokens": 73
     },
+    "long.read-url-find": {
+      "chars": 1251,
+      "tokens": 309
+    },
     "long.open": {
-      "chars": 77,
-      "tokens": 30
+      "chars": 162,
+      "tokens": 53
     },
     "long.read-first": {
-      "chars": 7539,
-      "tokens": 2049
+      "chars": 6552,
+      "tokens": 1774
     },
     "long.find": {
       "chars": 1201,
       "tokens": 290
     },
     "long.read-subtree": {
-      "chars": 502,
-      "tokens": 133
+      "chars": 497,
+      "tokens": 132
     },
     "long.read-all": {
-      "chars": 12671,
-      "tokens": 3113
+      "chars": 12562,
+      "tokens": 3114
     },
     "long.screenshot": {
       "chars": 49,

@@ -53,7 +53,7 @@ export async function runMcpServer(options: { claimFile?: string } = {}): Promis
   withoutExecution(
     server.registerTool(
       'tabs',
-      { description: 'List, open, switch to or close browser tabs.', inputSchema: tabsShape },
+      { description: 'List, open, switch to or close tabs. Loads (open, goto, back, forward, reload) reply with the page.', inputSchema: tabsShape },
       browserTool('tabs'),
     ),
   );

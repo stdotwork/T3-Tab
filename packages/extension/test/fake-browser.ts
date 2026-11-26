@@ -29,11 +29,18 @@ export class FakeBrowser {
   beforeCommand: ((tabId: number, method: string) => Promise<void> | void) | undefined;
   /** Answers an expression before the page would run it: the place to say what a script in the real page would find. */
   evaluateHook: ((params: Record<string, unknown>) => unknown) | undefined;
+  /**
+   * Where `Page.navigate` lands: the address it was given unless this names another (a redirect). A change of fragment
+   * only stays in the document, as in the browser, and reports no loader.
+   */
+  redirect: ((url: string) => string) | undefined;
   /** What the one window says about itself. */
   windowFocused = true;
   windowState = 'normal';
   private readonly listeners: EventListener[] = [];
   private contextSeq = 0;
+  private nextTabId = 500;
+  private loaderSeq = 0;
 
   reset(): void {
     this.tabs.clear();
@@ -42,6 +49,7 @@ export class FakeBrowser {
     this.groupCalls.length = 0;
     this.beforeCommand = undefined;
     this.evaluateHook = undefined;
+    this.redirect = undefined;
     this.windowFocused = true;
     this.windowState = 'normal';
   }
@@ -99,6 +107,11 @@ export class FakeBrowser {
           return this.snapshot(tab);
         },
         query: async () => [...this.tabs.values()].map((tab) => this.snapshot(tab)),
+        create: async (options: { url?: string }) => {
+          this.nextTabId += 1;
+          return this.snapshot(this.addTab({ id: this.nextTabId, url: options.url ?? 'about:blank' }));
+        },
+        remove: async (id: number) => void this.tabs.delete(id),
         group: async (options: { tabIds: number[]; groupId?: number }) => {
           this.groupCalls.push(options);
           const groupId = options.groupId ?? 1000;
@@ -107,7 +120,7 @@ export class FakeBrowser {
         },
       },
       windows: { get: async () => ({ id: 1, focused: this.windowFocused, state: this.windowState }) },
-      tabGroups: { TAB_GROUP_ID_NONE: -1 },
+      tabGroups: { TAB_GROUP_ID_NONE: -1, update: async () => undefined },
       webNavigation: { onCommitted: { addListener: () => undefined } },
     };
     (globalThis as unknown as { chrome: unknown }).chrome = fake;
@@ -131,6 +144,18 @@ export class FakeBrowser {
         return { cssVisualViewport: { clientWidth: 800, clientHeight: 600 } };
       case 'Page.captureScreenshot':
         return { data: 'AAAA' };
+      case 'Page.navigate': {
+        const url = String(params?.url);
+        const sameDocument = tab.url !== 'about:blank' && new URL(url).href.split('#')[0] === new URL(tab.url).href.split('#')[0];
+        if (sameDocument) {
+          tab.url = url;
+          return {};
+        }
+        this.navigate(tabId, this.redirect?.(url) ?? url, '');
+        this.emit(tabId, 'Page.loadEventFired', {});
+        this.loaderSeq += 1;
+        return { loaderId: `loader-${this.loaderSeq}` };
+      }
       default:
         return {};
     }

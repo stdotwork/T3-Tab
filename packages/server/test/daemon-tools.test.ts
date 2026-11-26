@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { EXTENSION_ORIGIN, PROTOCOL_VERSION, type ToolSession } from '@t3-tab/protocol';
+import { EXTENSION_ORIGIN, NO_TAB_MESSAGE, PROTOCOL_VERSION, type ToolSession } from '@t3-tab/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
@@ -108,7 +108,7 @@ describe('browser tools through the daemon', () => {
     });
     expect(await control(b.socket, b.session, { method: 'tabs', params: {} })).toMatchObject({
       ok: true,
-      result: { content: [{ type: 'text', text: 'No tabs in this session. Open one with action "open" and a url, or ask the owner to share one from the T3-Tab panel.' }] },
+      result: { content: [{ type: 'text', text: NO_TAB_MESSAGE }] },
     });
 
     const unregistered = await open(handle);

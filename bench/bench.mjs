@@ -130,9 +130,8 @@ async function measure() {
       tools: Object.fromEntries(tools.map((tool) => [tool.name, sizeOf(JSON.stringify(tool))])),
     };
 
-    // 1. Fill and submit a form.
-    await run('form', 'open', 'tabs', { action: 'open', url: `${siteUrl}/form` });
-    const formRead = await run('form', 'read-first', 'read', {});
+    // 1. Fill and submit a form. A load replies with the page, so its refs come from the open.
+    const formRead = await run('form', 'open', 'tabs', { action: 'open', url: `${siteUrl}/form` });
     const refs = {
       name: need(formRead, 'textbox "Name"'),
       email: need(formRead, 'textbox "Email"'),
@@ -151,20 +150,19 @@ async function measure() {
 
     // 2. Open a hidden section: the click through `act`, then a change made behind the agent's back so
     // the next `read` is a diff.
-    await run('hidden', 'open', 'tabs', { action: 'open', url: `${siteUrl}/form` });
-    const hiddenRead = await run('hidden', 'read-first', 'read', {});
+    const hiddenRead = await run('hidden', 'open', 'tabs', { action: 'open', url: `${siteUrl}/form` });
     await run('hidden', 'act-click', 'act', { steps: [{ action: 'click', ref: need(hiddenRead, 'button "Show details"') }] });
     await run('hidden', 'run_js', 'run_js', { expression: "document.getElementById('toggle').click()" });
     await run('hidden', 'read-diff', 'read', {});
     await run('hidden', 'read-unchanged', 'read', {});
 
     // 3. Follow a link: the reply to the click is the new page.
-    await run('navigate', 'open', 'tabs', { action: 'open', url: `${siteUrl}/products` });
-    const productsRead = await run('navigate', 'read-first', 'read', {});
+    const productsRead = await run('navigate', 'open', 'tabs', { action: 'open', url: `${siteUrl}/products` });
     await run('navigate', 'act-click-link', 'act', { steps: [{ action: 'click', ref: need(productsRead, 'link "Day pack"') }] });
     await run('navigate', 'tabs-list', 'tabs', {});
 
-    // 4. Search a longer page.
+    // 4. Search a longer page: on the load itself, then in the page it holds. Its load reply leaves the page to the read.
+    await run('long', 'read-url-find', 'read', { url: `${siteUrl}/docs`, find: 'rate limit' });
     await run('long', 'open', 'tabs', { action: 'open', url: `${siteUrl}/docs` });
     const longRead = await run('long', 'read-first', 'read', {});
     await run('long', 'find', 'read', { find: 'rate limit' });

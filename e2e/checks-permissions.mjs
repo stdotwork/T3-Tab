@@ -96,9 +96,9 @@ export async function checkPermissions({ mcpClient, mcpClientB, page, serviceWor
   assert(unsharedRead.isError === true && /not available to this session/.test(text(unsharedRead)), `Session A can read the unshared owner tab: ${text(unsharedRead)}`);
   console.log(`Share covers the origin shown when shared: tab ${ownerTab.id} readable at ${siteUrl}, then refused after unshare`);
 
-  const pageA = await rawCall(mcpClient, 'read', { tab: tabA, full: true });
-  const actionRef = refFor(text(pageA), 'button "Action A"');
-  assert(actionRef, `Session A's action page has no button ref:\n${text(pageA)}`);
+  // The open's reply holds the page.
+  const actionRef = refFor(text(openedA), 'button "Action A"');
+  assert(actionRef, `Session A's action page has no button ref:\n${text(openedA)}`);
 
   const firstAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const actPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
@@ -453,8 +453,8 @@ export async function checkFrames({ mcpClient, siteUrl, otherSiteUrl }) {
   const opened = await call(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/frames` });
   const tabId = Number(/^Opened tab (\d+)/.exec(text(opened))?.[1]);
   assert(Number.isInteger(tabId), `tabs open: ${text(opened)}`);
-  await sleep(500);
-  const framed = await call(mcpClient, 'read', { tab: tabId, full: true });
+  // The open's reply is the page as read shows it, read once the frames settled.
+  const framed = opened;
   show('read (page with a cross-origin iframe)', framed);
   assert(framed.isError !== true && text(framed).includes('# Frames page'), `The frames page was not read: ${text(framed)}`);
   assert(!text(framed).includes('Session B private tab'), `The cross-origin iframe's text was returned:\n${text(framed)}`);
@@ -608,6 +608,9 @@ async function answerInPanel(panelPage, serviceWorker, prompt, answer) {
     const card = panelPage.locator(`li.prompt-card[data-prompt-id="${prompt.id}"]`);
     await card.waitFor();
     assert((await card.locator('.answer-btn').first().isDisabled()) === true, 'A new card took answers at once');
+    // Keys go to the top card once the panel sees it whole, which locks it for another 500 ms. That sighting comes from
+    // an IntersectionObserver and, in this headless panel tab, sometimes about a second late: wait for it, then the lock.
+    await card.locator('[data-keyed="true"]').waitFor({ timeout: 5_000 });
     await sleep(650);
     const stillWaiting = async () => (await pendingPrompts(serviceWorker)).some((entry) => entry.id === prompt.id);
     if (answer === 'Enter' || answer === 'Escape') {

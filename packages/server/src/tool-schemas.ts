@@ -7,19 +7,22 @@ import { z } from 'zod';
 
 const tab = z.number().optional();
 const currentTab = 'Default: current tab.';
+const find = z.string().max(200).optional();
 
 export const tabsShape = {
   action: z.enum(['list', 'open', 'goto', 'back', 'forward', 'reload', 'switch', 'close']).optional().describe('Default list.'),
   url: z.string().optional().describe('For open, goto.'),
   tab: tab.describe('Default: current.'),
+  find: find.describe('Only matching lines.'),
   // No description: only a thread started from the side panel uses it, and its message says what to pass.
   claim: z.string().optional(),
 };
 
 export const readShape = {
   tab: tab.describe(currentTab),
+  url: z.string().optional().describe('Reuses its tab, else opens one.'),
   all: z.boolean().optional().describe('All text, no budget; images too.'),
-  find: z.string().max(200).optional().describe('Case-insensitive literal text; returns only matching lines.'),
+  find: find.describe('Case-insensitive literal text; returns only matching lines.'),
   regex: z.boolean().optional().describe('find is a regular expression.'),
   ref: z.string().optional().describe("Read only this element's subtree."),
   depth: z.number().min(0).optional().describe('Deepest nesting to show; … marks more inside.'),

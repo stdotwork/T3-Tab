@@ -163,9 +163,28 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **Opening a page asks first, and does not take the owner's tab.** The prompt names the address and nothing is
   fetched or run until the owner says yes, because a page loaded before the answer has already used their cookies. The
   page opens behind the tab they are on, so the side panel stays in view for the answer. A hidden page gets no animation
-  frames, so it counts as visible until it has settled and for a screenshot, then goes back to hidden; the reply does
-  not wait for the settling, only for the first frames. A redirect to
+  frames, so it counts as visible until it has settled and for a screenshot, then goes back to hidden; the reply waits
+  for the first frames, not for the page to settle, then carries the page. A redirect to
   another origin keeps the tab, unapproved, rather than failing: the approval covers only the origin asked for.
+- **A load replies with the page.** Agents followed every `open` with a `read`, and some called `read`, `goto` or `act`
+  before opening any tab and were refused, each a model request that re-reads the whole context. So `open`, `goto`,
+  `back`, `forward` and `reload` reply with what `read` would show (or the lines a `find` matches), and `read` and `goto`
+  with an address open a tab when the session has none. The page is in the reply only where a `read` would need no
+  prompt, and, for a load Full access let through, only while T3 still confirms the mode after the read; the
+  empty-session path asks the same `open` prompt before anything loads. A load now also takes the accessibility fetch,
+  which the `read` it replaces took anyway. It does not wait for the page to go quiet: a page that never does (a poll, an
+  animation) would hold every load for the whole wait. A page that moved while it was read is read once more if that
+  first read was quick, so a load does at most two reads. Models send a `read` or `find` with the load in the same turn,
+  before they see its reply, so a page over 4,000 characters is left out of the load's reply and comes with that read (a
+  page whose text alone is longer is not even read for the load), and a `read` with `full` right after a load that
+  showed the page says it is unchanged instead of resending it.
+  The `tabs` description says a load replies with "the page", not "a short page": with "short", Haiku asked for `full`
+  with the load and after every action, and paid for each page twice.
+- **`read` with an address never moves a tab.** It reads a tab of the session already at that address, or opens a new
+  one, asking as `open` does. Going to the address in the current tab would load the owner's shared tab elsewhere, or
+  load a page again and lose what was typed into it, from a call that reads like a read. Moving a tab stays with `tabs
+  goto`, which says it moves one. A tab the session may not read yet is not reused, so the prompt that comes up does not
+  tell the agent where that tab is.
 - **A session has a current tab.** With tabs opening in the background, the tab in front no longer says what the agent
   is working on. Calls that name no tab use the last one the session opened, switched to or was handed. The owner moving
   between tabs does not change it, so an action cannot land on a tab the agent did not mean.
