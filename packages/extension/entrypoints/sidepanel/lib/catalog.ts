@@ -115,7 +115,16 @@ export function choiceLabel(providers: readonly PickerProvider[], choice: Choice
   if (choice === undefined) return { name: 'No model' };
   const provider = providers.find((entry) => entry.id === choice.provider);
   const model = provider?.models.find((entry) => entry.slug === choice.model);
-  const name = model === undefined ? (provider?.customModels === true ? choice.model : choice.model.replace(/^claude-/, '').replaceAll('-', ' ')) || 'Default' : compactModelName(model, provider?.driver);
+  // A direct run's "default model" is whatever the agent's own login picks, which T3-Tab never learns: the chip names the
+  // agent instead of a word that names nothing. A model the catalog knows by name (T3's default is one) keeps its name.
+  const unnamed = model === undefined ? choice.model === '' : model.slug === '';
+  const name = unnamed
+    ? (provider?.name ?? 'Default')
+    : model === undefined
+      ? provider?.customModels === true
+        ? choice.model
+        : choice.model.replace(/^claude-/, '').replaceAll('-', ' ')
+      : compactModelName(model, provider?.driver);
   const reasoning = reasoningOption(model);
   const value = reasoning === undefined ? undefined : (choice.options[reasoning.id] ?? reasoning.currentValue ?? reasoning.options?.find((option) => option.isDefault === true)?.id);
   const effort = reasoning?.options?.find((option) => option.id === value)?.label;

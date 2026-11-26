@@ -1,11 +1,11 @@
 import type { T3VoiceStatus } from '@t3-tab/protocol';
-import { Loader2, Mic, MicOff, X } from 'lucide-react';
+import { Loader2, Mic, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
 import { errorText } from './lib/api';
 import { canRecord, micError, micPermission, startCapture, type Capture } from './lib/mic';
 import { t3, type T3State } from './lib/t3-client';
-import { formatElapsed, MAX_RECORDING_MS, micPermissionNote, voiceBlock, VoiceStream, type MicPermission } from './lib/voice';
+import { formatElapsed, MAX_RECORDING_MS, micPermissionNote, micShown, voiceBlock, VoiceStream, type MicPermission } from './lib/voice';
 import { GLYPH_STROKE, ICON } from './ui';
 
 const STATUS_TTL_MS = 60_000;
@@ -18,6 +18,8 @@ export interface Dictation {
   phase: DictationPhase;
   elapsedMs: number;
   level: number;
+  /** The composer draws the mic: recording can work here, or pressing it says what to do. Otherwise it draws nothing. */
+  shown: boolean;
   /** Why the button cannot record now; the button still shows it on a press. */
   blocked?: string | undefined;
   permission: MicPermission;
@@ -84,7 +86,25 @@ export function useDictation(state: T3State, onText: (text: string) => void, onN
     current.stream?.cancel();
   }, []);
 
-  const blocked = voiceBlock({ t3: state.status, capability: state.voice, status: status?.value, canRecord: canRecord() });
+  // As T3's composer does, ask once whether T3 can transcribe as soon as it is connected, so a mic that cannot work is never drawn.
+  const probing = state.status === 'ready' && state.voice;
+  useEffect(() => {
+    if (!probing) return;
+    let live = true;
+    t3.voiceStatus().then(
+      (value) => {
+        if (live) setStatus({ at: Date.now(), value });
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [probing]);
+
+  const block = { t3: state.status, capability: state.voice, status: status?.value, canRecord: canRecord() };
+  const blocked = voiceBlock(block);
+  const shown = micShown(block) || phase === 'recording' || phase === 'finishing';
 
   const reset = (): void => {
     session.current = undefined;
@@ -179,6 +199,7 @@ export function useDictation(state: T3State, onText: (text: string) => void, onN
     phase,
     elapsedMs,
     level,
+    shown,
     blocked,
     permission,
     toggle: () => {
@@ -191,7 +212,8 @@ export function useDictation(state: T3State, onText: (text: string) => void, onN
 
 /** The mic button just left of send, as in T3 Code; while recording it shows the time and a cancel. */
 export function MicButton({ dictation }: { dictation: Dictation }): ReactNode {
-  const { phase, blocked, permission } = dictation;
+  const { phase, blocked, permission, shown } = dictation;
+  if (!shown) return null;
   if (phase === 'recording' || phase === 'finishing') {
     return (
       <span className="mic-pill" data-ink="box" style={{ '--mic-level': String(dictation.level) } as CSSProperties}>
@@ -219,7 +241,7 @@ export function MicButton({ dictation }: { dictation: Dictation }): ReactNode {
       onClick={dictation.toggle}
       disabled={phase === 'starting'}
     >
-      {phase === 'starting' ? <Loader2 size={ICON.md} strokeWidth={GLYPH_STROKE} className="spin" aria-hidden="true" /> : off ? <MicOff size={ICON.md} strokeWidth={GLYPH_STROKE} aria-hidden="true" /> : <Mic size={ICON.md} strokeWidth={GLYPH_STROKE} aria-hidden="true" />}
+      {phase === 'starting' ? <Loader2 size={ICON.md} strokeWidth={GLYPH_STROKE} className="spin" aria-hidden="true" /> : <Mic size={ICON.md} strokeWidth={GLYPH_STROKE} aria-hidden="true" />}
     </button>
   );
 }

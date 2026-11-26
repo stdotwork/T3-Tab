@@ -19,7 +19,7 @@ import { lazy, memo, Suspense, useEffect, useRef, useState, type ReactNode } fro
 import type { PendingApproval, PendingQuestion, QueuedMessage, Row, ThreadView, WorkEntry, WorkIcon } from './lib/thread-model';
 import { ApprovalCard } from './Approval';
 import { t3Approval } from './approval-model';
-import { clockTime, CopyButton, formatDuration, ICON } from './ui';
+import { clockTime, CopyButton, formatDuration, ICON, workingTime } from './ui';
 
 // The markdown parser is about a quarter of the panel's script, and a new thread has nothing to render with it.
 const Markdown = lazy(() => import('./Markdown'));
@@ -81,7 +81,7 @@ function WorkGroup({ row, approval }: { row: Extract<Row, { kind: 'work' }>; app
   const [open, setOpen] = useState(false);
   const now = useNow(row.running);
   const end = row.running ? now : (row.endedAt ?? now);
-  const duration = row.startedAt === undefined ? undefined : formatDuration(end - row.startedAt);
+  const duration = row.startedAt === undefined ? undefined : row.running ? workingTime(end - row.startedAt) : end - row.startedAt < 1000 ? undefined : formatDuration(end - row.startedAt);
   if (row.running) {
     return (
       <section className="work-group" data-timeline-row-kind="work">

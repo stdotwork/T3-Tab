@@ -78,14 +78,14 @@ between turns with the conversation's Remove button; a missing, world-readable o
 the conversation and in the agent's first tool reply. The thread list, given T3 threads as one shell snapshot, shows T3's
 sidebar sections in T3's order (pinned, active, then the Working, Snoozed and Settled shelves), leaves archived threads
 out, ends each row in its provider's logo (none when T3 lists no such provider) and names no machine, and the threads button carries a dot only while a thread waits on the owner's answer or approval. The composer
-keeps the paperclip, model, mic and send in that order at 320, 360 and 400 px with no access row under it; the mic says why it cannot record without T3; a PDF for a direct run is named and holds the message; a pasted image is attached; a PNG
+keeps the paperclip, model, mic and send in that order at 320, 360 and 400 px with no access row under it; without T3 there is no mic and the model chip names the agent, never "Default"; a PDF for a direct run is named and holds the message; a pasted image is attached; a PNG
 dragged over the heading shows the whole-panel drop overlay, is attached when dropped there and
 reaches the fake Claude Code as an image block, while a file dropped on Settings is refused; Settings has a 28 px
 color scheme row, T3 Code's built-in theme with T3's shared theme ignored, and a theme menu with swatches, Create
 theme and Add theme, and each theme's actions beside it; and with T3's config handed to the panel, the access level is chosen in
 the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e/ink.mjs`) walks the new-thread
-screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, a T3
-thread waiting on an approval (at its work-log row and above the composer), three browser prompts on the new-thread
+screen (direct, with no mic, and T3, with the mic, with and without a project), the model and project pickers, the thread list, a thread, a T3
+thread waiting on an approval (at its work-log row and above the composer), a running thread (its composer's Stop at the size of the icons beside it), three browser prompts on the new-thread
 screen (one a `goto` on another tab), Settings and a theme sheet at 320, 360 and 400 px in light and dark, and measures visible ink (SVG strokes and fills, text glyphs
 on their baseline, painted boxes), never padding boxes. It fails when a bar's or the composer row's first and last
 controls sit at ink distances from its edges more than 1 px apart, when the composer's send circle is not as far from
@@ -535,8 +535,11 @@ directly through the daemon and feeds the same thread view.
   on the socket. The same holds for the two other connections the browser opens to T3: an attachment upload and the
   voice socket (below). Disconnect drops the session and revokes it through `t3.unpair`. The `t3 thread` polling below remains in
   the daemon, but the panel no longer uses it.
-- **The composer.** The bottom row is T3's: the paperclip at the left end, then the model, the mic and send, every
-  control 32 px and the row 8 px from the box's edges. The access level (runtime mode) is in the model picker's footer, as
+- **The composer.** The bottom row is T3's: the paperclip at the left end, then the model, the mic and send (Stop in its
+  place while a turn runs, drawn at the same 16 px as the other icons), every control 32 px and the row 8 px from the
+  box's edges. A direct run whose model is the agent's own default names the agent on the chip ("Claude Code"), not
+  "Default", since T3-Tab never learns which model that is. A running turn's header reads "Working…" until its first full
+  second, then "Working for 7s" in whole seconds, as T3's timer counts; it never shows "0.0s". The access level (runtime mode) is in the model picker's footer, as
   in T3; a running T3 thread's model chip opens the same footer, and a change there is sent at once with
   `thread.runtime-mode.set`.
 - **Attachments.** Paperclip, paste and drop add files. Files dragged anywhere over a screen with a composer (the
@@ -551,8 +554,10 @@ directly through the daemon and feeds the same thread view.
 - **Dictation.** The mic records 16 kHz mono PCM in an audio worklet (`public/pcm-capture.js`) and streams it to T3's
   `/ws/voice`, where T3 transcribes it on this machine with the model chosen in its Settings → Voice, the same route T3's
   composer takes. The media ticket and `GET /api/voice/status` go through the daemon's `t3.session` like the RPC ticket.
-  Without T3 connected, without T3's `voiceTranscription` capability or without a downloaded voice model, the button says
-  so instead of recording. A side panel cannot show the browser's microphone prompt, so the first press opens
+  As in T3's composer, the mic is not drawn where it cannot work: T3 not connected, no `voiceTranscription` capability, a
+  voice status that says unsupported (asked once when T3 connects, so a refused one never appears), or a page that cannot
+  record. A downloaded voice model that is missing keeps the button, as T3 opens its setup there: pressing it says where
+  to download one. A blocked microphone keeps it too, and says how to allow it. A side panel cannot show the browser's microphone prompt, so the first press opens
   `microphone.html` in a tab, where the browser asks once for the extension; after that the panel records without asking.
   Nothing uses the browser's Web Speech service.
 - **Themes.** Settings shows the color scheme as one segmented row and the theme as one menu (every theme with its

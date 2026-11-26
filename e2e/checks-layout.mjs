@@ -233,6 +233,9 @@ async function checkScreen(page, screen, shotsDir, bars, expect) {
       for (const bar of found.bars) bars[key].push({ screen, bar });
       failures.push(...problems(`${screen} @${width} ${scheme}`, found));
       if (expect?.approvals !== undefined && found.approvals.length !== expect.approvals) failures.push(`${screen} @${width} ${scheme}: ${found.approvals.length} approval cards, expected ${expect.approvals}`);
+      // Which composer controls the screen draws: Stop in a running composer, the mic only where T3 can transcribe.
+      for (const label of expect?.controls ?? []) if (!found.composer?.controls.includes(label)) failures.push(`${screen} @${width} ${scheme}: the composer has no "${label}" (it has ${found.composer?.controls.join(', ') ?? 'nothing'})`);
+      for (const label of expect?.without ?? []) if (found.composer?.controls.some((control) => control.startsWith(label))) failures.push(`${screen} @${width} ${scheme}: the composer draws "${label}", which cannot work here`);
       if (shotsDir !== undefined) await page.screenshot({ path: join(shotsDir, `layout-${screen}-${width}-${scheme}.png`), animations: 'disabled' });
     }
   }
@@ -321,7 +324,8 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
   };
 
   await home();
-  await run('home-direct');
+  // Without T3 the mic cannot record, so it is not drawn (as T3 Code's composer leaves it out), and the row is three controls.
+  await run('home-direct', { controls: ['Attach files', 'Send'], without: ['Start voice input', 'Voice input'] });
   await page.locator('.model-chip').first().click();
   await page.locator('.model-popover').waitFor();
   await run('model-picker');
@@ -337,13 +341,14 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
         providers: [{ instanceId: 'claudeAgent', driver: 'claudeAgent', enabled: true, installed: true, status: 'ready', models: [{ slug: 'claude-opus-5-5', name: 'Claude Opus 5.5', isDefault: true }] }],
         scratchWorkspaceRoot: '/tmp/layout-scratch',
         settings: {},
-        environment: { label: 'layout-machine', platform: { machine: 'desktop' }, capabilities: {} },
+        environment: { label: 'layout-machine', platform: { machine: 'desktop' }, capabilities: { voiceTranscription: true } },
       },
     });
     client.onShell({ kind: 'snapshot', snapshot: { threads: [], projects: [{ id: 'layout-project', title: 'virtus-umbrella', workspaceRoot: '/tmp/virtus-umbrella' }] } });
   });
   await page.locator('.hero .inline-picker, .hero .project-btn').filter({ hasText: 'No project' }).waitFor();
-  await run('home-t3-no-project');
+  // T3 can transcribe here, so the row has the mic as well: paperclip, model, mic and send on one centre line.
+  await run('home-t3-no-project', { controls: ['Attach files', 'Start voice input', 'Send'] });
   await page.locator('.hero-picker > button').click();
   await page.locator('.project-popover').getByText('virtus-umbrella').click();
   await page.locator('.hero-picker > button').filter({ hasText: 'virtus-umbrella' }).waitFor();
@@ -388,6 +393,15 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
   });
   await page.locator('.dock .approval-card.dock').waitFor();
   await run('approval-dock', { approvals: 1 });
+  // A running thread: the composer's Stop stands where send does and is drawn at the other icons' size.
+  await page.evaluate(() => {
+    const watch = window.__t3tabT3.watches.get('layout-approval');
+    watch.view = { ...window.__layoutApproval(false), running: true };
+    delete watch.view.approval;
+    for (const listener of watch.listeners) listener(watch.view);
+  });
+  await page.locator('.composer-row .send-btn.stop').waitFor();
+  await run('thread-running', { controls: ['Attach files', 'Start voice input', 'Stop'], without: ['Send'] });
   await page.evaluate(() => {
     window.__t3tabT3.watches.delete('layout-approval');
     delete window.__layoutApproval;
