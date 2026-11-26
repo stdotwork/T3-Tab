@@ -1,5 +1,6 @@
 import type { PageReadResult } from '@t3-tab/protocol';
 
+import { elideEchoes, elideTextEchoes, type SetValue } from './echo.js';
 import { findLines } from './find.js';
 import { MORE_INSIDE, RefGoneError, renderTree, truncate } from './format.js';
 import { RefTable } from './refs.js';
@@ -24,6 +25,8 @@ export interface ReadOptions {
   ref?: string | undefined;
   depth?: number | undefined;
   full?: boolean | undefined;
+  /** Values the `act` batch that this read follows set. Lines whose only change is such a value are left out. */
+  echoed?: SetValue[] | undefined;
 }
 
 /** What the background program holds for one tab: its refs and, per calling session, the last text read. */
@@ -146,20 +149,26 @@ export async function formatRead(
   if (lines.length === 0) {
     return `${header}\n${all ? '(empty page)' : '(no interactive elements; use all to see the text)'}`;
   }
+  // What the batch itself set is no news to the agent: the earlier read is settled to show it already.
+  const echoes =
+    previous === undefined || options.full === true || options.echoed === undefined
+      ? undefined
+      : elideEchoes(previous, text, options.echoed);
   // The default view leaves plain text out, so its changes are tracked beside it: a page whose only change is
   // a message must not read as unchanged.
-  const textChange = all ? undefined : trackPlainText(state, session, page, options, target);
+  const textChange = all ? undefined : trackPlainText(state, session, page, options, target, echoes?.pairs);
   if (previous === undefined || options.full === true) return limit(`${header}\n${text}`);
 
-  const diff = createSmartDiff({ oldContent: previous, newContent: text });
+  const diff = createSmartDiff({ oldContent: echoes?.previous ?? previous, newContent: text });
+  const set = echoes === undefined || echoes.refs.length === 0 ? undefined : `Set ${echoes.refs.join(', ')}.`;
   if (diff.type === 'no-change') {
-    if (textChange === undefined) return `${header}\nNo changes since the last read.`;
-    return limit(`${header}\nText changed since the last read:\n${textChange.diff}`);
+    if (textChange === undefined) return `${header}\n${set === undefined ? 'No changes since the last read.' : `${set} Nothing else changed.`}`;
+    return limit(`${header}${set === undefined ? '' : `\n${set}`}\nText changed since the last read:\n${textChange.diff}`);
   }
   if (diff.type === 'diff') {
     const added = textChange?.added.filter((line) => !diff.content.includes(line.slice(1, -1))).slice(0, MAX_NEW_TEXT_LINES) ?? [];
     const newText = added.length === 0 ? '' : `\nNew text:\n${added.join('\n')}`;
-    return limit(`${header}\nChanged since the last read:\n${diff.content}${newText}`);
+    return limit(`${header}${set === undefined ? '' : `\n${set}`}\nChanged since the last read:\n${diff.content}${newText}`);
   }
   return limit(`${header}\n${text}`);
 }
@@ -171,6 +180,7 @@ function trackPlainText(
   page: PageReadResult,
   options: ReadOptions,
   target: number | undefined,
+  echoes: Array<{ before: string; after: string }> | undefined,
 ): { diff: string; added: string[] } | undefined {
   // Its own ref table: rendering must not hand out refs the agent was never shown.
   const lines = renderTree(page.nodes, new RefTable(), { all: true, target, depth: options.depth }).map((line) =>
@@ -181,9 +191,12 @@ function trackPlainText(
   const previous = state.baseline(session, key);
   state.setBaseline(session, key, text);
   if (previous === undefined) return undefined;
-  const diff = createSmartDiff({ oldContent: previous, newContent: text, threshold: 1.01 });
+  // The same settling as for the elements: a field's value the batch set is not a change of the page's text.
+  const compared = echoes === undefined ? previous : elideTextEchoes(previous, text, echoes);
+  // Both end in a newline, so a line added at the end does not also show the old last line as changed.
+  const diff = createSmartDiff({ oldContent: `${compared}\n`, newContent: `${text}\n`, threshold: 1.01 });
   if (diff.type === 'no-change') return undefined;
-  const before = new Set(previous.split('\n'));
+  const before = new Set(compared.split('\n'));
   const added = lines.filter((line) => line.trimStart().startsWith('"') && !before.has(line)).map((line) => line.trim());
   return { diff: diff.content, added };
 }

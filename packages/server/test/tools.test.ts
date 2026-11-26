@@ -155,7 +155,8 @@ describe('act tool', () => {
       ],
     });
     expect(reply[0]).toMatchObject({ type: 'text' });
-    expect((reply[0] as { text: string }).text).toContain('e2 textbox "Email" value="grace@example.com" [required]');
+    // The value the batch typed is not sent back; the reply says the field was set.
+    expect((reply[0] as { text: string }).text).toBe('tab 7\nSet e2. Nothing else changed.');
     expect(batch).toMatchObject({
       tab: 7,
       epoch: 1,
@@ -165,6 +166,26 @@ describe('act tool', () => {
         { click: { ref: 'e3' } },
       ],
     });
+  });
+
+  it('keeps a value the page changed in the reply, and counts only the steps before a failure', async () => {
+    const initial = signInPage();
+    const masked = initial.map((node) => (node.id === '5' ? { ...node, value: 'GRACE@EXAMPLE.COM' } : node));
+    const link = fakeBrowser({
+      'page.read': () => page(initial),
+      'page.act': () => ({ ...page(masked), failure: { step: 2, action: 'click', error: 'e3 is no longer on the page; read again' } }),
+    });
+    await runTool(link, SESSION, 'read', {});
+    const failure = await runTool(link, SESSION, 'act', {
+      tab: 7,
+      steps: [
+        { action: 'fill', ref: 'e2', text: 'grace@example.com' },
+        { action: 'click', ref: 'e3' },
+      ],
+    }).catch((error: Error) => error.message);
+    expect(failure).toContain('Step 2 (click) failed: e3 is no longer on the page; read again');
+    expect(failure).toContain('e2 textbox "Email" value="GRACE@EXAMPLE.COM"');
+    expect(failure).not.toContain('Set e2');
   });
 
   it('uses the front tab when no tab is given', async () => {
