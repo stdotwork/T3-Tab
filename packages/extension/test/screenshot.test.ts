@@ -56,4 +56,28 @@ describe('a screenshot of a page that changes while it is taken', () => {
     const shot = await captureViewport(tab.id, 640, { origin: 'http://a.test', currentUrl: async () => 'http://a.test/page' });
     expect(shot).toMatchObject({ tab: tab.id, data: 'AAAA', width: 10, height: 10, viewportWidth: 800, viewportHeight: 600 });
   });
+
+  it('gives up on a tab the owner cannot see when the browser draws no frame, and says why', async () => {
+    const tab = browser.addTab({ id: tabCounter, url: 'http://a.test/page', active: false });
+    // A page that is not drawn: the browser holds the capture until its own 15 second limit.
+    browser.beforeCommand = (_tabId, method) => (method === 'Page.captureScreenshot' ? new Promise<void>(() => undefined) : undefined);
+    const started = Date.now();
+    const error = await captureViewport(tab.id, 640, { origin: 'http://a.test', currentUrl: async () => 'http://a.test/page' }, 50).catch((caught: Error) => caught);
+    expect(String(error)).toMatch(/no picture of the page.*in the background.*bring the tab to the front/s);
+    expect(String(error)).not.toMatch(/tabs switch/);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // The page is not left looking focused.
+    const emulation = browser.commands.filter((command) => command.method === 'Emulation.setFocusEmulationEnabled');
+    expect(emulation.at(-1)?.params).toEqual({ enabled: false });
+  });
+
+  it('keeps the long limit for a tab the owner can see', async () => {
+    const tab = browser.addTab({ id: tabCounter, url: 'http://a.test/page', active: true });
+    // Slower than the short limit, as a real capture of a busy page can be.
+    browser.beforeCommand = async (_tabId, method) => {
+      if (method === 'Page.captureScreenshot') await new Promise((resolve) => setTimeout(resolve, 200));
+    };
+    const shot = await captureViewport(tab.id, 640, { origin: 'http://a.test', currentUrl: async () => 'http://a.test/page' }, 50);
+    expect(shot.data).toBe('AAAA');
+  });
 });

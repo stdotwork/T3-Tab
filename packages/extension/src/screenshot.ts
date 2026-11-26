@@ -1,9 +1,16 @@
 import type { ScreenshotResult } from '@t3-tab/protocol';
 
-import { documentEpoch, ensureAttached, holdInputFocus, sendCommand, setRecoveryOrigin } from './cdp';
+import { CommandTimeoutError, documentEpoch, ensureAttached, holdInputFocus, sendCommand, setRecoveryOrigin } from './cdp';
 import { originOf } from './permissions';
+import { tabHiddenFromOwner } from './visibility';
 
 const JPEG_QUALITY = 85;
+/**
+ * How long a capture of a tab the owner cannot see may take. A page the browser draws gives its frame in tens of
+ * milliseconds to about two seconds; one it does not draw may give none, and the browser then holds the capture for its
+ * own 15 seconds. A tab the owner can see keeps that limit.
+ */
+export const HIDDEN_CAPTURE_TIMEOUT_MS = 3_000;
 
 interface LayoutMetrics {
   cssVisualViewport: { clientWidth: number; clientHeight: number };
@@ -21,7 +28,12 @@ export interface CaptureGuard {
  * page's viewport while it runs, which the page can see and react to. The document epoch and address are
  * recorded before the capture and compared after it; if either moved, the image is discarded.
  */
-export async function captureViewport(tabId: number, maxEdge: number, guard: CaptureGuard): Promise<ScreenshotResult> {
+export async function captureViewport(
+  tabId: number,
+  maxEdge: number,
+  guard: CaptureGuard,
+  hiddenTimeoutMs = HIDDEN_CAPTURE_TIMEOUT_MS,
+): Promise<ScreenshotResult> {
   setRecoveryOrigin(tabId, guard.origin);
   await ensureAttached(tabId);
   const epoch = documentEpoch(tabId);
@@ -32,10 +44,23 @@ export async function captureViewport(tabId: number, maxEdge: number, guard: Cap
   }
   const metrics = await sendCommand<LayoutMetrics>(tabId, 'Page.getLayoutMetrics');
   // A hidden tab renders no frames of its own, so it counts as visible for the length of the capture.
+  const hidden = await tabHiddenFromOwner(tabId);
   const release = await holdInputFocus(tabId);
   let captured: { data?: unknown };
   try {
-    captured = await sendCommand<{ data?: unknown }>(tabId, 'Page.captureScreenshot', { format: 'jpeg', quality: JPEG_QUALITY });
+    captured = await sendCommand<{ data?: unknown }>(
+      tabId,
+      'Page.captureScreenshot',
+      { format: 'jpeg', quality: JPEG_QUALITY },
+      hidden ? hiddenTimeoutMs : undefined,
+    );
+  } catch (error) {
+    if (hidden && error instanceof CommandTimeoutError && error.method === 'Page.captureScreenshot') {
+      throw new Error(
+        `The browser gave no picture of the page in ${hiddenTimeoutMs / 1_000} seconds. This tab is in the background, with the owner's window or another tab in front of it, and the browser does not draw it. Ask the owner to bring the tab to the front, or read the page as text.`,
+      );
+    }
+    throw error;
   } finally {
     await release();
   }

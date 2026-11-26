@@ -8,12 +8,14 @@ import {
   ensureAttached,
   holdInputFocus,
   navigationsSince,
+  networkRevision,
   openDialog,
   sendCommand,
   setRecoveryOrigin,
 } from './cdp';
 import { readPage } from './page';
 import { originOf } from './permissions';
+import { scrollWithWheel } from './scroll';
 import type { StoredSession } from './sessions';
 import { resolveSessionTab } from './tabs';
 import { settlePage, sleep } from './settle';
@@ -47,7 +49,7 @@ interface KeyStroke {
   text?: string;
 }
 
-/** Runs one ordered batch through CDP, settles after every step, and returns the resulting page read. */
+/** Runs one ordered batch through CDP, settles after each step that can start work and at the end, and returns the resulting page read. */
 export async function actOnPage(
   session: StoredSession,
   tabId: number,
@@ -70,11 +72,56 @@ export async function actOnPage(
   let epoch = documentEpoch(tabId);
   let failure: ActFailure | undefined;
   let activeSession = session;
+  /** Field steps run since the last settle, each with the document epoch it started on. */
+  let unsettled: Array<{ step: number; action: ActAction; epoch: number }> = [];
+  /** Which field step replaced the page, when one did, so a later step's stale ref can say so. */
+  let replacedNote: string | undefined;
+
+  const assertAccessAfter = async (stepNumber: number, action: ActAction): Promise<void> => {
+    try {
+      activeSession = await reloadSession();
+      await assertActAccess(activeSession, tabId, expectedOrigin);
+    } catch (error) {
+      throw new Error(
+        `Step ${stepNumber} (${action}) left the page outside the approved session origin: ${messageOf(error)}`,
+      );
+    }
+  };
 
   for (let index = 0; index < steps.length; index += 1) {
     const step = steps[index];
     if (step === undefined) continue;
     const action = actionOf(step);
+
+    // Field changes since the last settle may have started work the page answers a moment later: a debounced check
+    // that enables Submit, a navigation on a timer. Settle once before a step that acts on the page's answer, not
+    // after each field.
+    const pending = unsettled;
+    if (pending.length > 0 && startsWork(action)) {
+      const first = pending[0];
+      const last = pending[pending.length - 1];
+      if (first !== undefined && last !== undefined) {
+        await settlePage(tabId);
+        try {
+          assertSameOriginSince(tabId, epoch, expectedOrigin, last.action);
+        } catch (error) {
+          failure = { step: last.step, action: last.action, error: messageOf(error) };
+        }
+        if (documentEpoch(tabId) !== first.epoch) {
+          replacedNote =
+            pending.length === 1
+              ? `step ${first.step} (${first.action}) replaced the page`
+              : `the page was replaced after the field changes in steps ${first.step} to ${last.step}`;
+        }
+        epoch = documentEpoch(tabId);
+        unsettled = [];
+        await assertAccessAfter(last.step, last.action);
+        if (failure !== undefined) break;
+      }
+    }
+
+    const networkBefore = networkRevision(tabId);
+    const epochBefore = documentEpoch(tabId);
     try {
       activeSession = await reloadSession();
       await assertActAccess(activeSession, tabId, expectedOrigin);
@@ -84,7 +131,11 @@ export async function actOnPage(
         await answerDialogStep(tabId, step, expectedOrigin);
       } else if (ref !== undefined) {
         releaseFocus ??= await holdInputFocus(tabId);
-        if (epoch !== expectedEpoch) throw staleRef(ref, `document epoch ${expectedEpoch} -> ${epoch}`);
+        // Live, not the value kept after the last settle: a step that skipped its settle may have replaced the document.
+        const current = documentEpoch(tabId);
+        if (current !== expectedEpoch) {
+          throw staleRef(ref, `document epoch ${expectedEpoch} -> ${current}${replacedNote === undefined ? '' : `; ${replacedNote}`}`);
+        }
         const backendId = backendIds[index];
         if (backendId === undefined || backendId === null) throw staleRef(ref, 'the ref has no DOM node id');
         await runElementStep(tabId, step, backendId, ref);
@@ -107,9 +158,25 @@ export async function actOnPage(
       }
     }
 
-    await settlePage(tabId);
+    const readFollows = index === steps.length - 1 || failure !== undefined;
+    if (!readFollows && !startsWork(action)) {
+      // The debugger reports a request or a navigation the step began a moment after its own reply, so ask for
+      // one more answer from the page first; what it began is in by then.
+      await sendCommand(tabId, 'Page.getLayoutMetrics').catch(() => undefined);
+    }
+    const moved = documentEpoch(tabId) !== epochBefore || networkRevision(tabId) !== networkBefore;
+    const settles = readFollows || startsWork(action) || moved;
+    if (settles) {
+      await settlePage(tabId);
+      unsettled = [];
+    } else {
+      unsettled.push({ step: index + 1, action, epoch: epochBefore });
+    }
+    if (!startsWork(action) && documentEpoch(tabId) !== epochBefore) replacedNote = `step ${index + 1} (${action}) replaced the page`;
     // Again after settling: a document from another origin that came and went (its navigation reported
-    // after the input returned) ends on the approved origin, which the check below would not see.
+    // after the input returned) ends on the approved origin, which the check below would not see. A step
+    // that skipped its settle runs the check anyway; `epoch` stays where it was, so the next settle checks
+    // everything since the last one.
     if (failure === undefined && action !== 'wait') {
       try {
         assertSameOriginSince(tabId, epoch, expectedOrigin, action);
@@ -117,15 +184,8 @@ export async function actOnPage(
         failure = { step: index + 1, action, error: messageOf(error) };
       }
     }
-    epoch = documentEpoch(tabId);
-    try {
-      activeSession = await reloadSession();
-      await assertActAccess(activeSession, tabId, expectedOrigin);
-    } catch (error) {
-      throw new Error(
-        `Step ${index + 1} (${action}) left the page outside the approved session origin: ${messageOf(error)}`,
-      );
-    }
+    if (settles) epoch = documentEpoch(tabId);
+    await assertAccessAfter(index + 1, action);
     if (failure !== undefined) break;
   }
 
@@ -146,6 +206,16 @@ export async function actOnPage(
   const page = await readPage(activeSession, tabId, expectedOrigin, reloadSession);
   return failure === undefined ? page : { ...page, failure };
   }
+}
+
+/**
+ * Whether a step acts on the page's answer or starts work of its own: a click, a key press, a scroll, a hover or a
+ * wait. The others (fill, type, select) only change a field. They settle at the end of the batch, before the next step
+ * of the kind above, and at once when the page showed that the step started something: a document replaced or a
+ * network request begun while it ran.
+ */
+function startsWork(action: ActAction): boolean {
+  return action !== 'fill' && action !== 'type' && action !== 'select';
 }
 
 /** While a dialog is open: Enter accepts it, Escape dismisses it, and `type` holds a prompt's text. */
@@ -354,19 +424,7 @@ async function selectOption(tabId: number, backendId: number, ref: string, value
 }
 
 async function scrollPage(tabId: number, dx: number, dy: number): Promise<void> {
-  const metrics = await sendCommand<{ cssLayoutViewport?: { clientWidth?: number; clientHeight?: number } }>(
-    tabId,
-    'Page.getLayoutMetrics',
-  );
-  const x = (metrics.cssLayoutViewport?.clientWidth ?? 800) / 2;
-  const y = (metrics.cssLayoutViewport?.clientHeight ?? 600) / 2;
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', {
-    type: 'mouseWheel',
-    x,
-    y,
-    deltaX: dx,
-    deltaY: dy,
-  });
+  await scrollWithWheel(tabId, dx, dy);
 }
 
 async function pressKey(tabId: number, value: string): Promise<void> {

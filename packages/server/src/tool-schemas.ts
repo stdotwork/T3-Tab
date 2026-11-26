@@ -135,7 +135,7 @@ export const actShape = {
     .describe(
       'Run in order; stops at the first failure. Fields by action: click, hover: ref. type: text, optional ref. ' +
         'fill, select: ref, text. press: key (Enter, F5, Control+A). scroll: ref, or dx and dy. ' +
-        `wait: ms (0-${MAX_WAIT_MS}) or text to wait for.`,
+        `wait: ms (0-${MAX_WAIT_MS}) or text to wait for. A field check slower than 150 ms needs a wait step.`,
     ),
 };
 
