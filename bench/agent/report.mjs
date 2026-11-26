@@ -9,10 +9,10 @@ const ratio = (value, base) => (value === undefined || base === undefined || bas
 const x2 = (value) => (value === undefined || !Number.isFinite(value) ? '-' : `${value.toFixed(2)}x`);
 const interval = (entry) => (entry === undefined ? '-' : `${x2(entry.geomean)} [${x2(entry.low)}–${x2(entry.high)}]`);
 
-/** The median tokens of the no-tool baseline for each task. */
+/** The baseline's number for each task: the median input of the no-tool runs' first request (the fixed cost of a run). */
 function baselineTokens(runs, baselineId) {
   const byTask = new Map();
-  for (const run of runs.filter((entry) => entry.tool === baselineId)) byTask.set(run.task, [...(byTask.get(run.task) ?? []), tokensOf(run)]);
+  for (const run of runs.filter((entry) => entry.tool === baselineId)) byTask.set(run.task, [...(byTask.get(run.task) ?? []), run.first.input]);
   return new Map([...byTask].map(([task, tokens]) => [task, median(tokens)]));
 }
 
@@ -64,7 +64,7 @@ export function markdown({ runs: allRuns, tools: allTools, tasks, model, sites =
   const versus = headToHead({ runs, tools: competitors, reference: base, baselineId });
   lines.push('## Against T3-Tab', '');
   lines.push(
-    `Each cell is the geometric mean over tasks of (T3-Tab's median) / (the tool's median), with a 90% bootstrap interval (2,000 resamples of the runs of every task cell): below 1.00x, T3-Tab used less. Tool-attributable tokens are a run's tokens minus the no-tool baseline's median for the same task (never below 1), so Claude Code's own system prompt and the task are not counted for any tool. Model requests are the API responses of a run. Failed runs count with what they spent. About ${repeats.toFixed(1)} runs per task and tool.`,
+    `Each cell is the geometric mean over tasks of (T3-Tab's median) / (the tool's median), with a 90% bootstrap interval (2,000 resamples of the runs of every task cell): below 1.00x, T3-Tab used less. Tool-attributable tokens are a run's tokens minus the no-tool baseline's number for the same task (never below 1): the median input of the baseline's first request, which is Claude Code's own system prompt and the task, so that is not counted for any tool. Model requests are the API responses of a run. Failed runs count with what they spent. About ${repeats.toFixed(1)} runs per task and tool.`,
     '',
   );
   lines.push('Targets: tool-attributable tokens and model requests at most 0.50x the best competitor; total tokens at most 0.65x `chrome-devtools-mcp --slim`; success on every task; median tool latency not worse than the best.', '');
@@ -127,13 +127,13 @@ export function markdown({ runs: allRuns, tools: allTools, tasks, model, sites =
   const baselineRuns = runs.filter((run) => run.tool === baselineId);
   if (baselineRuns.length > 0) {
     lines.push('', '### No-tool baseline', '');
-    lines.push('Claude Code with no browser server, the same prompt. What every run pays whatever the tool; subtracted from each run for the tool-attributable tokens.', '');
-    lines.push('| Task | Runs | Median tokens | Median requests | Median cost |');
-    lines.push('| --- | ---: | ---: | ---: | ---: |');
+    lines.push('Claude Code with no browser server, the same prompt. The input of its first request is what every run pays whatever the tool, and is subtracted from each run for the tool-attributable tokens. Its whole run is shown for reference only: with no tools the model improvises and Claude Code continues it, so it makes several requests.', '');
+    lines.push('| Task | Runs | Median first-request input (subtracted) | Median tokens of the whole run | Median requests | Median cost |');
+    lines.push('| --- | ---: | ---: | ---: | ---: | ---: |');
     for (const task of tasks) {
       const list = baselineRuns.filter((run) => run.task === task.id);
       if (list.length === 0) continue;
-      lines.push(`| \`${task.id}\` | ${list.length} | ${int(median(list.map(tokensOf)))} | ${int(median(list.map(requestsOf)))} | ${usd(median(list.map((run) => run.costUsd)))} |`);
+      lines.push(`| \`${task.id}\` | ${list.length} | ${int(median(list.map((run) => run.first.input)))} | ${int(median(list.map(tokensOf)))} | ${int(median(list.map(requestsOf)))} | ${usd(median(list.map((run) => run.costUsd)))} |`);
     }
   }
 

@@ -7,7 +7,7 @@
 //   pnpm bench:agent --tools t3tab,dt-slim --tasks form,login --repeats 1
 //   pnpm bench:agent --model claude-sonnet-5-5 --repeats 1 --label sonnet --tasks login,wizard,table
 //   options: --sites local|real --concurrency N (default 2, the most browsers at once) --out DIR --label NAME --max-turns N
-//            --timeout-min N --fresh
+//            --timeout-min N --fresh --report-only
 //
 // Needs `pnpm build` first (T3-Tab's extension and daemon) and a model route in the environment
 // (ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN). Runs already in <out>/<label>/runs.jsonl are not repeated.
@@ -31,7 +31,7 @@ await mkdir(join(outDir, 'transcripts'), { recursive: true });
 const runsFile = join(outDir, 'runs.jsonl');
 if (options.fresh) await rm(runsFile, { force: true });
 
-// The no-tool baseline runs whenever any tool does: a run's tool-attributable tokens are its tokens minus the baseline's median.
+// The no-tool baseline runs whenever any tool does: a run's tool-attributable tokens are its tokens minus the input of the baseline's first request (see stats.mjs).
 const tools = TOOLS.filter((tool) => options.tools === undefined || options.tools.includes(tool.id) || tool.baseline === true);
 const tasks = TASKS.filter((task) => options.tasks === undefined || options.tasks.includes(task.id));
 for (const [name, known, picked] of [['tool', TOOLS, options.tools], [`${options.sites} task`, TASKS, options.tasks]]) {
@@ -39,9 +39,10 @@ for (const [name, known, picked] of [['tool', TOOLS, options.tools], [`${options
   if (unknown.length > 0) throw new Error(`Unknown ${name} ${unknown.join(', ')}; known: ${known.map((entry) => entry.id).join(', ')}`);
 }
 
+// --report-only: make the tables again from the runs already in the folder, and run nothing.
 const done = new Set((await readRuns()).map((run) => `${run.tool}/${run.task}/${run.rep}`));
 const jobs = [];
-for (let rep = 1; rep <= options.repeats; rep += 1) for (const tool of tools) for (const task of tasks) if (!done.has(`${tool.id}/${task.id}/${rep}`)) jobs.push({ tool, task, rep });
+if (!options.reportOnly) for (let rep = 1; rep <= options.repeats; rep += 1) for (const tool of tools) for (const task of tasks) if (!done.has(`${tool.id}/${task.id}/${rep}`)) jobs.push({ tool, task, rep });
 // A fixed shuffle, so no tool's runs sit together in time and the load of the machine falls on all of them alike.
 shuffle(jobs, 20261126);
 console.error(`${jobs.length} runs to do (${done.size} already in ${runsFile}), ${options.concurrency} at a time, model ${options.model}, claude ${CLAUDE_BIN}`);
@@ -214,6 +215,7 @@ function parseArgs(argv) {
     else if (flag === '--out') parsed.out = value();
     else if (flag === '--label') parsed.label = value();
     else if (flag === '--fresh') parsed.fresh = true;
+    else if (flag === '--report-only') parsed.reportOnly = true;
     else throw new Error(`Unknown option ${flag}`);
   }
   if (parsed.sites !== 'local' && parsed.sites !== 'real') throw new Error('--sites takes local or real');

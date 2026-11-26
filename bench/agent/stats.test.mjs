@@ -9,7 +9,7 @@ const run = (tool, task, tokens, requests, extra = {}) => ({
   rep: 1,
   ok: true,
   usage: { input: tokens - 100, output: 100 },
-  first: { input: 1 },
+  first: { input: tool === 'none' ? tokens : 1 },
   apiCalls: requests,
   turns: requests,
   toolCalls: requests - 1,

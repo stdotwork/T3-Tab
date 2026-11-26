@@ -120,7 +120,7 @@ results file without a browser. Changing `bench/pages.mjs` changes every number,
 `--sites real` on the frozen held-out set of eight public-site tasks (`bench/agent/real-tasks.mjs`: change a task only because
 its site changed, never to suit a tool; needs network and keeps the rate low). Success is checked from the page or a known answer,
 never from the model's words. Every run is also measured net of a no-tool baseline run on the same task, so a tool is judged on
-tool-attributable tokens (a run's tokens minus the baseline's median) and model requests, as the geometric mean over tasks of
+tool-attributable tokens (a run's tokens minus the input of the baseline's first request) and model requests, as the geometric mean over tasks of
 per-task ratios against T3-Tab with a 90% bootstrap interval; `--repeats` defaults to 5. It needs a model route in the
 environment (`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN`) and spends real quota: run it
 with a small `--repeats`, `--tools` and `--tasks` while developing. The other tools' browsers start with `--disable-extensions`,

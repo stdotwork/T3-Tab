@@ -1,6 +1,9 @@
 // The numbers the agent benchmark is judged on. A run's raw tokens include everything Claude Code sends whatever the
-// browser tool is (its system prompt, the task, the answer), so each run is also measured net of a no-tool baseline,
-// and tools are compared by the geometric mean over tasks of per-task ratios against T3-Tab, with a bootstrap interval.
+// browser tool is (its system prompt and the task), so each run is also measured net of a no-tool baseline, and tools are
+// compared by the geometric mean over tasks of per-task ratios against T3-Tab, with a bootstrap interval.
+//
+// The baseline's number is the input of its first request (system prompt plus task), not its whole run's tokens: with no
+// tools the model improvises, Claude Code continues it after the output cap, and a baseline run makes several requests.
 
 export const median = (values) => {
   if (values.length === 0) return undefined;
@@ -30,20 +33,20 @@ export function seeded(seed) {
 
 const resample = (values, random) => values.map(() => values[Math.floor(random() * values.length)]);
 
-/** What the tool added to a run: its tokens minus the no-tool baseline's median for that task. Never below 1, so a ratio is defined. */
+/** What the tool added to a run: its tokens minus the baseline's number for that task. Never below 1, so a ratio is defined. */
 export const attributable = (tokens, baseline) => Math.max(tokens - baseline, 1);
 
 /**
  * Runs grouped as `cells.get(tool).get(task)`: lists of {tokens, requests, cost, wallMs}, in the order they were made.
- * `baselineId` names the no-tool runs; it is not a competitor.
+ * `baselineId` names the no-tool runs, which are not a competitor; their `tokens` is the input of their first request.
  */
-export function groupRuns(runs) {
+export function groupRuns(runs, baselineId) {
   const cells = new Map();
   for (const run of runs) {
     if (!cells.has(run.tool)) cells.set(run.tool, new Map());
     const tasks = cells.get(run.tool);
     if (!tasks.has(run.task)) tasks.set(run.task, []);
-    tasks.get(run.task).push({ tokens: tokensOf(run), requests: requestsOf(run), cost: run.costUsd, wallMs: run.wallMs });
+    tasks.get(run.task).push({ tokens: run.tool === baselineId ? run.first.input : tokensOf(run), requests: requestsOf(run), cost: run.costUsd, wallMs: run.wallMs });
   }
   return cells;
 }
@@ -67,7 +70,7 @@ const cellMedian = (metric, cell, base) => median(cell.map((run) => metric.of(ru
  * when the reference and the tool both have runs on it (and, for the attributable metric, the baseline has too).
  */
 export function headToHead({ runs, tools, reference, baselineId, iterations = 2000, seed = 20261127 }) {
-  const cells = groupRuns(runs);
+  const cells = groupRuns(runs, baselineId);
   const baseCells = cells.get(baselineId) ?? new Map();
   const refCells = cells.get(reference) ?? new Map();
   const out = [];

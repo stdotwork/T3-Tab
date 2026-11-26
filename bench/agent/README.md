@@ -18,7 +18,7 @@ Options: `--sites` (`local`, the default, or `real`), `--tools`, `--tasks` (ids 
 `--concurrency` (default 2: the most browsers at once),
 `--label` (the results folder under `bench/agent/results/`), `--max-turns` (60) and `--timeout-min` (12), which only stop
 a run that is stuck (a run they stop is a failure), `--fresh` (forget the runs already in the folder; without it a repeated
-command only does the runs that are missing). Results go to `bench/agent/results/<label>/` (ignored by git): `runs.jsonl`,
+command only does the runs that are missing) and `--report-only` (make the tables again from the runs in the folder and run nothing). Results go to `bench/agent/results/<label>/` (ignored by git): `runs.jsonl`,
 `results.json`, `results.md`, and `transcripts/<tool>__<task>__<n>.jsonl` (the raw stream) and `.md` (readable). The label
 defaults to the model's name, with `-real` added for `--sites real`.
 
@@ -50,11 +50,13 @@ Raw tokens include everything Claude Code sends whatever the browser tool is (it
 tool is judged on what it adds:
 
 - **No-tool baseline.** The tool `none` runs Claude Code with no MCP server and no tools on every task with the same prompt,
-  and runs whenever any tool does. A run's **tool-attributable tokens** are its tokens minus the baseline's median for that
-  task (never below 1). A baseline run that does not finish in two minutes (a stalled model request) is tried again, up to
-  three times, and one that never finishes is left out of the tables. With no tools the model sometimes makes up tool calls and
-  their replies for thousands of tokens, so the baseline's output is capped (`CLAUDE_CODE_MAX_OUTPUT_TOKENS=512`); its median
-  over the repeats is a few thousand tokens, and what it still moves by is part of the noise in the net numbers.
+  and runs whenever any tool does. A run's **tool-attributable tokens** are its tokens minus the baseline's number for that
+  task (never below 1): the median input of the baseline runs' first request, which is Claude Code's own system prompt and
+  the task, about 3,450 tokens and the same for every tool. The baseline's whole run is not used, because with no tools the
+  model improvises tool calls and their replies, and Claude Code continues it after the output cap, so a baseline run
+  makes two or more requests and its total moves by thousands of tokens. (It is shown in the report for reference, and its
+  output is capped with `CLAUDE_CODE_MAX_OUTPUT_TOKENS=512` so that it ends.) A baseline run that does not finish in two minutes
+  (a stalled model request) is tried again, up to three times, and one that never finishes is left out of the tables.
 - **Model requests.** The API responses of a run (the stream's distinct assistant message ids), next to the number of tool
   calls. Every request re-reads the whole context, so a tool that needs fewer of them is cheaper in a way a token count of its
   replies does not show. (Claude Code can make requests the stream does not show; none is counted.)
