@@ -83,7 +83,7 @@ theme and Add theme, and each theme's actions beside it; and with T3's config ha
 the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e/ink.mjs`) walks the new-thread
 screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, a T3
 thread waiting on an approval (at its work-log row and above the composer), three browser prompts on the new-thread
-screen, Settings and a theme sheet at 320, 360 and 400 px in light and dark, and measures visible ink (SVG strokes and fills, text glyphs
+screen (one a `goto` on another tab), Settings and a theme sheet at 320, 360 and 400 px in light and dark, and measures visible ink (SVG strokes and fills, text glyphs
 on their baseline, painted boxes), never padding boxes. It fails when a bar's or the composer row's first and last
 controls sit at ink distances from its edges more than 1 px apart, when the composer's send circle is not as far from
 the frame's foot as from its side, when the composer's controls are not one size or their ink (and the model chip's
@@ -91,7 +91,12 @@ logo and words) is off one centre line, when its text does not start on the pape
 line is off the heading's ink centre, when one bar's icons, or the composer row's glyphs, are drawn at different
 sizes or stroke weights, when an approval card's ink is over 160 px tall or its three answers are not on one row of
 one-line 28 px buttons inside it, or when browser prompts on the new-thread screen move its heading or composer or
-cover the composer. It renders the panel from that state and, when
+cover the composer. `e2e/checks-approval-keys.mjs` then, on the headless panel with the panel's answers recorded,
+checks that a T3 approval under a browser prompt is locked when the prompt goes (a second click and an Enter at once
+answer nothing), that an Enter held through the change of card answers nothing until released, that a card scrolled out
+of the prompt list or the work log takes no key, that a T3 approval without `accept` or `decline` draws only More and
+takes no key, that Escape on another control does nothing, that T3's warning shows on its answer, and that a `goto` card
+names its address, its tab and that it is another tab. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
 variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once that the earlier one ended, and that `status` reports each state of its link.
@@ -349,8 +354,9 @@ from a tab of a session, through `chrome.webNavigation.onCreatedNavigationTarget
 group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own
 (shared or not), is left alone. A prompt names its site and its tab's title, or, for a page being opened (which has no tab yet), the address it would load; it can time out or be declined, and one session may
 have at most three waiting prompts. The side panel keeps prompt rows stable and disables a prompt's buttons
-for 500 ms when it appears and again whenever a row is removed or inserted above another; a T3 approval's card is
-locked for 500 ms when it appears too.
+for 500 ms when it appears, again whenever a row is removed or inserted above another, and whenever it becomes the card
+Enter and Escape answer. A thread's T3 approval is in the same lock list as the browser prompts (after them), so a
+prompt answered above it locks it too.
 
 Membership, restricted-page and approved-origin checks run again after every permission wait and before
 every `act` step. `run_js` runs only in the main frame's JavaScript context after the browser reports that
@@ -398,15 +404,25 @@ are listed above the composer, where they can be removed; after a Stop, T3 holds
 A direct run cannot queue, so its composer says to wait and keeps Stop visible.
 
 Browser prompts and a T3 thread's approvals share one card (`Approval.tsx`, built from `approval-model.ts`) in T3 Code's
-anatomy: a line saying what is asked (who asks, the action and the site, or the command or path T3 asks about), a
-line saying where (the tab's title, the address an open would load, or T3's reason), then Decline, the primary answer
-(the once answer or Approve) and More, in T3's order on one row. More holds the other answers with what each grants:
-for a browser prompt the lasting choice and Manage sites, for T3 its own (such as Always allow this session and
-Cancel). A card about another tab says so and has a Go to tab button. Enter gives the top card's primary answer and
-Escape declines it, only while the key is not typed into a field (the composer included) or a menu, and never while
-the card is locked; the top card shows the two keys, hidden below 360 px. A T3 approval is drawn at its row in the
-running work log, as T3 does, and above the composer when that row is not among the last eight steps shown; browser
-prompts sit above the composer, and on the new-thread screen they float over the hero's lower part so nothing moves. In a question card, keys 1 to 9 choose
+anatomy: a line saying what is asked (who asks, the action and the site, or the command or path T3 asks about), then
+the address a prompt would load or T3's reason, then the tab it is about by its title (`in "<title>"` under an
+address, as for `goto`, `back`, `forward` and `reload`), then Decline, the primary answer (the once answer or Approve)
+and More, in T3's order on one row. More holds the other answers with what each grants: for a browser prompt the
+lasting choice and Manage sites, for T3 its own (such as Always allow this session and Cancel), with T3's warning on an
+answer shown as T3 shows it. A T3 approval draws only the answers T3 offers: with no `accept` there is no primary
+answer, with no `decline` no Decline; with no options at all it offers T3's own defaults. A card about another tab says
+so and has a Go to tab button.
+
+The cards of a screen share one `ApprovalStack`: their locks are one list, and Enter (the primary answer) and Escape
+(Decline) answer only the keyed card, the first one, in the order browser prompts then the T3 approval, that is at least
+98% on screen (an `IntersectionObserver`, so a card scrolled out of the prompt list or the work log is never answered).
+A key answers only a press that began after that card became keyed: an Enter or Escape still held from before the
+change answers nothing until it is released. Keys never act from a text field (the composer included), a menu or a
+dialog, during composition, with a modifier, held down, or while the card is locked; Enter on a button is that button's
+own, and Escape declines only from the panel's body or from inside the card. The keyed card shows the two keys, hidden
+below 360 px. A T3 approval is drawn at its row in the running work log, as T3 does, and above the composer when that
+row is not among the last eight steps shown; browser prompts sit above the composer, and on the new-thread screen they
+float over the hero's lower part so nothing moves. In a question card, keys 1 to 9 choose
 an option unless the owner is typing, and Enter in the answer box moves on or submits. Browser steps name the action and
 site, and never the text typed into a field.
 

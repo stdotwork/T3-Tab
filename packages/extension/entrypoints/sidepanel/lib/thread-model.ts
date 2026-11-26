@@ -24,7 +24,17 @@ export type Row =
 export interface ApprovalOption {
   decision: string;
   label: string;
+  /** T3's caution for an answer, shown on it as T3 shows it. */
+  warning?: string;
 }
+
+/** What T3's own client offers when an approval names no options (`DEFAULT_APPROVAL_OPTIONS` in T3's web app). */
+export const T3_DEFAULT_APPROVAL_OPTIONS: readonly ApprovalOption[] = [
+  { decision: 'cancel', label: 'Cancel' },
+  { decision: 'decline', label: 'Decline' },
+  { decision: 'acceptForSession', label: 'Always allow this session' },
+  { decision: 'accept', label: 'Approve' },
+];
 
 export interface PendingApproval {
   requestId: string;
@@ -422,10 +432,7 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
         kind: item.requestKind ?? request.kind,
         title: approvalLabel(item.prompt ?? item.title ?? 'The agent asks for approval'),
         ...(item.reason == null ? {} : { detail: item.reason }),
-        options: item.options ?? [
-          { decision: 'decline', label: 'Decline' },
-          { decision: 'accept', label: 'Approve' },
-        ],
+        options: item.options ?? [...T3_DEFAULT_APPROVAL_OPTIONS],
       };
     }
   }

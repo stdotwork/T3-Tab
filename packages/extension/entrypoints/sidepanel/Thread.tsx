@@ -17,7 +17,7 @@ import {
 import { lazy, memo, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 
 import type { PendingApproval, PendingQuestion, QueuedMessage, Row, ThreadView, WorkEntry, WorkIcon } from './lib/thread-model';
-import { ApprovalCard, useCardLocks } from './Approval';
+import { ApprovalCard } from './Approval';
 import { t3Approval } from './approval-model';
 import { clockTime, CopyButton, formatDuration, ICON } from './ui';
 
@@ -199,16 +199,16 @@ export function approvalInline(view: ThreadView): boolean {
   return view.rows.some((row) => row.kind === 'work' && row.running && row.entries.slice(-8).some((entry) => entry.id === entryId));
 }
 
-/** A T3 thread's approval in the one approval card, locked for 500 ms when it appears like every card. */
-export function T3ApprovalCard({ approval, presentation, keyed, onAnswer }: { approval: PendingApproval; presentation: 'dock' | 'inline'; keyed: boolean; onAnswer: (decision: string) => Promise<void> }): ReactNode {
-  const locked = useCardLocks([approval.requestId]);
+/** A T3 approval's id in its screen's `ApprovalStack`. */
+export const t3CardId = (requestId: string): string => `t3:${requestId}`;
+
+/** A T3 thread's approval in the one approval card; its locks are kept with the screen's browser prompts. */
+export function T3ApprovalCard({ approval, presentation, onAnswer }: { approval: PendingApproval; presentation: 'dock' | 'inline'; onAnswer: (decision: string) => Promise<void> }): ReactNode {
   return (
     <ApprovalCard
-      key={approval.requestId}
+      id={t3CardId(approval.requestId)}
       model={t3Approval(approval)}
       presentation={presentation}
-      locked={locked(approval.requestId)}
-      keyed={keyed}
       onDecide={onAnswer}
       data={{ 'data-approval-kind': approval.kind, 'data-request-id': approval.requestId }}
     />

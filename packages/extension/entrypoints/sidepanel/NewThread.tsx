@@ -5,7 +5,8 @@ import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Composer, dictateInto, ModelPicker, TabChip, useComposerAttachments } from './Composer';
 import { useDictation } from './Dictation';
 import { askerName, Banner, bindClaim, TopBar, useCatalog, useNeedsOwner, withdrawClaim, type Screen } from './Frame';
-import { PromptCards } from './PromptCards';
+import { ApprovalStack } from './Approval';
+import { promptCardId, PromptCards } from './PromptCards';
 import { errorText, panel } from './lib/api';
 import { resolveChoice, selectionFor, type Choice } from './lib/catalog';
 import { DEFAULT_PROJECT_KEY, NO_PROJECT, pickableProjects, resolveProject } from './lib/new-thread';
@@ -224,6 +225,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
   };
 
   return (
+    <ApprovalStack order={live.prompts.map((prompt) => promptCardId(prompt.id))}>
     <div className="screen">
       <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} needsYou={needsYou} />
       <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />
@@ -266,5 +268,6 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
         />
       </div>
     </div>
+    </ApprovalStack>
   );
 }

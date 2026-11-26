@@ -7,6 +7,7 @@ import { join, dirname } from 'node:path';
 
 import { createServer } from 'node:http';
 
+import { checkApprovalKeys } from './checks-approval-keys.mjs';
 import { checkLayout, layoutProblems } from './checks-layout.mjs';
 import { assert, closeServer, connectMcp, listen, panelRequest, rootDir, sleep, text } from './harness.mjs';
 
@@ -284,6 +285,7 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   await checkComposer({ livePanel, fakes, screenshotPath });
   await checkAppearance({ livePanel, screenshotPath });
   await checkLayout({ livePanel, serviceWorker, panelPage, screenshotPath });
+  await checkApprovalKeys({ panelPage, serviceWorker });
   await livePanel.close();
   console.log('Panel UI: tab chip, direct agents, conversation list and replies rendered from the real state');
 

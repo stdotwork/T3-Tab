@@ -290,6 +290,9 @@ code.approval-subject { font: 400 var(--text-xs)/20px ui-monospace, 'SF Mono', M
 .answer-btn.primary:hover:not(:disabled) { background: var(--action-hover); }
 .answer-btn.icon { width: 28px; padding: 0; color: var(--icon); }
 .key-hint { font: 400 var(--text-2xs)/1 var(--font-sans); opacity: 0.7; }
+/* T3's caution on an answer: its triangle, in the button's own colour, and in the warning colour in the More menu. */
+.answer-warning { flex: none; }
+.approval-menu .answer-warning { color: var(--app-theme-warning-foreground); }
 /* Below 360 px the hints would push the row onto two lines; the keys still work. */
 @media (max-width: 359px) { .key-hint { display: none; } }
 .approval-more { position: relative; flex: none; }

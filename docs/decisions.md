@@ -291,8 +291,10 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   conversation stays in view. The lasting browser choice lives under More, stated in full, rather than as a third button:
   at 320 px three buttons whose labels say what they grant do not fit on one row, and T3 also keeps its lasting answer
   under More. A T3 approval is drawn at its work-log row, where T3 draws it, and falls back above the composer when that
-  row is not shown. Enter answers with the primary answer and Escape declines, only when no field has focus, so a key
-  meant for the composer never answers a card.
+  row is not shown. A T3 approval draws only the answers T3 offers. Enter answers with the primary answer and Escape
+  declines, only when no field has focus, only on the first card fully on screen, and only with a press that began after
+  that card became keyed, so a key meant for the composer, a card the owner cannot see or a double press never answers
+  a card. All of a screen's cards share one lock list, so a card answered above another locks the one that moves.
 - **The panel does little while idle.** Changes reach it through a message from the worker, stored-state events and tab
   events, and its timers are only a safety net. Markdown and Settings load on first use. It adds nothing a website can
   see: no content script, no web-accessible resource and no page change.

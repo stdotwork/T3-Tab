@@ -194,7 +194,7 @@ async function checkScreen(page, screen, shotsDir, expect) {
 
 /**
  * Browser prompts on the new-thread screen, drawn from supplied state on the headless panel: an act prompt on this tab,
- * a JavaScript prompt (the longest once answer) on another tab, and an open prompt with a long address. Each card is
+ * a JavaScript prompt (the longest once answer) on another tab, and a goto on another tab with a long address. Each card is
  * measured like every card; the hero and the composer must stay where they were without cards, and no card may cover
  * the composer.
  */
@@ -206,7 +206,8 @@ async function checkPromptOverlay(page, shotsDir) {
   const pending = [
     { id: 'layout-act', origin: 'http://127.0.0.1:41889', tool: 'act', session, tab },
     { id: 'layout-js', origin: 'https://checkout.example-shop.test:8443', tool: 'run_js', session, tab: { id: 4343, title: 'Checkout' } },
-    { id: 'layout-open', origin: 'https://docs.example.test', tool: 'open', session, url: 'https://docs.example.test/guides/payments/webhooks/retries?section=backoff&lang=en-GB#exponential' },
+    // A goto on another tab: the longest card, with the address, the tab it moves and Go to tab.
+    { id: 'layout-goto', origin: 'https://docs.example.test', tool: 'open', session, tab: { id: 4545, title: 'Payments guide – retries and backoff for webhooks' }, url: 'https://docs.example.test/guides/payments/webhooks/retries?section=backoff&lang=en-GB#exponential' },
   ];
   const show = async (prompts) => await page.evaluate((next) => globalThis.__t3tabRenderPanelState(next), { currentTab: { id: 4242, title: tab.title, url: 'http://127.0.0.1:41889/' }, pending: prompts, sites: [] });
   const place = async () =>

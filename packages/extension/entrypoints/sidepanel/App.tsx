@@ -3,12 +3,13 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 
 import type { PanelTab, TabThread } from '../../src/panel';
 
-import { approvalInline, QuestionCard, QueuedMessages, T3ApprovalCard, Timeline } from './Thread';
+import { ApprovalStack } from './Approval';
+import { approvalInline, QuestionCard, QueuedMessages, T3ApprovalCard, t3CardId, Timeline } from './Thread';
 import { Composer, dictateInto, TabChip, ThreadModelPicker, useComposerAttachments } from './Composer';
 import { useDictation } from './Dictation';
 import { askerName, Banner, bindClaim, TopBar, useCatalog, useNeedsOwner, useT3, withdrawClaim, type Screen } from './Frame';
 import { NewThread } from './NewThread';
-import { PromptCards } from './PromptCards';
+import { promptCardId, PromptCards } from './PromptCards';
 import { Setup } from './Setup';
 import { ThreadList } from './ThreadList';
 import { errorText, panel } from './lib/api';
@@ -145,7 +146,7 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
   const showApproval = view?.approval !== undefined && !(view.approval.kind === 'mcp-elicitation' && live.prompts.length > 0);
   const approval = showApproval ? view?.approval : undefined;
   // As T3 does, the thread's own approval is drawn at its row in the running work log, and above the composer only when
-  // that row is not shown. Enter and Escape answer the top browser card first, since it sits right above the composer.
+  // that row is not shown. All the screen's cards share one lock list in key order: browser prompts, then this approval.
   const inline = approval !== undefined && view !== undefined && approvalInline(view);
   const approvalCard =
     approval === undefined ? undefined : (
@@ -153,7 +154,6 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
         key={approval.requestId}
         approval={approval}
         presentation={inline ? 'inline' : 'dock'}
-        keyed={live.prompts.length === 0}
         onAnswer={async (decision) => {
           await t3.respond(screen.id, approval.requestId, { decision });
         }}
@@ -162,6 +162,7 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
   const project = state.projects.find((entry) => entry.id === view?.projectId);
   const needsYou = useNeedsOwner(live, state);
   return (
+    <ApprovalStack order={[...live.prompts.map((prompt) => promptCardId(prompt.id)), ...(approval === undefined ? [] : [t3CardId(approval.requestId)])]}>
     <div className="screen" data-thread-id={screen.id}>
       <TopBar
         title={
@@ -259,6 +260,7 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
         />
       </div>
     </div>
+    </ApprovalStack>
   );
 }
 

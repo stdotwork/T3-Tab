@@ -6,7 +6,10 @@
  */
 import type { PermissionDecision, PermissionPrompt } from '../../src/permissions';
 import type { PendingApproval } from './lib/thread-model';
-import { promptChoices } from './prompt-choices';
+import { promptChoices, rowsShifted } from './prompt-choices';
+
+/** How long a card takes no answer after it appears, after cards shift around it, and after it becomes the keyed card. */
+export const BUTTON_DELAY_MS = 500;
 
 export interface ApprovalAction<D extends string = string> {
   decision: D;
@@ -14,15 +17,20 @@ export interface ApprovalAction<D extends string = string> {
   label: string;
   /** The rest of what a lasting choice means, under its label. */
   detail?: string;
+  /** T3's caution for this answer, shown on it as T3 shows it. */
+  warning?: string;
 }
 
 export interface ApprovalModel<D extends string = string> {
   /** The one line saying what is asked. `subject` is the part set in mono: a site, a command or a path. */
   ask: { who?: string; verb: string; subject: string; mono: boolean };
-  /** Where, under it: the tab's title, the address an open would load, or T3's reason. */
-  where?: { text: string; mono: boolean };
-  decline: ApprovalAction<D>;
-  primary: ApprovalAction<D>;
+  /** A line under it: the address a prompt would load, or T3's reason. */
+  detail?: { text: string; mono: boolean };
+  /** The tab the ask is about, by its title: `"Title"`, or `in "Title"` under an address. */
+  tab?: string;
+  /** Absent when the asker offers no such answer: nothing is drawn for it and no key gives it. */
+  decline?: ApprovalAction<D>;
+  primary?: ApprovalAction<D>;
   /** Everything else, in T3's order, behind More. */
   more: ApprovalAction<D>[];
 }
@@ -44,7 +52,10 @@ const hostOf = (origin: string): string => {
   }
 };
 
-/** A browser permission prompt: who asks, the verb and the site; then the tab's title or the address it would open. */
+/**
+ * A browser permission prompt: who asks, the verb and the site; then the address it would load, if any, and the tab it is
+ * about by its title (a `goto`, `back`, `forward` or `reload` has both).
+ */
 export function promptApproval(prompt: PermissionPrompt, asker: string): ApprovalModel<PermissionDecision> {
   const choices = promptChoices(prompt.tool);
   const pick = (test: (decision: PermissionDecision) => boolean): ApprovalAction<PermissionDecision> => {
@@ -53,11 +64,12 @@ export function promptApproval(prompt: PermissionPrompt, asker: string): Approva
     return { decision: found.decision, label: found.label, ...(found.detail === undefined ? {} : { detail: found.detail }) };
   };
   const address = prompt.url === undefined ? undefined : plain(prompt.url);
-  const title = prompt.tab === undefined || (address !== undefined && prompt.tab.title === '') ? undefined : `"${plain(prompt.tab.title || '(untitled)')}"`;
-  const where = address !== undefined ? { text: address, mono: true } : title !== undefined ? { text: title, mono: false } : undefined;
+  const quoted = prompt.tab === undefined ? undefined : `"${plain(prompt.tab.title) || '(untitled)'}"`;
+  const tab = quoted === undefined ? undefined : address === undefined ? quoted : `in ${quoted}`;
   return {
     ask: { who: plain(asker), verb: VERB[prompt.tool], subject: hostOf(prompt.origin), mono: true },
-    ...(where === undefined ? {} : { where }),
+    ...(address === undefined ? {} : { detail: { text: address, mono: true } }),
+    ...(tab === undefined ? {} : { tab }),
     decline: pick((decision) => decision === 'decline'),
     primary: pick((decision) => decision === 'allow-once'),
     more: [pick((decision) => decision !== 'allow-once' && decision !== 'decline')],
@@ -75,18 +87,22 @@ const T3_VERB: Record<string, { verb: string; mono: boolean }> = {
 /** T3's answer order: Cancel, Decline, the lasting ones, Approve. Decline and Approve go on the row, the rest under More. */
 const T3_ORDER = ['cancel', 'decline', 'acceptForSession', 'acceptAlways', 'accept'];
 
-/** A T3 thread's approval: the command or path asked about, T3's reason under it, and T3's own answers. */
+/**
+ * A T3 thread's approval: the command or path asked about, T3's reason under it, and only the answers T3 offers. With no
+ * `accept` there is no primary answer and Enter gives nothing; with no `decline`, Escape gives nothing.
+ */
 export function t3Approval(approval: PendingApproval): ApprovalModel {
   const kind = T3_VERB[approval.kind] ?? { verb: 'Allow', mono: false };
   const options = [...approval.options].sort((a, b) => rank(a.decision) - rank(b.decision));
-  const decline = options.find((option) => option.decision === 'decline') ?? { decision: 'decline', label: 'Decline' };
-  const primary = options.find((option) => option.decision === 'accept') ?? { decision: 'accept', label: 'Approve' };
+  const action = (option: (typeof options)[number]): ApprovalAction => ({ decision: option.decision, label: option.label, ...(option.warning === undefined || option.warning === '' ? {} : { warning: option.warning }) });
+  const decline = options.find((option) => option.decision === 'decline');
+  const primary = options.find((option) => option.decision === 'accept');
   return {
     ask: { verb: kind.verb, subject: approval.title, mono: kind.mono },
-    ...(approval.detail === undefined || approval.detail === '' ? {} : { where: { text: approval.detail, mono: false } }),
-    decline: { decision: decline.decision, label: decline.label },
-    primary: { decision: primary.decision, label: primary.label },
-    more: options.filter((option) => option.decision !== 'decline' && option.decision !== 'accept').map((option) => ({ decision: option.decision, label: option.label })),
+    ...(approval.detail === undefined || approval.detail === '' ? {} : { detail: { text: approval.detail, mono: false } }),
+    ...(decline === undefined ? {} : { decline: action(decline) }),
+    ...(primary === undefined ? {} : { primary: action(primary) }),
+    more: options.filter((option) => option.decision !== 'decline' && option.decision !== 'accept').map(action),
   };
 }
 
@@ -95,18 +111,90 @@ function rank(decision: string): number {
   return index === -1 ? T3_ORDER.length - 1.5 : index;
 }
 
+export interface KeyLike {
+  key: string;
+  repeat: boolean;
+  defaultPrevented: boolean;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  isComposing?: boolean;
+  keyCode?: number;
+  target: unknown;
+}
+
+/** True for Enter and Escape, the two keys that can answer a card. */
+export const isAnswerKey = (key: string): boolean => key === 'Enter' || key === 'Escape' || key === 'Esc';
+
 /**
- * Which key answers a card, if any: Enter gives the primary answer and Escape declines, only with no modifier, not held
- * down, and never while the owner is typing or working a menu or dialog. A key on a button is that button's own.
+ * Which answer a key gives the keyed card, if any: Enter the primary answer, Escape Decline. Only with no modifier, not
+ * held down, not mid-composition, and never while the owner types in a field or works a menu or dialog. Enter on a
+ * button or link is that control's own. Escape declines only from the panel's body or from inside the card itself.
  */
-export function approvalKey(event: { key: string; repeat: boolean; defaultPrevented: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; target: unknown }): 'primary' | 'decline' | undefined {
+export function approvalKey(event: KeyLike, card?: { contains: (node: never) => boolean } | null): 'primary' | 'decline' | undefined {
   if (event.defaultPrevented || event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return undefined;
+  if (event.isComposing === true || event.keyCode === 229) return undefined;
   const answer = event.key === 'Enter' ? 'primary' : event.key === 'Escape' || event.key === 'Esc' ? 'decline' : undefined;
   if (answer === undefined) return undefined;
-  const target = event.target as { closest?: (selector: string) => unknown } | null;
-  if (target !== null && typeof target === 'object' && typeof target.closest === 'function') {
-    if (target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="menu"], [role="listbox"]') !== null) return undefined;
-    if (answer === 'primary' && target.closest('button, a[href], summary, [role="button"], [role="menuitem"]') !== null) return undefined;
+  const target = event.target as { closest?: (selector: string) => unknown; tagName?: string } | null;
+  if (target === null || typeof target !== 'object' || typeof target.closest !== 'function') return answer;
+  if (target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="menu"], [role="listbox"]') !== null) return undefined;
+  if (answer === 'primary') return target.closest('button, a[href], summary, [role="button"], [role="menuitem"]') === null ? answer : undefined;
+  const onBody = target.tagName === 'BODY' || target.tagName === 'HTML';
+  return onBody || card?.contains(target as never) === true ? answer : undefined;
+}
+
+/**
+ * Brings the locks up to date for one screen's cards, all in one list in key order (browser prompts, then the thread's T3
+ * approval), so one card leaving shifts the others whichever kind they are. A card is locked for `BUTTON_DELAY_MS` when
+ * it appears, every card when one above another appeared or went away, and a card whenever it becomes the keyed one.
+ * `locks` maps a card's id to the time its lock ends; `before` is what the last call saw.
+ */
+export function updateLocks(locks: Map<string, number>, before: { order: readonly string[]; keyed: string | undefined }, order: readonly string[], keyed: string | undefined, now: number): void {
+  const until = now + BUTTON_DELAY_MS;
+  if (order.join('\n') !== before.order.join('\n')) {
+    const shifted = rowsShifted(before.order, order);
+    const seen = new Set(before.order);
+    for (const id of order) if (shifted || !seen.has(id)) locks.set(id, until);
+    for (const id of locks.keys()) if (!order.includes(id)) locks.delete(id);
   }
-  return answer;
+  if (keyed !== undefined && keyed !== before.keyed) locks.set(keyed, Math.max(locks.get(keyed) ?? 0, until));
+}
+
+/** The card Enter and Escape answer: the first in key order that is fully on screen. None when no card is. */
+export function keyedCard(order: readonly string[], visible: ReadonlySet<string>): string | undefined {
+  return order.find((id) => visible.has(id));
+}
+
+/**
+ * Lets a key answer only a press that began after the card became keyed. An Enter or Escape still held from before the
+ * change (the press that answered the card before it, say) answers nothing until it is released.
+ */
+export class KeyGate {
+  private readonly held = new Set<string>();
+  private armed = true;
+
+  /** The keyed card changed. */
+  changed(): void {
+    this.armed = ![...this.held].some(isAnswerKey);
+  }
+
+  /** A key went down. True when this press may answer the keyed card. */
+  down(key: string): boolean {
+    const may = this.armed;
+    this.held.add(key);
+    return may;
+  }
+
+  up(key: string): void {
+    this.held.delete(key);
+    if (![...this.held].some(isAnswerKey)) this.armed = true;
+  }
+
+  /** The panel lost focus, so the key-ups it missed cannot be waited for. */
+  reset(): void {
+    this.held.clear();
+    this.armed = true;
+  }
 }
