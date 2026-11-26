@@ -283,7 +283,7 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   await checkThreadSections(livePanel, screenshotPath);
   await checkComposer({ livePanel, fakes, screenshotPath });
   await checkAppearance({ livePanel, screenshotPath });
-  await checkLayout({ livePanel, serviceWorker, screenshotPath });
+  await checkLayout({ livePanel, serviceWorker, panelPage, screenshotPath });
   await livePanel.close();
   console.log('Panel UI: tab chip, direct agents, conversation list and replies rendered from the real state');
 

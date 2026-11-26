@@ -17,6 +17,8 @@ import {
 import { lazy, memo, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 
 import type { PendingApproval, PendingQuestion, QueuedMessage, Row, ThreadView, WorkEntry, WorkIcon } from './lib/thread-model';
+import { ApprovalCard, useCardLocks } from './Approval';
+import { t3Approval } from './approval-model';
 import { clockTime, CopyButton, formatDuration, ICON } from './ui';
 
 // The markdown parser is about a quarter of the panel's script, and a new thread has nothing to render with it.
@@ -75,7 +77,7 @@ function Entry({ entry }: { entry: WorkEntry }): ReactNode {
   );
 }
 
-function WorkGroup({ row }: { row: Extract<Row, { kind: 'work' }> }): ReactNode {
+function WorkGroup({ row, approval }: { row: Extract<Row, { kind: 'work' }>; approval?: InlineApproval | undefined }): ReactNode {
   const [open, setOpen] = useState(false);
   const now = useNow(row.running);
   const end = row.running ? now : (row.endedAt ?? now);
@@ -85,9 +87,15 @@ function WorkGroup({ row }: { row: Extract<Row, { kind: 'work' }> }): ReactNode 
       <section className="work-group" data-timeline-row-kind="work">
         <div className="work-head">{duration === undefined ? 'Working…' : `Working for ${duration}`}</div>
         <div className="work-entries">
-          {row.entries.slice(-8).map((entry) => (
-            <Entry key={entry.id} entry={entry} />
-          ))}
+          {row.entries.slice(-8).map((entry) =>
+            entry.id === approval?.entryId ? (
+              <div className="work-item" key={entry.id} data-approval-entry={entry.id}>
+                {approval.card}
+              </div>
+            ) : (
+              <Entry key={entry.id} entry={entry} />
+            ),
+          )}
         </div>
       </section>
     );
@@ -137,13 +145,25 @@ function UserRow({ row }: { row: Extract<Row, { kind: 'user' }> }): ReactNode {
   );
 }
 
-export function Timeline({ view }: { view: ThreadView }): ReactNode {
+/** A waiting approval drawn as its own row of the running work log, as T3 draws it. */
+export interface InlineApproval {
+  entryId: string;
+  card: ReactNode;
+}
+
+export function Timeline({ view, approval }: { view: ThreadView; approval?: InlineApproval | undefined }): ReactNode {
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   useEffect(() => {
     const element = scroller.current;
     if (element !== null && pinned.current) element.scrollTop = element.scrollHeight;
   });
+  // A new approval is brought into view even when the owner had scrolled up: it waits on them.
+  const approvalEntry = approval?.entryId;
+  useEffect(() => {
+    if (approvalEntry === undefined) return;
+    scroller.current?.querySelector(`[data-approval-entry="${CSS.escape(approvalEntry)}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [approvalEntry]);
   return (
     <div
       className="timeline messages-timeline-scroll"
@@ -157,7 +177,7 @@ export function Timeline({ view }: { view: ThreadView }): ReactNode {
         if (row.kind === 'user') {
           return <UserRow key={row.id} row={row} />;
         }
-        if (row.kind === 'work') return <WorkGroup key={row.id} row={row} />;
+        if (row.kind === 'work') return <WorkGroup key={row.id} row={row} approval={row.running ? approval : undefined} />;
         if (row.kind === 'assistant') return <AssistantRow key={row.id} row={row} />;
         return (
           <p className={`notice ${row.tone}`} key={row.id}>
@@ -169,36 +189,29 @@ export function Timeline({ view }: { view: ThreadView }): ReactNode {
   );
 }
 
-const APPROVAL_KINDS: Record<string, { head: string; code: boolean }> = {
-  command: { head: 'Run this command?', code: true },
-  'file-change': { head: 'Change this file?', code: true },
-  'file-read': { head: 'Read this file?', code: true },
-  permission: { head: 'Allow this?', code: false },
-  'mcp-elicitation': { head: 'Allow this request?', code: false },
-};
+/**
+ * Where T3 draws a waiting approval: in place of its row in the running work log. True when that row is on screen (the
+ * running group shows its last eight steps); otherwise the card goes above the composer.
+ */
+export function approvalInline(view: ThreadView): boolean {
+  const entryId = view.approval?.entryId;
+  if (entryId === undefined) return false;
+  return view.rows.some((row) => row.kind === 'work' && row.running && row.entries.slice(-8).some((entry) => entry.id === entryId));
+}
 
-export function ApprovalCard({ approval, onAnswer }: { approval: PendingApproval; onAnswer: (decision: string) => void }): ReactNode {
-  const order = ['cancel', 'decline', 'acceptForSession', 'acceptAlways', 'accept'];
-  const options = [...approval.options]
-    .filter((option) => option.decision !== 'cancel')
-    .sort((a, b) => order.indexOf(a.decision) - order.indexOf(b.decision));
-  const kind = APPROVAL_KINDS[approval.kind] ?? { head: 'Waiting for approval', code: false };
+/** A T3 thread's approval in the one approval card, locked for 500 ms when it appears like every card. */
+export function T3ApprovalCard({ approval, presentation, keyed, onAnswer }: { approval: PendingApproval; presentation: 'dock' | 'inline'; keyed: boolean; onAnswer: (decision: string) => Promise<void> }): ReactNode {
+  const locked = useCardLocks([approval.requestId]);
   return (
-    <div className="approval-card" role="group" aria-label="Approval" data-approval-kind={approval.kind}>
-      <div className="approval-head">
-        <ShieldAlert size={ICON.sm} aria-hidden="true" />
-        {kind.head}
-      </div>
-      {kind.code ? <pre className="approval-code">{approval.title}</pre> : <p className="approval-title">{approval.title}</p>}
-      {approval.detail === undefined ? null : <p className="approval-detail">{approval.detail}</p>}
-      <div className="approval-actions">
-        {options.map((option) => (
-          <button type="button" key={option.decision} className={option.decision === 'accept' ? 'prompt-btn primary' : 'prompt-btn'} onClick={() => onAnswer(option.decision)}>
-            {option.label}
-          </button>
-        ))}
-      </div>
-    </div>
+    <ApprovalCard
+      key={approval.requestId}
+      model={t3Approval(approval)}
+      presentation={presentation}
+      locked={locked(approval.requestId)}
+      keyed={keyed}
+      onDecide={onAnswer}
+      data={{ 'data-approval-kind': approval.kind, 'data-request-id': approval.requestId }}
+    />
   );
 }
 

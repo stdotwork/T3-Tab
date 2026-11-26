@@ -240,7 +240,8 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
         </div>
       </main>
       <div className="dock">
-        <PromptCards prompts={live.prompts} currentTabId={tab?.id} askerName={askerName(live, state)} onManageSites={() => onNav({ name: 'settings', tab: 'sites' })} />
+        {/* Over the hero's lower part, so a prompt arriving never moves the heading or the composer. */}
+        <PromptCards prompts={live.prompts} currentTabId={tab?.id} askerName={askerName(live, state)} onManageSites={() => onNav({ name: 'settings', tab: 'sites' })} overlay />
         {error === undefined ? null : <p className="error-line">{error}</p>}
         <Composer
           value={text}

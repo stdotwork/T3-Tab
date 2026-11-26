@@ -3,7 +3,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 
 import type { PanelTab, TabThread } from '../../src/panel';
 
-import { ApprovalCard, QuestionCard, QueuedMessages, Timeline } from './Thread';
+import { approvalInline, QuestionCard, QueuedMessages, T3ApprovalCard, Timeline } from './Thread';
 import { Composer, dictateInto, TabChip, ThreadModelPicker, useComposerAttachments } from './Composer';
 import { useDictation } from './Dictation';
 import { askerName, Banner, bindClaim, TopBar, useCatalog, useNeedsOwner, useT3, withdrawClaim, type Screen } from './Frame';
@@ -143,6 +143,22 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
   const directDriver = view?.provider === 'claude' ? 'claudeAgent' : view?.provider === 'codex' ? 'codex' : provider?.driver;
   // A browser request shows once here: the sidebar's own card carries the choices, and answering it closes T3's.
   const showApproval = view?.approval !== undefined && !(view.approval.kind === 'mcp-elicitation' && live.prompts.length > 0);
+  const approval = showApproval ? view?.approval : undefined;
+  // As T3 does, the thread's own approval is drawn at its row in the running work log, and above the composer only when
+  // that row is not shown. Enter and Escape answer the top browser card first, since it sits right above the composer.
+  const inline = approval !== undefined && view !== undefined && approvalInline(view);
+  const approvalCard =
+    approval === undefined ? undefined : (
+      <T3ApprovalCard
+        key={approval.requestId}
+        approval={approval}
+        presentation={inline ? 'inline' : 'dock'}
+        keyed={live.prompts.length === 0}
+        onAnswer={async (decision) => {
+          await t3.respond(screen.id, approval.requestId, { decision });
+        }}
+      />
+    );
   const project = state.projects.find((entry) => entry.id === view?.projectId);
   const needsYou = useNeedsOwner(live, state);
   return (
@@ -166,18 +182,10 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
         needsYou={needsYou}
       />
       <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />
-      {view === undefined ? <div className="timeline" /> : <Timeline view={view} />}
+      {view === undefined ? <div className="timeline" /> : <Timeline view={view} approval={inline && approval?.entryId !== undefined && approvalCard !== undefined ? { entryId: approval.entryId, card: approvalCard } : undefined} />}
       <div className="dock">
         <PromptCards prompts={live.prompts} currentTabId={tab?.id} askerName={askerName(live, state)} onManageSites={() => onNav({ name: 'settings', tab: 'sites' })} />
-        {showApproval && view?.approval !== undefined ? (
-          <ApprovalCard
-            approval={view.approval}
-            onAnswer={(decision) => {
-              const requestId = view.approval?.requestId;
-              if (requestId !== undefined) void guard(async () => await t3.respond(screen.id, requestId, { decision }));
-            }}
-          />
-        ) : null}
+        {inline ? null : approvalCard}
         {view?.question === undefined ? null : (
           <QuestionCard
             key={view.question.requestId}

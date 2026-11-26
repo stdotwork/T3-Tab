@@ -28,6 +28,8 @@ export interface ApprovalOption {
 
 export interface PendingApproval {
   requestId: string;
+  /** The work-log entry that stands for this request while it waits, where the card is drawn in T3's place for it. */
+  entryId?: string;
   kind: string;
   title: string;
   detail?: string;
@@ -416,6 +418,7 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
     } else if (item?.type === 'approval_request' && view.approval === undefined) {
       view.approval = {
         requestId: request.id,
+        entryId: item.id,
         kind: item.requestKind ?? request.kind,
         title: approvalLabel(item.prompt ?? item.title ?? 'The agent asks for approval'),
         ...(item.reason == null ? {} : { detail: item.reason }),

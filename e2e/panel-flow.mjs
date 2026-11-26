@@ -267,7 +267,7 @@ async function checkThreadFromT3({ home, t3, panelPage, serviceWorker, tabId, ex
     await sleep(1_700);
     await shot('20-thread-from-t3-permission');
     const card = panelPage.locator(`.prompt-card[data-prompt-id="${asked.id}"]`);
-    check('the card names the thread', (await card.locator('.prompt-who').innerText()).includes('Started in T3'));
+    check('the card names the thread', (await card.locator('.approval-ask').innerText()).includes('Started in T3'));
     await panelRequest(serviceWorker, { type: 'panel.decide', promptId: asked.id, decision: 'decline' });
   }
   await until('the Supervised turn to end', async () => {
@@ -508,7 +508,7 @@ async function runT3Flow() {
     seen.add(second.id);
     await until('the second request in the thread', async () => (await threadApproval())?.kind === 'mcp-elicitation', 20_000).catch(() => undefined);
     await sleep(650);
-    await panelPage.locator(`.prompt-card[data-prompt-id="${second.id}"] .prompt-btn.primary`).click();
+    await panelPage.locator(`.prompt-card[data-prompt-id="${second.id}"] .answer-btn.primary`).click();
     const cleared = await until('T3 to drop its approval', async () => (await threadApproval())?.requestId === undefined || (await threadApproval())?.kind !== 'mcp-elicitation', 20_000).catch(() => false);
     check('answering in the sidebar cleared the T3 approval', cleared !== false);
     for (let round = 0; round < 40; round += 1) {
@@ -696,7 +696,7 @@ async function runDirectFlow() {
     check('a direct run asks in the sidebar', true);
     await sleep(650);
     await shot('08-permission');
-    await panelPage.locator('.prompt-card .prompt-btn.primary').first().click();
+    await panelPage.locator('.prompt-card .answer-btn.primary').first().click();
     await until('the direct reply', async () => /Harbour/i.test(await panelPage.locator('.assistant').last().innerText().catch(() => '')), 90_000);
     check('the sidebar answer let the direct run continue', true);
     await finished(panelPage);

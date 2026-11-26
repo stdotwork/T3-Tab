@@ -283,9 +283,16 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   at most 30 days after it was made.
 
 - **The panel looks and works like T3 Code.** It has a new-thread screen, a thread view, and a thread list and settings
-  behind icons. It is React, styled only from T3's theme roles, so any T3 theme applies in full. Waiting permission,
-  approval and question cards sit above the composer, because that is where the owner is already looking. Prompts can come
-  from any MCP session, so the Threads screen also lists every connected session, named by its thread.
+  behind icons. It is React, styled only from T3's theme roles, so any T3 theme applies in full. Waiting permission and
+  question cards sit above the composer, because that is where the owner is already looking. Prompts can come from any
+  MCP session, so the Threads screen also lists every connected session, named by its thread.
+- **One approval card, in T3 Code's anatomy.** Browser prompts and a T3 thread's approvals use one card: what is asked,
+  where, then Decline, the primary answer and More on one row, as T3 orders them. It stays small (at most 160 px) so the
+  conversation stays in view. The lasting browser choice lives under More, stated in full, rather than as a third button:
+  at 320 px three buttons whose labels say what they grant do not fit on one row, and T3 also keeps its lasting answer
+  under More. A T3 approval is drawn at its work-log row, where T3 draws it, and falls back above the composer when that
+  row is not shown. Enter answers with the primary answer and Escape declines, only when no field has focus, so a key
+  meant for the composer never answers a card.
 - **The panel does little while idle.** Changes reach it through a message from the worker, stored-state events and tab
   events, and its timers are only a safety net. Markdown and Settings load on first use. It adds nothing a website can
   see: no content script, no web-accessible resource and no page change.
