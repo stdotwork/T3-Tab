@@ -14,6 +14,9 @@ const BOTH = [
 ];
 
 export async function checkApprovalKeys({ panelPage: page, serviceWorker }) {
+  // A page in the background draws no frames, so its IntersectionObserver never reports a card on screen and no card is
+  // keyed: the owner cannot see it. Only the screenshot run brings this page to the front before now.
+  await page.bringToFront();
   await page.setViewportSize({ width: 400, height: 760 });
   await page.emulateMedia({ colorScheme: 'light' });
   await page.evaluate(() => {
