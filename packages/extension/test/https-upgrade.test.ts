@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { actOnPage } from '../src/actions';
 import { ensureAttached, initCdp } from '../src/cdp';
+import { rememberSecrets } from '../src/secret-text';
 import type { StoredSession } from '../src/sessions';
 import { goToHistoryEntry, HTTPS_UPGRADE_FAILED, loadAddress, loadFailure, reloadTab } from '../src/tabs';
 import { FakeBrowser } from './fake-browser';
@@ -103,6 +104,19 @@ describe('a load of an http address the browser upgraded and could not finish', 
     await expect(actOnPage(session, tab, [{ press: { key: 'Enter' } }], [null], 0, A, reload)).rejects.toThrow(
       `Step 1 (press): ${UPGRADE}`,
     );
+  });
+
+  it('hides a secret the page put in the address it could not load', async () => {
+    const leaky = 'http://b.test/login?user=ada&password=hunter2secret';
+    rememberSecrets(tab, ['hunter2secret']);
+    browser.beforeCommand = (id, method) => {
+      if (id !== tab || method !== 'Input.dispatchKeyEvent') return;
+      browser.beforeCommand = undefined;
+      browser.failLoad(id, leaky, BLOCKED);
+    };
+    const failed = actOnPage(session, tab, [{ press: { key: 'Enter' } }], [null], 0, A, reload);
+    await expect(failed).rejects.toThrow(HTTPS_UPGRADE_FAILED);
+    await expect(failed).rejects.not.toThrow('hunter2secret');
   });
 
   it('leaves an act step that blocked nothing alone', async () => {

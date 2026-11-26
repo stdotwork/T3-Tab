@@ -15,6 +15,7 @@ import {
 } from './cdp';
 
 import { originOf, restrictedPageError, type SitePermission } from './permissions';
+import { scrubReported } from './secret-text';
 import { settlePage } from './settle';
 import {
   assertSessionTab,
@@ -213,7 +214,10 @@ async function navigated(tabId: number, go: () => Promise<boolean>, throughHisto
     await waitForDocumentLoad(tabId, since, OPEN_TIMEOUT_MS, moves);
     // A reload or a step through history has no reply of its own that says the load failed.
     const unreachable = blockedLoadSince(tabId, blocked);
-    if (unreachable !== undefined && isHttp(unreachable)) throw new Error(loadFailure(unreachable, 'net::ERR_BLOCKED_BY_CLIENT'));
+    // The address came from the page (a link, a form), so it can hold a value the page treats as secret.
+    if (unreachable !== undefined && isHttp(unreachable)) {
+      throw new Error(loadFailure(scrubReported(tabId, unreachable, true), 'net::ERR_BLOCKED_BY_CLIENT'));
+    }
     await firstFrames(tabId);
     settling = true;
     void settlePage(tabId)

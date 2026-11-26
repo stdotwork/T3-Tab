@@ -86,7 +86,7 @@ export async function actOnPage(
     // page: that is not an origin to approve.
     const unreachable = blockedLoadSince(tabId, blockedBefore);
     if (unreachable !== undefined && isHttp(unreachable)) {
-      throw new Error(`Step ${stepNumber} (${action}): ${loadFailure(unreachable, 'net::ERR_BLOCKED_BY_CLIENT')}`);
+      throw new Error(`Step ${stepNumber} (${action}): ${loadFailure(scrubReported(tabId, unreachable, true), 'net::ERR_BLOCKED_BY_CLIENT')}`);
     }
     try {
       activeSession = await reloadSession();
