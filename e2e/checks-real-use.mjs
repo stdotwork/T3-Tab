@@ -36,12 +36,19 @@ const pages = (otherSite) => ({
      <label>PW combo <input type="password" role="combobox"></label>
      <label>PW search <input type="password" role="searchbox"></label>
      <label>PW button <input type="password" role="button" id="pwbutton"></label>
-     <label>PW plain <input type="password"></label>
-     <label>PIN disc <input type="text" class="disc"></label>
+     <label>PW plain <input type="password" id="pwplain"></label>
+     <label>PIN disc <input type="text" class="disc" id="pindisc"></label>
      <label>PIN square <input type="text" class="sq"></label>
      <label for="inherited">PIN inherited</label><div class="disc"><input type="text" id="inherited"></div>
      <label>PIN area <textarea class="disc"></textarea></label>
      <label>Plain text <input type="text" value="visible-ok"></label>
+     <button type="button">Pay <input type="text" class="disc" aria-label="Pay PIN"></button>
+     <a href="#top">Link <input type="text" class="disc" aria-label="Link PIN"></a>
+     <h2>Head <input type="text" class="disc" aria-label="Head PIN"></h2>
+     <label for="target">Label <input type="password" aria-label="Label PW"></label><input type="text" id="target">
+     <span id="cardlbl">Card</span>
+     <button type="button" aria-labelledby="cardlbl pindisc">Named by pin</button>
+     <button type="button" aria-labelledby="pwplain">Named by password</button>
      <iframe title="pin frame" srcdoc="<!doctype html><style>.disc{-webkit-text-security:disc}</style><label>Frame PIN <input type='text' class='disc'></label>"></iframe>`,
   ),
   '/keys': page('Keys', '<p id="k">0</p><script>addEventListener("keydown",(e)=>{if(e.key==="/")k.textContent=+k.textContent+1})</script>'),
@@ -283,6 +290,10 @@ export async function checkRealUse() {
         'textbox "PIN inherited"': 'INHERIT-PIN-6',
         'textbox "PIN area"': 'AREA-PIN-7',
         'textbox "Frame PIN"': 'FRAME-PIN-8',
+        'textbox "Pay PIN"': 'PAY-PIN-11',
+        'textbox "Link PIN"': 'LINK-PIN-12',
+        'textbox "Head PIN"': 'HEAD-PIN-13',
+        'textbox "Label PW"': 'LABEL-SECRET-14',
       };
       for (const label of Object.keys(secrets)) {
         const line = first.text.split('\n').find((candidate) => candidate.includes(label));
@@ -312,6 +323,17 @@ export async function checkRealUse() {
         // A find that matches nothing repeats the query, which is not the page's text.
         const shown = view.text.replace(/No matches for ".*"\./, '');
         assert(!/SECRET|PIN-\d|•|■/.test(shown), `${name} shows a value or its length:\n${view.text}`);
+      }
+      // Names the browser builds from a hidden value say so instead of showing it, or its length.
+      for (const expected of [
+        'button "Pay <redacted>"',
+        'link "Link <redacted>"',
+        '## Head <redacted>',
+        'textbox "Label <redacted>"',
+        'button "Card <redacted>"',
+        'button "<redacted>"',
+      ]) {
+        assert(views['all read'].text.includes(expected), `${expected} is missing from the read:\n${views['all read'].text}`);
       }
       for (const label of [...Object.keys(secrets), 'button "PW button"']) {
         assert(views['all read'].text.includes(label), `${label} is missing from the read:\n${views['all read'].text}`);

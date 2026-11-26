@@ -36,7 +36,7 @@ describe('password redaction', () => {
         active -= 1;
         return ids.map((id) => id === 240);
       },
-      10,
+      { batchSize: 10 },
     );
     expect(inspected).toHaveLength(260);
     expect(maximumActive).toBe(1);
@@ -125,5 +125,96 @@ describe('password redaction', () => {
     const empty: AxNode = { id: '1', role: 'textbox', name: 'Password', backendId: 1, children: [] };
     await redactPasswordValues([empty], async (ids) => ids.map(() => true));
     expect(empty.props?.password).toBe(true);
+  });
+
+  describe('names the browser builds from a hidden value', () => {
+    const named = (id: string, role: string, name: string, children: string[] = [], backendId?: number): AxNode => ({
+      id,
+      role,
+      name,
+      children,
+      ...(backendId === undefined ? {} : { backendId }),
+    });
+    const inspectNothing = async (ids: number[]): Promise<boolean[]> => ids.map(() => false);
+
+    it('replaces the value in the name of each element the field sits in', async () => {
+      const pin = { ...textbox(5, '4242'), id: 'pin' };
+      const button = named('button', 'button', 'Pay 4242', ['pin']);
+      const cell = named('cell', 'cell', 'Cell 4242 and 4242 again', ['button']);
+      const unrelated = named('other', 'link', 'Item 4242 elsewhere');
+      const root = named('root', 'RootWebArea', 'Shop', ['cell', 'other']);
+      const result = await redactPasswordValues([root, cell, button, pin, unrelated], async (ids) => ids.map((id) => id === 5), {
+        namedFrom: async () => [],
+      });
+      expect(result.find((node) => node.id === 'button')?.name).toBe('Pay <redacted>');
+      expect(result.find((node) => node.id === 'cell')?.name).toBe('Cell <redacted> and <redacted> again');
+      // Only the field's own ancestors are searched; an element elsewhere keeps its name unless it is named from the field.
+      expect(unrelated.name).toBe('Item 4242 elsewhere');
+      expect(root.name).toBe('Shop');
+    });
+
+    it('replaces the bullets of a password input in the name of what it sits in', async () => {
+      const password = { ...field(1, '•••••••••', 'combobox'), id: 'pw' };
+      const tab = named('tab', 'tab', 'Tab •••••••••', ['pw']);
+      const result = await redactPasswordValues([tab, password], inspectNothing);
+      expect(result.find((node) => node.id === 'tab')?.name).toBe('Tab <redacted>');
+    });
+
+    it('replaces the value in the name of an element named from the field, and the whole name when it is not found', async () => {
+      const pin = textbox(5, '4242');
+      const labelled = named('l1', 'button', 'Card 4242', [], 10);
+      const changed = named('l2', 'group', 'something else entirely', [], 11);
+      const stranger = named('l3', 'button', 'Visible 4242', [], 12);
+      const asked: number[][] = [];
+      await redactPasswordValues([pin, labelled, changed, stranger], async (ids) => ids.map(() => true), {
+        namedFrom: async (ids) => {
+          asked.push(ids);
+          return [10, 11];
+        },
+      });
+      expect(asked).toEqual([[5]]);
+      expect(labelled.name).toBe('Card <redacted>');
+      expect(changed.name).toBe('<redacted>');
+      expect(stranger.name).toBe('Visible 4242');
+    });
+
+    it('does not ask the page about names when nothing was redacted or the field is empty', async () => {
+      let asked = 0;
+      const namedFrom = async (): Promise<number[]> => {
+        asked += 1;
+        return [];
+      };
+      await redactPasswordValues([textbox(1, 'visible')], inspectNothing, { namedFrom });
+      const empty: AxNode = { id: '2', role: 'textbox', name: 'Password', backendId: 2, children: [] };
+      await redactPasswordValues([empty], async (ids) => ids.map(() => true), { namedFrom });
+      expect(asked).toBe(0);
+    });
+
+    it('treats every name as possibly holding the value when the page cannot say which are named from the field', async () => {
+      const pin = textbox(5, '424242');
+      const far = named('far', 'button', 'Number 424242', [], 20);
+      const safe = named('safe', 'button', 'Pay now', [], 21);
+      await redactPasswordValues([pin, far, safe], async (ids) => ids.map(() => true), {
+        namedFrom: async () => {
+          throw new Error('page unavailable');
+        },
+      });
+      expect(far.name).toBe('Number <redacted>');
+      expect(safe.name).toBe('Pay now');
+    });
+
+    it('replaces a value that has special characters or spaces as the name shows it, and the longer value first', async () => {
+      const first = { ...textbox(1, '12  34.*'), id: 'a' };
+      const second = { ...textbox(2, '1234'), id: 'b' };
+      const group = named('g', 'group', 'Codes 12 34.* and 1234', ['a', 'b']);
+      await redactPasswordValues([group, first, second], async (ids) => ids.map(() => true));
+      expect(group.name).toBe('Codes <redacted> and <redacted>');
+    });
+
+    it("hides a field's own name when it is named by itself", async () => {
+      const self: AxNode = { id: '1', role: 'textbox', name: '•••', value: '•••', backendId: 1, children: [] };
+      await redactPasswordValues([self], inspectNothing);
+      expect(self.name).toBe('<redacted>');
+    });
   });
 });

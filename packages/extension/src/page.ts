@@ -37,7 +37,9 @@ export async function readPage(
       ownerOrigin: async (backendId) => await ownerFrameOrigin(tabId, backendId, frames.byId, expectedOrigin),
     } satisfies FramePolicy),
   );
-  const nodes = await redactPasswordValues(slim, (backendIds) => inspectFields(tabId, backendIds));
+  const nodes = await redactPasswordValues(slim, (backendIds) => inspectFields(tabId, backendIds), {
+    namedFrom: (backendIds) => namedFromFields(tabId, backendIds),
+  });
   return { tab: tabId, title: after.title ?? '', url: after.url ?? after.pendingUrl ?? '', epoch, nodes };
 }
 
@@ -178,7 +180,51 @@ const INSPECT_FIELDS = `function (...fields) {
   });
 }`;
 
+/** Runs in T3-Tab's own world: the elements whose names come from one of the fields without containing it. */
+const NAMED_FROM_FIELDS = `function (...fields) {
+  const found = new Set();
+  for (const field of fields) {
+    try {
+      const root = field.getRootNode();
+      for (const element of root.querySelectorAll('[aria-labelledby]')) {
+        for (const id of (element.getAttribute('aria-labelledby') || '').split(/\\s+/)) {
+          const target = id === '' ? null : root.getElementById ? root.getElementById(id) : null;
+          if (target !== null && (target === field || target.contains(field))) {
+            found.add(element);
+            break;
+          }
+        }
+      }
+      for (let label = field.closest('label'); label; label = label.parentElement && label.parentElement.closest('label')) {
+        if (label.control && label.control !== field) found.add(label.control);
+      }
+    } catch (error) {
+      // A field that cannot be searched leaves the others' results as they are.
+    }
+  }
+  return Array.from(found).slice(0, 200);
+}`;
+
 let inspections = 0;
+
+/** Resolves nodes into T3-Tab's own world, in one object group; a node the browser cannot resolve is `undefined`. */
+async function resolveFields(tabId: number, backendIds: number[], context: number, group: string): Promise<Array<string | undefined>> {
+  return await Promise.all(
+    backendIds.map(async (backendNodeId) => {
+      try {
+        const reply = await sendCommand<{ object?: { objectId?: unknown } }>(tabId, 'DOM.resolveNode', {
+          backendNodeId,
+          executionContextId: context,
+          objectGroup: group,
+        });
+        return typeof reply.object?.objectId === 'string' ? reply.object.objectId : undefined;
+      } catch (error) {
+        if (error instanceof DialogOpenError) throw error;
+        return undefined;
+      }
+    }),
+  );
+}
 
 /**
  * For each field, whether its value must be hidden: a password input, whatever its role, or a field masked with
@@ -189,21 +235,7 @@ async function inspectFields(tabId: number, backendIds: number[]): Promise<boole
   const context = await privateWorld(tabId);
   const group = `t3tab-fields-${(inspections += 1)}`;
   try {
-    const resolved = await Promise.all(
-      backendIds.map(async (backendNodeId) => {
-        try {
-          const reply = await sendCommand<{ object?: { objectId?: unknown } }>(tabId, 'DOM.resolveNode', {
-            backendNodeId,
-            executionContextId: context,
-            objectGroup: group,
-          });
-          return typeof reply.object?.objectId === 'string' ? reply.object.objectId : undefined;
-        } catch (error) {
-          if (error instanceof DialogOpenError) throw error;
-          return undefined;
-        }
-      }),
-    );
+    const resolved = await resolveFields(tabId, backendIds, context, group);
     const found = resolved.filter((objectId): objectId is string => objectId !== undefined);
     if (found.length === 0) return backendIds.map(() => true);
     const answer = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.callFunctionOn', {
@@ -216,6 +248,49 @@ async function inspectFields(tabId: number, backendIds: number[]): Promise<boole
     if (!Array.isArray(flags) || flags.length !== found.length) return backendIds.map(() => true);
     let next = 0;
     return resolved.map((objectId) => (objectId === undefined ? true : flags[next++] !== false));
+  } finally {
+    await sendCommand(tabId, 'Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined);
+  }
+}
+
+/**
+ * The DOM node ids of the elements whose names the browser builds from one of the fields without the field being inside
+ * them: an `aria-labelledby` that points at the field or an element around it, and the control a label around the field
+ * belongs to. The accessibility tree says what a name is, not where it came from. Throws when it cannot say, which makes
+ * the caller treat every name as possibly holding the value.
+ */
+async function namedFromFields(tabId: number, backendIds: number[]): Promise<number[]> {
+  const context = await privateWorld(tabId);
+  const group = `t3tab-named-${(inspections += 1)}`;
+  try {
+    const found = (await resolveFields(tabId, backendIds, context, group)).filter((id): id is string => id !== undefined);
+    if (found.length < backendIds.length) throw new Error('A field could not be resolved');
+    if (found.length === 0) return [];
+    const list = await sendCommand<{ result?: { objectId?: unknown } }>(tabId, 'Runtime.callFunctionOn', {
+      objectId: found[0],
+      functionDeclaration: NAMED_FROM_FIELDS,
+      arguments: found.map((objectId) => ({ objectId })),
+      objectGroup: group,
+    });
+    const listId = list.result?.objectId;
+    if (typeof listId !== 'string') throw new Error('The browser gave no list of elements');
+    const properties = await sendCommand<{ result?: Array<{ name?: unknown; value?: { objectId?: unknown } }> }>(
+      tabId,
+      'Runtime.getProperties',
+      { objectId: listId, ownProperties: true },
+    );
+    const elements = (properties.result ?? []).flatMap((property) =>
+      typeof property.name === 'string' && /^\d+$/.test(property.name) && typeof property.value?.objectId === 'string'
+        ? [property.value.objectId]
+        : [],
+    );
+    const described = await Promise.all(
+      elements.map(async (objectId) => {
+        const reply = await sendCommand<{ node?: { backendNodeId?: unknown } }>(tabId, 'DOM.describeNode', { objectId });
+        return typeof reply.node?.backendNodeId === 'number' ? reply.node.backendNodeId : undefined;
+      }),
+    );
+    return described.filter((id): id is number => id !== undefined);
   } finally {
     await sendCommand(tabId, 'Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined);
   }
