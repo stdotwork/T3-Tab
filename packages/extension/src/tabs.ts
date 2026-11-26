@@ -14,6 +14,7 @@ import {
   waitForDocumentLoad,
 } from './cdp';
 
+import { joinTree } from './opened-tabs';
 import { originOf, restrictedPageError, type SitePermission } from './permissions';
 import { knownSecrets, rememberSecrets, scrubReported } from './secret-text';
 import { settlePage } from './settle';
@@ -327,15 +328,15 @@ async function getTab(tabId: number): Promise<chrome.tabs.Tab> {
 /**
  * A tab a page opened is kept in its opener's session group, so the session that works in the opener can
  * use it. Only the opener's group decides: a tab opened from the owner's own tabs, shared ones included, is
- * left alone. The tab carries no origin approval, so its first read still prompts, and it inherits the secret values known
- * for its opener.
+ * left alone. The tab carries no origin approval, so its first read still prompts, and it joins its opener's tree of
+ * openers, whose secret values are taken out of its title and address.
  */
 export async function adoptPopupTab(tabId: number, sourceTabId: number, store: SessionStore): Promise<void> {
   // A form the opener sent into the new tab (a GET form with a target) puts its values in the new tab's address and title,
-  // so the values known for the opener are known for it too. Done before anything else, while the tab is still loading.
-  // Values the opener's tree learns later reach the tab through `rememberSecrets`.
-  const known = knownSecrets(sourceTabId);
-  if (known.length > 0) rememberSecrets(tabId, known);
+  // so the tab joins its opener's tree and the opener's values are kept for the tree, which scrubs the title and address
+  // of its tabs. Done before anything else, while the tab is still loading; what the tree learns later reaches it too.
+  joinTree(sourceTabId, tabId);
+  rememberSecrets(sourceTabId, knownSecrets(sourceTabId));
   try {
     const opener = await chrome.tabs.get(sourceTabId);
     const owner = sessionForPopup(await store.list(), opener);

@@ -263,7 +263,10 @@ async function describeOpened(
   // Only where a `read` of the tab would pass without a prompt; the tab itself carries no approval.
   if (tab.needsApproval === true) return { tab };
   // What Full access let through is listed with the requests it allowed, as a prompt it answered would be.
+  let noted = false;
   const noteFullAccess = async (): Promise<void> => {
+    if (noted) return;
+    noted = true;
     const setting = await siteStore.get(origin);
     const held = await sessionStore.hasApprovedOrigin(session.id, tabId, origin);
     if (setting !== 'read' && setting !== 'allow' && !held) permissionPrompts.noteAutoAllowed('read', origin, promptTabOf(tabId, tab.title));

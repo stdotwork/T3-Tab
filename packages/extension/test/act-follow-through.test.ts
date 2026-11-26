@@ -18,6 +18,8 @@ const reader = vi.hoisted(() => ({
   duringRead: undefined as ((tab: number) => void) | undefined,
   /** Runs at each wait, after the clock moved: the place for a loading tab to commit. */
   onSleep: undefined as (() => void) | undefined,
+  /** The tabs whose secret values a step noted, in order. */
+  collected: [] as number[],
 }));
 vi.mock('../src/settle', () => ({
   sleep: async (ms: number) => {
@@ -35,7 +37,9 @@ vi.mock('../src/page', () => ({
     const current = await chrome.tabs.get(tab);
     return { tab, title: current.title ?? '', url: current.url ?? '', epoch: 0, nodes: [] };
   },
-  rememberPageSecrets: async (): Promise<void> => undefined,
+  rememberPageSecrets: async (tab: number): Promise<void> => {
+    reader.collected.push(tab);
+  },
 }));
 
 const browser = new FakeBrowser();
@@ -106,7 +110,7 @@ beforeEach(() => {
   const fake = (globalThis as unknown as { chrome: Record<string, unknown> }).chrome;
   fake.storage = { session: storage({}), local: storage({}) };
   fake.webNavigation = { onCommitted: { addListener: () => undefined } };
-  Object.assign(reader, { textLength: 100, reads: [], clock: 1_000_000, duringRead: undefined, onSleep: undefined });
+  Object.assign(reader, { textLength: 100, reads: [], clock: 1_000_000, duringRead: undefined, onSleep: undefined, collected: [] });
   vi.spyOn(Date, 'now').mockImplementation(() => reader.clock);
 });
 
@@ -204,6 +208,28 @@ describe('a tab a step opened', () => {
     expect(result.opened).toBeUndefined();
     expect(result.openedElsewhere).toBe(1);
     expect(browser.tabs.get(popup)?.groupId).toBe(-1);
+  });
+});
+
+describe('the secret values a batch notes', () => {
+  it('are noted before every step that can change a field or send a form, and before a scroll, hover or wait only after one did', async () => {
+    const { shopTab, act, allowOnce, sessionStore } = await load();
+    await sessionStore.register(alice);
+    const tab = await shopTab();
+    const steps: ActStep[] = [
+      { scroll: { dy: 100 } },
+      { wait: { ms: 10 } },
+      { type: { text: 'ada' } },
+      { scroll: { dy: 100 } },
+      { wait: { ms: 10 } },
+      { press: { key: 'Enter' } },
+    ];
+    const acting = act(tab, { steps, backendIds: steps.map(() => null) });
+    await allowOnce();
+    const result = await acting;
+    expect(result.failure).toBeUndefined();
+    // The first scroll (nothing noted on this document yet), the type, the scroll after it and the key press.
+    expect(reader.collected).toEqual([tab, tab, tab, tab]);
   });
 });
 

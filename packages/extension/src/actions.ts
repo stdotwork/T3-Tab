@@ -98,6 +98,9 @@ export async function actOnPage(
     }
   };
 
+  // The document the page's secret values were last noted on, and whether a step changed a field since.
+  let secretsEpoch: number | undefined;
+  let fieldsChanged = false;
   for (let index = 0; index < steps.length; index += 1) {
     const step = steps[index];
     if (step === undefined) continue;
@@ -137,10 +140,16 @@ export async function actOnPage(
       await assertActAccess(activeSession, tabId, expectedOrigin);
       const ref = actStepRef(step);
       const dialog = openDialog(tabId);
-      // Any step can send a form (a click, a key press, or page script it sets off: a `select` whose change submits, a
-      // timer during a `wait`), and a form that sends a field's value in the address puts it in the title and address this
-      // reply shows: note the page's secret values first, as of this moment. The read after the batch notes them again.
-      if (dialog === undefined) await rememberPageSecrets(tabId);
+      // A step can send a form (a click, a key press, or page script it sets off: a `select` whose change submits, a timer
+      // that runs while it waits), and a form that sends a field's value in the address puts it in the title and address
+      // this reply shows: note the page's secret values first, as of this moment. A scroll, a hover or a wait changes no
+      // field, so before one they are noted only when a field changed or the document was replaced since they last were.
+      // The read after the batch notes them again.
+      if (dialog === undefined && (!changesNoField(action) || fieldsChanged || secretsEpoch !== documentEpoch(tabId))) {
+        await rememberPageSecrets(tabId);
+        secretsEpoch = documentEpoch(tabId);
+        fieldsChanged = false;
+      }
       if (dialog !== undefined) {
         await answerDialogStep(tabId, step, expectedOrigin);
       } else if (ref !== undefined) {
@@ -172,6 +181,8 @@ export async function actOnPage(
       }
     }
 
+    // A key press can type into a field as well.
+    if (!changesNoField(action) && action !== 'click') fieldsChanged = true;
     const readFollows = index === steps.length - 1 || failure !== undefined;
     if (!readFollows && !startsWork(action)) {
       // The debugger reports a request or a navigation the step began a moment after its own reply, so ask for
@@ -230,6 +241,11 @@ export async function actOnPage(
  */
 function startsWork(action: ActAction): boolean {
   return action !== 'fill' && action !== 'type' && action !== 'select';
+}
+
+/** A scroll, a hover or a wait: steps that change no field's value. */
+function changesNoField(action: ActAction): boolean {
+  return action === 'scroll' || action === 'hover' || action === 'wait';
 }
 
 /** While a dialog is open: Enter accepts it, Escape dismisses it, and `type` holds a prompt's text. */

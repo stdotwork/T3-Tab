@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { forgetClosedTab, noteOpenedTab } from '../src/opened-tabs';
+import { forgetClosedTab, joinTree, rebuildOpenerTrees, treeOfTab } from '../src/opened-tabs';
 import {
   addressForms,
   forgetSecrets,
   knownSecrets,
   matcher,
+  promoteAddressSecrets,
   rememberSecrets,
   scrubReported,
   shortScrub,
@@ -113,28 +114,80 @@ describe('what is remembered about a tab', () => {
     expect(knownSecrets(1_000)).toEqual([]);
   });
 
-  it('reaches every open tab of the tree of openers, which a form can be sent into by name, whenever it is learnt', () => {
-    // Tab 1 opened 2 and 3; 3 opened 4. Tab 9 is no relation.
-    noteOpenedTab(1, 2, Promise.resolve());
-    noteOpenedTab(1, 3, Promise.resolve());
-    noteOpenedTab(3, 4, Promise.resolve());
-    try {
-      // Learnt on the opener after its tabs were opened: a form with target="results" sent into tab 2.
-      rememberSecrets(1, ['NAMED-SECRET-91']);
-      expect(scrubReported(2, 'https://a.test/?pw=NAMED-SECRET-91', true)).toBe('https://a.test/?pw=<redacted>');
-      expect(knownSecrets(4)).toEqual(['NAMED-SECRET-91']);
-      expect(knownSecrets(9)).toEqual([]);
-      // A popup's form sent into its opener, or into a sibling, after the tab that opened them closed.
-      forgetClosedTab(1);
-      forgetSecrets(1);
-      rememberSecrets(2, ['popup-secret']);
-      expect(knownSecrets(4)).toEqual(['NAMED-SECRET-91', 'popup-secret']);
-      expect(knownSecrets(1)).toEqual([]);
-    } finally {
-      for (const tab of [1, 2, 3, 4]) {
+  describe('in a tree of openers', () => {
+    const trees: number[] = [];
+    const tree = (opener: number, ...tabs: number[]): void => {
+      for (const tab of tabs) joinTree(opener, tab);
+      trees.push(opener, ...tabs);
+    };
+    afterEach(() => {
+      for (const tab of trees.splice(0)) {
         forgetClosedTab(tab);
         forgetSecrets(tab);
       }
-    }
+    });
+
+    it('takes a value of another tab out of the title and address only, never out of the page text', () => {
+      // Tab 1 opened 2, as a middle click or a link with a target does; 9 is no relation.
+      tree(1, 2);
+      rememberSecrets(1, ['2026']);
+      expect(knownSecrets(2)).toEqual([]);
+      expect(scrubReported(2, 'https://a.test/orders?year=2026', true)).toBe('https://a.test/orders?year=<redacted>');
+      expect(scrubReported(9, 'https://a.test/orders?year=2026', true)).toBe('https://a.test/orders?year=2026');
+    });
+
+    it('makes a value of the tree that a tab\'s address carries one of the tab\'s own, which its page can echo', () => {
+      tree(1, 2, 3);
+      // Learnt on the form's tab after the others were opened: a form with target="results" sent into tab 2.
+      rememberSecrets(1, ['NAMED-SECRET-91', 'other-secret']);
+      promoteAddressSecrets(2, 'https://a.test/secure?password=NAMED-SECRET-91');
+      expect(knownSecrets(2)).toEqual(['NAMED-SECRET-91']);
+      expect(knownSecrets(3)).toEqual([]);
+    });
+
+    it('keeps reaching the tree after the form\'s tab closed, in every direction a name reaches', () => {
+      tree(1, 2, 3);
+      forgetClosedTab(1);
+      forgetSecrets(1);
+      rememberSecrets(2, ['popup-secret']);
+      expect(scrubReported(3, 'https://a.test/?pw=popup-secret', true)).toBe('https://a.test/?pw=<redacted>');
+    });
+
+    it('never pushes out a tab\'s own values, however large the tree', () => {
+      rememberSecrets(5, ['unrelated-value']);
+      tree(1, ...Array.from({ length: 201 }, (_, index) => 1_000 + index));
+      rememberSecrets(1, ['FORM-SECRET-1']);
+      for (let tab = 1_000; tab < 1_201; tab += 1) scrubReported(tab, `https://a.test/${tab}`, true);
+      rememberSecrets(1_200, ['popup-value']);
+      expect(knownSecrets(1)).toEqual(['FORM-SECRET-1']);
+      expect(knownSecrets(5)).toEqual(['unrelated-value']);
+      expect(scrubReported(1_000, 'https://a.test/?a=FORM-SECRET-1&b=popup-value', true)).toBe('https://a.test/?a=<redacted>&b=<redacted>');
+    });
+
+    it('builds its matcher once until a value is added, so listing the tabs of a large tree stays quick', () => {
+      tree(1, ...Array.from({ length: 19 }, (_, index) => 2 + index));
+      rememberSecrets(1, Array.from({ length: 399 }, (_, index) => `value-${index}-${'x'.repeat(4_990)}`));
+      const started = performance.now();
+      for (let round = 0; round < 10; round += 1) for (let tab = 2; tab < 21; tab += 1) scrubReported(tab, `https://a.test/${tab}?q=value-1-xx`, true);
+      // Built for each call, this took about 90 ms a call here (17 s for these 190); built once, well under a second.
+      expect(performance.now() - started).toBeLessThan(2_000);
+      rememberSecrets(1, ['later-value']);
+      expect(scrubReported(2, 'https://a.test/?pw=later-value', true)).toBe('https://a.test/?pw=<redacted>');
+    });
+
+    it('is built again from the openers the browser records when the worker starts, leaving out a tab that closed', async () => {
+      const listing = rebuildOpenerTrees(async () => {
+        // Tab 33 closes while the browser lists the tabs.
+        forgetClosedTab(33);
+        return [{ id: 30 }, { id: 31, openerTabId: 30 }, { id: 32, openerTabId: 31 }, { id: 33, openerTabId: 30 }, { id: 34 }];
+      });
+      await listing;
+      trees.push(30, 31, 32, 33, 34);
+      expect([treeOfTab(30), treeOfTab(31), treeOfTab(32)]).toEqual([30, 30, 30]);
+      expect(treeOfTab(33)).toBeUndefined();
+      expect(treeOfTab(34)).toBeUndefined();
+      rememberSecrets(32, ['restart-secret']);
+      expect(scrubReported(30, 'https://a.test/?pw=restart-secret', true)).toBe('https://a.test/?pw=<redacted>');
+    });
   });
 });

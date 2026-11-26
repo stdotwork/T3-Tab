@@ -1,4 +1,4 @@
-import { relatedTabs } from './opened-tabs';
+import { onTreeClosed, treeOfTab } from './opened-tabs';
 
 /** What stands in text for the part of it that held a hidden value. */
 export const HIDDEN = '<redacted>';
@@ -243,60 +243,125 @@ export function shortScrubber(needles: Iterable<string>): (text: string) => stri
 
 // What the extension still knows about secrets it saw on a tab, so that text it reports later (a tab's title and address,
 // which a form that sends the password in its address puts there) is scrubbed too, with no read between.
+//
+// A tab's own values are the ones its pages held. They are taken out of everything a read of it reports. A form can also
+// be sent by name into another tab of its tree of openers (`opened-tabs.ts`), so the values of every tab of a tree are
+// kept once more for the tree, apart from the tabs' own: a tab's tree values are taken out of its title and address only,
+// in the forms an address holds them, so a short value does not blank the text of the other tabs. A tree value its address
+// holds becomes one of its own, since its page can echo what its address carries.
 const REMEMBER_MS = 30 * 60_000;
 const MAX_TABS = 200;
 const MAX_PER_TAB = 400;
-const remembered = new Map<number, { at: number; needles: Set<string> }>();
+const MAX_TREES = 200;
 
-/**
- * Remembers values (of `MIN_SUBSTRING` characters or more) seen in secret fields of a tab, for it and for every tab of its
- * tree of openers (`relatedTabs`), since a form on it can be sent by name into any of them and put the values in that
- * tab's address. A tab with no such value gets no entry; one it has already is kept for longer.
- */
-export function rememberSecrets(tabId: number, needles: Iterable<string>, now = Date.now()): void {
-  for (const [id, entry] of remembered) if (now - entry.at > REMEMBER_MS) remembered.delete(id);
+interface Remembered {
+  at: number;
+  needles: Set<string>;
+  /** Matchers built from `needles`, dropped whenever they change. */
+  plain?: Matcher;
+  address?: Matcher;
+}
+
+const remembered = new Map<number, Remembered>();
+const byTree = new Map<number, Remembered>();
+onTreeClosed((tree) => byTree.delete(tree));
+
+/** The entry's values as they are matched in a title (`plain`) or in an address, built once until they change. */
+function matcherOf(entry: Remembered, address: boolean): Matcher {
+  return address ? (entry.address ??= matcher(addressForms(entry.needles))) : (entry.plain ??= matcher(entry.needles));
+}
+
+function needlesOf(needles: Iterable<string>): Set<string> {
   const texts = new Set<string>();
   for (const needle of needles) {
     const text = collapse(needle);
     if (text.length >= MIN_SUBSTRING) texts.add(text);
   }
+  return texts;
+}
+
+/** An entry still in time, or `undefined` (and dropped) once it lapsed. */
+function live(entries: Map<number, Remembered>, key: number | undefined, now: number): Remembered | undefined {
+  if (key === undefined) return undefined;
+  const entry = entries.get(key);
+  if (entry !== undefined && now - entry.at > REMEMBER_MS) {
+    entries.delete(key);
+    return undefined;
+  }
+  return entry;
+}
+
+/** Adds `texts` to the entry under `key` and makes it the newest, dropping the oldest past `max`; other maps are untouched. */
+function store(entries: Map<number, Remembered>, key: number, texts: Set<string>, now: number, max: number): void {
+  const entry = live(entries, key, now) ?? { at: now, needles: new Set<string>() };
+  const size = entry.needles.size;
+  for (const text of texts) if (entry.needles.size < MAX_PER_TAB) entry.needles.add(text);
+  if (entry.needles.size !== size) {
+    delete entry.plain;
+    delete entry.address;
+  }
+  entry.at = now;
+  entries.delete(key);
+  entries.set(key, entry);
+  while (entries.size > max) {
+    const oldest = entries.keys().next().value;
+    if (oldest === undefined) break;
+    entries.delete(oldest);
+  }
+}
+
+/**
+ * Remembers values (of `MIN_SUBSTRING` characters or more) seen in secret fields of a tab: as its own, and for its tree of
+ * openers when it has one. A tab with no such value gets no entry; one it has already is kept for longer.
+ */
+export function rememberSecrets(tabId: number, needles: Iterable<string>, now = Date.now()): void {
+  for (const [id, entry] of remembered) if (now - entry.at > REMEMBER_MS) remembered.delete(id);
+  for (const [tree, entry] of byTree) if (now - entry.at > REMEMBER_MS) byTree.delete(tree);
+  const texts = needlesOf(needles);
   if (texts.size === 0) {
     const entry = remembered.get(tabId);
-    if (entry !== undefined) keep(tabId, entry, now);
+    if (entry !== undefined) store(remembered, tabId, texts, now, MAX_TABS);
     return;
   }
-  for (const id of [tabId, ...relatedTabs(tabId)]) {
-    const entry = remembered.get(id) ?? { at: now, needles: new Set<string>() };
-    for (const text of texts) if (entry.needles.size < MAX_PER_TAB) entry.needles.add(text);
-    keep(id, entry, now);
-  }
+  store(remembered, tabId, texts, now, MAX_TABS);
+  const tree = treeOfTab(tabId);
+  if (tree !== undefined) store(byTree, tree, texts, now, MAX_TREES);
 }
 
-/** Stores a tab's entry as its newest, dropping the oldest past `MAX_TABS`. */
-function keep(tabId: number, entry: { at: number; needles: Set<string> }, now: number): void {
-  entry.at = now;
-  remembered.delete(tabId);
-  remembered.set(tabId, entry);
-  while (remembered.size > MAX_TABS) {
-    const oldest = remembered.keys().next().value;
-    if (oldest === undefined) break;
-    remembered.delete(oldest);
-  }
-}
-
+/** The tab's own values: what a read of it takes out of its whole page. */
 export function knownSecrets(tabId: number, now = Date.now()): string[] {
-  const entry = remembered.get(tabId);
-  return entry === undefined || now - entry.at > REMEMBER_MS ? [] : [...entry.needles];
+  const entry = live(remembered, tabId, now);
+  return entry === undefined ? [] : [...entry.needles];
 }
 
 export function forgetSecrets(tabId: number): void {
   remembered.delete(tabId);
 }
 
-/** A tab's title or address as the agent may see it: the values known for the tab taken out, also in their address forms. */
+/**
+ * Makes the values of the tab's tree that its address holds (in any address form) its own, so a read of its page takes
+ * them out of its text too. Called with the address before a read and whenever an address is reported.
+ */
+export function promoteAddressSecrets(tabId: number, address: string, now = Date.now()): void {
+  const tree = live(byTree, treeOfTab(tabId), now);
+  if (tree === undefined || address === '' || !matcherOf(tree, true).has(address)) return;
+  const own = live(remembered, tabId, now)?.needles;
+  const found = [...tree.needles].filter((needle) => own?.has(needle) !== true && matcher(addressForms([needle])).has(address));
+  if (found.length > 0) store(remembered, tabId, new Set(found), now, MAX_TABS);
+}
+
+/**
+ * A tab's title or address as the agent may see it: its own values taken out (in their address forms in an address), then
+ * its tree's values in their address forms. The matcher leaves the first pass's markers alone.
+ */
 export function scrubReported(tabId: number | undefined, text: string, address: boolean): string {
   if (tabId === undefined || text === '') return text;
-  const known = knownSecrets(tabId);
-  if (known.length === 0) return text;
-  return matcher(address ? addressForms(known) : known).scrub(text) ?? text;
+  const now = Date.now();
+  if (address) promoteAddressSecrets(tabId, text, now);
+  let out = text;
+  const own = live(remembered, tabId, now);
+  if (own !== undefined) out = matcherOf(own, address).scrub(out) ?? out;
+  const tree = live(byTree, treeOfTab(tabId), now);
+  if (tree !== undefined) out = matcherOf(tree, true).scrub(out) ?? out;
+  return out;
 }

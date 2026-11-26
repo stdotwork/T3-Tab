@@ -14,7 +14,7 @@ import { defineBackground } from 'wxt/utils/define-background';
 
 import { initCdp } from '../src/cdp';
 import { handleDaemonReply, noteDaemonClose, noteDaemonProblem, noteSocketClosed, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
-import { forgetClosedTab, noteOpenedTab } from '../src/opened-tabs';
+import { forgetClosedTab, noteOpenedTab, rebuildOpenerTrees, replaceTreeTab } from '../src/opened-tabs';
 import { handlePanelRequest } from '../src/panel';
 import { isSidePanelSender } from '../src/panel-security';
 import { forgetPanelTab, keepPanelOnItsTab, openPanelOn } from '../src/panel-tab';
@@ -175,8 +175,11 @@ export default defineBackground(() => {
   chrome.tabs.onRemoved.addListener((tabId) => void sessionStore.forgetTab(tabId));
   chrome.tabs.onRemoved.addListener((tabId) => forgetSecrets(tabId));
   chrome.tabs.onRemoved.addListener((tabId) => forgetClosedTab(tabId));
+  // After the listener above, so a tab that closes while the browser lists the tabs is not added.
+  void rebuildOpenerTrees();
   chrome.tabs.onRemoved.addListener((tabId) => void forgetPanelTab(tabId).catch(() => undefined));
   chrome.tabs.onReplaced.addListener(reportTabCount);
+  chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => replaceTreeTab(addedTabId, removedTabId));
   chrome.tabs.onAttached.addListener(reportTabCount);
   chrome.tabs.onDetached.addListener(reportTabCount);
   chrome.runtime.onStartup.addListener(() => void connect());

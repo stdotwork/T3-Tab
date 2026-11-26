@@ -410,11 +410,10 @@ redacted as any read. What Full access let through this way is listed in `autoAl
 cap: the batch's own part is cut first to leave the opened tabs their room, and a failed step's line (its error held to 1,000 characters) counts in it. The reply waits up to 5 seconds in all for
 those tabs to commit and load (`describeOpenedTabs` in `requests.ts`), and a tab still on its blank page after a second
 is said to be loading. A tab the session does not hold (opened from a tab the owner shared, or not adopted in time) is
-only counted. The opened tab carries no approval and does not become the current tab, and it is given the secret values
-known for its opener (`adoptPopupTab`), so a GET form sent into it does not show its password in the tab's title or
-address. The extension keeps each open tab's tree of openers (`relatedTabs` in `opened-tabs.ts`), since a form can be sent
-by name into any tab of it, one a link opened earlier included, and a value remembered for one tab of the tree is
-remembered for all of them. With `find`, a batch that went through replies with the matching lines only, as `read` with `find`, and sets no
+only counted. The opened tab carries no approval and does not become the current tab. It joins its opener's tree of
+openers (`joinTree` in `opened-tabs.ts`, from `adoptPopupTab`), and the secret values of a tree's tabs are taken out of
+the title and address of all of them (see *Title and address* below), so a GET form sent into it, or by name into a tab a
+link opened earlier, does not show its password there. With `find`, a batch that went through replies with the matching lines only, as `read` with `find`, and sets no
 baseline; an empty `find` is none.
 An `act` reply leaves out what the batch itself set: a changed line whose only change is the value a `fill`, a `type` with a
 ref or a `select` gave it (`packages/server/src/reader/echo.ts`) is settled against the earlier read, so it is not a change, and
@@ -491,8 +490,8 @@ and of the values, not their product:
   most 5,000 fields asked about their style, 200,000 elements). A failed call leaves that list empty and the read goes on.
   The values seen in a tab are also remembered for it (`rememberSecrets` in `secret-text.ts`, memory of the extension's worker:
   400 values a tab, 30 minutes, dropped when the tab closes or the worker restarts), so a later read of the same tab, whose
-  form is gone, still hides them. They are remembered for every open tab of its tree of openers too, the tabs a form on it
-  can be sent into by name; a tab with no such value gets no entry, so tabs without secrets do not push out those of one.
+  form is gone, still hides them. A tab with no such value gets no entry, so tabs without secrets do not push out those
+  of one.
 - *Where a name came from.* Each source of a name that the browser did not set aside carries the nodes it was built from
   (`relatedNodes` with `backendDOMNodeId`, under `attributeValue` for `aria-labelledby` and a script's `ariaLabelledByElements`
   and under `nativeSourceValue` for `<label for>`). A name built from a hidden field, or from a node that is an ancestor of one
@@ -524,10 +523,18 @@ and of the values, not their product:
 - *Title and address.* The tab's title and address come from the browser, not the tree, and a form that sends a password in
   its address (a GET login) puts it in both, in the header of every later reply and in `tabs list`. `scrubReported` takes the
   tab's remembered values out of the title and address (in their address forms) in `readPage`, `tabInfo` (`tabs list`,
-  `open`, `switch`) and the dialog branch of `act`. Before every step, `act` collects the page's secret values again
-  (`rememberPageSecrets`, about 1 ms on a small form and 12 ms on a page of 3,000 masked fields), so a form the owner or an
-  earlier step filled after the last read is covered whatever sends it: a click, a key press, or page script a step sets
-  off, such as a `select` whose change submits.
+  `open`, `switch`) and the dialog branch of `act`. A form can also be sent into another tab, a new one or one it names
+  (`target="results"`), which puts the values in that tab's title and address. So the extension keeps each open tab's
+  tree of openers (`opened-tabs.ts`: from `onCreatedNavigationTarget`, rebuilt from the browser's `openerTabId` when the
+  worker starts, a tab swapped by `tabs.onReplaced` keeping its place) and remembers every value of a tree's tabs once more
+  for the tree (400 values, 200 trees, dropped when the tree's last tab closes, apart from the tabs' own entries, which a
+  tree never pushes out). A tab's tree values are taken out of its title and address only, in their address forms, never
+  out of its page; one its address holds becomes one of its own (`promoteAddressSecrets`), since its page can echo it. Each
+  entry builds its matcher once until its values change. Before a `click`, `press`, `select`, `fill` or `type` step, `act`
+  collects the page's secret values again (`rememberPageSecrets`, about 1 ms on a small form and 12 ms on a page of 3,000
+  masked fields, given up after 1.5 s), and before a `scroll`, `hover` or `wait` only when a field step ran or the document
+  changed since the last collection, so a form the owner or an earlier step filled after the last read is covered whatever
+  sends it: a click, a key press, or page script a step sets off, such as a `select` whose change submits.
 - *The budget.* The steps after the checks run under a time budget of 1.5 s (`budgetMs`). Past it, the analysis stops and
   every name, value, link address and line of text that holds a value the extension knows (or a run of two or more password
   bullets) is hidden whole, and past a second budget every name built from content or from other nodes is hidden whole. The
@@ -545,7 +552,10 @@ other values; a field masked another way (a text input drawn as dots by a script
 outside the value roles draws as text (its length); a secret field inside a closed shadow root that no name was built from
 (the page's list cannot reach it; the checks above reach it only through the tree) and fields past the caps above; secrets of
 a tab after the extension's worker restarted or 30 minutes passed (the memory is gone; the tab's address from before then
-shows as the browser reports it); `run_js`, which is the agent's own code; and a screenshot, which shows what the page draws.
+shows as the browser reports it); a form sent by name into a tab of no tree the extension knows (one whose opener the browser
+did not record, after the worker restarted); `run_js`, which is the agent's own code; and a screenshot, which shows what the
+page draws. A short value of one tab also hides the same text in the titles and addresses of the other tabs of its tree (a
+false positive, on purpose).
 
 ## Sessions and permissions
 
