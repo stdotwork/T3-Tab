@@ -277,11 +277,17 @@ async function describeLanding(
   const described = await describeSessionTab(current, tabId, tabAccess(session));
   const result: TabLoadResult = origin === requested ? { tab: described } : { tab: described, redirectedFrom: requested };
   const readable = async (): Promise<boolean> => await readableAfterLoad(session, tabId, origin, requested, pass);
-  if (!(await readable())) return pass === 'full-access' && origin === requested ? { ...result, unread: FULL_ACCESS_ENDED } : result;
+  // A pass from Full access holds only while T3 confirms the mode, which may have ended since the tab was described.
+  // Then the tab is described again, so its title and address are not shown either.
+  const fullAccessEnded = async (): Promise<TabLoadResult> => {
+    const tab = await describeSessionTab(await registeredSession(session), tabId, tabAccess(session));
+    return { ...result, tab, unread: FULL_ACCESS_ENDED };
+  };
+  if (!(await readable())) return pass === 'full-access' && origin === requested ? await fullAccessEnded() : result;
   // A page too long for the reply to carry whole is left to the read the agent sends anyway, so it is not read twice.
   if (options.skipReadOver !== undefined) {
     const textLength = await pageTextLength(tabId);
-    if (textLength > options.skipReadOver) return { ...result, textLength };
+    if (textLength > options.skipReadOver) return (await readable()) ? { ...result, textLength } : await fullAccessEnded();
   }
   let page: PageReadResult;
   try {
@@ -289,12 +295,7 @@ async function describeLanding(
   } catch (error) {
     return { ...result, unread: error instanceof Error ? error.message : String(error) };
   }
-  // A pass from Full access holds only while T3 confirms the mode, which may have ended during the read. Then the tab is
-  // described again, so its title and address are not shown either.
-  if (!(await readable())) {
-    const tab = await describeSessionTab(await registeredSession(session), tabId, tabAccess(session));
-    return { ...result, tab, unread: FULL_ACCESS_ENDED };
-  }
+  if (!(await readable())) return await fullAccessEnded();
   return { ...result, page };
 }
 

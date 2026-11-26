@@ -21,11 +21,15 @@ const reader = vi.hoisted(() => ({
   reads: [] as Array<{ tab: number; overlapped: boolean }>,
   running: 0,
   duringRead: undefined as (() => Promise<void> | void) | undefined,
+  duringTextLength: undefined as (() => void) | undefined,
 }));
 vi.mock('../src/settle', () => ({
   sleep: async () => undefined,
   settlePage: async () => ({ settled: true, timedOut: false, elapsedMs: 0 }),
-  pageTextLength: async () => reader.textLength,
+  pageTextLength: async () => {
+    reader.duringTextLength?.();
+    return reader.textLength;
+  },
   settleSnapshot: async () => {
     reader.snapshots += 1;
     return { ready: true, revision: reader.pageRevision, layout: 'layout', networkRevision: 0 };
@@ -77,7 +81,7 @@ beforeEach(() => {
   (globalThis as unknown as { chrome: Record<string, unknown> }).chrome.webNavigation = {
     onCommitted: { addListener: () => undefined },
   };
-  Object.assign(reader, { pageRevision: 0, textLength: 100, snapshots: 0, reads: [], running: 0, duringRead: undefined });
+  Object.assign(reader, { pageRevision: 0, textLength: 100, snapshots: 0, reads: [], running: 0, duringRead: undefined, duringTextLength: undefined });
   clock = 1_000_000;
   vi.spyOn(Date, 'now').mockImplementation(() => clock);
 });
@@ -210,6 +214,23 @@ describe('a load that Full access let through', () => {
     const result = await call('tabs.open', { url: `${SHOP}/cart` });
     expect(reader.reads.length).toBeGreaterThan(0);
     expect(result.page).toBeUndefined();
+    expect(result.unread).toBe(FULL_ACCESS_ENDED);
+    expect(result.tab.needsApproval).toBe(true);
+  });
+  it('leaves the length of a long page out too when the thread left Full access while it was measured', async () => {
+    const { call } = await fullAccessSession();
+    let mode = 'full-access';
+    daemon.askDaemon.mockImplementation(async () => ({ runtimeMode: mode }));
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    reader.textLength = 5_000;
+    reader.duringTextLength = () => {
+      mode = 'approval-required';
+      now += 10_000;
+    };
+    const result = await call('tabs.open', { url: `${SHOP}/cart`, skipReadOver: 4_000 });
+    expect(reader.reads).toHaveLength(0);
+    expect(result.textLength).toBeUndefined();
     expect(result.unread).toBe(FULL_ACCESS_ENDED);
     expect(result.tab.needsApproval).toBe(true);
   });
