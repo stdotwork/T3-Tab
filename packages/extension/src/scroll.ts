@@ -83,8 +83,8 @@ export function parseProbe(value: unknown): ScrollProbe | undefined {
 /**
  * Runs in the page's document, in T3-Tab's own world. Walks from the deepest element at the pointer (through open
  * shadow roots) up through its ancestors, noting each scroll position and whether that element can scroll further the
- * way the wheel turned. The walk stops at an element whose `overscroll-behavior` keeps the scroll from passing on to
- * its parent. If it gets to the page, the page counts too, unless its overflow is hidden or clipped. Over a frame of
+ * way the wheel turned. The walk stops at an element that overflows on the wheel's axis and whose `overscroll-behavior`
+ * keeps the scroll from passing on to its parent. If it gets to the page, the page counts too, unless its overflow is hidden or clipped. Over a frame of
  * another document nothing can be read, so it says there is no room and nothing is checked.
  */
 const PROBE = `(x, y, dx, dy) => {
@@ -113,9 +113,12 @@ const PROBE = `(x, y, dx, dy) => {
       const style = getComputedStyle(element);
       if (scrolls(style.overflowY) && roomOn(element.scrollTop, element.scrollHeight, element.clientHeight, dy)) room = true;
       if (scrolls(style.overflowX) && roomOn(element.scrollLeft, element.scrollWidth, element.clientWidth, dx)) room = true;
-      // A scroller that keeps the scroll to itself, at its end or not, does not hand it to the page.
+      // A scroller that really overflows on the axis and keeps the scroll to itself, at its end or not, does not hand it
+      // to the page. One with nothing to scroll is not a scroll container there, and the wheel passes through it.
       const keeps = (value) => value === 'contain' || value === 'none';
-      if ((dy !== 0 && keeps(style.overscrollBehaviorY) && scrolls(style.overflowY)) || (dx !== 0 && keeps(style.overscrollBehaviorX) && scrolls(style.overflowX))) {
+      const holdsY = dy !== 0 && keeps(style.overscrollBehaviorY) && scrolls(style.overflowY) && element.scrollHeight > element.clientHeight;
+      const holdsX = dx !== 0 && keeps(style.overscrollBehaviorX) && scrolls(style.overflowX) && element.scrollWidth > element.clientWidth;
+      if (holdsY || holdsX) {
         passesOn = false;
         break;
       }

@@ -42,7 +42,7 @@ const PAGES = {
   '/tall': page('Tall', '<div style="height:6000px">tall page</div>'),
   '/trap': page('Trap', '<div style="height:6000px">wheel trap</div><script>addEventListener("wheel", (event) => event.preventDefault(), { passive: false })</script>'),
   '/clip': '<!doctype html><html style="overflow:clip"><head><title>Clip</title></head><body><div style="height:6000px">clipped page</div></body></html>',
-  '/contained': '<!doctype html><html><head><title>Contained</title></head><body><div style="height:6000px">tall page</div><div id="box" style="position:fixed;inset:0;overflow:auto;overscroll-behavior:contain"><p>short content</p></div></body></html>',
+  '/contained': '<!doctype html><html><head><title>Contained</title></head><body><div style="height:6000px">tall page</div><div id="box" style="position:fixed;inset:0;overflow:auto;overscroll-behavior:contain"><div style="height:3000px">long content</div></div><script>box.scrollTop = box.scrollHeight</script></body></html>',
   '/inner': '<!doctype html><html><head><title>Inner</title><style>html,body{margin:0;overflow:hidden}</style></head><body><div id="box" style="position:fixed;inset:0;overflow:auto"><div style="height:6000px">inner scroller</div></div></body></html>',
   '/two': page('Two', '<p>second</p>'),
 };

@@ -70,12 +70,13 @@ describe('a wheel scroll', () => {
     expect(probes()).toBe(0);
   });
 
-  it('counts a tab of an unfocused or minimised window as one the owner cannot see', async () => {
+  it('counts a tab of a minimised window as one the owner cannot see, and one of an unfocused window as visible', async () => {
     browser.addTab({ id: tabId + 1, url: 'http://a.test/other', active: true });
     pageSays({ positions: [0, 0], room: true });
+    // An unfocused browser beside a terminal is still on screen.
     browser.windowFocused = false;
-    await expect(scrollWithWheel(tabId + 1, 0, 3000, 80)).rejects.toThrow(/did not scroll/);
-    browser.windowFocused = true;
+    await scrollWithWheel(tabId + 1, 0, 3000, 80);
+    expect(probes()).toBe(0);
     browser.windowState = 'minimized';
     await expect(scrollWithWheel(tabId + 1, 0, 3000, 80)).rejects.toThrow(/did not scroll/);
   });
