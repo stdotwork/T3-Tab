@@ -49,8 +49,9 @@ that the extension opened its welcome tab on install and that the tab's one butt
 opens the real side panel on that tab (read over the DevTools protocol, since Playwright does not list side panels):
 the new-thread screen with the setup card and no setup screen or Start, where a task typed before the helper exists
 waits with Send off; that the panel's helper state goes from missing to connected with no reload and the background
-program started by the browser, and that the side panel's setup card then goes by itself with the typed task kept and
-Send on; that Add for Claude Code writes an entry naming the installed launcher and that entry's `mcp` server
+program started by the browser, and that the side panel's setup card then goes by itself with the typed task kept, and
+Send turns on when the helper found Claude Code or Codex (with neither, the screen says no agent was found and Send
+stays off); that Add for Claude Code writes an entry naming the installed launcher and that entry's `mcp` server
 sees the browser, that running `setup` again over a daemon of another version stops it and the browser reconnects
 to a new one, that `uninstall` removes the helper folder, manifest, state and agent entry and stops the daemon,
 that `scripts/install-test-build.sh` (through a `file://` address) installs the same helper, and that a browser

@@ -187,8 +187,15 @@ export async function checkProductInstall() {
     await sidePanel.until('the setup card gone', `${SETUP_CARD} === null && ${COMPOSER} != null`, RECONNECT_MAX_MS + 10_000);
     const cardGoneMs = Date.now() - setupExited;
     assert((await sidePanel.evaluate(`${COMPOSER}.value`)) === task, 'The task typed before the helper arrived was lost');
-    await sidePanel.until('Send enabled for the typed task', `${SEND}.disabled === false`);
-    console.log(`Product install: with no click in the panel, the setup card went ${cardGoneMs} ms after setup exited, the task typed before is kept and Send is on`);
+    // Send turns on when the helper found an agent to run the task; with none (a machine without Claude Code or Codex), the
+    // screen says so in place of the disabled Start the setup screen had, and Send stays off.
+    const anyAgent = (await panelRequest(serviceWorker, { type: 'panel.setup', refresh: true })).agents.some((agent) => agent.found);
+    if (anyAgent) await sidePanel.until('Send enabled for the typed task', `${SEND}.disabled === false`);
+    else {
+      await sidePanel.until('that no agent was found', "document.body.innerText.includes('No agent found on this machine')");
+      assert((await sidePanel.evaluate(`${SEND}.disabled`)) === true, 'Send is enabled with no agent to run the task');
+    }
+    console.log(`Product install: with no click in the panel, the setup card went ${cardGoneMs} ms after setup exited and the task typed before is kept; ${anyAgent ? 'an agent was found and Send is on' : 'no agent was found, the screen says so and Send stays off'}`);
 
     // 4. The panel's Add for Claude Code writes an entry that points at the installed helper, and that entry runs.
     await panelRequest(serviceWorker, { type: 'panel.addAgent', agent: 'claude' });
