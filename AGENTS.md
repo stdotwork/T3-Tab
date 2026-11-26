@@ -423,7 +423,8 @@ sits lighter than the canvas in dark and darker in light (`T3_CODE_PAINTED_DARK`
 is T3-Tab's own: `packages/extension/icon-source.svg`, rendered to `public/icons/`. T3 Code's mark appears only on the row
 that names T3 Code.
 
-The panel loads the markdown renderer and Settings when they are first needed. It asks the worker on a timer only as a
+The panel bundles Inter Variable's Latin and Latin-ext faces only (`entrypoints/sidepanel/inter.css`); text in another script
+is drawn by the system's fonts through the `--font-sans` fallbacks. The panel loads the markdown renderer and Settings when they are first needed. It asks the worker on a timer only as a
 safety net: the worker's `panel.changed` message, `chrome.storage.onChanged` and tab events bring changes at once. The
 timers are 5 seconds for prompts and sessions, 10 seconds for the helper (3 while it is missing or a screen shows setup
 details), 15 seconds for the list of direct runs (1.5 while one runs) and one minute for the agent and T3 checks. An open

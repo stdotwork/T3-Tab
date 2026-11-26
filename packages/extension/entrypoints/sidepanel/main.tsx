@@ -1,4 +1,4 @@
-import '@fontsource-variable/inter';
+import './inter.css';
 import './styles.css';
 
 import { createRoot } from 'react-dom/client';
