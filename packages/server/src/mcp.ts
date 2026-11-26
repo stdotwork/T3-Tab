@@ -53,7 +53,7 @@ export async function runMcpServer(options: { claimFile?: string } = {}): Promis
   withoutExecution(
     server.registerTool(
       'tabs',
-      { description: 'List, open, switch to or close tabs. A load replies with a short page, or with find only its matching lines.', inputSchema: tabsShape },
+      { description: 'List, open, switch to or close tabs. A load replies with the page, or with find only its matching lines.', inputSchema: tabsShape },
       browserTool('tabs'),
     ),
   );
@@ -62,7 +62,7 @@ export async function runMcpServer(options: { claimFile?: string } = {}): Promis
       'read',
       {
         description:
-          "A page as text: elements with refs (e12), headings and text up to a budget. Later reads return only changes.",
+          "Read a page as text: interactive elements with refs (e12), headings, and the page's text up to a budget. Later reads return only changes.",
         inputSchema: readShape,
       },
       browserTool('read'),

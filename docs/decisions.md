@@ -175,6 +175,8 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   (150 ms on a quiet page, at most a second), which it did not. Models send a `read` or `find` with the load in the same
   turn, before they see its reply, so a page over 4,000 characters is left out of the load's reply and comes with that
   read, and a `read` with `full` right after a load that showed the page says it is unchanged instead of resending it.
+  The `tabs` description says a load replies with "the page", not "a short page": with "short", Haiku asked for `full`
+  with the load and after every action, and paid for each page twice.
 - **A session has a current tab.** With tabs opening in the background, the tab in front no longer says what the agent
   is working on. Calls that name no tab use the last one the session opened, switched to or was handed. The owner moving
   between tabs does not change it, so an action cannot land on a tab the agent did not mean.

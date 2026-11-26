@@ -22,7 +22,7 @@ export const readShape = {
   tab: tab.describe(currentTab),
   url: z.string().optional().describe('Load first (new tab if none).'),
   all: z.boolean().optional().describe('All text, no budget; images too.'),
-  find: find.describe('Literal, case-insensitive; only matching lines.'),
+  find: find.describe('Case-insensitive literal text; returns only matching lines.'),
   regex: z.boolean().optional().describe('find is a regular expression.'),
   ref: z.string().optional().describe("Read only this element's subtree."),
   depth: z.number().min(0).optional().describe('Deepest nesting to show; … marks more inside.'),
