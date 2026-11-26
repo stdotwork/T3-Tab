@@ -56,7 +56,7 @@ function ProjectPicker({
         {value?.title ?? (noProject ? 'No project' : 'Choose a project')}
       </button>
       {open ? (
-        <div className="popover project-popover">
+        <div className="popover project-popover" role="dialog" aria-label="Choose a project">
           <label className="model-search">
             <Search size={ICON.md} aria-hidden="true" />
             <input autoFocus placeholder="Search projects…" value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -118,6 +118,8 @@ function FolderPicker({ value, onChange }: { value: string; onChange: (folder: s
       {open ? (
         <form
           className="popover project-popover project-add"
+          role="dialog"
+          aria-label="Working folder"
           onSubmit={(event) => {
             event.preventDefault();
             onChange(draft.trim());
@@ -225,7 +227,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
   };
 
   return (
-    <ApprovalStack order={live.prompts.map((prompt) => promptCardId(prompt.id))}>
+    <ApprovalStack order={live.prompts.map((prompt) => promptCardId(prompt.id))} keys={live.prompts.map((prompt) => promptCardId(prompt.id))}>
     <div className="screen">
       <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} needsYou={needsYou} />
       <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />

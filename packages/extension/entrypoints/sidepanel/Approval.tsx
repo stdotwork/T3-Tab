@@ -4,16 +4,18 @@
  * row. Every answer's label says what it grants (`approval-model.ts`), and a card never takes focus, so a key meant for
  * the composer cannot answer it.
  *
- * The cards of one screen sit in one `ApprovalStack`, in key order: browser prompts, then the thread's T3 approval. It
- * keeps their locks in one list (500 ms when a card appears, when cards shift around it and when it becomes the keyed
- * card) and listens for Enter and Escape once. Only the keyed card answers: the first one fully on screen. A key answers
- * only a press that began after that card became keyed, never one typed into a field or a menu (`approvalKey`).
+ * The cards of one screen sit in one `ApprovalStack`: browser prompts, then the thread's T3 approval. It keeps their
+ * locks in one list (500 ms when a card appears, when cards shift around it, when it becomes the keyed card and when the
+ * panel is shown again) and listens for Enter and Escape once. Only browser prompts take keys, as T3's own client takes
+ * none for its approvals, and only the keyed one answers: the first prompt fully on screen. A key answers only a press
+ * that began after that card became keyed, never one typed into a field, nor while a popover, menu or dialog is open
+ * (`approvalKey`).
  */
 import { ArrowUpRight, Ellipsis, ShieldAlert, TriangleAlert } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
 import { errorText } from './lib/api';
-import { approvalKey, KeyGate, keyedCard, updateLocks, type ApprovalAction, type ApprovalModel } from './approval-model';
+import { approvalKey, COVERING, KeyGate, keyedCard, lockAll, updateLocks, type ApprovalAction, type ApprovalModel } from './approval-model';
 import { ICON, useDismiss } from './ui';
 
 interface Slot {
@@ -33,10 +35,10 @@ const StackContext = createContext<Stack | undefined>(undefined);
 /** A card counts as on screen when this much of it shows; a card cut by a scroller or the panel's edge does not. */
 const FULLY_SHOWN = 0.98;
 
-/** Holds one screen's cards. `order` is their ids in key order. */
-export function ApprovalStack({ order, children }: { order: readonly string[]; children: ReactNode }): ReactNode {
+/** Holds one screen's cards. `order` is all their ids, top to bottom; `keys` the ones Enter and Escape may answer. */
+export function ApprovalStack({ order, keys, children }: { order: readonly string[]; keys: readonly string[]; children: ReactNode }): ReactNode {
   const [visible, setVisible] = useState<ReadonlySet<string>>(() => new Set());
-  const keyed = keyedCard(order, visible);
+  const keyed = keyedCard(keys, visible);
   const locks = useRef(new Map<string, number>());
   const before = useRef<{ order: readonly string[]; keyed: string | undefined }>({ order: [], keyed: undefined });
   const gate = useRef(new KeyGate());
@@ -56,13 +58,26 @@ export function ApprovalStack({ order, children }: { order: readonly string[]; c
   const slots = useRef(new Map<string, Slot>());
   const keyedNow = useRef(keyed);
   keyedNow.current = keyed;
+  const orderNow = useRef(order);
+  orderNow.current = order;
+  // Shown again after it was hidden: what the cards hold now has not been seen, so none answers for a moment.
+  useEffect(() => {
+    const onShow = (): void => {
+      if (document.visibilityState !== 'visible') return;
+      lockAll(locks.current, orderNow.current, Date.now());
+      gate.current.reset();
+      redraw();
+    };
+    document.addEventListener('visibilitychange', onShow);
+    return () => document.removeEventListener('visibilitychange', onShow);
+  }, []);
   useEffect(() => {
     const onDown = (event: KeyboardEvent): void => {
       const fresh = gate.current.down(event.key);
       const id = keyedNow.current;
       const slot = id === undefined ? undefined : slots.current.get(id);
       if (slot === undefined) return;
-      const answer = approvalKey(event, slot.element);
+      const answer = approvalKey(event, slot.element, document.querySelector(COVERING) !== null);
       if (answer === undefined) return;
       event.preventDefault();
       if (fresh) slot.answer(answer);
@@ -120,7 +135,7 @@ export function ApprovalCard<D extends string>({ id, model, presentation, onDeci
   const keyed = stack.keyed === id;
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
-  const disabled = locked || submitting;
+  const disabled = locked || submitting || model.unanswerable !== undefined;
   const decide = async (decision: D): Promise<void> => {
     if (disabled) return;
     setSubmitting(true);
@@ -188,6 +203,7 @@ export function ApprovalCard<D extends string>({ id, model, presentation, onDeci
           {model.primary === undefined ? null : <AnswerButton action={model.primary} primary disabled={disabled} hint={keyed ? '↵' : undefined} onClick={(decision) => void decide(decision)} />}
           {model.more.length === 0 && onManage === undefined ? null : <MoreMenu actions={model.more} disabled={disabled} onPick={(decision) => void decide(decision)} onManage={onManage} />}
         </div>
+        {model.unanswerable === undefined ? null : <p className="approval-unanswerable">{model.unanswerable}</p>}
         {error === undefined ? null : <p className="error-line approval-error">{error}</p>}
       </div>
     </div>

@@ -146,7 +146,8 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
   const showApproval = view?.approval !== undefined && !(view.approval.kind === 'mcp-elicitation' && live.prompts.length > 0);
   const approval = showApproval ? view?.approval : undefined;
   // As T3 does, the thread's own approval is drawn at its row in the running work log, and above the composer only when
-  // that row is not shown. All the screen's cards share one lock list in key order: browser prompts, then this approval.
+  // that row is not shown. All the screen's cards share one lock list: browser prompts, then this approval, which takes
+  // clicks only, as in T3's own client.
   const inline = approval !== undefined && view !== undefined && approvalInline(view);
   const approvalCard =
     approval === undefined ? undefined : (
@@ -162,7 +163,10 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
   const project = state.projects.find((entry) => entry.id === view?.projectId);
   const needsYou = useNeedsOwner(live, state);
   return (
-    <ApprovalStack order={[...live.prompts.map((prompt) => promptCardId(prompt.id)), ...(approval === undefined ? [] : [t3CardId(approval.requestId)])]}>
+    <ApprovalStack
+      order={[...live.prompts.map((prompt) => promptCardId(prompt.id)), ...(approval === undefined ? [] : [t3CardId(approval.requestId)])]}
+      keys={live.prompts.map((prompt) => promptCardId(prompt.id))}
+    >
     <div className="screen" data-thread-id={screen.id}>
       <TopBar
         title={

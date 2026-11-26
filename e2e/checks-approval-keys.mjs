@@ -6,7 +6,7 @@ import { assert, panelRequest, sleep } from './harness.mjs';
 const SETTLED = 700;
 const session = { id: 'keys-session', name: 'Claude Code' };
 const prompt = (id, tool, extra = {}) => ({ id, origin: 'http://127.0.0.1:41889', tool, session, tab: { id: 4242, title: `Card ${id}` }, ...extra });
-const command = (requestId, options, extra = {}) => ({ requestId, kind: 'command', title: `npm run ${requestId}`, detail: 'in /tmp/keys-project', options, ...extra });
+const command = (requestId, options, extra = {}) => ({ requestId, responseCapability: 'live', kind: 'command', title: `npm run ${requestId}`, detail: 'in /tmp/keys-project', options, ...extra });
 const BOTH = [
   { decision: 'decline', label: 'Decline' },
   { decision: 'acceptForSession', label: 'Always allow this session' },
@@ -92,30 +92,79 @@ export async function checkApprovalKeys({ panelPage: page, serviceWorker }) {
   assert((await responded()).length === 0, `A second click or Enter right after the prompt went answered the T3 approval: ${JSON.stringify(await responded())}`);
   assert(JSON.stringify(await decided()) === JSON.stringify(['p1:allow-once']), `The prompt was answered other than once: ${JSON.stringify(await decided())}`);
   await sleep(SETTLED);
-  assert(JSON.stringify(await keyed()) === JSON.stringify(['r1']), `The T3 approval did not become the keyed card: ${JSON.stringify(await keyed())}`);
+  // As in T3's own client, a T3 approval takes clicks only: never keyed, no key hints, Enter and Escape give nothing.
+  assert((await keyed()).length === 0 && (await card('r1').locator('.key-hint').count()) === 0, `A T3 approval took the keys: ${JSON.stringify(await keyed())}`);
   await page.keyboard.press('Enter');
+  await page.keyboard.press('Escape');
   await sleep(100);
-  assert(JSON.stringify(await responded()) === JSON.stringify(['r1:accept']), `Enter on the settled T3 approval: ${JSON.stringify(await responded())}`);
-  console.log('Approval keys: a T3 approval under a browser prompt was locked when the prompt went; a second click and an Enter at once answered nothing, a later Enter approved it');
+  assert((await responded()).length === 0, `A key answered a T3 approval: ${JSON.stringify(await responded())}`);
+  await card('r1').locator('.answer-btn.primary').click();
+  await sleep(100);
+  assert(JSON.stringify(await responded()) === JSON.stringify(['r1:accept']), `A click on the settled T3 approval: ${JSON.stringify(await responded())}`);
+  console.log('Approval keys: a T3 approval under a browser prompt was locked when the prompt went (a second click and an Enter at once answered nothing); it takes no keys at all, and a later click approved it');
 
   // 5. An Enter still held from the answer before answers nothing on the next card until it is released.
-  await view(command('r2', BOTH));
-  await prompts([prompt('p2', 'act')]);
-  await card('r2').waitFor();
+  await view(null);
+  await prompts([prompt('h1', 'act'), prompt('h2', 'read')]);
+  await promptCard('h2').waitFor();
   await sleep(SETTLED);
   await page.keyboard.down('Enter');
   await sleep(50);
-  await prompts([]);
+  assert((await decided()).includes('h1:allow-once'), `The held Enter did not answer the card it began on: ${JSON.stringify(await decided())}`);
+  await prompts([prompt('h2', 'read')]);
   await sleep(SETTLED);
+  assert(JSON.stringify(await keyed()) === JSON.stringify(['h2']), `The next card is not keyed: ${JSON.stringify(await keyed())}`);
   await page.evaluate(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
   await sleep(100);
-  assert(!(await responded()).includes('r2:accept'), 'A keydown while the Enter that answered the prompt was still held approved the next card');
+  assert(!(await decided()).includes('h2:allow-once'), 'A keydown while the Enter that answered the card before was still held answered the next card');
   await page.keyboard.up('Enter');
   await page.keyboard.press('Enter');
   await sleep(100);
-  assert((await responded()).includes('r2:accept'), `A fresh Enter after the release did not approve: ${JSON.stringify(await responded())}`);
-  assert((await decided()).includes('p2:allow-once'), `The held Enter did not answer the prompt it began on: ${JSON.stringify(await decided())}`);
+  assert((await decided()).includes('h2:allow-once'), `A fresh Enter after the release did not answer: ${JSON.stringify(await decided())}`);
+  await prompts([]);
   console.log('Approval keys: an Enter held through the change of card answered nothing until it was released');
+
+  // Keys never answer a card something covers: with the new-thread screen's project popover open, Enter gives nothing;
+  // once it is closed, it does.
+  await page.locator('#btn-new').click();
+  await page.locator('.hero h1').waitFor();
+  await prompts([prompt('c1', 'act')]);
+  await promptCard('c1').waitFor();
+  await sleep(SETTLED);
+  // T3's project picker, or the folder picker of a direct run: both open a popover with role dialog.
+  await page.locator('.hero button').first().click();
+  await page.locator('.popover[role="dialog"]').waitFor();
+  await blur();
+  await page.keyboard.press('Enter');
+  await sleep(100);
+  assert(!(await decided()).includes('c1:allow-once'), 'Enter answered a card while a popover was open');
+  await page.mouse.click(5, 5);
+  assert((await page.locator('.popover').count()) === 0, 'The popover did not close');
+  await blur();
+  await page.keyboard.press('Enter');
+  await sleep(100);
+  assert((await decided()).includes('c1:allow-once'), `Enter did not answer once the popover closed: ${JSON.stringify(await decided())}`);
+  await prompts([]);
+  await page.locator('#btn-threads').click();
+  await page.locator('.thread-row').filter({ hasText: 'Keys thread' }).first().click();
+  await page.locator('.screen[data-thread-id="keys-thread"]').waitFor();
+  await blur();
+  console.log('Approval keys: with the project popover open, Enter answered nothing; once it closed, Enter answered');
+
+  // Shown again after it was hidden, the panel locks every card for a moment.
+  await prompts([prompt('v1', 'act')]);
+  await promptCard('v1').waitFor();
+  await sleep(SETTLED);
+  assert(!(await promptCard('v1').locator('.answer-btn.primary').isDisabled()), 'The card did not settle');
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  assert(await promptCard('v1').locator('.answer-btn.primary').isDisabled(), 'The card was not locked when the panel was shown again');
+  await page.keyboard.press('Enter');
+  await sleep(100);
+  assert(!(await decided()).includes('v1:allow-once'), 'Enter answered a card right after the panel was shown again');
+  await sleep(SETTLED);
+  assert(!(await promptCard('v1').locator('.answer-btn.primary').isDisabled()), 'The card did not unlock after the panel was shown again');
+  await prompts([]);
+  console.log('Approval keys: the panel shown again locked its cards for a moment');
 
   // 2. A card scrolled out of view is never keyed: the list's first card, and a T3 approval scrolled off the work log.
   await view(null);
@@ -140,21 +189,7 @@ export async function checkApprovalKeys({ panelPage: page, serviceWorker }) {
   assert(afterScroll.at(-1) === `${scrolledKeyed[0]}:allow-once` && !afterScroll.includes('q1:allow-once'), `Enter answered a card out of view: ${JSON.stringify(afterScroll)}`);
   await prompts([]);
   await page.setViewportSize({ width: 400, height: 760 });
-  await view(command('r3', BOTH), { inline: true, before: 14 });
-  await card('r3').waitFor();
-  await page.locator('.timeline').evaluate((timeline) => timeline.scrollTo(0, 0));
-  await sleep(SETTLED);
-  assert((await keyed()).length === 0, `A T3 approval scrolled off the work log is keyed: ${JSON.stringify(await keyed())}`);
-  assert((await card('r3').locator('.key-hint').count()) === 0, 'A card out of view shows the keys');
-  await page.keyboard.press('Enter');
-  await sleep(100);
-  assert(!(await responded()).includes('r3:accept'), 'Enter approved a T3 approval scrolled out of view');
-  await card('r3').scrollIntoViewIfNeeded();
-  await sleep(SETTLED);
-  await page.keyboard.press('Enter');
-  await sleep(100);
-  assert((await responded()).includes('r3:accept'), `Enter did not approve the T3 approval once it was back in view: ${JSON.stringify(await responded())}`);
-  console.log(`Approval keys: with the prompt list scrolled, Enter answered ${scrolledKeyed[0]}, not the first card; a T3 approval scrolled off the work log took no key until it was back`);
+  console.log(`Approval keys: with the prompt list scrolled, Enter answered ${scrolledKeyed[0]}, not the first card out of view`);
 
   // 3. No answer T3 did not offer: without accept there is no primary button and Enter gives nothing; without decline, Escape.
   await view(command('r4', [{ decision: 'acceptForSession', label: 'Always allow this session' }, { decision: 'cancel', label: 'Cancel' }]));
@@ -169,22 +204,39 @@ export async function checkApprovalKeys({ panelPage: page, serviceWorker }) {
   assert(!(await responded()).some((entry) => entry.startsWith('r4:')), `A key gave an answer T3 did not offer: ${JSON.stringify(await responded())}`);
   console.log('Approval keys: a T3 approval offering neither accept nor decline drew only More, and Enter and Escape gave nothing');
 
-  // Escape only from the panel body or the card; T3's warning on an answer; the card named by its ask line.
+  // T3's warning on an answer; the card named by its ask line; no answer once T3 says the provider is gone.
   await view(command('r5', [{ decision: 'decline', label: 'Decline' }, { decision: 'accept', label: 'Approve', warning: 'Runs outside the sandbox' }]));
   await card('r5').waitFor();
   await sleep(SETTLED);
   const approve = card('r5').locator('.answer-btn.primary');
   assert((await approve.getAttribute('aria-description')) === 'Runs outside the sandbox' && (await approve.locator('.answer-warning').count()) === 1, 'T3\'s warning is not shown on its answer');
   await page.getByRole('group', { name: 'Run npm run r5' }).waitFor();
+  await view(command('r6', BOTH, { responseCapability: 'not_resumable' }));
+  await card('r6').waitFor();
+  await sleep(SETTLED);
+  const goneButtons = await card('r6').locator('.answer-btn').evaluateAll((buttons) => buttons.map((button) => button.disabled));
+  assert(goneButtons.length === 3 && goneButtons.every(Boolean), `A T3 approval T3 cannot take an answer for has live buttons: ${JSON.stringify(goneButtons)}`);
+  await card('r6').getByText('Provider process is gone. Interrupt or restart the run to respond.').waitFor();
+  await card('r6').locator('.answer-btn.primary').click({ force: true });
+  await sleep(100);
+  assert(!(await responded()).some((entry) => entry.startsWith('r6:')), `A T3 approval whose provider is gone was answered: ${JSON.stringify(await responded())}`);
+  console.log('Approval keys: T3\'s warning is on its answer; the card is named by its ask; with the provider gone the card says so in T3\'s words and takes no answer');
+
+  // Escape declines only from the panel body or the card, never from another control.
+  await view(null);
+  await prompts([prompt('x1', 'act')]);
+  await promptCard('x1').waitFor();
+  await sleep(SETTLED);
   await page.locator('#btn-settings').focus();
   await page.keyboard.press('Escape');
   await sleep(100);
-  assert(!(await responded()).includes('r5:decline'), 'Escape on another control declined the card');
+  assert(!(await decided()).includes('x1:decline'), 'Escape on another control declined the card');
   await blur();
   await page.keyboard.press('Escape');
   await sleep(100);
-  assert((await responded()).includes('r5:decline'), `Escape from the panel body did not decline: ${JSON.stringify(await responded())}`);
-  console.log('Approval keys: Escape on another control did nothing and from the panel body declined; T3\'s warning is on its answer; the card is named by its ask');
+  assert((await decided()).includes('x1:decline'), `Escape from the panel body did not decline: ${JSON.stringify(await decided())}`);
+  await prompts([]);
+  console.log('Approval keys: Escape on another control did nothing, and from the panel body declined');
 
   // 4. A goto names its address and the tab it moves, and says when that is another tab.
   await view(null);

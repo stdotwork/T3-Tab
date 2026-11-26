@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { approvalKey, BUTTON_DELAY_MS, KeyGate, keyedCard, promptApproval, t3Approval, updateLocks, type ApprovalModel } from '../entrypoints/sidepanel/approval-model';
+import { approvalKey, BUTTON_DELAY_MS, KeyGate, keyedCard, lockAll, promptApproval, t3Approval, updateLocks, type ApprovalModel } from '../entrypoints/sidepanel/approval-model';
 import { t3ThreadView, type PendingApproval } from '../entrypoints/sidepanel/lib/thread-model';
 import type { PermissionPrompt } from '../src/permissions';
 
@@ -11,7 +11,7 @@ const prompt = (tool: PermissionPrompt['tool'], extra: { tab?: PermissionPrompt[
 };
 /** The answers in the order a card draws them: Decline, the primary one, then each under More. */
 const answers = (model: ApprovalModel): string[] => [model.decline?.decision, model.primary?.decision, ...model.more.map((action) => action.decision)].filter((decision): decision is string => decision !== undefined);
-const t3 = (options: PendingApproval['options'], extra: Partial<PendingApproval> = {}): PendingApproval => ({ requestId: 'r1', kind: 'command', title: 'npm run build', options, ...extra });
+const t3 = (options: PendingApproval['options'], extra: Partial<PendingApproval> = {}): PendingApproval => ({ requestId: 'r1', responseCapability: 'live', kind: 'command', title: 'npm run build', options, ...extra });
 
 describe('one approval card for both kinds of ask', () => {
   it('draws a browser prompt and a T3 approval with the same parts in T3 order', () => {
@@ -85,11 +85,27 @@ describe('a T3 approval draws only the answers T3 offers', () => {
     expect(model.decline).toEqual({ decision: 'decline', label: 'Decline' });
   });
 
+  it('offers no answer unless T3 says the provider can still take one, in T3\'s words', () => {
+    expect(t3Approval(t3([{ decision: 'accept', label: 'Approve' }])).unanswerable).toBeUndefined();
+    const gone = t3Approval(t3([{ decision: 'accept', label: 'Approve' }], { responseCapability: 'not_resumable' }));
+    expect(gone.unanswerable).toBe('Provider process is gone. Interrupt or restart the run to respond.');
+    const view = (capability?: { type: string }) =>
+      t3ThreadView({
+        thread: { id: 't', title: 'Thread' },
+        runs: [],
+        runtimeRequests: [{ id: 'r8', kind: 'approval', status: 'pending', ...(capability === undefined ? {} : { responseCapability: capability }) }],
+        visibleTurnItems: [{ item: { id: 'item-8', type: 'approval_request', status: 'waiting', requestId: 'r8', requestKind: 'command', prompt: 'ls' } }],
+      } as never).approval?.responseCapability;
+    expect(view({ type: 'live' })).toBe('live');
+    expect(view({ type: 'message' })).toBe('not_resumable');
+    expect(view()).toBe('not_resumable');
+  });
+
   it('gives an approval without options T3\'s own default answers', () => {
     const view = t3ThreadView({
       thread: { id: 't', title: 'Thread' },
       runs: [],
-      runtimeRequests: [{ id: 'r9', kind: 'approval', status: 'pending' }],
+      runtimeRequests: [{ id: 'r9', kind: 'approval', status: 'pending', responseCapability: { type: 'live' } }],
       visibleTurnItems: [{ item: { id: 'item-9', type: 'approval_request', status: 'waiting', requestId: 'r9', requestKind: 'file-read', prompt: '/etc/hosts' } }],
     } as never);
     expect(view.approval).toMatchObject({ requestId: 'r9', entryId: 'item-9' });
@@ -124,6 +140,14 @@ describe('locks shared by every card of a screen', () => {
     expect(lockedAt(locks, 'prompt:a', 5_000)).toBe(false);
     step(locks, seen, ['prompt:a', 'prompt:b'], undefined, 9_000);
     expect(lockedAt(locks, 'prompt:b', 9_000)).toBe(false);
+  });
+
+  it('locks every card when the panel is shown again', () => {
+    const locks = new Map<string, number>([['prompt:a', 0]]);
+    lockAll(locks, ['prompt:a', 't3:r1'], 2_000);
+    expect(lockedAt(locks, 'prompt:a', 2_000 + BUTTON_DELAY_MS - 1)).toBe(true);
+    expect(lockedAt(locks, 't3:r1', 2_000 + BUTTON_DELAY_MS - 1)).toBe(true);
+    expect(lockedAt(locks, 't3:r1', 2_000 + BUTTON_DELAY_MS)).toBe(false);
   });
 
   it('keys the first card fully on screen, and none when none is', () => {
@@ -184,6 +208,11 @@ describe('the keys that answer a card', () => {
     expect(approvalKey(key('Escape', { defaultPrevented: true }), card)).toBeUndefined();
     expect(approvalKey(key('Enter', { isComposing: true }), card)).toBeUndefined();
     expect(approvalKey(key('Enter', { keyCode: 229 }), card)).toBeUndefined();
+  });
+
+  it('takes no key while a popover, menu or dialog is open over the panel', () => {
+    expect(approvalKey(key('Enter'), card, true)).toBeUndefined();
+    expect(approvalKey(key('Escape'), card, true)).toBeUndefined();
   });
 
   it('leaves Enter on a button to that button', () => {

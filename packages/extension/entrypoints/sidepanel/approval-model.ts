@@ -33,6 +33,8 @@ export interface ApprovalModel<D extends string = string> {
   primary?: ApprovalAction<D>;
   /** Everything else, in T3's order, behind More. */
   more: ApprovalAction<D>[];
+  /** Why no answer can be given now; every answer is disabled while it is set. */
+  unanswerable?: string;
 }
 
 const plain = (text: string): string => [...text].filter((character) => (character.codePointAt(0) ?? 0) >= 32).join('');
@@ -103,6 +105,8 @@ export function t3Approval(approval: PendingApproval): ApprovalModel {
     ...(decline === undefined ? {} : { decline: action(decline) }),
     ...(primary === undefined ? {} : { primary: action(primary) }),
     more: options.filter((option) => option.decision !== 'decline' && option.decision !== 'accept').map(action),
+    // T3's own words when the provider can no longer take an answer (TimelinePendingApprovalRow).
+    ...(approval.responseCapability === 'live' ? {} : { unanswerable: 'Provider process is gone. Interrupt or restart the run to respond.' }),
   };
 }
 
@@ -127,12 +131,17 @@ export interface KeyLike {
 /** True for Enter and Escape, the two keys that can answer a card. */
 export const isAnswerKey = (key: string): boolean => key === 'Enter' || key === 'Escape' || key === 'Esc';
 
+/** Open popovers, menus and dialogs: while one is open it may cover a card, so no key answers one. */
+export const COVERING = '.popover, [role="dialog"], [role="menu"]';
+
 /**
  * Which answer a key gives the keyed card, if any: Enter the primary answer, Escape Decline. Only with no modifier, not
- * held down, not mid-composition, and never while the owner types in a field or works a menu or dialog. Enter on a
- * button or link is that control's own. Escape declines only from the panel's body or from inside the card itself.
+ * held down, not mid-composition, never while something `covered` the panel (`COVERING`), and never while the owner
+ * types in a field or works a menu or dialog. Enter on a button or link is that control's own. Escape declines only from
+ * the panel's body or from inside the card itself.
  */
-export function approvalKey(event: KeyLike, card?: { contains: (node: never) => boolean } | null): 'primary' | 'decline' | undefined {
+export function approvalKey(event: KeyLike, card?: { contains: (node: never) => boolean } | null, covered = false): 'primary' | 'decline' | undefined {
+  if (covered) return undefined;
   if (event.defaultPrevented || event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return undefined;
   if (event.isComposing === true || event.keyCode === 229) return undefined;
   const answer = event.key === 'Enter' ? 'primary' : event.key === 'Escape' || event.key === 'Esc' ? 'decline' : undefined;
@@ -162,7 +171,18 @@ export function updateLocks(locks: Map<string, number>, before: { order: readonl
   if (keyed !== undefined && keyed !== before.keyed) locks.set(keyed, Math.max(locks.get(keyed) ?? 0, until));
 }
 
-/** The card Enter and Escape answer: the first in key order that is fully on screen. None when no card is. */
+/**
+ * Locks every card for `BUTTON_DELAY_MS`, as when the panel is shown again after it was hidden: the owner has not seen
+ * what the cards hold now.
+ */
+export function lockAll(locks: Map<string, number>, order: readonly string[], now: number): void {
+  for (const id of order) locks.set(id, Math.max(locks.get(id) ?? 0, now + BUTTON_DELAY_MS));
+}
+
+/**
+ * The card Enter and Escape answer: the first in key order that is fully on screen. None when no card is. Only browser
+ * prompts take keys; a T3 approval, as in T3's own client, is answered by click.
+ */
 export function keyedCard(order: readonly string[], visible: ReadonlySet<string>): string | undefined {
   return order.find((id) => visible.has(id));
 }

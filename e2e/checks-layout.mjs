@@ -325,7 +325,7 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
         { kind: 'user', id: 'u1', text: 'Restyle the checkout button and check the build', at: Date.now() - 120_000 },
         { kind: 'work', id: 'w1', running: true, startedAt: Date.now() - 100_000, entries: [{ id: 'e1', icon: 'edit', label: 'Edited checkout.css', status: 'done' }, { id: 'e2', icon: 'approval', label: 'Waiting for approval', status: 'waiting' }] },
       ],
-      approval: { requestId: 'r1', ...(inline ? { entryId: 'e2' } : {}), kind: 'command', title: command, detail: 'in /tmp/virtus-umbrella', options: [{ decision: 'decline', label: 'Decline' }, { decision: 'acceptForSession', label: 'Always allow this session' }, { decision: 'accept', label: 'Approve' }] },
+      approval: { requestId: 'r1', responseCapability: 'live', ...(inline ? { entryId: 'e2' } : {}), kind: 'command', title: command, detail: 'in /tmp/virtus-umbrella', options: [{ decision: 'decline', label: 'Decline' }, { decision: 'acceptForSession', label: 'Always allow this session' }, { decision: 'accept', label: 'Approve' }] },
     });
     client.watches.set('layout-approval', { listeners: new Set(), view: window.__layoutApproval(true), stop() {} });
   });

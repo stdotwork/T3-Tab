@@ -301,6 +301,7 @@ code.approval-subject { font: 400 var(--text-xs)/20px ui-monospace, 'SF Mono', M
 .approval-menu .menu-row:disabled:hover { background: none; }
 .approval-manage { color: var(--muted-fg); font-size: var(--text-sm); }
 .approval-error { margin-top: 4px; }
+.approval-unanswerable { margin-top: 4px; color: var(--app-theme-warning-foreground); font-size: var(--text-xs); }
 .queued-list { display: flex; flex-direction: column; gap: 1px; padding: 4px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); max-height: 132px; overflow-y: auto; flex: none; }
 .queued-list li { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 2px 4px 2px 8px; border-radius: var(--radius); font-size: var(--text-sm); }
 .queued-list small { flex: none; color: var(--muted-fg); }

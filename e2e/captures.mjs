@@ -346,9 +346,9 @@ try {
     ...shared, id: 'asks', title: 'Add a monthly summary to the budget view', running: true, activeRunId: 'run-asks', runtimeMode: 'approval-required', projectId: 'p1',
     rows: [
       { kind: 'user', id: 'u1', text: 'Add a monthly summary to the budget view and run the tests.', at: now - 120_000 },
-      { kind: 'work', id: 'w1', running: true, startedAt: now - 100_000, entries: [{ id: 'e1', icon: 'edit', label: 'Changed MonthlySummary.tsx +42 −0', status: 'done' }, { id: 'e2', icon: 'command', label: 'pnpm test', status: 'waiting' }] },
+      { kind: 'work', id: 'w1', running: true, startedAt: now - 100_000, entries: [{ id: 'e1', icon: 'edit', label: 'Changed MonthlySummary.tsx +42 −0', status: 'done' }, { id: 'e2', icon: 'approval', label: 'Waiting for approval', status: 'waiting' }] },
     ],
-    approval: { requestId: 'r1', kind: 'command', title: 'pnpm test', detail: 'in /home/dev/budget-tracker', options: [{ decision: 'decline', label: 'Decline' }, { decision: 'acceptForSession', label: 'Always allow this session' }, { decision: 'accept', label: 'Approve' }] },
+    approval: { requestId: 'r1', responseCapability: 'live', entryId: 'e2', kind: 'command', title: 'pnpm test', detail: 'in /home/dev/budget-tracker', options: [{ decision: 'decline', label: 'Decline' }, { decision: 'acceptForSession', label: 'Always allow this session' }, { decision: 'accept', label: 'Approve' }] },
   };
   await injectT3(panel, rows);
   await seed(panel, 'busy', running);
