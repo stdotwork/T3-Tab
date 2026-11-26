@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { formatRead, MAX_OUTPUT_CHARS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
-import { ax, buttonPage, feed, longArticle, page, signInPage } from './ax-fixtures.js';
+import { ax, buttonPage, docsPage, feed, longArticle, page, signInPage } from './ax-fixtures.js';
 
 describe('reading a page', () => {
   it('returns the full text on the first read, with a header line', async () => {
@@ -193,6 +193,33 @@ describe('text in the default view', () => {
     expect(text.length).toBeLessThanOrEqual(TEXT_BUDGET);
     expect(text.length).toBeGreaterThan(TEXT_BUDGET - 200);
     expect(lines.at(-1)).toMatch(/^\(\d+ text lines left out, \d+ characters: find searches them, read a ref for one part, all for the whole page\)$/);
+  });
+
+  it('folds a long sidebar to one line so the main text has room, and keeps every link in reach', async () => {
+    const state = new TabState();
+    const reply = await formatRead(state, 's1', page(docsPage(500, 60)), {});
+    const lines = reply.split('\n');
+    expect(lines[1]).toBe('e1 navigation "Sidebar" (500 links; read e1): "Guide to topic 0", "Guide to topic 1", "Guide to topic 2", "Guide to topic 3", …');
+    expect(reply).not.toContain('e2 link "Guide to topic 0"');
+    expect(lines[2]).toBe('# Getting started');
+    // The text, with its links written in.
+    expect(lines[3]).toBe('"Paragraph 0 explains one part of the subject, in words, and then points to [related page 0](e502) for the details that this page leaves out."');
+    expect(reply).toContain('e562 button "Edit this page"');
+    expect(lines.at(-1)).toMatch(/^\(\d+ text lines left out, \d+ characters, \d+ links in them: find searches them/);
+    // The sidebar's ref lists its links with the refs they had all along; find reaches one in the folded list and one in
+    // text the budget left out.
+    const sidebar = await formatRead(state, 's1', page(docsPage(500, 60)), { ref: 'e1' });
+    expect(sidebar).toContain('  e2 link "Guide to topic 0"');
+    expect(await formatRead(state, 's1', page(docsPage(500, 60)), { find: 'topic 499' })).toContain('e501 link "Guide to topic 499"');
+    expect(await formatRead(state, 's1', page(docsPage(500, 60)), { find: 'related page 59' })).toContain('[related page 59](e561)');
+    // A later read shows only what changed, as before.
+    expect(await formatRead(state, 's1', page(docsPage(500, 60)), {})).toBe('tab 7\nNo changes since the last read.');
+  });
+
+  it('leaves a page that fits as it is', async () => {
+    const reply = await formatRead(new TabState(), 's1', page(docsPage(20, 3)), {});
+    expect(reply).toContain('  e2 link "Guide to topic 0"');
+    expect(reply).toContain('  e21 link "Guide to topic 19"');
   });
 
   it('gives text no more room than the cap leaves after the elements', async () => {

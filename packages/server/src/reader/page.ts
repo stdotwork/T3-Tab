@@ -2,7 +2,7 @@ import type { PageReadResult } from '@t3-tab/protocol';
 
 import { elideEchoes, type SetValue } from './echo.js';
 import { findLines } from './find.js';
-import { type Keep, MORE_INSIDE, RefGoneError, renderLines, type RenderedLine, truncate } from './format.js';
+import { collapseGroups, type Keep, MORE_INSIDE, RefGoneError, type RenderedLine, renderView, truncate, type View } from './format.js';
 import { RefTable } from './refs.js';
 import { createSmartDiff } from './smart-diff.js';
 
@@ -129,9 +129,9 @@ export async function formatRead(
   const find = options.find === '' ? undefined : options.find;
   // A search covers every node unless the caller narrowed it to the default view.
   const all = options.all ?? find !== undefined;
-  let rendered: RenderedLine[];
+  let view: View;
   try {
-    rendered = renderLines(page.nodes, state.refTable, {
+    view = renderView(page.nodes, state.refTable, {
       all,
       target,
       depth: options.depth,
@@ -146,6 +146,7 @@ export async function formatRead(
     }
     throw error;
   }
+  const rendered = view.lines;
   const lines = rendered.map((item) => item.line);
 
   if (find !== undefined) {
@@ -169,8 +170,11 @@ export async function formatRead(
   const budget = all || options.ref !== undefined ? Number.POSITIVE_INFINITY : TEXT_BUDGET;
   const whole = (): string => {
     if (all) return limit(`${header}\n${text}`);
-    const view = withinBudget(rendered, budget, header.length);
-    return limit(`${header}\n${view.text}${depthNote}`, view.note);
+    // Long lists of links or buttons give way to one line each where the page's text would otherwise get no room.
+    const room = MAX_OUTPUT_CHARS - NOTE_ROOM - header.length;
+    const shown = options.ref === undefined && options.depth === undefined ? collapseGroups(view, room, budget) : rendered;
+    const within = withinBudget(shown, budget, header.length);
+    return limit(`${header}\n${within.text}${depthNote}`, within.note);
   };
   // What the batch itself set is no news to the agent: the earlier read is settled to show it already.
   const echoes =
@@ -241,9 +245,8 @@ function withinBudget(rendered: RenderedLine[], budget: number, headerLength: nu
     .filter((item, index) => !item.text || shown.has(index))
     .map((item) => item.line)
     .join('\n');
-  const left = candidates.filter((item) => !shown.has(item.index));
-  const chars = left.reduce((sum, item) => sum + textLength(rendered[item.index]?.line ?? ''), 0);
-  return { text, note: left.length === 0 ? undefined : leftOutNote(left.length, chars) };
+  const left = candidates.filter((item) => !shown.has(item.index)).map((item) => rendered[item.index]?.line ?? '');
+  return { text, note: left.length === 0 ? undefined : leftOutNote(left) };
 }
 
 /**
@@ -267,25 +270,21 @@ function diffWithinBudget(
   });
   const shown = chooseText(candidates, Math.min(budget, Math.max(0, room - fixed)));
   const hunks: string[][] = [];
-  let left = 0;
-  let chars = 0;
+  const left: string[] = [];
   for (const [index, line] of lines.entries()) {
     if (line === '@@') {
       hunks.push([line]);
       continue;
     }
     if (isText(line) && !shown.has(index)) {
-      if (!line.startsWith(' ')) {
-        left += 1;
-        chars += textLength(line.slice(1));
-      }
+      if (!line.startsWith(' ')) left.push(line.slice(1));
       continue;
     }
     hunks.at(-1)?.push(line);
   }
   // A hunk whose changes were all left out says nothing.
   const changed = hunks.filter((hunk) => hunk.some((line) => line.startsWith('+') || line.startsWith('-')));
-  return { text: changed.flat().join('\n'), note: left === 0 ? undefined : leftOutNote(left, chars, 'changed ') };
+  return { text: changed.flat().join('\n'), note: left.length === 0 ? undefined : leftOutNote(left, 'changed ') };
 }
 
 /** The characters of text a printed text line holds: without its indent and quotes. */
@@ -293,9 +292,16 @@ function textLength(line: string): number {
   return Math.max(0, line.trim().length - 2);
 }
 
-function leftOutNote(lines: number, chars: number, kind = ''): string {
-  return `(${lines} ${kind}text lines left out, ${chars} characters: find searches them, read a ref for one part, all for the whole page)`;
+/** Says how much text a reply left out, and the links written into it, `[name](e12)`, which went with it. */
+function leftOutNote(lines: string[], kind = ''): string {
+  const chars = lines.reduce((sum, line) => sum + textLength(line), 0);
+  const links = lines.reduce((sum, line) => sum + (line.match(LINK_MARK) ?? []).length, 0);
+  const withLinks = links === 0 ? '' : `, ${links} ${links === 1 ? 'link' : 'links'} in them`;
+  return `(${lines.length} ${kind}text lines left out, ${chars} characters${withLinks}: find searches them, read a ref for one part, all for the whole page)`;
 }
+
+/** A link written into a line of text. */
+const LINK_MARK = /\]\(e\d+[) ]/g;
 
 const TRUNCATED = `\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use find, a ref subtree or depth to read the rest.`;
 

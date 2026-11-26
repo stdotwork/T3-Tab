@@ -1,7 +1,7 @@
 import type { AxNode } from '@t3-tab/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { RefGoneError, renderLines, renderTree } from '../src/reader/format.js';
+import { collapseGroups, RefGoneError, renderLines, renderTree, renderView } from '../src/reader/format.js';
 import { RefTable } from '../src/reader/refs.js';
 import { ax, signInPage } from './ax-fixtures.js';
 
@@ -302,7 +302,10 @@ describe('tree to text', () => {
     const lines = renderTree(code, new RefTable(), { all: false });
     expect(performance.now() - start).toBeLessThan(2_000);
     expect(lines.at(-1)).toBe('e1 button "Copy"');
-    expect(lines[0]).toMatch(/^"token0 token2 .*…"$/);
+    // Split into lines of up to 1,000 characters between its text nodes.
+    expect(lines[0]).toMatch(/^"token0 token2 /);
+    expect(lines.length).toBeGreaterThan(100);
+    expect(lines.every((line) => line.length <= 1_002)).toBe(true);
     // 50 texts, each 400 wrappers deep.
     const nested: AxNode[] = [ax(1, 'RootWebArea', '', [])];
     for (let branch = 0; branch < 50; branch += 1) {
@@ -324,13 +327,107 @@ describe('tree to text', () => {
 
   it('leaves out separators between links and icon-font glyphs', () => {
     const nodes = [
-      ax(1, 'RootWebArea', '', [2, 3, 4, 5]),
-      ax(2, 'link', 'new'),
-      ax(3, 'StaticText', ' | '),
-      ax(4, 'link', 'past'),
-      ax(5, 'StaticText', '\ue00c In stock'),
+      ax(1, 'RootWebArea', '', [2, 6]),
+      ax(2, 'generic', '', [3, 4, 5]),
+      ax(3, 'link', 'new'),
+      ax(4, 'StaticText', ' | '),
+      ax(5, 'link', 'past'),
+      ax(6, 'paragraph', '', [7]),
+      ax(7, 'StaticText', '\ue00c In stock'),
     ];
     expect(renderTree(nodes, new RefTable(), { all: false })).toEqual(['e1 link "new"', 'e2 link "past"', '"In stock"']);
+  });
+
+  it('writes the links of a paragraph into its line of text, with the refs their own lines would carry', () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 9]),
+      ax(2, 'paragraph', '', [3, 4, 6, 7]),
+      ax(3, 'StaticText', 'A web browser is an '),
+      ax(4, 'link', 'application', [5]),
+      ax(5, 'StaticText', 'application'),
+      ax(6, 'StaticText', ' for reading '),
+      ax(7, 'generic', '', [8], { ignored: true }),
+      ax(8, 'link', 'websites', [10]),
+      ax(10, 'StaticText', 'websites'),
+      ax(9, 'button', 'Share'),
+    ];
+    const refs = new RefTable();
+    const lines = renderLines(nodes, refs, { all: false });
+    expect(lines.map((item) => item.line)).toEqual(['"A web browser is an [application](e1) for reading [websites](e2)"', 'e3 button "Share"']);
+    expect(lines[0]?.text).toBe(true);
+    // The ref is the link's own: reading it shows the link.
+    expect(renderTree(nodes, refs, { all: false, target: 8 })).toEqual(['e2 link "websites"']);
+    // A search shows where each link goes.
+    nodes[3] = { ...nodes[3]!, props: { url: 'https://a.test/wiki/Application' } };
+    expect(renderTree(nodes, new RefTable(), { all: true, uncut: true, linkAddresses: 'all', pageUrl: 'https://a.test/wiki/Browser' })[0]).toBe(
+      '"A web browser is an [application](e1 → /wiki/Application) for reading [websites](e2)"',
+    );
+  });
+
+  it('keeps a line of links with a few words between them as a list of links', () => {
+    // A news site's story line: its links are most of its text.
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2]),
+      ax(2, 'generic', '', [3, 4, 5, 6, 7, 8, 9]),
+      ax(3, 'StaticText', '54 points by '),
+      ax(4, 'link', 'someone'),
+      ax(5, 'StaticText', ' '),
+      ax(6, 'link', '2 hours ago'),
+      ax(7, 'StaticText', ' | '),
+      ax(8, 'link', 'hide'),
+      ax(9, 'link', '42 comments'),
+    ];
+    expect(renderTree(nodes, new RefTable(), { all: false })).toEqual([
+      '"54 points by"',
+      'e1 link "someone"',
+      'e2 link "2 hours ago"',
+      'e3 link "hide"',
+      'e4 link "42 comments"',
+    ]);
+  });
+
+  it('keeps a line headed by a link, such as a product or a search result, as its link and its text', () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2]),
+      ax(2, 'listitem', '', [3, 4]),
+      ax(3, 'link', 'Day pack'),
+      ax(4, 'StaticText', ' Twenty litres, a hip belt and a rain cover.'),
+    ];
+    expect(renderTree(nodes, new RefTable(), { all: false })).toEqual(['e1 link "Day pack"', '"Twenty litres, a hip belt and a rain cover."']);
+  });
+
+  it('keeps a link that is a box of its own beside text out of the text', () => {
+    // A list item holding only a link, and a link beside a block of text: neither sits in running text.
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 5]),
+      ax(2, 'list', '', [3]),
+      ax(3, 'listitem', '', [4]),
+      ax(4, 'link', 'Pricing'),
+      ax(5, 'generic', '', [6, 7]),
+      ax(6, 'link', 'Docs'),
+      ax(7, 'paragraph', '', [8]),
+      ax(8, 'StaticText', 'Everything about the product, in one place.'),
+    ];
+    expect(renderTree(nodes, new RefTable(), { all: false })).toEqual(['e1 link "Pricing"', 'e2 link "Docs"', '"Everything about the product, in one place."']);
+  });
+
+  it('splits a paragraph too long for one line between its pieces, never inside a link', () => {
+    const children: number[] = [];
+    const extra: AxNode[] = [];
+    for (let index = 0; index < 40; index += 1) {
+      const text = 100 + index * 3;
+      children.push(text, text + 1);
+      extra.push(ax(text, 'StaticText', `Sentence ${index} says something about the subject at some length. `), ax(text + 1, 'link', `source ${index}`));
+    }
+    const nodes = [ax(1, 'RootWebArea', '', [2]), ax(2, 'paragraph', '', children), ...extra];
+    const lines = renderTree(nodes, new RefTable(), { all: false });
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(1_002);
+      expect(line).not.toContain('…');
+      expect(line.match(/\[/g)?.length).toBe(line.match(/\]\(e\d+\)/g)?.length);
+    }
+    expect(lines.join(' ')).toContain('[source 39](e40)');
   });
 
   it('survives a node that lists itself as a child', () => {
@@ -358,5 +455,67 @@ describe('refs', () => {
     renderTree(signInPage(), refs, { all: false });
     expect(refs.backendIdOf('e3')).toBe(6);
     expect(refs.backendIdOf('e99')).toBeUndefined();
+  });
+});
+
+describe('long lists of links', () => {
+  it('finds the long lists of links or buttons, outermost first, and none holding a heading or a field', () => {
+    const links = (from: number, count: number): AxNode[] => Array.from({ length: count }, (_, index) => ax(from + index, 'link', `Page ${from + index}`));
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 30, 60]),
+      ax(2, 'navigation', 'Docs', [3, 4]),
+      ax(3, 'heading', 'Guides', [], { props: { level: 2 } }),
+      ax(4, 'list', '', links(100, 12).map((node) => Number(node.id))),
+      ax(30, 'form', 'Search', [31, ...links(200, 9).map((node) => Number(node.id))]),
+      ax(31, 'textbox', 'Query'),
+      ax(60, 'contentinfo', '', links(300, 7).map((node) => Number(node.id))),
+      ...links(100, 12),
+      ...links(200, 9),
+      ...links(300, 7),
+    ];
+    const view = renderView(nodes, new RefTable(), { all: false });
+    // The list under the heading; not the form, which holds a field; not the footer, with fewer than eight.
+    expect(view.groups).toHaveLength(1);
+    expect(view.groups[0]).toMatchObject({ start: 2, end: 14, chrome: true });
+  });
+
+  it('folds lists around the content first, to make room for the text, and names a ref that lists them', () => {
+    const nav = Array.from({ length: 400 }, (_, index) => ax(1_000 + index, 'link', `Guide number ${index}`));
+    const paragraphs = Array.from({ length: 40 }, (_, index) => [
+      ax(2_000 + index * 2, 'paragraph', '', [2_001 + index * 2]),
+      ax(2_001 + index * 2, 'StaticText', `Paragraph ${index} of the main content, long enough to be a line of prose worth reading.`),
+    ]).flat();
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 3]),
+      ax(2, 'navigation', 'Sidebar', nav.map((node) => Number(node.id))),
+      ax(3, 'main', '', paragraphs.filter((node) => node.role === 'paragraph').map((node) => Number(node.id))),
+      ...nav,
+      ...paragraphs,
+    ];
+    const refs = new RefTable();
+    const view = renderView(nodes, refs, { all: false });
+    const folded = collapseGroups(view, 10_000, 4_000);
+    expect(folded[0]?.line).toBe('e1 navigation "Sidebar" (400 links; read e1): "Guide number 0", "Guide number 1", "Guide number 2", "Guide number 3", …');
+    expect(folded.slice(1).every((line) => line.text)).toBe(true);
+    // Reading the ref lists the links, each with the ref it had all along.
+    expect(renderTree(nodes, refs, { all: false, target: 2 }).slice(0, 2)).toEqual(['e1 navigation "Sidebar"', '  e2 link "Guide number 0"']);
+    // With room for everything, nothing is folded.
+    expect(collapseGroups(view, 100_000, 4_000)).toBe(view.lines);
+  });
+
+  it('leaves a list that is the page\'s content in place when little text is outside it', () => {
+    const stories = Array.from({ length: 400 }, (_, index) => ax(1_000 + index, 'link', `Story number ${index} with a long title`));
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 3]),
+      ax(2, 'main', '', [4, 5]),
+      ax(3, 'paragraph', '', [6]),
+      ax(4, 'list', '', stories.map((node) => Number(node.id))),
+      ax(5, 'StaticText', 'Top stories'),
+      ax(6, 'StaticText', 'A short footer.'),
+      ...stories,
+    ];
+    const view = renderView(nodes, new RefTable(), { all: false });
+    expect(view.groups).toHaveLength(1);
+    expect(collapseGroups(view, 10_000, 4_000)).toBe(view.lines);
   });
 });
