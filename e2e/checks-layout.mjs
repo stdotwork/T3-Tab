@@ -10,15 +10,19 @@
 // - a screen's top bar is not the panel's one bar (`[data-bar]`, Bar in Frame.tsx), or the bars of the screens it walks
 //   differ from each other at one width and scheme: in height, in where their first and last ink sit, in their icons'
 //   size and stroke weight, in where the thread toggle's ink sits, or in where the breadcrumb's text sits,
-// by more than 1 px (0.25 px for stroke weights).
+// by more than 1 px (0.25 px for stroke weights); and when
+// - an approval card (a browser prompt or a T3 approval) is more than 160 px tall, its answers are not on one row of
+//   one-line buttons inside the card, or a card on the new-thread screen moves the hero or the composer or covers it.
 import { dirname, join } from 'node:path';
 
-import { assert, sleep } from './harness.mjs';
+import { assert, panelRequest, sleep } from './harness.mjs';
 import { installInkSource } from './ink.mjs';
 
 const WIDTHS = [320, 360, 400];
 const SCHEMES = ['light', 'dark'];
 const TOLERANCE = 1;
+const CARD_MAX = 160;
+const ANSWER_HEIGHT = 28;
 
 /** Measures every bar, the composer and the hero on the page as it stands. */
 async function measure(page) {
@@ -31,7 +35,28 @@ async function measure(page) {
         .map((child) => ({ element: child, ink: window.__ink(child) }))
         .filter((entry) => entry.ink !== null);
     const name = (element) => element.getAttribute('aria-label') ?? element.className ?? element.tagName;
-    const result = { bars: [], composer: null, hero: null };
+    const result = { bars: [], composer: null, hero: null, approvals: [] };
+    // Every approval card: its ink height, and whether its answers stand on one row of one-line buttons inside it.
+    for (const card of document.querySelectorAll('.approval-card')) {
+      if (!shown(card)) continue;
+      const ink = window.__ink(card);
+      const box = card.getBoundingClientRect();
+      const row = card.querySelector('.approval-actions');
+      const buttons = [...card.querySelectorAll('.answer-btn')].filter(shown).map((button) => button.getBoundingClientRect());
+      result.approvals.push({
+        kind: card.classList.contains('inline') ? 'inline' : 'dock',
+        height: ink === null ? 0 : Math.round((ink.bottom - ink.top) * 10) / 10,
+        buttons: buttons.length,
+        tops: buttons.map((rect) => Math.round(rect.top * 10) / 10),
+        heights: buttons.map((rect) => Math.round(rect.height * 10) / 10),
+        // How much of the ask line (who, what and the site) is scrolled out of view.
+        askHidden: (() => {
+          const ask = card.querySelector('.approval-ask');
+          return ask === null ? 0 : ask.scrollHeight - ask.clientHeight;
+        })(),
+        overflow: Math.max(row === null ? 0 : row.scrollWidth - row.clientWidth, buttons.length === 0 ? 0 : buttons.at(-1).right - (box.right - Number.parseFloat(getComputedStyle(card).paddingRight))),
+      });
+    }
     // Every header, so a screen that draws its own instead of the panel's one bar is caught.
     for (const bar of document.querySelectorAll('header, [data-bar]')) {
       if (!shown(bar) || bar.closest('.composer, .popover') !== null) continue;
@@ -148,6 +173,14 @@ function problems(screen, found) {
     if (spread(composer.glyphs) > TOLERANCE) out.push(`${where}: glyphs of ${composer.glyphs.join(' / ')} px`);
     if (spread(composer.strokes) > 0.25) out.push(`${where}: glyph strokes of ${composer.strokes.join(' / ')} px`);
   }
+  for (const [index, card] of found.approvals.entries()) {
+    const where = `${screen}: ${card.kind} approval card ${index + 1}`;
+    if (card.height > CARD_MAX) out.push(`${where}: ${fixed(card.height)} px tall, over ${CARD_MAX}`);
+    if (card.buttons !== 3) out.push(`${where}: ${card.buttons} answer buttons, expected Decline, the primary answer and More`);
+    if (spread(card.tops) > TOLERANCE) out.push(`${where}: answers on more than one row (tops ${card.tops.join(' / ')})`);
+    if (card.heights.some((height) => Math.abs(height - ANSWER_HEIGHT) > TOLERANCE)) out.push(`${where}: answer heights ${card.heights.join(' / ')} px, a label wrapped`);
+    if (card.overflow > 0.5) out.push(`${where}: answers run ${fixed(card.overflow)} px past the card`);
+  }
   if (found.hero !== null && Math.abs(found.hero.headingCentre - found.hero.lineCentre) > TOLERANCE) {
     out.push(`${screen}: "${found.hero.line}" ink centre ${fixed(found.hero.lineCentre)} vs heading "${found.hero.heading}" ${fixed(found.hero.headingCentre)}`);
   }
@@ -183,7 +216,7 @@ function barProblems(where, bars) {
 }
 
 /** Measures one screen at every width and scheme; returns its problems, how many things it measured and its bars. */
-async function checkScreen(page, screen, shotsDir, bars) {
+async function checkScreen(page, screen, shotsDir, bars, expect) {
   const failures = [];
   let measured = 0;
   for (const width of WIDTHS) {
@@ -194,11 +227,12 @@ async function checkScreen(page, screen, shotsDir, bars) {
       await page.mouse.move(width - 1, 759);
       await sleep(250);
       const found = await measure(page);
-      measured += found.bars.length + (found.composer === null ? 0 : 1) + (found.hero === null ? 0 : 1);
+      measured += found.bars.length + (found.composer === null ? 0 : 1) + (found.hero === null ? 0 : 1) + found.approvals.length;
       const key = `@${width} ${scheme}`;
       bars[key] ??= [];
       for (const bar of found.bars) bars[key].push({ screen, bar });
       failures.push(...problems(`${screen} @${width} ${scheme}`, found));
+      if (expect?.approvals !== undefined && found.approvals.length !== expect.approvals) failures.push(`${screen} @${width} ${scheme}: ${found.approvals.length} approval cards, expected ${expect.approvals}`);
       if (shotsDir !== undefined) await page.screenshot({ path: join(shotsDir, `layout-${screen}-${width}-${scheme}.png`), animations: 'disabled' });
     }
   }
@@ -206,17 +240,77 @@ async function checkScreen(page, screen, shotsDir, bars) {
 }
 
 /**
+ * Browser prompts on the new-thread screen, drawn from supplied state on the headless panel: an act prompt on this tab,
+ * a JavaScript prompt (the longest once answer) on another tab, and a goto on another tab with a long address. Each card is
+ * measured like every card; the hero and the composer must stay where they were without cards, and no card may cover
+ * the composer.
+ */
+async function checkPromptOverlay(page, shotsDir) {
+  const failures = [];
+  let measured = 0;
+  const session = { id: 'layout-session', name: 'Claude Code' };
+  const tab = { id: 4242, title: 'Cable Shop – USB-C cables, braided and basic, every length in stock' };
+  const pending = [
+    { id: 'layout-act', origin: 'http://127.0.0.1:41889', tool: 'act', session, tab },
+    { id: 'layout-js', origin: 'https://checkout.example-shop.test:8443', tool: 'run_js', session, tab: { id: 4343, title: 'Checkout' } },
+    // A goto on another tab: the longest card, with the address, the tab it moves and Go to tab.
+    { id: 'layout-goto', origin: 'https://docs.example.test', tool: 'open', session, tab: { id: 4545, title: 'Payments guide – retries and backoff for webhooks' }, url: 'https://docs.example.test/guides/payments/webhooks/retries?section=backoff&lang=en-GB#exponential' },
+  ];
+  const show = async (prompts) => await page.evaluate((next) => globalThis.__t3tabRenderPanelState(next), { currentTab: { id: 4242, title: tab.title, url: 'http://127.0.0.1:41889/' }, pending: prompts, sites: [] });
+  const place = async () =>
+    await page.evaluate(() => {
+      const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect() ?? null;
+      const heading = rect('.hero h1');
+      const composer = rect('.composer');
+      const cards = [...document.querySelectorAll('.prompt-list .approval-card')].map((card) => card.getBoundingClientRect().bottom);
+      return { heading: heading?.top ?? null, composer: composer?.top ?? null, lowestCard: cards.length === 0 ? null : Math.max(...cards) };
+    });
+  for (const width of WIDTHS) {
+    await page.setViewportSize({ width, height: 760 });
+    for (const scheme of SCHEMES) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.mouse.move(width - 1, 759);
+      await show([]);
+      await page.locator('.hero h1').waitFor();
+      await sleep(250);
+      const before = await place();
+      await show(pending);
+      await page.locator('.prompt-list .approval-card').first().waitFor();
+      await sleep(600);
+      const after = await place();
+      const where = `prompts-new-thread @${width} ${scheme}`;
+      if (before.heading === null || before.composer === null) failures.push(`${where}: the new-thread screen has no hero or composer`);
+      else {
+        if (Math.abs((after.heading ?? Number.NaN) - before.heading) > TOLERANCE || Number.isNaN(after.heading - before.heading)) failures.push(`${where}: the heading moved from ${fixed(before.heading)} to ${fixed(after.heading)}`);
+        if (Math.abs((after.composer ?? Number.NaN) - before.composer) > TOLERANCE || Number.isNaN(after.composer - before.composer)) failures.push(`${where}: the composer moved from ${fixed(before.composer)} to ${fixed(after.composer)}`);
+        if (after.lowestCard !== null && after.composer !== null && after.lowestCard > after.composer + 0.5) failures.push(`${where}: a card reaches ${fixed(after.lowestCard)}, over the composer at ${fixed(after.composer)}`);
+      }
+      const found = await measure(page);
+      if (found.approvals.length !== pending.length) failures.push(`${where}: ${found.approvals.length} cards drawn, expected ${pending.length}`);
+      measured += found.approvals.length;
+      failures.push(...problems(where, { ...found, bars: [], composer: null, hero: null }));
+      for (const [index, card] of found.approvals.entries()) if (card.askHidden > 1) failures.push(`${where}: card ${index + 1} hides ${card.askHidden} px of its ask line, the site among it`);
+      if (shotsDir !== undefined) await page.screenshot({ path: join(shotsDir, `layout-prompts-new-thread-${width}-${scheme}.png`), animations: 'disabled' });
+    }
+  }
+  await show([]);
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.emulateMedia({ colorScheme: 'light' });
+  return { failures, measured };
+}
+
+/**
  * Walks the panel's screens on a live panel page and checks each. T3 is not signed in here, so its new-thread hero is
  * drawn from a T3 state handed to the panel's client, as the thread-list check hands it threads.
  */
-export async function checkLayout({ livePanel, serviceWorker, screenshotPath }) {
+export async function checkLayout({ livePanel, serviceWorker, panelPage, screenshotPath }) {
   const page = livePanel;
   const shotsDir = screenshotPath === undefined ? undefined : dirname(screenshotPath);
   const failures = [];
   const counts = {};
   const bars = {};
-  const run = async (screen) => {
-    const { failures: found, measured } = await checkScreen(page, screen, shotsDir, bars);
+  const run = async (screen, expect) => {
+    const { failures: found, measured } = await checkScreen(page, screen, shotsDir, bars, expect);
     counts[screen] = measured;
     failures.push(...found);
   };
@@ -257,6 +351,48 @@ export async function checkLayout({ livePanel, serviceWorker, screenshotPath }) 
   await page.locator('.hero-picker > button').click();
   await run('project-picker');
   await page.keyboard.press('Escape');
+
+  // A T3 thread waiting on an approval: drawn at its row in the running work log, as T3 does, and above the composer when
+  // that row is not shown. The thread is handed to the panel's T3 client as the thread-list check hands it threads.
+  await page.evaluate(() => {
+    const client = window.__t3tabT3;
+    const at = new Date(Date.now() - 600_000).toISOString();
+    client.onShell({
+      kind: 'snapshot',
+      snapshot: {
+        threads: [{ id: 'layout-approval', projectId: 'layout-project', title: 'Pick a colour', status: 'running', interactionMode: 'default', createdAt: at, updatedAt: at, latestRunId: 'run-a', latestRunRequestedAt: at, latestRunStartedAt: at, latestRunCompletedAt: null, activeRunId: 'run-a', activityRunStatus: 'waiting', pendingRuntimeRequest: { id: 'r1', kind: 'approval', createdAt: at }, lineage: { relationshipToParent: null, parentThreadId: null }, archivedAt: null, settledOverride: null, settledAt: null }],
+        projects: [{ id: 'layout-project', title: 'virtus-umbrella', workspaceRoot: '/tmp/virtus-umbrella' }],
+      },
+    });
+    const command = 'pnpm exec vitest run --reporter=verbose packages/extension/test/panel-approval.test.ts && pnpm build';
+    // The thread is drawn idle (running: false) so its composer shows send, as on every other measured screen; its work
+    // row still runs, which is where the approval waits.
+    window.__layoutApproval = (inline) => ({
+      id: 'layout-approval', source: 't3', title: 'Pick a colour', running: false, failed: false, queued: [], activeRunId: 'run-a', runtimeMode: 'approval-required', projectId: 'layout-project',
+      rows: [
+        { kind: 'user', id: 'u1', text: 'Restyle the checkout button and check the build', at: Date.now() - 120_000 },
+        { kind: 'work', id: 'w1', running: true, startedAt: Date.now() - 100_000, entries: [{ id: 'e1', icon: 'edit', label: 'Edited checkout.css', status: 'done' }, { id: 'e2', icon: 'approval', label: 'Waiting for approval', status: 'waiting' }] },
+      ],
+      approval: { requestId: 'r1', responseCapability: 'live', ...(inline ? { entryId: 'e2' } : {}), kind: 'command', title: command, detail: 'in /tmp/virtus-umbrella', options: [{ decision: 'decline', label: 'Decline' }, { decision: 'acceptForSession', label: 'Always allow this session' }, { decision: 'accept', label: 'Approve' }] },
+    });
+    client.watches.set('layout-approval', { listeners: new Set(), view: window.__layoutApproval(true), stop() {} });
+  });
+  await page.locator('#btn-threads').click();
+  await page.locator('.thread-row').filter({ hasText: 'Pick a colour' }).first().click();
+  await page.locator('.work-entries .approval-card.inline').waitFor();
+  await run('approval-inline', { approvals: 1 });
+  await page.evaluate(() => {
+    const watch = window.__t3tabT3.watches.get('layout-approval');
+    watch.view = window.__layoutApproval(false);
+    for (const listener of watch.listeners) listener(watch.view);
+  });
+  await page.locator('.dock .approval-card.dock').waitFor();
+  await run('approval-dock', { approvals: 1 });
+  await page.evaluate(() => {
+    window.__t3tabT3.watches.delete('layout-approval');
+    delete window.__layoutApproval;
+  });
+  await home();
   await page.evaluate(() => {
     const client = window.__t3tabT3;
     client.onShell({ kind: 'snapshot', snapshot: { threads: [], projects: [] } });
@@ -298,6 +434,17 @@ export async function checkLayout({ livePanel, serviceWorker, screenshotPath }) 
   await page.setViewportSize({ width: 360, height: 800 });
   await page.emulateMedia({ colorScheme: 'light' });
 
+  // The prompt cards are drawn on the headless panel, which is not one of the screens walked above, so they are counted on
+  // their own and the walked screens' one-bar check does not include it.
+  let promptCards = 0;
+  if (panelPage !== undefined) {
+    const { failures: found, measured } = await checkPromptOverlay(panelPage, shotsDir);
+    promptCards = measured;
+    assert(measured > 0, 'The layout check measured no prompt cards on the new-thread screen');
+    failures.push(...found);
+    await panelPage.evaluate((next) => globalThis.__t3tabRenderPanelState(next), await panelRequest(serviceWorker, { type: 'panel.state' }));
+  }
+
   const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
   for (const [screen, count] of Object.entries(counts)) assert(count > 0, `The layout check measured nothing on ${screen}`);
   // Every screen walked has the one bar, and the bars agree with each other at each width and scheme.
@@ -309,5 +456,5 @@ export async function checkLayout({ livePanel, serviceWorker, screenshotPath }) 
   for (const [key, list] of Object.entries(bars)) failures.push(...barProblems(key, list));
   const barCount = Object.values(bars).reduce((sum, list) => sum + list.length, 0);
   assert(failures.length === 0, `Panel layout, measured on its ink (${failures.length} problems):\n${failures.join('\n')}`);
-  console.log(`Panel layout: ${total} bars, composers and heroes measured on ${Object.keys(counts).length} screens at ${WIDTHS.join('/')} px, light and dark; ink insets, centre lines, control sizes and glyph sizes within ${TOLERANCE} px; the ${barCount} top bars are the one bar and agree across screens in height, insets, icon size and stroke, toggle and breadcrumb position`);
+  console.log(`Panel layout: ${total} bars, composers, heroes and approval cards measured on ${Object.keys(counts).length} screens at ${WIDTHS.join('/')} px, light and dark (and ${promptCards} prompt cards on the headless new-thread screen); ink insets, centre lines, control sizes and glyph sizes within ${TOLERANCE} px; the ${barCount} top bars are the one bar and agree across screens in height, insets, icon size and stroke, toggle and breadcrumb position; approval cards at most ${CARD_MAX} px with one row of answers, and prompts on the new-thread screen move neither the hero nor the composer`);
 }
