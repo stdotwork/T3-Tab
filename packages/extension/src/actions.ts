@@ -14,6 +14,7 @@ import {
 } from './cdp';
 import { readPage } from './page';
 import { originOf } from './permissions';
+import { scrollWithWheel } from './scroll';
 import type { StoredSession } from './sessions';
 import { resolveSessionTab } from './tabs';
 import { settlePage, sleep } from './settle';
@@ -354,19 +355,7 @@ async function selectOption(tabId: number, backendId: number, ref: string, value
 }
 
 async function scrollPage(tabId: number, dx: number, dy: number): Promise<void> {
-  const metrics = await sendCommand<{ cssLayoutViewport?: { clientWidth?: number; clientHeight?: number } }>(
-    tabId,
-    'Page.getLayoutMetrics',
-  );
-  const x = (metrics.cssLayoutViewport?.clientWidth ?? 800) / 2;
-  const y = (metrics.cssLayoutViewport?.clientHeight ?? 600) / 2;
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', {
-    type: 'mouseWheel',
-    x,
-    y,
-    deltaX: dx,
-    deltaY: dy,
-  });
+  await scrollWithWheel(tabId, dx, dy);
 }
 
 async function pressKey(tabId: number, value: string): Promise<void> {

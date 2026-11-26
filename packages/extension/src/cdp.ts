@@ -48,6 +48,16 @@ export interface OpenDialog {
   input?: string;
 }
 
+/** A DevTools command that the browser did not answer in time. */
+export class CommandTimeoutError extends Error {
+  constructor(
+    readonly method: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 /** A command could not finish because the tab is waiting on a dialog. */
 export class DialogOpenError extends Error {}
 
@@ -490,11 +500,12 @@ export async function sendCommand<T = Record<string, unknown>>(
   tabId: number,
   method: string,
   params?: Record<string, unknown>,
+  timeoutMs = COMMAND_TIMEOUT_MS,
 ): Promise<T> {
   for (let attempt = 1; ; attempt += 1) {
     try {
       await ensureAttached(tabId);
-      return await send<T>(tabId, method, params);
+      return await send<T>(tabId, method, params, timeoutMs);
     } catch (error) {
       // The debugger can be detached behind our back (the user closes the banner, DevTools opens, another
       // extension's frame appears), and again while the session is being restored.
@@ -512,14 +523,19 @@ export async function sendCommand<T = Record<string, unknown>>(
   }
 }
 
-async function send<T>(tabId: number, method: string, params?: Record<string, unknown>): Promise<T> {
+async function send<T>(
+  tabId: number,
+  method: string,
+  params?: Record<string, unknown>,
+  timeoutMs = COMMAND_TIMEOUT_MS,
+): Promise<T> {
   // The one command the browser answers itself; every other waits on a page that a dialog has paused.
   const reachesPage = method !== 'Page.handleJavaScriptDialog';
   const waiting = reachesPage ? dialogs.get(tabId) : undefined;
   if (waiting !== undefined) throw new DialogOpenError(dialogNotice(tabId, waiting));
   if (!reachesPage) {
     const answered = chrome.debugger.sendCommand({ tabId }, method, params) as Promise<unknown>;
-    return (await withTimeout(answered, COMMAND_TIMEOUT_MS, `${method} timed out`)) as T;
+    return (await withTimeout(answered, timeoutMs, `${method} timed out`, method)) as T;
   }
   let stop = (): void => undefined;
   const paused = new Promise<never>((_resolve, reject) => {
@@ -530,7 +546,7 @@ async function send<T>(tabId: number, method: string, params?: Record<string, un
   });
   const result = chrome.debugger.sendCommand({ tabId }, method, params) as Promise<unknown>;
   try {
-    return (await withTimeout(Promise.race([result, paused]), COMMAND_TIMEOUT_MS, `${method} timed out`)) as T;
+    return (await withTimeout(Promise.race([result, paused]), timeoutMs, `${method} timed out`, method)) as T;
   } finally {
     stop();
   }
@@ -632,10 +648,10 @@ function isForeignFrameError(error: unknown): boolean {
   return error instanceof Error && /chrome-extension:\/\/ URL of different extension/.test(error.message);
 }
 
-async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string, method?: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), milliseconds);
+    timer = setTimeout(() => reject(method === undefined ? new Error(message) : new CommandTimeoutError(method, message)), milliseconds);
   });
   try {
     return await Promise.race([promise, timeout]);
