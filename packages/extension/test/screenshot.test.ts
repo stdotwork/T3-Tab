@@ -56,4 +56,18 @@ describe('a screenshot of a page that changes while it is taken', () => {
     const shot = await captureViewport(tab.id, 640, { origin: 'http://a.test', currentUrl: async () => 'http://a.test/page' });
     expect(shot).toMatchObject({ tab: tab.id, data: 'AAAA', width: 10, height: 10, viewportWidth: 800, viewportHeight: 600 });
   });
+
+  it('gives up when the browser draws no frame, and says why and what to do', async () => {
+    const tab = browser.addTab({ id: tabCounter, url: 'http://a.test/page' });
+    // A page that is not drawn: the browser holds the capture until its own 15 second limit.
+    browser.beforeCommand = (_tabId, method) => (method === 'Page.captureScreenshot' ? new Promise<void>(() => undefined) : undefined);
+    const started = Date.now();
+    await expect(
+      captureViewport(tab.id, 640, { origin: 'http://a.test', currentUrl: async () => 'http://a.test/page' }, 50),
+    ).rejects.toThrow(/no picture of the page.*background.*tabs switch/s);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // The page is not left looking focused.
+    const emulation = browser.commands.filter((command) => command.method === 'Emulation.setFocusEmulationEnabled');
+    expect(emulation.at(-1)?.params).toEqual({ enabled: false });
+  });
 });

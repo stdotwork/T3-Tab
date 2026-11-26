@@ -490,11 +490,12 @@ export async function sendCommand<T = Record<string, unknown>>(
   tabId: number,
   method: string,
   params?: Record<string, unknown>,
+  timeoutMs = COMMAND_TIMEOUT_MS,
 ): Promise<T> {
   for (let attempt = 1; ; attempt += 1) {
     try {
       await ensureAttached(tabId);
-      return await send<T>(tabId, method, params);
+      return await send<T>(tabId, method, params, timeoutMs);
     } catch (error) {
       // The debugger can be detached behind our back (the user closes the banner, DevTools opens, another
       // extension's frame appears), and again while the session is being restored.
@@ -512,14 +513,19 @@ export async function sendCommand<T = Record<string, unknown>>(
   }
 }
 
-async function send<T>(tabId: number, method: string, params?: Record<string, unknown>): Promise<T> {
+async function send<T>(
+  tabId: number,
+  method: string,
+  params?: Record<string, unknown>,
+  timeoutMs = COMMAND_TIMEOUT_MS,
+): Promise<T> {
   // The one command the browser answers itself; every other waits on a page that a dialog has paused.
   const reachesPage = method !== 'Page.handleJavaScriptDialog';
   const waiting = reachesPage ? dialogs.get(tabId) : undefined;
   if (waiting !== undefined) throw new DialogOpenError(dialogNotice(tabId, waiting));
   if (!reachesPage) {
     const answered = chrome.debugger.sendCommand({ tabId }, method, params) as Promise<unknown>;
-    return (await withTimeout(answered, COMMAND_TIMEOUT_MS, `${method} timed out`)) as T;
+    return (await withTimeout(answered, timeoutMs, `${method} timed out`)) as T;
   }
   let stop = (): void => undefined;
   const paused = new Promise<never>((_resolve, reject) => {
@@ -530,7 +536,7 @@ async function send<T>(tabId: number, method: string, params?: Record<string, un
   });
   const result = chrome.debugger.sendCommand({ tabId }, method, params) as Promise<unknown>;
   try {
-    return (await withTimeout(Promise.race([result, paused]), COMMAND_TIMEOUT_MS, `${method} timed out`)) as T;
+    return (await withTimeout(Promise.race([result, paused]), timeoutMs, `${method} timed out`)) as T;
   } finally {
     stop();
   }

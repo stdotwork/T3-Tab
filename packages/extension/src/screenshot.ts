@@ -4,6 +4,11 @@ import { documentEpoch, ensureAttached, holdInputFocus, sendCommand, setRecovery
 import { originOf } from './permissions';
 
 const JPEG_QUALITY = 85;
+/**
+ * How long a capture may take. A page the browser draws gives its frame in tens of milliseconds; a hidden one may give
+ * none, and the browser then waits for 15 seconds before it answers.
+ */
+export const CAPTURE_TIMEOUT_MS = 3_000;
 
 interface LayoutMetrics {
   cssVisualViewport: { clientWidth: number; clientHeight: number };
@@ -21,7 +26,12 @@ export interface CaptureGuard {
  * page's viewport while it runs, which the page can see and react to. The document epoch and address are
  * recorded before the capture and compared after it; if either moved, the image is discarded.
  */
-export async function captureViewport(tabId: number, maxEdge: number, guard: CaptureGuard): Promise<ScreenshotResult> {
+export async function captureViewport(
+  tabId: number,
+  maxEdge: number,
+  guard: CaptureGuard,
+  timeoutMs = CAPTURE_TIMEOUT_MS,
+): Promise<ScreenshotResult> {
   setRecoveryOrigin(tabId, guard.origin);
   await ensureAttached(tabId);
   const epoch = documentEpoch(tabId);
@@ -35,7 +45,14 @@ export async function captureViewport(tabId: number, maxEdge: number, guard: Cap
   const release = await holdInputFocus(tabId);
   let captured: { data?: unknown };
   try {
-    captured = await sendCommand<{ data?: unknown }>(tabId, 'Page.captureScreenshot', { format: 'jpeg', quality: JPEG_QUALITY });
+    captured = await sendCommand<{ data?: unknown }>(tabId, 'Page.captureScreenshot', { format: 'jpeg', quality: JPEG_QUALITY }, timeoutMs);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Page.captureScreenshot timed out') {
+      throw new Error(
+        `The browser gave no picture of the page in ${timeoutMs / 1_000} seconds. A tab in the background is not drawn, so it cannot be captured. Bring the tab to the front with tabs switch and take the screenshot again, or read the page as text.`,
+      );
+    }
+    throw error;
   } finally {
     await release();
   }

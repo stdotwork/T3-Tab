@@ -39,6 +39,8 @@ const PAGES = {
   '/form-post': page('Post form', '<form method="post" action="/posted"><button>Send</button></form>'),
   '/posted': page('Posted', '<p>sent</p>'),
   '/one': page('One', '<p>first</p>'),
+  '/tall': page('Tall', '<div style="height:6000px">tall page</div>'),
+  '/inner': '<!doctype html><html><head><title>Inner</title><style>html,body{margin:0;overflow:hidden}</style></head><body><div id="box" style="position:fixed;inset:0;overflow:auto"><div style="height:6000px">inner scroller</div></div></body></html>',
   '/two': page('Two', '<p>second</p>'),
 };
 
@@ -237,6 +239,57 @@ export async function checkAgentTools() {
       const all = await call('read', { tab, all: true });
       assert(/…"$/m.test(all.text), `a cut paragraph has no mark: ${all.text.slice(0, 500)}`);
       await closeTab(tab);
+    });
+
+    await check('a scroll moves the page or says it did not, and a screenshot of a background tab gives up soon', async () => {
+      const scrollY = async (tab, expression = 'window.scrollY') => Number((await call('run_js', { tab, expression })).text);
+      const tab = await openAllowed('/tall');
+      const front = await frontTab();
+      assert((await tabInfo(tab)).active === false && front !== tab, 'the tab to scroll is in front');
+      // A background tab that has been idle for a few seconds takes the wheel event and may move nothing. Reporting
+      // success with no movement is what must never happen.
+      await sleep(3_000);
+      const hidden = await call('act', { tab, steps: [{ action: 'scroll', dy: 3000 }] });
+      const hiddenY = await scrollY(tab);
+      if (hidden.error) assert(/did not scroll/.test(hidden.text) && /tabs switch/.test(hidden.text), `a failed scroll does not say why: ${hidden.text}`);
+      else assert(hiddenY > 0, `the scroll was reported as done but the page is at ${hiddenY}: ${hidden.text}`);
+
+      // In front it scrolls, and that is reported.
+      await call('tabs', { action: 'switch', tab });
+      const before = await scrollY(tab);
+      const shown = await call('act', { tab, steps: [{ action: 'scroll', dy: 1000 }] });
+      assert(!shown.error, `a scroll in front failed: ${shown.text}`);
+      assert((await scrollY(tab)) > before, `the page in front did not scroll: ${before} -> ${await scrollY(tab)}`);
+      await browser.worker(`chrome.tabs.update(${front}, { active: true })`);
+      await closeTab(tab);
+
+      // The element under the pointer counts as well as the page.
+      const inner = await openAllowed('/inner');
+      await call('tabs', { action: 'switch', tab: inner });
+      const innerReply = await call('act', { tab: inner, steps: [{ action: 'scroll', dy: 800 }] });
+      assert(!innerReply.error, `a scroll of an element in front failed: ${innerReply.text}`);
+      assert((await scrollY(inner, 'document.getElementById("box").scrollTop')) > 0, 'the element did not scroll');
+      await browser.worker(`chrome.tabs.update(${front}, { active: true })`);
+      await closeTab(inner);
+
+      // A page with nothing to scroll is not an error, and is not waited on.
+      const flat = await openAllowed('/one');
+      const started = Date.now();
+      const nothing = await call('act', { tab: flat, steps: [{ action: 'scroll', dy: 500 }] });
+      assert(!nothing.error, `a scroll on a page with nothing to scroll failed: ${nothing.text}`);
+      assert(Date.now() - started < 1_500, `a scroll with nothing to move took ${Date.now() - started} ms`);
+      await closeTab(flat);
+
+      // A background tab that has been idle gives no frame: the capture ends in seconds, with a reason, or works.
+      const idle = await openAllowed('/red');
+      await sleep(2_500);
+      const shot = Date.now();
+      const picture = await call('screenshot', { tab: idle });
+      const took = Date.now() - shot;
+      assert(took < 6_000, `the screenshot of an idle background tab took ${took} ms`);
+      if (picture.error) assert(/no picture of the page/.test(picture.text) && /tabs switch/.test(picture.text), `a failed screenshot does not say why: ${picture.text}`);
+      else assert(picture.content.some((item) => item.type === 'image'), `a screenshot without an image: ${picture.text}`);
+      await closeTab(idle);
     });
 
     await check('an empty session is told what to do', async () => {

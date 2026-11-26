@@ -25,6 +25,8 @@ export class FakeBrowser {
   readonly groupCalls: Array<{ tabIds: number[]; groupId?: number }> = [];
   /** Runs when a command reaches the browser, before it is handled: the place for a navigation to land. */
   beforeCommand: ((tabId: number, method: string) => Promise<void> | void) | undefined;
+  /** Answers an expression before the page would run it: the place to say what a script in the real page would find. */
+  evaluateHook: ((params: Record<string, unknown>) => unknown) | undefined;
   private readonly listeners: EventListener[] = [];
   private contextSeq = 0;
 
@@ -34,6 +36,7 @@ export class FakeBrowser {
     this.evaluated.length = 0;
     this.groupCalls.length = 0;
     this.beforeCommand = undefined;
+    this.evaluateHook = undefined;
   }
 
   addTab(fields: { id: number; url: string; text?: string; title?: string; groupId?: number }): FakeTab {
@@ -108,6 +111,8 @@ export class FakeBrowser {
         return { frameTree: { frame: { id: tab.frameId, securityOrigin: new URL(tab.url).origin } } };
       case 'Runtime.evaluate':
         return await this.evaluate(tab, params ?? {});
+      case 'Page.createIsolatedWorld':
+        return { executionContextId: 900 + tab.id };
       case 'Page.getLayoutMetrics':
         return { cssVisualViewport: { clientWidth: 800, clientHeight: 600 } };
       case 'Page.captureScreenshot':
@@ -118,6 +123,8 @@ export class FakeBrowser {
   }
 
   private async evaluate(tab: FakeTab, params: Record<string, unknown>): Promise<unknown> {
+    const hooked = this.evaluateHook?.(params);
+    if (hooked !== undefined) return { result: { type: typeof hooked, value: hooked } };
     const wanted = params.uniqueContextId;
     // Without a context id the browser evaluates in whatever document the tab shows now.
     if (wanted !== undefined && wanted !== tab.context.uniqueId) {
