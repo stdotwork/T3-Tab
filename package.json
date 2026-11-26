@@ -14,7 +14,8 @@
     "test": "vitest run",
     "build": "pnpm -r build",
     "e2e": "node e2e/extension.e2e.mjs",
-    "bench": "node bench/bench.mjs"
+    "bench": "node bench/bench.mjs",
+    "captures": "node e2e/captures.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

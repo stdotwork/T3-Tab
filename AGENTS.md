@@ -95,6 +95,8 @@ variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is 
 finished threads against a real throwaway T3 and again with T3 absent, and saves each screen at 400 px in light and
 dark to the folder named by `T3_TAB_FLOW_SHOTS`.
 
+`pnpm captures` (after `pnpm build`, with `T3_TAB_CAPTURES_DIR` naming an output folder; not part of `pnpm e2e`) renders every panel view at 400 x 800 in light and dark from one fixed shopping scenario with the e2e fakes and the product's `npx t3-tab@latest setup` command, and writes it three ways: `panel/` as drawn, `framed/` on one browser-window frame with the product's and T3 Code's names masked (for blind rating beside other products), `framed-named/` on the same frame unmasked (`e2e/captures.mjs`).
+
 `pnpm bench` (after `pnpm build`) measures what an agent is sent, in characters and estimated tokens: the
 `tools/list` payload (total and per tool) and each tool reply on four fixed tasks over three local pages
 (`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link, and search a longer page
