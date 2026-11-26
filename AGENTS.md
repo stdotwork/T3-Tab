@@ -86,7 +86,7 @@ theme and Add theme, and each theme's actions beside it; and with T3's config ha
 the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e/ink.mjs`) walks the new-thread
 screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, a T3
 thread waiting on an approval (at its work-log row and above the composer), three browser prompts on the new-thread
-screen (one a `goto` on another tab), Settings and a theme sheet at 320, 360 and 400 px in light and dark, and measures visible ink (SVG strokes and fills, text glyphs
+screen (one a `goto` on another tab), Settings and a theme sheet at 320, 360 and 400 px in light and dark (and the sheet opened from each scheme, which must open on that scheme's tab with every panel role unchanged and its fields painted with the panel's surface and border), and measures visible ink (SVG strokes and fills, text glyphs
 on their baseline, painted boxes), never padding boxes. It fails when a bar's or the composer row's first and last
 controls sit at ink distances from its edges more than 1 px apart, when the composer's send circle is not as far from
 the frame's foot as from its side, when the composer's controls are not one size or their ink (and the model chip's
@@ -559,7 +559,11 @@ directly through the daemon and feeds the same thread view.
   light and dark swatches, then Create theme and Add theme); edit, duplicate, export and remove for the current theme
   sit in a menu beside it. A fresh install uses T3 Code's built-in theme with the System scheme. The panel does not
   follow T3's theme, and a stored "follow T3 Code" choice from an earlier version, or a theme that is gone, falls back
-  to that default (`known` in `lib/theme.ts`). T3 theme files can be imported. The owner's themes can be
+  to that default (`known` in `lib/theme.ts`). The theme sheet (Create, Duplicate and Edit) opens on the scheme the panel is
+  drawn in and in the panel's own palette: a new theme starts as a copy of the theme in use for that scheme (`currentPalette`
+  in `lib/theme.ts`), so the sheet looks the same a moment after it opens as before, and picking a new Canvas or Accent is
+  what makes the other colours from the two seeds. While it is open the whole panel previews the draft, as T3's editor does:
+  its Light and Dark tabs preview those schemes, and closing it brings the saved theme back. T3 theme files can be imported. The owner's themes can be
   edited, and any theme can be duplicated with all its colours and both of its modes. A name already in use gets a number
   instead of replacing that theme. A change reaches panels open on other tabs through `chrome.storage.onChanged`. Custom
   CSS goes through T3's own filter, which removes rules that load remote files.

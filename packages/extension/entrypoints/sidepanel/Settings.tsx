@@ -19,7 +19,7 @@ import { errorText, panel } from './lib/api';
 import { DEFAULT_PROJECT_KEY, LAST_PROJECT, NO_PROJECT, pickableProjects } from './lib/new-thread';
 import { refreshPanel, useFreshSetup, useStored, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
-import { freeThemeName, importCustomTheme, previewTheme, removeCustomTheme, saveCustomTheme, setScheme, setTheme, STOCK_THEME, useAppearance, type SchemeChoice } from './lib/theme';
+import { currentPalette, freeThemeName, importCustomTheme, previewTheme, removeCustomTheme, saveCustomTheme, setScheme, setTheme, STOCK_THEME, useAppearance, type SchemeChoice } from './lib/theme';
 import { SITE_CHOICES, siteStatus } from './prompt-choices';
 import { AgentRow, HelperStep, T3Row } from './Setup';
 import { Bar, CloseButton } from './Frame';
@@ -37,11 +37,16 @@ function Orb({ colors }: { colors: ThemeColors | null }): ReactNode {
   return <span className="theme-orb" style={{ background: `radial-gradient(circle at 32% 28%, ${colors.surfaceRaised}, ${colors.canvas} 48%, ${colors.accent} 130%)` }} />;
 }
 
-/** One mode of a theme being edited: its two seed colours, and every colour set by hand or carried over. */
+/**
+ * One mode of a theme being edited: its two seed colours, and every colour set by hand or carried over. `base` is the
+ * theme the mode started from: until the owner picks a new Canvas or Accent, the mode is exactly that theme (so the sheet
+ * opens looking like the panel does); picking either makes the other colours from the two seeds, as before.
+ */
 interface ModeDraft {
   canvas: string;
   accent: string;
   overrides: Partial<Record<ThemeColorRole, string>>;
+  base?: ThemeColors;
 }
 
 const generated = (mode: ThemeAppearance, canvas: string, accent: string): ThemeColors => {
@@ -60,18 +65,22 @@ function draftFrom(colors: ThemeColors, mode: ThemeAppearance): ModeDraft {
   return { canvas, accent, overrides };
 }
 
-const stockDraft = (mode: ThemeAppearance): ModeDraft => {
-  const colors = getThemeColorsForMode(STOCK_THEME, mode) ?? STOCK_THEME.colors;
-  return { canvas: themeColorToHex(colors.canvas) ?? '#ffffff', accent: themeColorToHex(colors.accent) ?? '#5b5bd6', overrides: {} };
+/** A new mode: the theme in use when that mode has colours, else T3 Code's own. */
+const startDraft = (mode: ThemeAppearance): ModeDraft => {
+  const colors = getThemeColorsForMode(currentPalette().theme, mode) ?? getThemeColorsForMode(STOCK_THEME, mode) ?? STOCK_THEME.colors;
+  return { canvas: themeColorToHex(colors.canvas) ?? '#ffffff', accent: themeColorToHex(colors.accent) ?? '#5b5bd6', overrides: {}, base: colors };
 };
+
+const draftColors = (mode: ThemeAppearance, draft: ModeDraft): ThemeColors => ({ ...(draft.base ?? generated(mode, draft.canvas, draft.accent)), ...draft.overrides });
 
 function ThemeEditor({ start, editing, onClose }: { start: ThemeDefinition | undefined; editing: boolean; onClose: () => void }): ReactNode {
   const [name, setName] = useState(start === undefined ? 'My theme' : editing ? start.label : `${start.label} copy`);
-  const startMode = start === undefined ? (document.documentElement.classList.contains('dark') ? 'dark' : 'light') : (singleAppearanceOf(start) ?? (document.documentElement.classList.contains('dark') ? 'dark' : 'light'));
+  // It opens on the scheme the panel is drawn in now, not on whatever an earlier preview left on the page.
+  const startMode = (start === undefined ? undefined : singleAppearanceOf(start)) ?? currentPalette().appearance;
   const [appearance, setAppearance] = useState<ThemeAppearance>(startMode);
   const [both, setBoth] = useState(start !== undefined && singleAppearanceOf(start) === null);
   const [drafts, setDrafts] = useState<Partial<Record<ThemeAppearance, ModeDraft>>>(() => {
-    if (start === undefined) return { [startMode]: stockDraft(startMode) };
+    if (start === undefined) return { [startMode]: startDraft(startMode) };
     const out: Partial<Record<ThemeAppearance, ModeDraft>> = {};
     for (const mode of ['light', 'dark'] as const) {
       const colors = getThemeColorsForMode(start, mode);
@@ -81,14 +90,17 @@ function ThemeEditor({ start, editing, onClose }: { start: ThemeDefinition | und
   });
   const [css, setCss] = useState(start?.css ?? '');
   const [showAll, setShowAll] = useState(false);
-  const draft = drafts[appearance] ?? stockDraft(appearance);
+  const draft = drafts[appearance] ?? startDraft(appearance);
   const { canvas, accent, overrides } = draft;
-  const update = (patch: Partial<ModeDraft>): void => setDrafts((current) => ({ ...current, [appearance]: { ...(current[appearance] ?? stockDraft(appearance)), ...patch } }));
-  const colorsOf = (mode: ThemeAppearance): ThemeColors => {
-    const entry = drafts[mode] ?? stockDraft(mode);
-    return { ...generated(mode, entry.canvas, entry.accent), ...entry.overrides };
-  };
-  const colors = useMemo<ThemeColors>(() => ({ ...generated(appearance, canvas, accent), ...overrides }), [appearance, canvas, accent, overrides]);
+  // Picking a new Canvas or Accent makes the colours from the seeds again, so the mode no longer carries its starting theme.
+  const update = (patch: Partial<ModeDraft>): void =>
+    setDrafts((current) => {
+      const { base, ...rest } = current[appearance] ?? startDraft(appearance);
+      const seeds = patch.canvas !== undefined || patch.accent !== undefined;
+      return { ...current, [appearance]: { ...rest, ...(seeds || base === undefined ? {} : { base }), ...patch } };
+    });
+  const colorsOf = (mode: ThemeAppearance): ThemeColors => draftColors(mode, drafts[mode] ?? startDraft(mode));
+  const colors = useMemo<ThemeColors>(() => draftColors(appearance, draft), [appearance, draft]);
   useEffect(() => {
     previewTheme({ colors, appearance, ...(css === '' ? {} : { css }) });
   }, [colors, appearance, css]);
@@ -120,7 +132,7 @@ function ThemeEditor({ start, editing, onClose }: { start: ThemeDefinition | und
               onClick={() => {
                 setAppearance(value);
                 // T3's generator takes light or dark from the canvas, so each mode keeps its own colours.
-                setDrafts((current) => (current[value] !== undefined ? current : { ...current, [value]: stockDraft(value) }));
+                setDrafts((current) => (current[value] !== undefined ? current : { ...current, [value]: startDraft(value) }));
               }}
             >
               {value === 'light' ? <Sun size={ICON.xs} /> : <Moon size={ICON.xs} />} {value === 'light' ? 'Light' : 'Dark'}
