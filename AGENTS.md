@@ -52,7 +52,7 @@ to a new one, that `uninstall` removes the helper folder, manifest, state and ag
 that `scripts/install-test-build.sh` (through a `file://` address) installs the same helper, and that a browser
 started with its own `--user-data-dir` finds it once `setup` names that folder. Then `e2e/checks-real-use.mjs` runs in a headless Chromium only the extension debugs, because Playwright answers
 dialogs itself and makes hidden tabs act focused: dialogs, background input, another extension's frame
-(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs and same-origin frames. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that every tool works on that hidden tab, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
+(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs, same-origin frames, and password inputs under other ARIA roles and text fields masked by `-webkit-text-security` staying redacted in `read`, `find`, a diff and an `act` reply, with the names built from them (a button, link, heading, label, `aria-labelledby` and a script's `ariaLabelledByElements`, open and closed shadow roots, 205 referrers), a 260-character value, show-password toggles by `autocomplete`, a short value that must not scrub other names, secrets in hidden, `aria-hidden`, `display:none`, `visibility:hidden` and closed-dialog content, fields under the roles link, checkbox and switch, a secret passed on through a label and a button, one echoed in the page's text, split over one element per character, upper-cased or taken from a hidden field no name was built from, a password a GET form puts in the address (the reply header and `tabs list` leave it out), and a page of 3,000 masked fields with 200 buttons named from them read in bounded time. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that every tool works on that hidden tab, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
 two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
 links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
 `screenshot`, `act` and `run_js`. It also checks session tab groups, socket-bound session ids, tab sharing,
@@ -377,9 +377,94 @@ after a reattach only when the main document's loader id is unchanged and `chrom
 commit in between. Input that was in flight when the debugger dropped is not sent again.
 
 `find` matches case-insensitive literal text by default. Passing `regex: true` opts into a regular
-expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. Every text box
-is inspected in bounded batches; password values are removed before the accessibility tree leaves the
-extension and render as `value=<redacted>`.
+expression of at most 200 characters; it runs in a worker that is terminated after 500 ms.
+
+**Redacted fields** (`packages/extension/src/password.ts`, called from `readPage` on the raw tree, before `slimAxNodes` trims
+it). Every node that holds a value, and every field the reader prints a value for (textbox, searchbox, combobox, spinbutton,
+slider), is checked, whatever its ARIA role: one `DOM.resolveNode` each into T3-Tab's own isolated world, so a page cannot change
+what `type`, `autocomplete` or `getComputedStyle` answer, then one `Runtime.callFunctionOn` per batch of 25, which also reads
+the value the field really holds. The value is removed and the line renders as `value=<redacted>`, with no length, when the field is:
+- a password input (the check is the element's `type`, not its role);
+- masked by `-webkit-text-security` (a PIN or card number in `type=text`, set on the field or inherited);
+- or marked by its `autocomplete` as a secret: `current-password`, `new-password`, `one-time-code`, `cc-number` or `cc-csc`
+  (any token of the attribute). This also catches a password field a show-password toggle turned into `type=text`, and costs
+  the agent the value of such a field when it is plain text on purpose (decided: safety over convenience). **A show-password
+  toggle on a password field that has no `autocomplete` attribute is not covered**: once it is `type=text` nothing marks it.
+
+A run of password bullets as a value is redacted under any role without asking (a `button`, for one), and a redacted node loses
+its children, because the bullets the browser draws for a password are a text child that would show the length. A field that
+cannot be checked (the browser could not resolve it, or the batch failed) is redacted too, and its value is looked for like a
+secret's; a dialog that opens during the read stops the read instead. When the private world was destroyed by a navigation, it
+is made again and the batch asked once more. `slimAxNodes` keeps a node's value only for the roles the reader prints one for, so
+no other role's value leaves the extension. A standalone script making the calls of the first version of this check in
+headless Chromium (median of 5 alternating runs, Chromium 159, Node 26.12) took 12 ms instead of 9 ms for 30 fields, 80 ms
+instead of 58 ms for 260, and 0.76 s instead of 0.57 s for 3,000, against the old `DOM.describeNode` per field, next to 0.5 s,
+0.9 s and 4.6 s to fetch the accessibility trees of those pages (the shipped code was not timed on its own). `find`, diffs and
+the `act` reply are built from the same lines, so they show nothing a read does not.
+
+**Names and text that took a hidden value in.** The browser puts a field's value into other elements' names, and a page can echo
+it in its text, so each secret is followed wherever it can have gone, with the value taken whole from the raw tree before any
+cut. The analysis (`redactPasswordValues`) does each step once for the whole page, so what it costs follows the size of the tree
+and of the values, not their product:
+- *Which values.* The fields the checks above found, the values of the hidden fields inside what names were built from, and the
+  page's own list: before the tree is read, one `Runtime.evaluate` in T3-Tab's world (`COLLECT_SECRETS` in `page.ts`) lists the
+  value of every input and textarea that is a password input, marked by `autocomplete` or masked, in the document, open shadow
+  roots and same-origin frames, **hidden fields included whether or not a name was built from them** (up to 3,000 values, at
+  most 5,000 fields asked about their style, 200,000 elements). A failed call leaves that list empty and the read goes on.
+  The values seen in a tab are also remembered for it (`rememberSecrets` in `secret-text.ts`, memory of the extension's worker:
+  400 values a tab, 30 minutes, dropped when the tab closes or the worker restarts), so a later read of the same tab, whose
+  form is gone, still hides them.
+- *Where a name came from.* Each source of a name that the browser did not set aside carries the nodes it was built from
+  (`relatedNodes` with `backendDOMNodeId`, under `attributeValue` for `aria-labelledby` and a script's `ariaLabelledByElements`
+  and under `nativeSourceValue` for `<label for>`). A name built from a hidden field, or from a node that is an ancestor of one
+  in the tree (a `LabelText`, a shadow host, an ignored wrapper), is cleaned of the values, and becomes `<redacted>` whole when
+  none is found in it or a node it was built from is not in the tree. A field's own label around it is not part of its name;
+  a field that names itself is. A name built from content (a button, link, heading, cell or tab around the field, a
+  `fieldset`'s legend) is treated the same way, for every ancestor of the field that holds it.
+- *Hidden content.* The tree marks hidden, `aria-hidden`, `display:none`, `visibility:hidden` and closed-dialog content as
+  ignored and gives its nodes no role or value, yet a name built from it still holds what is in it. So the ignored nodes inside
+  any element some name was built from (up to 1,000 a read, in one walk of the tree) are checked as well. If there are more, or
+  the check fails, the names built from them are hidden whole, when the page holds a secret or the check failed.
+- *It travels.* A name that took a secret in passes it on the same two ways, to the names above it built from content and to the
+  names whose sources list it or an element around it. Each node is expanded once (not once per value), so a form of thousands of
+  fields named by hundreds of buttons costs one pass. A name that had to be hidden whole, because no value could be found in it,
+  is passed on as unknown: the names above it that are built from content are hidden whole.
+- *The net.* Every value of four characters or more, including the value the field really holds and not only the bullets the
+  tree shows, is replaced in every name, value, link address and line of text on the page, tied to a field or not, so a path not
+  modelled cannot print a secret the extension knows. The matcher (`matcher` in `secret-text.ts`) is an Aho-Corasick automaton:
+  one pass over a text whatever the number of values or how alike they start, case-insensitive (a page that upper-cases its text
+  is caught), overlapping matches joined into one marker, never inside a marker; a value over 256 characters is found by its
+  first 256 and then hidden as far as the text follows it. **Text is matched as a stream**: the lines of text of the page in
+  document order are joined with nothing between, as the reader joins sibling text, so a value a page wrote one element per
+  character, or with its first letters in a `<b>`, is found, and every line it covers loses its part (the first keeps the
+  marker, the rest go empty). This also joins text across blocks, so two separate lines that together spell a value are hidden
+  too (a rare false positive, on purpose). A link address is also matched in the forms an address holds a value:
+  as it is, `encodeURIComponent`, `encodeURI` and with `+` for a space. A value of fewer than four characters is replaced only
+  as a whole word and never in plain text, only in names tied to a hidden field (the names that took a value in, and those
+  around the field that holds it; in a tied name every short value of the page is looked for, not only its own field's).
+- *Title and address.* The tab's title and address come from the browser, not the tree, and a form that sends a password in
+  its address (a GET login) puts it in both, in the header of every later reply and in `tabs list`. `scrubReported` takes the
+  tab's remembered values out of the title and address (in their address forms) in `readPage`, `tabInfo` (`tabs list`,
+  `open`, `switch`) and the dialog branch of `act`. Before a `click` or a `press` step, `act` collects the page's secret values
+  again (`rememberPageSecrets`), so a form the owner filled after the last read and that a click sends is covered.
+- *The budget.* The steps after the checks run under a time budget of 1.5 s (`budgetMs`). Past it, the analysis stops and
+  every name, value, link address and line of text that holds a value the extension knows (or a run of two or more password
+  bullets) is hidden whole, and past a second budget every name built from content or from other nodes is hidden whole. The
+  fallback never reads a text more than once.
+Measured: a stub inspector and synthetic trees in the unit tests (Node 26.12, vitest, one run each, tree building included):
+3,000 masked fields in a form with 200 buttons named from it, 0.59 s; groups 500 deep with 20 fields each, 0.15 s; 30 deep with
+300 each, 0.10 s. The version before took 29 to 31 s on shapes like those (as a review measured them, with its own stub). In headless Chromium (`e2e/checks-real-use.mjs`, one
+run, wall time of the `read` call) the real 3,000-field, 200-button page read in 3.4 s, 12,083 characters, and `tabs list`
+answered straight after; the version before did not answer within 25 s.
+Not covered: a show-password toggle on a field with no `autocomplete` attribute (above); `aria-describedby` (a description is not
+part of the tree the reader gets, so it never leaves the extension); a name or text that holds the value in another form than
+the field showed it (the match is the value with its whitespace collapsed, in any case, with the encoded forms in addresses
+only); a secret that is in none of the ways above a field's value, such as one a script types into plain text or builds from
+other values; a field masked another way (a text input drawn as dots by a script or a font), and the bullets a masked field
+outside the value roles draws as text (its length); a secret field inside a closed shadow root that no name was built from
+(the page's list cannot reach it; the checks above reach it only through the tree) and fields past the caps above; secrets of
+a tab after the extension's worker restarted or 30 minutes passed (the memory is gone; the tab's address from before then
+shows as the browser reports it); `run_js`, which is the agent's own code; and a screenshot, which shows what the page draws.
 
 ## Sessions and permissions
 

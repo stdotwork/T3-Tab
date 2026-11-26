@@ -113,6 +113,33 @@ describe('reading a page', () => {
     expect(reply).not.toContain('value="');
   });
 
+  it('masks a redacted field whatever its role, in a read, a find and a diff', async () => {
+    const field = (id: number, role: string, name: string): ReturnType<typeof ax> =>
+      ax(id, role, name, [], { value: 'hunter2-secret', props: { password: true } });
+    const build = (): ReturnType<typeof ax>[] => [
+      ax(1, 'RootWebArea', '', [2, 3, 4, 5]),
+      field(2, 'combobox', 'PW combo'),
+      field(3, 'searchbox', 'PW search'),
+      field(4, 'spinbutton', 'PW spin'),
+      field(5, 'slider', 'PW slider'),
+    ];
+    const state = new TabState();
+    const reply = await formatRead(state, 's1', page(build()), { all: true });
+    for (const name of ['combobox "PW combo"', 'searchbox "PW search"', 'spinbutton "PW spin"', 'slider "PW slider"']) {
+      expect(reply).toContain(`${name} value=<redacted>`);
+    }
+    expect(reply).not.toContain('hunter2');
+    expect(reply).not.toContain('value="');
+    const found = await formatRead(state, 's1', page(build()), { find: 'PW combo' });
+    expect(found).toContain('combobox "PW combo" value=<redacted>');
+    expect(found).not.toContain('hunter2');
+    const changed = build();
+    changed[1] = ax(2, 'combobox', 'PW combo', [], { value: 'another-secret', props: { password: true, invalid: true } });
+    const diff = await formatRead(state, 's1', page(changed), {});
+    expect(diff).toContain('value=<redacted>');
+    expect(diff).not.toContain('another-secret');
+  });
+
   it('cuts a long reply at a line and says how to read the rest', async () => {
     const reply = await formatRead(new TabState(), 's1', page(buttonPage(2_000)), {});
     expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);

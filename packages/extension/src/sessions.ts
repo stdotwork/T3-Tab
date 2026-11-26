@@ -1,6 +1,7 @@
 import type { TabInfo, ToolSession } from '@t3-tab/protocol';
 
 import { isOriginKey, restrictedPageReason } from './permissions';
+import { scrubReported } from './secret-text';
 
 export interface StoredSession extends ToolSession {
   groupId?: number;
@@ -79,8 +80,9 @@ export function currentSessionTab(session: StoredSession, usable: chrome.tabs.Ta
 export function tabInfo(tab: chrome.tabs.Tab, active: boolean): TabInfo {
   const info: TabInfo = {
     id: tab.id ?? -1,
-    title: tab.title ?? '',
-    url: tab.url ?? tab.pendingUrl ?? '',
+    // What the browser reports for a tab can hold a secret the page was given (a form that sends it in the address).
+    title: scrubReported(tab.id, tab.title ?? '', false),
+    url: scrubReported(tab.id, tab.url ?? tab.pendingUrl ?? '', true),
     active,
   };
   if (tab.groupId !== undefined && tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) info.groupId = tab.groupId;

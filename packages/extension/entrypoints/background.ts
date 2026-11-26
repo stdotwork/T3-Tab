@@ -20,6 +20,7 @@ import { forgetPanelTab, keepPanelOnItsTab, openPanelOn } from '../src/panel-tab
 import { originOf } from '../src/permissions';
 import { handleRequest } from '../src/requests';
 import { sessionStore } from '../src/runtime';
+import { forgetSecrets } from '../src/secret-text';
 import { adoptPopupTab } from '../src/tabs';
 
 const browserId = crypto.randomUUID();
@@ -170,6 +171,7 @@ export default defineBackground(() => {
   chrome.tabs.onRemoved.addListener(reportTabCount);
   chrome.tabs.onRemoved.addListener(reportTabClosed);
   chrome.tabs.onRemoved.addListener((tabId) => void sessionStore.forgetTab(tabId));
+  chrome.tabs.onRemoved.addListener((tabId) => forgetSecrets(tabId));
   chrome.tabs.onRemoved.addListener((tabId) => void forgetPanelTab(tabId).catch(() => undefined));
   chrome.tabs.onReplaced.addListener(reportTabCount);
   chrome.tabs.onAttached.addListener(reportTabCount);

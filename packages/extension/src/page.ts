@@ -1,8 +1,9 @@
 import type { PageReadResult } from '@t3-tab/protocol';
 
 import { restrictToOriginFrames, slimAxNodes, type FrameInfo, type FramePolicy } from './ax';
-import { DialogOpenError, documentEpoch, ensureAttached, sendCommand, setRecoveryOrigin } from './cdp';
-import { redactPasswordValues } from './password';
+import { DialogOpenError, documentEpoch, ensureAttached, forgetPrivateWorld, privateWorld, sendCommand, setRecoveryOrigin } from './cdp';
+import { redactPasswordValues, type FieldAnswer } from './password';
+import { knownSecrets, rememberSecrets, scrubReported } from './secret-text';
 import { originOf } from './permissions';
 import type { StoredSession } from './sessions';
 import { resolveSessionTab } from './tabs';
@@ -29,16 +30,31 @@ export async function readPage(
   const withFrames = await addSameOriginFrames(tabId, tree.nodes, frames, expectedOrigin);
   const after = await resolveSessionTab(await reloadSession(), tabId);
   assertOrigin(after, expectedOrigin);
-  const nodes = slimAxNodes(
-    await restrictToOriginFrames(withFrames, {
+  const restricted = await restrictToOriginFrames(withFrames, {
       origin: expectedOrigin,
       mainFrameId: frames.mainFrameId,
       frames: frames.byId,
       ownerOrigin: async (backendId) => await ownerFrameOrigin(tabId, backendId, frames.byId, expectedOrigin),
-    } satisfies FramePolicy),
+    } satisfies FramePolicy);
+  const pageSecrets = await collectSecrets(tabId);
+  // Before the tree is trimmed, so a value is taken whole and every node's relations are still there.
+  const nodes = slimAxNodes(
+    await redactPasswordValues(restricted, (backendIds) => inspectFields(tabId, backendIds), {
+      // A dialog opening mid-read is the read's failure, not a field that could not be checked.
+      rethrow: (error) => error instanceof DialogOpenError,
+      pageSecrets,
+      remembered: knownSecrets(tabId),
+      onSecrets: (needles) => rememberSecrets(tabId, needles),
+    }),
   );
-  await redactPasswordValues(nodes, async (backendId) => isPasswordInput(await describeNode(tabId, backendId)));
-  return { tab: tabId, title: after.title ?? '', url: after.url ?? after.pendingUrl ?? '', epoch, nodes };
+  // The title and address come from the browser, not the tree: a form that sends the password in the address puts it there.
+  return {
+    tab: tabId,
+    title: scrubReported(tabId, after.title ?? '', false),
+    url: scrubReported(tabId, after.url ?? after.pendingUrl ?? '', true),
+    epoch,
+    nodes,
+  };
 }
 
 function assertOrigin(tab: chrome.tabs.Tab, expectedOrigin: string): void {
@@ -163,21 +179,169 @@ async function ownerFrameOrigin(
   return undefined;
 }
 
-interface DescribedNode {
-  node?: { nodeName?: string; attributes?: string[] };
-}
-
-async function describeNode(tabId: number, backendId: number): Promise<DescribedNode['node']> {
-  const described = await sendCommand<DescribedNode>(tabId, 'DOM.describeNode', { backendNodeId: backendId });
-  return described.node;
-}
-
-function isPasswordInput(node: DescribedNode['node']): boolean {
-  if (node?.nodeName?.toUpperCase() !== 'INPUT' || !Array.isArray(node.attributes)) return false;
-  for (let index = 0; index + 1 < node.attributes.length; index += 2) {
-    if (node.attributes[index]?.toLowerCase() === 'type' && node.attributes[index + 1]?.toLowerCase() === 'password') {
-      return true;
+/** Runs in T3-Tab's own world, so a page cannot change what `type` or `getComputedStyle` answer for its fields. */
+const INSPECT_FIELDS = `function (...fields) {
+  const SECRET_AUTOCOMPLETE = ['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc'];
+  return fields.map((field) => {
+    try {
+      if (field.nodeType !== 1) return null;
+      let secret = false;
+      if (field.nodeName === 'INPUT' && String(field.type).toLowerCase() === 'password') secret = true;
+      if (!secret) {
+        const hints = String(field.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/);
+        secret = hints.some((hint) => SECRET_AUTOCOMPLETE.includes(hint));
+      }
+      if (!secret) {
+        const view = field.ownerDocument && field.ownerDocument.defaultView;
+        if (!view) return null;
+        secret = view.getComputedStyle(field).getPropertyValue('-webkit-text-security') !== 'none';
+      }
+      const holdsValue = field.nodeName === 'INPUT' || field.nodeName === 'TEXTAREA';
+      return secret && holdsValue && typeof field.value === 'string' ? { secret, value: field.value.slice(0, 5000) } : { secret };
+    } catch (error) {
+      return null;
     }
+  });
+}`;
+
+/**
+ * Runs in T3-Tab's own world: the value of every input and textarea in the page that holds a secret (a password input, a
+ * field marked secret by its `autocomplete`, one masked with `-webkit-text-security`), hidden ones too, also in open shadow
+ * roots and same-origin frames. Closed shadow roots cannot be reached from the page's DOM.
+ */
+const COLLECT_SECRETS = `function () {
+  const SECRET_AUTOCOMPLETE = ['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc'];
+  const found = new Set();
+  let styled = 0;
+  let seen = 0;
+  const visit = (root, level) => {
+    if (!root || level > 8) return;
+    const view = (root.ownerDocument || root).defaultView;
+    for (const element of root.querySelectorAll('*')) {
+      if ((seen += 1) > 200000 || found.size >= 3000) return;
+      try {
+        if (element.shadowRoot) visit(element.shadowRoot, level + 1);
+        if (element.nodeName === 'IFRAME' || element.nodeName === 'FRAME') {
+          try {
+            visit(element.contentDocument, level + 1);
+          } catch (error) {
+            // Another origin.
+          }
+        }
+        if (element.nodeName !== 'INPUT' && element.nodeName !== 'TEXTAREA') continue;
+        const value = typeof element.value === 'string' ? element.value : '';
+        if (value === '') continue;
+        let secret = element.nodeName === 'INPUT' && String(element.type).toLowerCase() === 'password';
+        if (!secret) {
+          const hints = String(element.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/);
+          secret = hints.some((hint) => SECRET_AUTOCOMPLETE.includes(hint));
+        }
+        if (!secret && view && styled < 5000) {
+          styled += 1;
+          secret = view.getComputedStyle(element).getPropertyValue('-webkit-text-security') !== 'none';
+        }
+        if (secret) found.add(value.slice(0, 5000));
+      } catch (error) {
+        // An element that cannot be read is left out.
+      }
+    }
+  };
+  visit(document, 0);
+  return [...found];
+}`;
+
+/** The values of the page's secret fields, found without a node; empty when the browser cannot be asked. */
+async function collectSecrets(tabId: number): Promise<string[]> {
+  try {
+    const context = await privateWorld(tabId);
+    const answer = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.evaluate', {
+      expression: `(${COLLECT_SECRETS})()`,
+      contextId: context,
+      returnByValue: true,
+    });
+    const value = answer.result?.value;
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  } catch (error) {
+    if (error instanceof DialogOpenError) throw error;
+    forgetPrivateWorld(tabId);
+    return [];
   }
-  return false;
+}
+
+/** Remembers the values of the page's secret fields for the tab, as they are now. Never fails the call it is part of. */
+export async function rememberPageSecrets(tabId: number): Promise<void> {
+  try {
+    rememberSecrets(tabId, await collectSecrets(tabId));
+  } catch {
+    // The read that follows asks again.
+  }
+}
+
+let inspections = 0;
+
+/** Resolves nodes into T3-Tab's own world, in one object group; a node the browser cannot resolve is `undefined`. */
+async function resolveFields(tabId: number, backendIds: number[], context: number, group: string): Promise<Array<string | undefined>> {
+  return await Promise.all(
+    backendIds.map(async (backendNodeId) => {
+      try {
+        const reply = await sendCommand<{ object?: { objectId?: unknown } }>(tabId, 'DOM.resolveNode', {
+          backendNodeId,
+          executionContextId: context,
+          objectGroup: group,
+        });
+        return typeof reply.object?.objectId === 'string' ? reply.object.objectId : undefined;
+      } catch (error) {
+        if (error instanceof DialogOpenError) throw error;
+        return undefined;
+      }
+    }),
+  );
+}
+
+/**
+ * For each field, whether it holds a secret (a password input, whatever its role, a field masked with
+ * `-webkit-text-security`, or one whose `autocomplete` says so) and the value it really holds. One round trip per field to
+ * find it and one for the whole batch to ask; `undefined` for a field the browser could not resolve or inspect. When the
+ * private world is gone (a navigation destroyed it) it is made again and the batch asked once more.
+ */
+export async function inspectFields(tabId: number, backendIds: number[]): Promise<Array<FieldAnswer | undefined>> {
+  try {
+    return await askAboutFields(tabId, backendIds, true);
+  } catch (error) {
+    if (error instanceof DialogOpenError) throw error;
+    forgetPrivateWorld(tabId);
+    return await askAboutFields(tabId, backendIds, false);
+  }
+}
+
+/** With `strict`, a batch no node of which could be resolved is an error: the world they were resolved in may be gone. */
+async function askAboutFields(tabId: number, backendIds: number[], strict: boolean): Promise<Array<FieldAnswer | undefined>> {
+  const context = await privateWorld(tabId);
+  const group = `t3tab-fields-${(inspections += 1)}`;
+  try {
+    const resolved = await resolveFields(tabId, backendIds, context, group);
+    const found = resolved.filter((objectId): objectId is string => objectId !== undefined);
+    if (found.length === 0) {
+      if (strict && backendIds.length > 0) throw new Error('None of the fields could be resolved');
+      return backendIds.map(() => undefined);
+    }
+    const answer = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.callFunctionOn', {
+      objectId: found[0],
+      functionDeclaration: INSPECT_FIELDS,
+      arguments: found.map((objectId) => ({ objectId })),
+      returnByValue: true,
+    });
+    const flags = answer.result?.value;
+    if (!Array.isArray(flags) || flags.length !== found.length) throw new Error('The browser gave no answer about the fields');
+    let next = 0;
+    return resolved.map((objectId) => {
+      if (objectId === undefined) return undefined;
+      const flag: unknown = flags[next++];
+      if (typeof flag !== 'object' || flag === null) return undefined;
+      const { secret, value } = flag as { secret?: unknown; value?: unknown };
+      return typeof secret === 'boolean' ? { secret, value: typeof value === 'string' ? value : undefined } : undefined;
+    });
+  } finally {
+    await sendCommand(tabId, 'Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined);
+  }
 }
