@@ -8,6 +8,7 @@ import {
   ensureAttached,
   holdInputFocus,
   navigationsSince,
+  networkRevision,
   openDialog,
   sendCommand,
   setRecoveryOrigin,
@@ -47,7 +48,7 @@ interface KeyStroke {
   text?: string;
 }
 
-/** Runs one ordered batch through CDP, settles after every step, and returns the resulting page read. */
+/** Runs one ordered batch through CDP, settles after each step that can start work and at the end, and returns the resulting page read. */
 export async function actOnPage(
   session: StoredSession,
   tabId: number,
@@ -75,6 +76,8 @@ export async function actOnPage(
     const step = steps[index];
     if (step === undefined) continue;
     const action = actionOf(step);
+    const networkBefore = networkRevision(tabId);
+    const epochBefore = documentEpoch(tabId);
     try {
       activeSession = await reloadSession();
       await assertActAccess(activeSession, tabId, expectedOrigin);
@@ -84,7 +87,9 @@ export async function actOnPage(
         await answerDialogStep(tabId, step, expectedOrigin);
       } else if (ref !== undefined) {
         releaseFocus ??= await holdInputFocus(tabId);
-        if (epoch !== expectedEpoch) throw staleRef(ref, `document epoch ${expectedEpoch} -> ${epoch}`);
+        // Live, not the value kept after the last settle: a step that skipped its settle may have replaced the document.
+        const current = documentEpoch(tabId);
+        if (current !== expectedEpoch) throw staleRef(ref, `document epoch ${expectedEpoch} -> ${current}`);
         const backendId = backendIds[index];
         if (backendId === undefined || backendId === null) throw staleRef(ref, 'the ref has no DOM node id');
         await runElementStep(tabId, step, backendId, ref);
@@ -107,9 +112,18 @@ export async function actOnPage(
       }
     }
 
-    await settlePage(tabId);
+    const readFollows = index === steps.length - 1 || failure !== undefined;
+    if (!readFollows && !startsWork(action)) {
+      // The debugger reports a request or a navigation the step began a moment after its own reply, so ask for
+      // one more answer from the page first; what it began is in by then.
+      await sendCommand(tabId, 'Page.getLayoutMetrics').catch(() => undefined);
+    }
+    const settles = readFollows || startsWork(action) || documentEpoch(tabId) !== epochBefore || networkRevision(tabId) !== networkBefore;
+    if (settles) await settlePage(tabId);
     // Again after settling: a document from another origin that came and went (its navigation reported
-    // after the input returned) ends on the approved origin, which the check below would not see.
+    // after the input returned) ends on the approved origin, which the check below would not see. A step
+    // that skipped its settle runs the check anyway; `epoch` stays where it was, so the next settle checks
+    // everything since the last one.
     if (failure === undefined && action !== 'wait') {
       try {
         assertSameOriginSince(tabId, epoch, expectedOrigin, action);
@@ -117,7 +131,7 @@ export async function actOnPage(
         failure = { step: index + 1, action, error: messageOf(error) };
       }
     }
-    epoch = documentEpoch(tabId);
+    if (settles) epoch = documentEpoch(tabId);
     try {
       activeSession = await reloadSession();
       await assertActAccess(activeSession, tabId, expectedOrigin);
@@ -146,6 +160,16 @@ export async function actOnPage(
   const page = await readPage(activeSession, tabId, expectedOrigin, reloadSession);
   return failure === undefined ? page : { ...page, failure };
   }
+}
+
+/**
+ * Whether a step can start work the next one has to wait for: a click, a key press, a scroll, a hover or a wait. The
+ * others (fill, type, select) only change a field. The next step cannot use anything they would have waited for (its
+ * refs come from the read before the batch), so between other steps they settle only when the page showed that the
+ * step did start something: a document replaced or a network request begun while it ran.
+ */
+function startsWork(action: ActAction): boolean {
+  return action !== 'fill' && action !== 'type' && action !== 'select';
 }
 
 /** While a dialog is open: Enter accepts it, Escape dismisses it, and `type` holds a prompt's text. */
