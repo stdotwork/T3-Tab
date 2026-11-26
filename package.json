@@ -16,7 +16,8 @@
     "e2e": "node e2e/extension.e2e.mjs",
     "bench": "node bench/bench.mjs",
     "bench:compare": "node bench/compare/run.mjs",
-    "bench:agent": "node bench/agent/run.mjs"
+    "bench:agent": "node bench/agent/run.mjs",
+    "captures": "node e2e/captures.mjs"
   },
   "devDependencies": {
     "@browsermcp/mcp": "2.5.0",

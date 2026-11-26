@@ -39,6 +39,23 @@ const PAGES = {
   '/form-post': page('Post form', '<form method="post" action="/posted"><button>Send</button></form>'),
   '/posted': page('Posted', '<p>sent</p>'),
   '/one': page('One', '<p>first</p>'),
+  '/jump-select': page(
+    'Jump select',
+    '<select aria-label="Section" onchange="location.href = \'/landing\'"><option>Pick</option><option>Landing</option></select><label>Note <input id="note"></label>',
+  ),
+  '/debounced': page(
+    'Debounced',
+    '<label>Code <input id="code" oninput="clearTimeout(window.later); window.later = setTimeout(() => { send.disabled = false }, 100)"></label><button id="send" disabled onclick="fetch(\'/submitted\')">Send</button>',
+  ),
+  '/slow-field': page(
+    'Slow field',
+    '<label>Code <input id="code" oninput="fetch(\'/hint\').then(() => { hint.textContent = \'checked\' })"></label><button onclick="seen.textContent = hint.textContent">Send</button><p id="hint">unchecked</p><p id="seen">nothing</p>',
+  ),
+  '/tall': page('Tall', '<div style="height:6000px">tall page</div>'),
+  '/trap': page('Trap', '<div style="height:6000px">wheel trap</div><script>addEventListener("wheel", (event) => event.preventDefault(), { passive: false })</script>'),
+  '/clip': '<!doctype html><html style="overflow:clip"><head><title>Clip</title></head><body><div style="height:6000px">clipped page</div></body></html>',
+  '/contained': '<!doctype html><html><head><title>Contained</title></head><body><div style="height:6000px">tall page</div><div id="box" style="position:fixed;inset:0;overflow:auto;overscroll-behavior:contain"><div style="height:3000px">long content</div></div><script>box.scrollTop = box.scrollHeight</script></body></html>',
+  '/inner': '<!doctype html><html><head><title>Inner</title><style>html,body{margin:0;overflow:hidden}</style></head><body><div id="box" style="position:fixed;inset:0;overflow:auto"><div style="height:6000px">inner scroller</div></div></body></html>',
   '/two': page('Two', '<p>second</p>'),
 };
 
@@ -51,6 +68,10 @@ export async function checkAgentTools() {
       const { pathname } = new URL(request.url ?? '/', 'http://x');
       hits[name].push(request.method === 'POST' ? `POST ${pathname}` : pathname);
       request.resume();
+      if (pathname === '/hint') {
+        setTimeout(() => response.end('ok'), 60);
+        return;
+      }
       if (pathname === '/to-other') {
         response.writeHead(302, { location: `${urls.other}/landing` });
         response.end();
@@ -239,6 +260,76 @@ export async function checkAgentTools() {
       await closeTab(tab);
     });
 
+    await check('a scroll moves the page or says it did not, and a screenshot of a background tab gives up soon', async () => {
+      const scrollY = async (tab, expression = 'window.scrollY') => Number((await call('run_js', { tab, expression })).text);
+      const tab = await openAllowed('/tall');
+      const front = await frontTab();
+      assert((await tabInfo(tab)).active === false && front !== tab, 'the tab to scroll is in front');
+      // A background tab that has been idle for a few seconds takes the wheel event and may move nothing. Reporting
+      // success with no movement is what must never happen.
+      await sleep(3_000);
+      const hidden = await call('act', { tab, steps: [{ action: 'scroll', dy: 3000 }] });
+      const hiddenY = await scrollY(tab);
+      if (hidden.error) assert(/did not scroll/.test(hidden.text) && /in the background/.test(hidden.text) && !/tabs switch/.test(hidden.text), `a failed scroll does not say why: ${hidden.text}`);
+      else assert(hiddenY > 0, `the scroll was reported as done but the page is at ${hiddenY}: ${hidden.text}`);
+
+      // In front it scrolls, and that is reported.
+      await call('tabs', { action: 'switch', tab });
+      const before = await scrollY(tab);
+      const shown = await call('act', { tab, steps: [{ action: 'scroll', dy: 1000 }] });
+      assert(!shown.error, `a scroll in front failed: ${shown.text}`);
+      assert((await scrollY(tab)) > before, `the page in front did not scroll: ${before} -> ${await scrollY(tab)}`);
+      await browser.worker(`chrome.tabs.update(${front}, { active: true })`);
+      await closeTab(tab);
+
+      // The element under the pointer counts as well as the page.
+      const inner = await openAllowed('/inner');
+      await call('tabs', { action: 'switch', tab: inner });
+      const innerReply = await call('act', { tab: inner, steps: [{ action: 'scroll', dy: 800 }] });
+      assert(!innerReply.error, `a scroll of an element in front failed: ${innerReply.text}`);
+      assert((await scrollY(inner, 'document.getElementById("box").scrollTop')) > 0, 'the element did not scroll');
+      await browser.worker(`chrome.tabs.update(${front}, { active: true })`);
+      await closeTab(inner);
+
+      // Where the wheel cannot move the page whatever the tab shows, nothing is reported: the root is clipped, or a
+      // scroller that keeps the wheel to itself sits under the pointer and has no room.
+      for (const path of ['/clip', '/contained']) {
+        const blocked = await openAllowed(path);
+        const refused = await call('act', { tab: blocked, steps: [{ action: 'scroll', dy: 500 }] });
+        assert(!refused.error, `a scroll on ${path} failed though the wheel cannot move it: ${refused.text}`);
+        await closeTab(blocked);
+      }
+
+      // A tab the owner can see is never failed for not moving: a page may take the wheel itself.
+      const trap = await openAllowed('/trap');
+      await call('tabs', { action: 'switch', tab: trap });
+      const trapStarted = Date.now();
+      const trapped = await call('act', { tab: trap, steps: [{ action: 'scroll', dy: 500 }] });
+      assert(!trapped.error, `a scroll in front of a page that takes the wheel failed: ${trapped.text}`);
+      assert(Date.now() - trapStarted < 1_500, `a scroll in front waited ${Date.now() - trapStarted} ms for a page that took the wheel`);
+      await browser.worker(`chrome.tabs.update(${front}, { active: true })`);
+      await closeTab(trap);
+
+      // A page with nothing to scroll is not an error, and is not waited on.
+      const flat = await openAllowed('/one');
+      const started = Date.now();
+      const nothing = await call('act', { tab: flat, steps: [{ action: 'scroll', dy: 500 }] });
+      assert(!nothing.error, `a scroll on a page with nothing to scroll failed: ${nothing.text}`);
+      assert(Date.now() - started < 1_500, `a scroll with nothing to move took ${Date.now() - started} ms`);
+      await closeTab(flat);
+
+      // A background tab that has been idle gives no frame: the capture ends in seconds, with a reason, or works.
+      const idle = await openAllowed('/red');
+      await sleep(2_500);
+      const shot = Date.now();
+      const picture = await call('screenshot', { tab: idle });
+      const took = Date.now() - shot;
+      assert(took < 6_000, `the screenshot of an idle background tab took ${took} ms`);
+      if (picture.error) assert(/no picture of the page/.test(picture.text) && /in the background/.test(picture.text) && !/tabs switch/.test(picture.text), `a failed screenshot does not say why: ${picture.text}`);
+      else assert(picture.content.some((item) => item.type === 'image'), `a screenshot without an image: ${picture.text}`);
+      await closeTab(idle);
+    });
+
     await check('an empty session is told what to do', async () => {
       idle = await connectMcp(home, 'agent-tools-empty');
       const list = await call('tabs', {}, idle.client);
@@ -349,6 +440,55 @@ export async function checkAgentTools() {
       assert(hits.allowed.filter((hit) => hit === 'POST /posted').length === 1, `reload sent the form again: ${hits.allowed.join(' ')}`);
       assert(hits.allowed.at(-1) === '/posted', `reload did not fetch the page: ${hits.allowed.at(-1)}`);
       assert((await entries()).text === before, 'reload added a history entry');
+      await closeTab(tab);
+    });
+
+    await check('a field change that starts a page load is waited for before the next step uses the old page', async () => {
+      const tab = await openAllowed('/jump-select');
+      const read = await call('read', { tab });
+      const acted = await call('act', {
+        tab,
+        steps: [
+          { action: 'select', ref: refFor(read.text, 'combobox "Section"'), text: 'Landing' },
+          { action: 'fill', ref: refFor(read.text, 'textbox "Note"'), text: 'x' },
+        ],
+      });
+      assert(/no longer on the page/.test(acted.text), `the second step ran on the old page: ${acted.text}`);
+      assert(/step 1 \(select\) replaced the page/.test(acted.text), `the error does not name the step that moved the page: ${acted.text}`);
+      assert(acted.text.includes('Landing'), `the reply is not the new page: ${acted.text}`);
+      await closeTab(tab);
+    });
+
+    await check('a field change that asks the server something is answered before the click after it', async () => {
+      const tab = await openAllowed('/slow-field');
+      const read = await call('read', { tab });
+      const acted = await call('act', {
+        tab,
+        steps: [
+          { action: 'fill', ref: refFor(read.text, 'textbox "Code"'), text: '123' },
+          { action: 'click', ref: refFor(read.text, 'button "Send"') },
+        ],
+      });
+      assert(!acted.error, `act: ${acted.text}`);
+      const seen = await call('run_js', { tab, expression: 'seen.textContent' });
+      assert(seen.text === '"checked"', `the click ran before the server's answer was in: ${seen.text}`);
+      await closeTab(tab);
+    });
+
+    await check('a click waits for a check the page runs a moment after a field change', async () => {
+      const tab = await openAllowed('/debounced');
+      const read = await call('read', { tab });
+      const before = hits.allowed.filter((hit) => hit === '/submitted').length;
+      const acted = await call('act', {
+        tab,
+        steps: [
+          { action: 'fill', ref: refFor(read.text, 'textbox "Code"'), text: '123' },
+          { action: 'click', ref: refFor(read.text, 'button "Send"') },
+        ],
+      });
+      assert(!acted.error, `act: ${acted.text}`);
+      for (let attempt = 0; attempt < 40 && hits.allowed.filter((hit) => hit === '/submitted').length === before; attempt += 1) await sleep(50);
+      assert(hits.allowed.filter((hit) => hit === '/submitted').length === before + 1, 'the click ran before the page enabled Send, so nothing was sent');
       await closeTab(tab);
     });
 

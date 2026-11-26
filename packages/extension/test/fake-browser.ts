@@ -13,6 +13,8 @@ export interface FakeTab {
   text: string;
   frameId: string;
   context: { id: number; uniqueId: string };
+  /** Whether the tab is the active one of its window. Left out, the tab does not say. */
+  active?: boolean;
 }
 
 type EventListener = (source: { tabId?: number }, method: string, params?: unknown) => void;
@@ -25,6 +27,11 @@ export class FakeBrowser {
   readonly groupCalls: Array<{ tabIds: number[]; groupId?: number }> = [];
   /** Runs when a command reaches the browser, before it is handled: the place for a navigation to land. */
   beforeCommand: ((tabId: number, method: string) => Promise<void> | void) | undefined;
+  /** Answers an expression before the page would run it: the place to say what a script in the real page would find. */
+  evaluateHook: ((params: Record<string, unknown>) => unknown) | undefined;
+  /** What the one window says about itself. */
+  windowFocused = true;
+  windowState = 'normal';
   private readonly listeners: EventListener[] = [];
   private contextSeq = 0;
 
@@ -34,9 +41,12 @@ export class FakeBrowser {
     this.evaluated.length = 0;
     this.groupCalls.length = 0;
     this.beforeCommand = undefined;
+    this.evaluateHook = undefined;
+    this.windowFocused = true;
+    this.windowState = 'normal';
   }
 
-  addTab(fields: { id: number; url: string; text?: string; title?: string; groupId?: number }): FakeTab {
+  addTab(fields: { id: number; url: string; text?: string; title?: string; groupId?: number; active?: boolean }): FakeTab {
     const tab: FakeTab = {
       id: fields.id,
       groupId: fields.groupId ?? -1,
@@ -45,6 +55,7 @@ export class FakeBrowser {
       text: fields.text ?? '',
       frameId: `frame-${fields.id}`,
       context: this.newContext(),
+      ...(fields.active === undefined ? {} : { active: fields.active }),
     };
     this.tabs.set(tab.id, tab);
     return tab;
@@ -63,6 +74,11 @@ export class FakeBrowser {
     tab.context = this.newContext();
     this.emit(tabId, 'Page.frameNavigated', { frame: { id: tab.frameId, url } });
     this.emitContext(tab);
+  }
+
+  /** A network request the page started, as the debugger reports it. */
+  request(tabId: number): void {
+    this.emit(tabId, 'Network.requestWillBeSent', { type: 'XHR', loaderId: 'x', request: { method: 'GET' } });
   }
 
   install(): void {
@@ -90,6 +106,7 @@ export class FakeBrowser {
           return groupId;
         },
       },
+      windows: { get: async () => ({ id: 1, focused: this.windowFocused, state: this.windowState }) },
       tabGroups: { TAB_GROUP_ID_NONE: -1 },
       webNavigation: { onCommitted: { addListener: () => undefined } },
     };
@@ -108,6 +125,8 @@ export class FakeBrowser {
         return { frameTree: { frame: { id: tab.frameId, securityOrigin: new URL(tab.url).origin } } };
       case 'Runtime.evaluate':
         return await this.evaluate(tab, params ?? {});
+      case 'Page.createIsolatedWorld':
+        return { executionContextId: 900 + tab.id };
       case 'Page.getLayoutMetrics':
         return { cssVisualViewport: { clientWidth: 800, clientHeight: 600 } };
       case 'Page.captureScreenshot':
@@ -118,6 +137,8 @@ export class FakeBrowser {
   }
 
   private async evaluate(tab: FakeTab, params: Record<string, unknown>): Promise<unknown> {
+    const hooked = this.evaluateHook?.(params);
+    if (hooked !== undefined) return { result: { type: typeof hooked, value: hooked } };
     const wanted = params.uniqueContextId;
     // Without a context id the browser evaluates in whatever document the tab shows now.
     if (wanted !== undefined && wanted !== tab.context.uniqueId) {
@@ -158,7 +179,13 @@ export class FakeBrowser {
   }
 
   private snapshot(tab: FakeTab): chrome.tabs.Tab {
-    return { id: tab.id, groupId: tab.groupId, url: tab.url, title: tab.title } as chrome.tabs.Tab;
+    return {
+      id: tab.id,
+      groupId: tab.groupId,
+      url: tab.url,
+      title: tab.title,
+      ...(tab.active === undefined ? {} : { active: tab.active, windowId: 1 }),
+    } as chrome.tabs.Tab;
   }
 
   private mustTab(id: number): FakeTab {
