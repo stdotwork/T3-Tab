@@ -11,3 +11,4 @@ packages/extension/.wxt/
 .DS_Store
 bench/results/
 bench/compare/results/
+bench/agent/results/

@@ -15,7 +15,8 @@
     "build": "pnpm -r build",
     "e2e": "node e2e/extension.e2e.mjs",
     "bench": "node bench/bench.mjs",
-    "bench:compare": "node bench/compare/run.mjs"
+    "bench:compare": "node bench/compare/run.mjs",
+    "bench:agent": "node bench/agent/run.mjs"
   },
   "devDependencies": {
     "@browsermcp/mcp": "2.5.0",
