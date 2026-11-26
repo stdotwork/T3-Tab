@@ -213,7 +213,7 @@ export type TabNavigation = 'goto' | 'back' | 'forward' | 'reload';
 
 /**
  * Where a load ended. `redirectedFrom` is the origin asked for, set when the page ended up on another one. `page` is the
- * page as `page.read` gives it, read once the load settled, when the session may read the tab without a prompt;
+ * page as `page.read` gives it, read once the load arrived, when the session may read the tab without a prompt;
  * otherwise `unread` says why it was not read when that is not a redirect to an origin the session holds no approval for.
  */
 export interface TabLoadResult {
@@ -221,6 +221,16 @@ export interface TabLoadResult {
   redirectedFrom?: string;
   page?: PageReadResult;
   unread?: string;
+  /** Set instead of `page` when the load asked for `skipReadOver` and the page's text is longer: it was not read. */
+  textLength?: number;
+}
+
+/**
+ * What a load asks of its reply. With `skipReadOver`, a page whose text is longer than that many characters is not read:
+ * its reply could not carry it whole, and the agent reads it anyway.
+ */
+export interface LoadOptions {
+  skipReadOver?: number;
 }
 
 /** What a tool that needs a tab says when the session has none. */
@@ -239,10 +249,14 @@ export interface BrowserMethods {
   'session.claim': { params: { code: string; route: ClaimRoute }; result: { shared: number[] } };
   'session.unregister': { params: Record<string, never>; result: { unregistered: true } };
   'tabs.list': { params: Record<string, never>; result: { tabs: TabInfo[] } };
-  'tabs.open': { params: { url: string }; result: TabLoadResult };
+  /**
+   * With `reuse`, a tab of the session already at that address (the fragment aside, and only `tab` when it is given) is
+   * read instead, as `page.read` reads it, and the result says `reused`; otherwise a new tab is opened as without it.
+   */
+  'tabs.open': { params: LoadOptions & { url: string; reuse?: true; tab?: number }; result: TabLoadResult & { reused?: true } };
   /** A `goto` with no `tab` in a session that has no tab opens one, asking as `tabs.open` does, and says `opened`. */
   'tabs.navigate': {
-    params: { tab?: number; action: TabNavigation; url?: string };
+    params: LoadOptions & { tab?: number; action: TabNavigation; url?: string };
     result: TabLoadResult & { opened?: true };
   };
   'tabs.switch': { params: { tab: number }; result: { tab: TabInfo } };

@@ -13,7 +13,7 @@ import {
 } from './cdp';
 
 import { originOf, restrictedPageError, type SitePermission } from './permissions';
-import { settlePage, type SettleResult } from './settle';
+import { settlePage } from './settle';
 import {
   assertSessionTab,
   currentSessionTab,
@@ -32,14 +32,14 @@ const OPENABLE_PROTOCOLS = new Set(['http:', 'https:']);
 const grouping = new Map<string, Promise<unknown>>();
 
 /**
- * A load that has arrived: `settled` resolves once the page has settled after it, with what the settle wait last saw, or at
- * once, with nothing, when there is nothing to wait for.
+ * A load that has arrived. `newDocument` is false when nothing new was loaded: a move within the same document (a
+ * fragment), or a dialog the page opened before it finished.
  */
 export interface Landing {
-  settled: Promise<SettleResult | undefined>;
+  newDocument: boolean;
 }
 
-const ARRIVED: Landing = { settled: Promise.resolve(undefined) };
+const ARRIVED: Landing = { newDocument: false };
 
 /** What the browser tools may show for a tab: the site setting for an origin, from the owner's site list. */
 export type SiteSetting = (origin: string) => Promise<SitePermission | undefined>;
@@ -83,6 +83,49 @@ export async function resolveSessionTab(session: StoredSession, tab: number | un
   if (selected === undefined) throw new Error(NO_TAB_MESSAGE);
   assertAllowedTab(selected);
   return selected;
+}
+
+/**
+ * A tab of the session that already shows this address, the fragment aside, and whose page the session may read without
+ * a prompt: only `tab` when it is given, else the current tab first. A tab still loading something else does not count.
+ */
+export async function sessionTabAt(
+  session: StoredSession,
+  url: string,
+  tab: number | undefined,
+  siteSetting: SiteSetting,
+): Promise<chrome.tabs.Tab | undefined> {
+  const wanted = withoutFragment(url);
+  if (wanted === undefined) return undefined;
+  let candidates: chrome.tabs.Tab[];
+  if (tab !== undefined) {
+    candidates = [await resolveSessionTab(session, tab)];
+  } else {
+    const [all, front] = await Promise.all([
+      chrome.tabs.query({}),
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }),
+    ]);
+    const usable = usableSessionTabs(session, all);
+    const current = currentSessionTab(session, usable, front[0]?.id);
+    candidates = current === undefined ? usable : [current, ...usable.filter((other) => other.id !== current.id)];
+  }
+  for (const candidate of candidates) {
+    if (candidate.pendingUrl !== undefined || candidate.url === undefined || withoutFragment(candidate.url) !== wanted) continue;
+    if (restrictedPageError(candidate.url) !== undefined) continue;
+    // A tab the session may not read yet does not count, so which prompt comes up says nothing about where that tab is.
+    if (!(await describeTab(session, candidate, false, siteSetting)).needsApproval) return candidate;
+  }
+  return undefined;
+}
+
+function withoutFragment(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = '';
+    return parsed.href;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The tab a call that names none uses, or nothing when the session has no tab. */
@@ -133,8 +176,8 @@ export async function loadAddress(tabId: number, url: string): Promise<Landing> 
 /**
  * Runs a command that moves the tab, then waits for the new document to load and paint its first frames. A dialog that
  * opens counts as arrived. A hidden page gets no animation frames and slow timers, so a page that renders from script
- * would stay blank: the tab counts as visible until it has settled, which goes on after this returns (the landing's
- * `settled` says when), and then goes back to hidden.
+ * would stay blank: the tab counts as visible until it has settled, which goes on after this returns so the agent is not
+ * kept waiting, and then goes back to hidden.
  */
 async function navigated(tabId: number, go: () => Promise<boolean>, throughHistory = false): Promise<Landing> {
   const since = documentEpoch(tabId);
@@ -147,12 +190,10 @@ async function navigated(tabId: number, go: () => Promise<boolean>, throughHisto
     await waitForDocumentLoad(tabId, since, OPEN_TIMEOUT_MS, moves);
     await firstFrames(tabId);
     settling = true;
-    const settled = settlePage(tabId).then(
-      (result) => result,
-      () => undefined,
-    );
-    void settled.finally(() => void release());
-    return { settled };
+    void settlePage(tabId)
+      .catch(() => undefined)
+      .finally(() => void release());
+    return { newDocument: true };
   } catch (error) {
     if (!(error instanceof DialogOpenError)) throw error;
     return ARRIVED;

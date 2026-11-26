@@ -15,7 +15,7 @@ import type { z } from 'zod';
 import type { BrowserLink } from './browser-link.js';
 import type { SetValue } from './reader/echo.js';
 import { truncate } from './reader/format.js';
-import { formatRead, MAX_OUTPUT_CHARS, type ReadOptions } from './reader/page.js';
+import { formatRead, LOAD_REPLY_MAX, MAX_OUTPUT_CHARS, type ReadOptions } from './reader/page.js';
 import { actParams, convertStep, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
 
 const MAX_TAB_TITLE = 80;
@@ -58,7 +58,7 @@ async function runTabs(
     }
     case 'open': {
       if (params.url === undefined) throw new Error('open needs a url');
-      const opened = await link.request(session, 'tabs.open', { url: params.url });
+      const opened = await link.request(session, 'tabs.open', { url: params.url, ...skipLongPage(params.find) });
       return await loadReply(link, session, 'Opened', opened, { find: params.find, load: true });
     }
     case 'goto':
@@ -70,6 +70,7 @@ async function runTabs(
         action,
         ...(params.tab === undefined ? {} : { tab: params.tab }),
         ...(action !== 'goto' || params.url === undefined ? {} : { url: params.url }),
+        ...skipLongPage(params.find),
       });
       return await loadReply(link, session, moved.opened === true ? 'Opened' : NAVIGATED[action], moved, { find: params.find, load: true });
     }
@@ -90,14 +91,12 @@ async function runTabs(
 async function runRead(link: BrowserLink, session: ToolSession, params: z.infer<typeof readParams>): Promise<string> {
   const { url, ...options } = params;
   if (url !== undefined) {
-    // Refs belong to the document they came from, and a load replaces it.
+    // Refs belong to the document they came from, and a new tab is a new document.
     if (options.ref !== undefined) throw new Error('Invalid arguments: ref does not go with url');
-    const moved = await link.request(session, 'tabs.navigate', {
-      action: 'goto',
-      url,
-      ...(params.tab === undefined ? {} : { tab: params.tab }),
-    });
-    return await loadReply(link, session, moved.opened === true ? 'Opened' : 'Loaded', moved, options);
+    // A tab of the session already at the address is read as it is; no tab is ever moved or loaded again.
+    const found = await link.request(session, 'tabs.open', { url, reuse: true, ...(params.tab === undefined ? {} : { tab: params.tab }) });
+    if (found.reused === true && found.page !== undefined) return await formatRead(link.tabState(found.page.tab), session.id, found.page, options);
+    return await loadReply(link, session, 'Opened', found, options);
   }
   const page = await link.request(session, 'page.read', params.tab === undefined ? {} : { tab: params.tab });
   return await formatRead(link.tabState(page.tab), session.id, page, options);
@@ -117,11 +116,29 @@ async function loadReply(
   options: ReadOptions,
 ): Promise<string> {
   if (loaded.page === undefined) {
+    if (loaded.textLength !== undefined) {
+      const size = loaded.textLength.toLocaleString('en-US');
+      return `${verb} tab ${tabLine(loaded.tab)}${redirectNote(loaded)}\n(${size} characters of text, too long for this reply: read shows it, find searches it.)`;
+    }
     const why = loaded.unread === undefined ? '' : `\n${loaded.unread}`;
     const note = redirectNote(loaded) || (loaded.tab.needsApproval === true || why !== '' ? '' : '\nread it for the page.');
     return `${verb} tab ${tabLine(loaded.tab)}${note}${why}`;
   }
-  return `${verb} ${await formatRead(link.tabState(loaded.page.tab), session.id, loaded.page, options)}`;
+  const read = await formatRead(link.tabState(loaded.page.tab), session.id, loaded.page, options);
+  // The read's header is `tab <id>` and its title and address; the reply marks the current tab as `tabs list` does.
+  const header = `tab ${loaded.page.tab}`;
+  const marked = loaded.tab.active && read.startsWith(header) ? `${header} [current]${read.slice(header.length)}` : read;
+  const lineEnd = marked.indexOf('\n');
+  const [first, rest] = lineEnd === -1 ? [marked, ''] : [marked.slice(0, lineEnd), marked.slice(lineEnd)];
+  return `${verb} ${first}${redirectNote(loaded)}${rest}`;
+}
+
+/**
+ * A load without `find` replies with the whole page only up to `LOAD_REPLY_MAX`, so the browser need not read a page whose
+ * text alone is longer: the agent reads it anyway.
+ */
+function skipLongPage(find: string | undefined): { skipReadOver?: number } {
+  return find === undefined ? { skipReadOver: LOAD_REPLY_MAX } : {};
 }
 
 async function runScreenshot(
@@ -215,9 +232,10 @@ function tabLine(tab: TabInfo): string {
   return `${tab.id}${current} ${truncate(tab.title, MAX_TAB_TITLE)} — ${truncate(tab.url, MAX_TAB_URL)}`;
 }
 
-/** Said only when the agent has to do something about it: a redirect to an origin nobody approved yet. */
+/** Where a load was redirected from, and, for an origin nobody approved yet, how to ask for it. */
 function redirectNote(moved: { tab: TabInfo; redirectedFrom?: string }): string {
-  if (moved.redirectedFrom === undefined || moved.tab.needsApproval !== true) return '';
+  if (moved.redirectedFrom === undefined) return '';
+  if (moved.tab.needsApproval !== true) return `\nRedirected from ${moved.redirectedFrom}.`;
   return `\nRedirected from ${moved.redirectedFrom}. read this tab to ask the owner for access.`;
 }
 

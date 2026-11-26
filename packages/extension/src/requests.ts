@@ -1,4 +1,4 @@
-import type { BrowserMethods, BrowserRequestMessage, PageReadResult, TabLoadResult, ToolSession } from '@t3-tab/protocol';
+import type { BrowserMethods, BrowserRequestMessage, LoadOptions, PageReadResult, TabLoadResult, ToolSession } from '@t3-tab/protocol';
 
 import { actOnPage } from './actions';
 import { claimTabs } from './claims';
@@ -8,7 +8,7 @@ import { readPage } from './page';
 import { originOf, promptAddress, restrictedPageError, type AuthorizeResult, type PromptTab } from './permissions';
 import { claimStore, permissionPrompts, sessionStore, siteStore } from './runtime';
 import { captureViewport } from './screenshot';
-import { sameSnapshot, settleSnapshot, sleep, type SettleSnapshot } from './settle';
+import { pageTextLength, settleSnapshot, type SettleSnapshot } from './settle';
 import type { StoredSession } from './sessions';
 import {
   closeSessionTab,
@@ -22,17 +22,21 @@ import {
   reloadTab,
   resolveSessionTab,
   sessionCurrentTab,
+  sessionTabAt,
   switchSessionTab,
   type Landing,
   type SiteSetting,
 } from './tabs';
 
 /**
- * Longest a load's reply waits for the page to settle before reading it. A load already waited for the document and
- * its first frames; this catches what a page fetches or draws just after, without holding the agent for a page that
- * never goes quiet.
+ * A load's reply reads the page once its document has loaded and drawn its first frames, without waiting for it to go
+ * quiet. When the page moved while it was read and that read ended within this long, it is read once more. A page that
+ * never stops moving costs at most this and one more read.
  */
-const LOAD_SETTLE_MS = 1_000;
+const LOAD_REREAD_MS = 100;
+
+/** Said in a load's reply in place of the page when the Full access pass the load went through no longer holds. */
+const FULL_ACCESS_ENDED = 'T3 no longer confirms Full access for this thread, so the page is left out: read it to ask the owner.';
 
 /**
  * What a session may see of a tab it holds no approval for. Full access shows it while T3 confirms the mode, and records
@@ -79,7 +83,7 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
     case 'tabs.list':
       return { tabs: await listTabs(session, tabAccess(session)) } satisfies BrowserMethods['tabs.list']['result'];
     case 'tabs.open':
-      return await openTabForSession(session, request.params.url);
+      return await openOrReuse(session, request.params);
     case 'tabs.navigate':
       return await navigateTab(session, request.params);
     case 'tabs.switch': {
@@ -160,16 +164,38 @@ function loadableOrigin(url: string): string {
   return origin;
 }
 
+/**
+ * `read` with an address: a tab of the session already showing it is read as it is, never moved or loaded again, and
+ * becomes the current tab. Otherwise the address opens in a new tab, as `tabs open` does.
+ */
+async function openOrReuse(
+  session: StoredSession,
+  params: BrowserMethods['tabs.open']['params'],
+): Promise<BrowserMethods['tabs.open']['result']> {
+  loadableOrigin(params.url);
+  const options: LoadOptions = params.skipReadOver === undefined ? {} : { skipReadOver: params.skipReadOver };
+  if (params.reuse !== true) return await openTabForSession(session, params.url, options);
+  const found = await sessionTabAt(session, params.url, params.tab, tabAccess(session));
+  if (found?.id === undefined) return await openTabForSession(session, params.url, options);
+  const access = await authorizeRead(session, found.id);
+  const tabId = access.tab.id ?? -1;
+  await sessionStore.setCurrentTab(session.id, tabId);
+  const page = await readPage(access.session, tabId, access.origin, async () => await registeredSession(session));
+  const tab = await describeSessionTab(await registeredSession(session), tabId, tabAccess(session));
+  return { tab, page, reused: true };
+}
+
 /** Asks first, for the requested address: nothing is created, fetched or run until the owner says yes. */
 async function openTabForSession(
   session: StoredSession,
   url: string,
+  options: LoadOptions = {},
 ): Promise<TabLoadResult> {
   const origin = loadableOrigin(url);
   const pass = await permissionPrompts.authorize(origin, 'open', session, undefined, promptAddress(url));
-  const { tabId, settled } = await openSessionTab(await registeredSession(session), url, sessionStore);
+  const { tabId, ...landing } = await openSessionTab(await registeredSession(session), url, sessionStore);
   try {
-    return await describeLanding(session, tabId, origin, pass, { settled });
+    return await describeLanding(session, tabId, origin, pass, landing, options);
   } catch (failure) {
     await chrome.tabs.remove(tabId).catch(() => undefined);
     throw failure;
@@ -189,7 +215,7 @@ async function navigateTab(
   const { action } = params;
   if (action === 'goto' && params.tab === undefined && (await sessionCurrentTab(session)) === undefined) {
     if (params.url === undefined) throw new Error('goto needs a url');
-    return { ...(await openTabForSession(session, params.url)), opened: true };
+    return { ...(await openTabForSession(session, params.url, loadOptions(params))), opened: true };
   }
   const tab = await resolveSessionTab(session, params.tab);
   const tabId = tab.id ?? -1;
@@ -222,14 +248,18 @@ async function navigateTab(
   else if (action === 'reload') landing = await reloadTab(tabId, current.url ?? url);
   else landing = await goToHistoryEntry(tabId, entryId ?? -1);
   await sessionStore.setCurrentTab(session.id, tabId);
-  return await describeLanding(session, tabId, target, pass, landing);
+  return await describeLanding(session, tabId, target, pass, landing, loadOptions(params));
+}
+
+function loadOptions(params: LoadOptions): LoadOptions {
+  return params.skipReadOver === undefined ? {} : { skipReadOver: params.skipReadOver };
 }
 
 /**
- * Where a load ended up, and the page once it settled (for at most `LOAD_SETTLE_MS`). The approval covers the origin
- * that was asked for, so a tab that a redirect took elsewhere stays in the session unapproved: the agent is told the new
- * origin, and its next read asks the owner unless the site is allowed. The page is read only where a `read` would pass
- * without a prompt: the origin this load was approved for, or one the session already holds or the owner lets it read.
+ * Where a load ended up, and the page as it arrived. The approval covers the origin that was asked for, so a tab that a
+ * redirect took elsewhere stays in the session unapproved: the agent is told the new origin, and its next read asks the
+ * owner unless the site is allowed. The page is read only where a `read` would pass without a prompt, and goes into the
+ * reply only if that still holds once it was read.
  */
 async function describeLanding(
   session: StoredSession,
@@ -237,10 +267,8 @@ async function describeLanding(
   requested: string,
   pass: AuthorizeResult,
   landing: Landing,
+  options: LoadOptions = {},
 ): Promise<TabLoadResult> {
-  // The page is read while the settle wait runs, and that read is kept if nothing moved from its start to the settle's end.
-  const early = await readEarly(session, tabId, requested);
-  const settled = await Promise.race([landing.settled, sleep(LOAD_SETTLE_MS).then(() => undefined)]);
   const landed = await resolveSessionTab(await registeredSession(session), tabId);
   const origin = tabOrigin(landed);
   await sessionStore.observeTabOrigin(tabId, origin);
@@ -248,46 +276,74 @@ async function describeLanding(
   const current = await registeredSession(session);
   const described = await describeSessionTab(current, tabId, tabAccess(session));
   const result: TabLoadResult = origin === requested ? { tab: described } : { tab: described, redirectedFrom: requested };
-  if (!(await readableAfterLoad(current, tabId, origin, requested))) return result;
-  if (early !== undefined && early.origin === origin && settled?.last !== undefined && sameSnapshot(early.before, settled.last)) {
-    const page = await early.page;
-    if (page !== undefined) return { ...result, page };
+  const readable = async (): Promise<boolean> => await readableAfterLoad(session, tabId, origin, requested, pass);
+  if (!(await readable())) return pass === 'full-access' && origin === requested ? { ...result, unread: FULL_ACCESS_ENDED } : result;
+  // A page too long for the reply to carry whole is left to the read the agent sends anyway, so it is not read twice.
+  if (options.skipReadOver !== undefined) {
+    const textLength = await pageTextLength(tabId);
+    if (textLength > options.skipReadOver) return { ...result, textLength };
   }
+  let page: PageReadResult;
   try {
-    return { ...result, page: await readPage(current, tabId, origin, async () => await registeredSession(session)) };
+    page = await readLanded(current, session, tabId, origin, landing);
   } catch (error) {
     return { ...result, unread: error instanceof Error ? error.message : String(error) };
   }
+  // A pass from Full access holds only while T3 confirms the mode, which may have ended during the read. Then the tab is
+  // described again, so its title and address are not shown either.
+  if (!(await readable())) {
+    const tab = await describeSessionTab(await registeredSession(session), tabId, tabAccess(session));
+    return { ...result, tab, unread: FULL_ACCESS_ENDED };
+  }
+  return { ...result, page };
 }
 
 /**
- * Starts reading the page as the load left it, when its reply could carry it, with the settle snapshot taken first. The
- * read's failure is not an answer: the page is read again after the settle wait.
+ * Reads the page a load arrived at. A new document is read at once, without waiting for it to go quiet; if it moved
+ * while it was read (its content, layout or document, not only its network traffic) and that took under
+ * `LOAD_REREAD_MS`, it is read once more, after the first read ended, and that read is the answer.
  */
-async function readEarly(
+async function readLanded(
+  current: StoredSession,
   session: StoredSession,
   tabId: number,
-  requested: string,
-): Promise<{ origin: string; before: SettleSnapshot; page: Promise<PageReadResult | undefined> } | undefined> {
+  origin: string,
+  landing: Landing,
+): Promise<PageReadResult> {
+  const reload = async (): Promise<StoredSession> => await registeredSession(session);
+  if (!landing.newDocument) return await readPage(current, tabId, origin, reload);
+  const startedAt = Date.now();
+  const before = await settleSnapshot(tabId);
   try {
-    const current = await registeredSession(session);
-    const origin = tabOrigin(await resolveSessionTab(current, tabId));
-    if (!(await readableAfterLoad(current, tabId, origin, requested))) return undefined;
-    const before = await settleSnapshot(tabId);
-    if (!before.ready) return undefined;
-    const page = readPage(current, tabId, origin, async () => await registeredSession(session)).catch(() => undefined);
-    return { origin, before, page };
-  } catch {
-    return undefined;
+    const page = await readPage(current, tabId, origin, reload);
+    if (Date.now() - startedAt >= LOAD_REREAD_MS || samePage(before, await settleSnapshot(tabId))) return page;
+  } catch (error) {
+    if (Date.now() - startedAt >= LOAD_REREAD_MS) throw error;
   }
+  return await readPage(await registeredSession(session), tabId, origin, reload);
 }
 
-/** Whether a load's reply may carry the page: never past what a `read` would need a prompt for. */
-async function readableAfterLoad(session: StoredSession, tabId: number, origin: string, requested: string): Promise<boolean> {
-  if (origin === requested) return true;
+/** Nothing a read shows moved between the two snapshots: network traffic alone does not count. */
+function samePage(a: SettleSnapshot, b: SettleSnapshot): boolean {
+  return a.ready && b.ready && a.revision === b.revision && a.layout === b.layout;
+}
+
+/**
+ * Whether a load's reply may carry the page: never past what a `read` would need a prompt for. A pass from Full access
+ * counts only while T3 still confirms it.
+ */
+async function readableAfterLoad(
+  session: StoredSession,
+  tabId: number,
+  origin: string,
+  requested: string,
+  pass: AuthorizeResult,
+): Promise<boolean> {
+  if (origin === requested && pass !== 'full-access') return true;
   if (await sessionStore.hasApprovedOrigin(session.id, tabId, origin)) return true;
   const setting = await siteStore.get(origin);
-  return setting === 'read' || setting === 'allow';
+  if (setting === 'read' || setting === 'allow') return true;
+  return origin === requested && (await permissionPrompts.hasFullAccess(session.id));
 }
 
 async function authorizeRead(

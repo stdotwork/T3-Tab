@@ -18,8 +18,6 @@ export interface SettleResult {
   settled: boolean;
   timedOut: boolean;
   elapsedMs: number;
-  /** The page as the last probe saw it; none when the wait ended without one (a dialog, a closed tab). */
-  last?: SettleSnapshot;
 }
 
 interface PageProbe {
@@ -74,16 +72,16 @@ export async function settlePage(tabId: number): Promise<SettleResult> {
     const now = Date.now();
     const state = tracker.observe(snapshot, now);
     if (state === 'settled') {
-      return { settled: now - startedAt < MAX_SETTLE_MS, timedOut: tracker.timedOut(now), elapsedMs: now - startedAt, last: snapshot };
+      return { settled: now - startedAt < MAX_SETTLE_MS, timedOut: tracker.timedOut(now), elapsedMs: now - startedAt };
     }
-    if (tracker.timedOut(now)) return { settled: false, timedOut: true, elapsedMs: now - startedAt, last: snapshot };
+    if (tracker.timedOut(now)) return { settled: false, timedOut: true, elapsedMs: now - startedAt };
     await sleep(POLL_MS);
   }
 }
 
 /**
  * The page's state as the settle wait compares it: two snapshots that are the same mean nothing in the document, its
- * layout or its network traffic moved between them.
+ * layout or its network traffic moved between them. A load's reply uses it to see whether the page moved while it was read.
  */
 export async function settleSnapshot(tabId: number): Promise<SettleSnapshot> {
   const probe = await probePage(tabId);
@@ -93,6 +91,20 @@ export async function settleSnapshot(tabId: number): Promise<SettleSnapshot> {
     layout: `${documentEpoch(tabId)}|${probe.width}|${probe.height}|${probe.scrollWidth}|${probe.scrollHeight}|${probe.url}`,
     networkRevision: networkRevision(tabId),
   };
+}
+
+/** How many characters of text the page shows (`innerText` of its body), read in T3-Tab's own world; 0 when it cannot say. */
+export async function pageTextLength(tabId: number): Promise<number> {
+  try {
+    const evaluated = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.evaluate', {
+      contextId: await privateWorld(tabId),
+      expression: 'document.body ? document.body.innerText.length : 0',
+      returnByValue: true,
+    });
+    return numberOrZero(evaluated.result?.value);
+  } catch {
+    return 0;
+  }
 }
 
 async function probePage(tabId: number): Promise<PageProbe> {
@@ -140,7 +152,7 @@ async function probePage(tabId: number): Promise<PageProbe> {
   }
 }
 
-export function sameSnapshot(a: SettleSnapshot, b: SettleSnapshot): boolean {
+function sameSnapshot(a: SettleSnapshot, b: SettleSnapshot): boolean {
   return (
     a.ready === b.ready &&
     a.revision === b.revision &&

@@ -27,7 +27,7 @@ export async function checkBrowserTools({ mcpClient, page, siteUrl }) {
 
   const opened = await call(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/about` });
   show('tabs open', opened);
-  assert(/^Opened tab \d+: About — /.test(text(opened)) && text(opened).includes('# About'), `tabs open: ${text(opened)}`);
+  assert(/^Opened tab \d+ \[current\]: About — /.test(text(opened)) && text(opened).includes('# About'), `tabs open: ${text(opened)}`);
   const aboutId = Number(/^Opened tab (\d+)/.exec(text(opened))?.[1]);
   const refusedOpen = await call(mcpClient, 'tabs', { action: 'open', url: 'chrome://settings' });
   assert(refusedOpen.isError === true && /restricted/.test(text(refusedOpen)), `tabs open chrome://: ${text(refusedOpen)}`);

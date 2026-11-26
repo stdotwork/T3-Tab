@@ -13,14 +13,14 @@ export const tabsShape = {
   action: z.enum(['list', 'open', 'goto', 'back', 'forward', 'reload', 'switch', 'close']).optional().describe('Default list.'),
   url: z.string().optional().describe('For open, goto.'),
   tab: tab.describe('Default: current.'),
-  find,
+  find: find.describe('Only matching lines.'),
   // No description: only a thread started from the side panel uses it, and its message says what to pass.
   claim: z.string().optional(),
 };
 
 export const readShape = {
   tab: tab.describe(currentTab),
-  url: z.string().optional().describe('Load first (new tab if none).'),
+  url: z.string().optional().describe('Reuses its tab, else opens one.'),
   all: z.boolean().optional().describe('All text, no budget; images too.'),
   find: find.describe('Case-insensitive literal text; returns only matching lines.'),
   regex: z.boolean().optional().describe('find is a regular expression.'),

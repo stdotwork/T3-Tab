@@ -29,6 +29,7 @@ const PAGES = {
   '/red': '<!doctype html><html><head><title>Red</title><style>html,body{margin:0;height:100%;background:#f00}</style></head><body><button onclick="this.textContent=\'pressed\'">Press</button></body></html>',
   '/painted': page('Painted', '<p id="r">not yet</p><script>requestAnimationFrame(() => requestAnimationFrame(() => { r.textContent = "painted by script"; }))</script>'),
   '/long': page('Long', `<p>${LONG_TEXT}</p>`),
+  '/novel': page('Novel', Array.from({ length: 60 }, (_, index) => `<p>Paragraph ${index + 1} of a page whose text alone is longer than a load's reply can carry.</p>`).join('')),
   '/huge': page('Huge', Array.from({ length: 60 }, (_, index) => `<button>Item ${index + 1}</button><p>Line ${index + 1} of a page too long for a load's reply.</p>`).join('')),
   '/links': page(
     'Links',
@@ -232,6 +233,13 @@ export async function checkAgentTools() {
       assert(read.text.includes('button "Item 60"') && read.text.includes('Line 60'), `the read after a left-out page: ${read.text.slice(0, 300)}`);
       const full = await call('read', { tab, full: true });
       assert(full.text.includes('button "Item 60"'), `a full read after it: ${full.text.slice(0, 300)}`);
+      // A page whose text alone is too long is not read for the load at all, and find still reads it.
+      const novel = await call('tabs', { action: 'open', url: `${urls.allowed}/novel` });
+      assert(/characters of text, too long for this reply/.test(novel.text) && !novel.text.includes('Paragraph 1'), `the load reply of a page of long text: ${novel.text}`);
+      const novelTab = opened(novel);
+      const found = await call('tabs', { action: 'goto', tab: novelTab, url: `${urls.allowed}/novel#end`, find: 'Paragraph 60' });
+      assert(found.text.includes('Paragraph 60'), `find on a load of a page of long text: ${found.text}`);
+      await closeTab(novelTab);
       const short = await openAllowedPage('/one');
       const again = await call('read', { tab: short.tab, full: true });
       assert(/^tab \d+\nNo changes since the load's reply, which showed the whole page\.$/.test(again.text), `a full read right after a short load: ${again.text}`);
@@ -378,21 +386,39 @@ export async function checkAgentTools() {
         assert(prompt.tab === undefined && prompt.url === `${urls.ask}/private`, `read's open prompt: ${JSON.stringify(prompt)}`);
         await decide(prompt, 'allow-once');
         const result = await reply;
-        assert(!result.error && /^Opened tab \d+: Private/.test(result.text), `read with a url: ${result.text}`);
+        assert(!result.error && /^Opened tab \d+ \[current\]: Private/.test(result.text), `read with a url: ${result.text}`);
         assert(result.text.includes('"private page"'), `find on the load: ${result.text}`);
         const tab = opened(result);
         assert((await tabInfo(tab)).groupId !== -1, 'the tab read opened is not in the session group');
 
         const goto = await call('tabs', { action: 'goto', url: `${urls.allowed}/long`, find: 'needle-429' }, fresh.client);
-        assert(!goto.error && goto.text.startsWith(`Loaded tab ${tab}: Long`), `goto with a tab moves it: ${goto.text}`);
+        assert(!goto.error && goto.text.startsWith(`Loaded tab ${tab} [current]: Long`), `goto with a tab moves it: ${goto.text}`);
         assert(goto.text.includes('needle-429') && goto.text.length < 900, `find on goto: ${goto.text}`);
         await call('tabs', { action: 'close', tab }, fresh.client);
         const reopened = await call('tabs', { action: 'goto', url: `${urls.allowed}/two` }, fresh.client);
-        assert(!reopened.error && /^Opened tab \d+: Two/.test(reopened.text) && reopened.text.includes('second'), `goto with no tab: ${reopened.text}`);
+        assert(!reopened.error && /^Opened tab \d+ \[current\]: Two/.test(reopened.text) && reopened.text.includes('second'), `goto with no tab: ${reopened.text}`);
         await call('tabs', { action: 'close', tab: opened(reopened) }, fresh.client);
       } finally {
         await fresh.client.close().catch(() => undefined);
       }
+    });
+
+    await check('read with a url reads a tab already at the address and never moves one', async () => {
+      const tab = await openAllowed('/one');
+      const marked = await call('run_js', { tab, expression: '(window.keptAcrossRead = 1)' });
+      assert(marked.text === '1', `run_js: ${marked.text}`);
+      const before = await tabCount();
+      const again = await call('read', { url: `${urls.allowed}/one#top` });
+      assert(!again.error && again.text.startsWith(`tab ${tab}`), `read of a tab already at the address: ${again.text}`);
+      assert((await tabCount()) === before, 'read with the address of a tab it has opened another');
+      const kept = await call('run_js', { tab, expression: 'window.keptAcrossRead' });
+      assert(kept.text === '1', `read with a url loaded the page again: ${kept.text}`);
+      const other = await call('read', { url: `${urls.allowed}/two` });
+      const otherTab = opened(other);
+      assert(otherTab !== tab && other.text.includes('second'), `read with another address: ${other.text}`);
+      assert((await tabInfo(tab)).url === `${urls.allowed}/one`, `read with another address moved the tab: ${(await tabInfo(tab)).url}`);
+      await closeTab(otherTab);
+      await closeTab(tab);
     });
 
     await check('read shows the address of links it cannot otherwise tell apart', async () => {

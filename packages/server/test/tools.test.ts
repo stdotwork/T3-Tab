@@ -146,19 +146,48 @@ describe('loads', () => {
     );
   });
 
-  it('read with a url loads it, opening a tab when the session has none', async () => {
-    const link = fakeBrowser({ 'tabs.navigate': () => ({ tab: second, page: landing(), opened: true }) });
+  it('mark the current tab, and say where a redirect to a readable origin came from', async () => {
+    const link = fakeBrowser({
+      'tabs.open': () => ({ tab: { ...second, active: true }, redirectedFrom: 'http://old.test', page: landing() }),
+    });
+    const opened = text(await runTool(link, SESSION, 'tabs', { action: 'open', url: 'http://old.test/b' }));
+    expect(opened.split('\n').slice(0, 3)).toEqual([
+      'Opened tab 9 [current]: Second — http://localhost/b',
+      'Redirected from http://old.test.',
+      '# Sign in',
+    ]);
+  });
+
+  it('let the browser skip reading a page whose text is too long to carry, unless find asks for lines of it', async () => {
+    const link = fakeBrowser({ 'tabs.open': () => ({ tab: { ...second, active: true }, textLength: 12_345 }) });
+    expect(text(await runTool(link, SESSION, 'tabs', { action: 'open', url: 'http://localhost/b' }))).toBe(
+      'Opened tab 9 [current] Second — http://localhost/b\n(12,345 characters of text, too long for this reply: read shows it, find searches it.)',
+    );
+    await runTool(link, SESSION, 'tabs', { action: 'open', url: 'http://localhost/b', find: 'x' });
+    expect(link.calls).toEqual(['tabs.open {"url":"http://localhost/b","skipReadOver":4000}', 'tabs.open {"url":"http://localhost/b"}']);
+  });
+
+  it('read with a url opens a new tab when no tab of the session is at that address', async () => {
+    const link = fakeBrowser({
+      'tabs.open': () => ({ tab: second, page: landing() }),
+      'tabs.navigate': () => ({ tab: second, page: landing(), opened: true }),
+    });
     const reply = text(await runTool(link, SESSION, 'read', { url: 'http://localhost/b', find: 'hello' }));
-    expect(link.calls).toEqual(['tabs.navigate {"action":"goto","url":"http://localhost/b"}']);
+    expect(link.calls).toEqual(['tabs.open {"url":"http://localhost/b","reuse":true}']);
     expect(reply.split('\n')[0]).toBe('Opened tab 9: Second — http://localhost/b');
     expect(reply).toContain('Hello there');
+    // tabs goto in a session with no tab opens one too.
     expect(text(await runTool(link, SESSION, 'tabs', { action: 'goto', url: 'http://localhost/b' }))).toMatch(/^Opened tab 9/);
   });
 
-  it('read with a url says Loaded for a tab it moved, and refuses a ref', async () => {
-    const link = fakeBrowser({ 'tabs.navigate': () => ({ tab: second, page: landing() }) });
-    expect(text(await runTool(link, SESSION, 'read', { url: 'http://localhost/b', tab: 9 }))).toMatch(/^Loaded tab 9: Second/);
-    expect(link.calls).toEqual(['tabs.navigate {"action":"goto","url":"http://localhost/b","tab":9}']);
+  it('read with a url reads a tab already there as any read does, never moving it, and refuses a ref', async () => {
+    const link = fakeBrowser({ 'tabs.open': () => ({ tab: second, page: landing(), reused: true }) });
+    expect(text(await runTool(link, SESSION, 'read', { url: 'http://localhost/b#top', tab: 9 }))).toMatch(/^tab 9: Second — http:\/\/localhost\/b\n# Sign in/);
+    expect(text(await runTool(link, SESSION, 'read', { url: 'http://localhost/b' }))).toBe('tab 9\nNo changes since the last read.');
+    expect(link.calls).toEqual([
+      'tabs.open {"url":"http://localhost/b#top","reuse":true,"tab":9}',
+      'tabs.open {"url":"http://localhost/b","reuse":true}',
+    ]);
     await expect(runTool(link, SESSION, 'read', { url: 'http://localhost/b', ref: 'e1' })).rejects.toThrow('ref does not go with url');
   });
 });

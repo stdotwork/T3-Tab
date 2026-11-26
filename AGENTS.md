@@ -57,7 +57,7 @@ to a new one, that `uninstall` removes the helper folder, manifest, state and ag
 that `scripts/install-test-build.sh` (through a `file://` address) installs the same helper, and that a browser
 started with its own `--user-data-dir` finds it once `setup` names that folder. Then `e2e/checks-real-use.mjs` runs in a headless Chromium only the extension debugs, because Playwright answers
 dialogs itself and makes hidden tabs act focused: dialogs, background input, another extension's frame
-(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs, same-origin frames, and password inputs under other ARIA roles and text fields masked by `-webkit-text-security` staying redacted in `read`, `find`, a diff and an `act` reply, with the names built from them (a button, link, heading, label, `aria-labelledby` and a script's `ariaLabelledByElements`, open and closed shadow roots, 205 referrers), a 260-character value, show-password toggles by `autocomplete`, a short value that must not scrub other names, secrets in hidden, `aria-hidden`, `display:none`, `visibility:hidden` and closed-dialog content, fields under the roles link, checkbox and switch, a secret passed on through a label and a button, one echoed in the page's text, split over one element per character, upper-cased or taken from a hidden field no name was built from, a password a GET form puts in the address (the reply header and `tabs list` leave it out), and a page of 3,000 masked fields with 200 buttons named from them read in bounded time. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that its reply carries the page (drawn by script too) and is the baseline of the next `read`, that `read` and `goto` with a url open a tab in an empty session behind the same prompt and take `find`, that a load's reply leaves out a page a redirect took to an unapproved origin and names a dialog the page opened, that every tool works on that hidden tab, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
+(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs, same-origin frames, and password inputs under other ARIA roles and text fields masked by `-webkit-text-security` staying redacted in `read`, `find`, a diff and an `act` reply, with the names built from them (a button, link, heading, label, `aria-labelledby` and a script's `ariaLabelledByElements`, open and closed shadow roots, 205 referrers), a 260-character value, show-password toggles by `autocomplete`, a short value that must not scrub other names, secrets in hidden, `aria-hidden`, `display:none`, `visibility:hidden` and closed-dialog content, fields under the roles link, checkbox and switch, a secret passed on through a label and a button, one echoed in the page's text, split over one element per character, upper-cased or taken from a hidden field no name was built from, a password a GET form puts in the address (the reply header and `tabs list` leave it out), and a page of 3,000 masked fields with 200 buttons named from them read in bounded time. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that its reply carries the page (drawn by script too) and is the baseline of the next `read`, that `read` and `goto` with a url open a tab in an empty session behind the same prompt and take `find`, that `read` with the address of a tab the session has reads that tab without loading it again and opens a new tab for any other address, leaving the first where it was, that a load's reply leaves out a page too long for it (a page of long text without reading it) and a page a redirect took to an unapproved origin and names a dialog the page opened, that every tool works on that hidden tab, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
 two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
 links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
 `screenshot`, `act` and `run_js`. It also checks session tab groups, socket-bound session ids, tab sharing,
@@ -289,20 +289,34 @@ for on that tab. The browser's reload resends a form's POST without asking, so u
 from a GET, `reload` fetches the address with a new GET (`location.replace`, which keeps the history).
 
 A load (`open`, `goto`, `back`, `forward`, `reload`) replies with the page as `read` would show it, header first (`Opened
-tab <id>: <title> — <url>`), and that reply is the tab's diff baseline for the MCP server process, as a `read` is; with
-`find` it replies with the matching lines instead. A page whose view is over `LOAD_REPLY_MAX` (4,000 characters, `page.ts`)
-is left out of a load's reply, which says how long it is and sets no baseline: agents send a `read` (or a `find`) in the
-same turn as the load, before they see its reply, and that read then gets the page once. A `read` with `full` right after a
-load reply that showed the whole page (within 5 seconds, `LOAD_REPEAT_MS`), with nothing changed, says so instead of
-sending it again (once; the next one is whole). The extension reads the page in the same request (`describeLanding` in `requests.ts`), after the load and its first
-frames: the read starts at once, beside the settle wait (at most one more second, `LOAD_SETTLE_MS`), and is kept when the
-settle's last snapshot (document, layout and network activity, `settleSnapshot`) matches the one taken before it; otherwise
-the page is read again. It reads only where a `read` would pass without a prompt: the origin the load was approved for, or one the session already holds on
-that tab or the owner lets it read. A redirect to any other origin replies as before, with the origin only and how to ask;
-a page that could not be read (a dialog opened on load, say) replies with the tab and the reason. `read` with a `url` is a
-`goto` of the tab it names, or the current one, followed by that read (a `ref` does not go with it). A `goto` that names no
-tab, in a session with no tab, opens one (`opened` in the result), asking as `open` does, so `read {url}` and `tabs goto`
-work from an empty session; every other tool says in one line how to get a tab (`NO_TAB_MESSAGE` in the protocol package).
+tab <id> [current]: <title> — <url>`, with `Redirected from <origin>.` under it when a redirect landed on an origin the
+session may read), and that reply is the tab's diff baseline for the MCP server process, as a `read` is; with `find` it
+replies with the matching lines instead. A page whose view is over `LOAD_REPLY_MAX` (4,000 characters, `page.ts`) is left
+out of a load's reply, which says how long it is and sets no baseline: agents send a `read` (or a `find`) in the same turn
+as the load, before they see its reply, and that read then gets the page once. So a load without `find` first asks the
+page how much text it shows (`innerText`, `pageTextLength` in `settle.ts`), and a page with more than `LOAD_REPLY_MAX`
+characters of it is not read for the load at all (`skipReadOver` and `textLength` in the protocol); the reply says how
+much text it has. A `read` with `full` right after a load
+reply that showed the whole page (within 5 seconds, `LOAD_REPEAT_MS`), with nothing changed, says so instead of sending it
+again (once; the next one is whole). The extension reads the page in the same request (`describeLanding` in
+`requests.ts`) as soon as the new document has loaded and drawn its first frames, without waiting for it to go quiet. If
+the page moved while it was read (its content, layout or document per `settleSnapshot`, not only its network traffic) and
+that read ended within `LOAD_REREAD_MS` (100 ms), it is read once more after the first read ended, and that read is the
+answer; a page that never stops moving costs at most that and one more read. A move within the same document (a fragment)
+or a dialog that opened on load is read once. It reads only where a `read` would pass without a prompt: the origin the
+load was approved for, or one the session already holds on that tab or the owner lets it read. A load that went through
+on T3's Full access carries the page only if T3 still confirms the mode once the page was read; otherwise the reply says
+to read the tab. A redirect to any other origin replies as before, with the origin only and how to ask; a page that could
+not be read (a dialog opened on load, say) replies with the tab and the reason.
+
+`read` with a `url` never moves or reloads a tab. A tab of the session already at that address (the fragment aside; only
+the tab it names, when it names one), whose page the session may read without a prompt, is read as any `read` reads it
+(a diff when there is a baseline) and becomes the current tab. Otherwise the address opens in a new tab behind the
+owner's, asking as `open` does, and the reply is that load's (`tabs.open` with `reuse` in the protocol). A tab the
+session may not read yet does not count, so which prompt comes up says nothing about where that tab is. A `ref` does not
+go with a `url`. Moving a tab is left to `tabs goto`. A `goto` that names no tab, in a session with no tab, opens one
+(`opened` in the result), asking as `open` does, so `read {url}` and `tabs goto` work from an empty session; every other
+tool says in one line how to get a tab (`NO_TAB_MESSAGE` in the protocol package).
 
 A call that names no tab uses the session's current tab, marked `[current]`: the last it opened, switched to or was
 handed by the owner, else the tab in front, else its first. The owner moving between tabs does not change it, so an
@@ -390,7 +404,7 @@ already had open, the tool says to ask the owner to answer it.
 **Background tabs.** Chromium never acknowledges wheel input on a hidden page and holds mouse input for seconds, so
 an `act` batch on a hidden tab turns on `Emulation.setFocusEmulationEnabled` while its steps run and off afterwards.
 So do a screenshot and a load through `tabs`, because a hidden page gets no animation frames and would stay blank if it
-renders from script. A load replies after the first two frames and holds the tab visible until the page settles. The page sees itself as visible and focused for that long.
+renders from script. A load holds the tab visible from before it starts until the page settles (at most 4 seconds), which goes on after its reply. The page sees itself as visible and focused for that long.
 A tab the owner cannot see (not the active tab of its window, or in a window that is minimised, `visibility.ts`;
 a window that is merely not in focus is still on screen) that has been in the background for a few seconds can ignore the mouse wheel and draw no frame. There a
 wheel scroll reads the scroll position of the page and of the elements under the pointer (`scroll.ts`, in T3-Tab's own
@@ -512,8 +526,9 @@ group. It can list and use only tabs in that group or tabs the owner shares from
 `tabs open` asks first, for the requested address: nothing is created, fetched or run until the owner says yes. Then
 the page loads in a new tab behind the one the owner is on, with the debugger attached on `about:blank` first. If a
 redirect takes it to another origin, the tab stays in the session's group unapproved, and the reply names the origin and
-says to read it to ask for access; an origin that is already allowed just carries on. `read` or `tabs goto` with a url in
-a session that has no tab asks the same `open` prompt, with no tab named, before anything is created.
+says to read it to ask for access; an origin that is already allowed just carries on. `read` with a url that no readable
+tab of the session shows, and `tabs goto` with a url in a session that has no tab, ask the same `open` prompt, with no
+tab named, before anything is created.
 
 When the control connection closes (the daemon stopped or restarted), that session is over: the daemon forgot
 it, with its tab group, approvals and shared tabs. An MCP server does not resume it. A call that was in flight
