@@ -1,6 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { SitePermission } from '../src/permissions';
+import { forgetSecrets, rememberSecrets } from '../src/secret-text';
 import type { SessionStore, StoredSession } from '../src/sessions';
 import { adoptPopupTab, listTabs, switchSessionTab } from '../src/tabs';
 import { FakeBrowser } from './fake-browser';
@@ -15,6 +16,20 @@ const noSettings = async (): Promise<SitePermission | undefined> => undefined;
 
 beforeAll(() => browser.install());
 beforeEach(() => browser.reset());
+
+describe('what tabs list shows of a tab that took a secret into its address', () => {
+  it('leaves out the values the extension saw in the tab\'s secret fields, from its title and address', async () => {
+    browser.addTab({ id: 1, groupId: 5, url: 'https://shop.test/login?user=ada&pw=Tr0ub4dor%263', title: 'Hello Tr0ub4dor&3' });
+    rememberSecrets(1, ['Tr0ub4dor&3']);
+    try {
+      const tabs = await listTabs(sessionWith({ approvedOrigins: { '1': ['https://shop.test'] } }), noSettings);
+      expect(tabs[0]).toMatchObject({ title: 'Hello <redacted>', url: 'https://shop.test/login?user=ada&pw=<redacted>' });
+      expect(JSON.stringify(tabs)).not.toContain('Tr0ub4dor');
+    } finally {
+      forgetSecrets(1);
+    }
+  });
+});
 
 describe('what tabs list and switch show for a member tab', () => {
   it('shows only the origin and that approval is needed for a tab whose origin the session has not approved', async () => {

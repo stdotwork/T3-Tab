@@ -573,3 +573,163 @@ describe('password redaction', () => {
     });
   });
 });
+
+describe('password redaction: what a hostile page can make it cost', () => {
+  const needleOf = (index: number): string => `PINVAL${index}x`;
+  const named = (needles: string[]): string => `Checkout ${needles.join(' ')}`;
+  /** Answers each DOM id of a masked field with its own value. */
+  const byBackend = (base: number): InspectFields => async (ids) => ids.map((id) => (id >= base ? secret(needleOf(id - base)) : plain));
+  const leaks = (nodes: unknown[]): number =>
+    (nodes as Raw[]).filter((item) => {
+      const name = (item.name as { value?: string } | undefined)?.value ?? '';
+      const value = (item.value as { value?: unknown } | undefined)?.value;
+      return name.includes('PINVAL') || (typeof value === 'string' && value.includes('PINVAL'));
+    }).length;
+
+  it('hides the values of 3,000 masked fields from 200 buttons named by their form, in bounded time', async () => {
+    const fields = Array.from({ length: 3_000 }, (_, index) => field(`f${index}`, 100_000 + index, '••••••••'));
+    const formName = named(fields.map((_, index) => needleOf(index)));
+    const nodes = [
+      node({ id: 'root', role: 'RootWebArea', children: ['form', ...Array.from({ length: 200 }, (_, index) => `b${index}`)] }),
+      node({ id: 'form', role: 'form', name: formName, backend: 1, contents: true, children: fields.map((item) => String(item.nodeId)) }),
+      ...fields,
+      ...Array.from({ length: 200 }, (_, index) => node({ id: `b${index}`, role: 'button', name: formName, labelledBy: [1] })),
+    ];
+    const started = performance.now();
+    const result = await redactPasswordValues(nodes, byBackend(100_000));
+    const elapsed = performance.now() - started;
+    expect(leaks(result)).toBe(0);
+    expect(nameOf(result, 'b0')).toContain('<redacted>');
+    expect(elapsed).toBeLessThan(3_000);
+  });
+
+  const nested = (depth: number, width: number): Raw[] => {
+    const nodes: Raw[] = [node({ id: 'root', role: 'RootWebArea', children: ['level0'] })];
+    for (let level = 0; level < depth; level += 1) {
+      const ids = Array.from({ length: width }, (_, index) => `f${level}-${index}`);
+      nodes.push(
+        node({
+          id: `level${level}`,
+          role: 'group',
+          name: named(ids.map((_, index) => needleOf(level * width + index))),
+          backend: 10 + level,
+          contents: true,
+          children: [...ids, ...(level + 1 < depth ? [`level${level + 1}`] : [])],
+        }),
+        node({ id: `b${level}`, role: 'button', name: named(ids.map((_, index) => needleOf(level * width + index))), labelledBy: [10 + level] }),
+      );
+      ids.forEach((id, index) => nodes.push(field(id, 100_000 + level * width + index, '••••••••')));
+    }
+    return nodes;
+  };
+
+  it('copes with groups nested 500 deep holding 20 masked fields each', async () => {
+    const nodes = nested(500, 20);
+    const started = performance.now();
+    const result = await redactPasswordValues(nodes, byBackend(100_000));
+    expect(performance.now() - started).toBeLessThan(4_000);
+    expect(leaks(result)).toBe(0);
+  });
+
+  it('copes with groups nested 30 deep holding 300 masked fields each', async () => {
+    const nodes = nested(30, 300);
+    const started = performance.now();
+    const result = await redactPasswordValues(nodes, byBackend(100_000));
+    expect(performance.now() - started).toBeLessThan(4_000);
+    expect(leaks(result)).toBe(0);
+  });
+
+  it('past its time budget hides every name, value, address and line of text that holds a value, and no other', async () => {
+    const nodes = [
+      node({ id: 'root', role: 'RootWebArea', children: ['pw', 'name', 'echo', 'link', 'plain'] }),
+      node({ id: 'pw', role: 'textbox', name: 'Password', value: '••••••••', backend: 5 }),
+      node({ id: 'name', role: 'button', name: 'Pay hunter2x now' }),
+      node({ id: 'echo', role: 'StaticText', name: 'You typed hunter2x just now' }),
+      node({ id: 'link', role: 'link', name: 'Reset', url: 'https://a.test/?pw=hunter2x' }),
+      node({ id: 'plain', role: 'button', name: 'Nothing here' }),
+      node({ id: 'bullets', role: 'button', name: 'Pay ••••••' }),
+    ];
+    await redactPasswordValues(nodes, answering({ 5: secret('hunter2x') }), { budgetMs: 0 });
+    expect(nameOf(nodes, 'bullets')).toBe('<redacted>');
+    expect(nameOf(nodes, 'name')).toBe('<redacted>');
+    expect(nameOf(nodes, 'echo')).toBe('<redacted>');
+    const address = ((byId(nodes, 'link').properties as Raw[])[0] as { value: { value: string } }).value.value;
+    expect(address).toBe('<redacted>');
+    expect(nameOf(nodes, 'plain')).toBe('Nothing here');
+  });
+});
+
+describe('password redaction: text the page split, changed or hid', () => {
+  const text = (id: string, name: string): Raw => node({ id, role: 'StaticText', name });
+  const lines = (nodes: unknown[]): string[] => (nodes as Raw[]).filter((item) => (item.role as { value: string }).value === 'StaticText').map((item) => (item.name as { value: string }).value);
+
+  it('takes out a value the page wrote one element a character, and in a bold run and the text after it', async () => {
+    const chars = [...'hunter2x'];
+    const nodes = [
+      node({ id: 'root', role: 'RootWebArea', children: ['pw', 'p', 'q'] }),
+      node({ id: 'pw', role: 'textbox', name: 'Password', value: '••••••••', backend: 5 }),
+      node({ id: 'p', role: 'paragraph', children: chars.map((_, index) => `c${index}`) }),
+      ...chars.map((character, index) => text(`c${index}`, character)),
+      node({ id: 'q', role: 'paragraph', children: ['b', 't'] }),
+      node({ id: 'b', role: 'strong', children: ['b1'] }),
+      text('b1', 'hun'),
+      text('t', 'ter2x is it'),
+    ];
+    const result = await redactPasswordValues(nodes, answering({ 5: secret('hunter2x') }));
+    const all = lines(result).join('');
+    expect(all).not.toMatch(/h\s*u\s*n\s*t\s*e\s*r\s*2\s*x/);
+    expect(all).not.toContain('hun');
+    expect(all).not.toContain('ter2x');
+    expect(all.match(/<redacted>/g)).toHaveLength(2);
+    expect(all).toContain(' is it');
+  });
+
+  it('matches whatever the case, as a page that upper-cases its text shows it', async () => {
+    const nodes = [
+      node({ id: 'pw', role: 'textbox', name: 'Password', value: '••••••••', backend: 5 }),
+      text('echo', 'ECHO2: LOWERSECRET21'),
+      node({ id: 'link', role: 'link', name: 'x', url: 'https://a.test/?q=LowerSecret21' }),
+    ];
+    await redactPasswordValues(nodes, answering({ 5: secret('lowersecret21') }));
+    expect(nameOf(nodes, 'echo')).toBe('ECHO2: <redacted>');
+    const address = ((byId(nodes, 'link').properties as Raw[])[0] as { value: { value: string } }).value.value;
+    expect(address).toBe('https://a.test/?q=<redacted>');
+  });
+
+  it('takes out the values the page lists as secret even when no node or name holds the field', async () => {
+    const nodes = [text('echo', 'Echo: Tr0ub4dor&3 done'), text('other', 'Nothing')];
+    const told: string[][] = [];
+    await redactPasswordValues(nodes, nonSecret, { pageSecrets: ['Tr0ub4dor&3'], onSecrets: (needles) => told.push(needles) });
+    expect(nameOf(nodes, 'echo')).toBe('Echo: <redacted> done');
+    expect(nameOf(nodes, 'other')).toBe('Nothing');
+    expect(told).toEqual([['Tr0ub4dor&3']]);
+  });
+
+  it('takes out values remembered from an earlier read of the tab', async () => {
+    const nodes = [text('echo', 'Welcome back, hunter2x')];
+    await redactPasswordValues(nodes, nonSecret, { remembered: ['hunter2x'] });
+    expect(nameOf(nodes, 'echo')).toBe('Welcome back, <redacted>');
+  });
+
+  it('takes out the encoded forms of a value from a link address', async () => {
+    const nodes = [
+      node({ id: 'pw', role: 'textbox', name: 'Password', value: '••••••••', backend: 5 }),
+      node({ id: 'a', role: 'link', name: 'a', url: 'https://a.test/?pw=p%40ss%20w%26rd' }),
+      node({ id: 'b', role: 'link', name: 'b', url: 'https://a.test/?pw=p%40ss+w%26rd' }),
+      node({ id: 'c', role: 'link', name: 'c', url: 'https://a.test/?pw=p@ss%20w&rd' }),
+      node({ id: 'd', role: 'link', name: 'd', url: 'https://a.test/?pw=p@ss w&rd' }),
+    ];
+    await redactPasswordValues(nodes, answering({ 5: secret('p@ss w&rd') }));
+    for (const id of ['a', 'b', 'c', 'd']) {
+      const address = ((byId(nodes, id).properties as Raw[])[0] as { value: { value: string } }).value.value;
+      expect(address, id).toBe('https://a.test/?pw=<redacted>');
+    }
+  });
+
+  it('takes out the value of a hidden field no name was built from, which only the page\'s own list knows', async () => {
+    const nodes = [node({ id: 'hidden', role: 'none', ignored: true, backend: 5, name: '' }), text('echo', 'Echo: hiddenvalue1')];
+    await redactPasswordValues(nodes, nonSecret, { pageSecrets: ['hiddenvalue1'] });
+    expect(nameOf(nodes, 'echo')).toBe('Echo: <redacted>');
+  });
+});
+

@@ -99,6 +99,33 @@ const pages = (otherSite) => ({
      <button type="button">Pay <span aria-labelledby="pwtaint">z</span></button>
      <label>Net PIN <input type="text" class="disc" id="netpin" oninput="echo.textContent = 'You typed ' + this.value"></label><p id="echo">Nothing typed</p>`,
   ),
+  // Echoes a page can print: split over elements, upper-cased, from a hidden field no name was built from.
+  '/secrets-text': page(
+    'Echoed secrets',
+    `<style>.disc{-webkit-text-security:disc}</style>
+     <label>Echo PIN <input type="text" class="disc" id="echopin"></label>
+     <div id="split"></div><p id="bold"></p><p id="upper" style="text-transform:uppercase"></p>
+     <div hidden><input type="password" id="hid" value="HIDDENECHO-SECRET-51"></div><p id="hecho"></p>
+     <script>
+       hecho.textContent = 'Hidden echo: ' + hid.value;
+       echopin.addEventListener('input', () => {
+         const v = echopin.value;
+         split.replaceChildren(...[...('Split: ' + v)].map((c) => { const s = document.createElement('span'); s.textContent = c; return s; }));
+         bold.innerHTML = '<b>' + v.slice(0, 3) + '</b>' + v.slice(3) + ' (bold)';
+         upper.textContent = 'Echo2: ' + v;
+       });
+     </script>`,
+  ),
+  // A form with thousands of masked fields and a crowd of buttons named from it: what a hostile page can make a read cost.
+  '/hostile': page(
+    'Hostile',
+    `<style>.disc{-webkit-text-security:disc}</style>
+     <form id="big"></form><div id="btns"></div>
+     <script>
+       for (let i = 0; i < 3000; i += 1) { const f = document.createElement('input'); f.type = 'text'; f.className = 'disc'; f.value = 'HOSTILE-PIN-' + i; big.append(f); }
+       for (let i = 0; i < 200; i += 1) { const b = document.createElement('button'); b.type = 'button'; b.setAttribute('aria-labelledby', 'big'); b.textContent = 'Pay ' + i; btns.append(b); }
+     </script>`,
+  ),
   '/keys': page('Keys', '<p id="k">0</p><script>addEventListener("keydown",(e)=>{if(e.key==="/")k.textContent=+k.textContent+1})</script>'),
   '/dialogs': page(
     'Dialogs',
@@ -490,6 +517,57 @@ export async function checkRealUse() {
         assert(text.includes(expected), `${expected} is missing from the read:\n${text}`);
       }
       assert((text.match(/^e[1-5] button ".*<redacted>"$/gm) ?? []).length === 5, `five buttons named from hidden fields should be redacted:\n${text}`);
+    });
+
+    await check('text the page split over elements, upper-cased or took from a hidden field stays redacted', async () => {
+      const tab = await open('/secrets-text');
+      const first = await read(tab, { all: true });
+      assert(first.text.includes('Hidden echo: <redacted>') && !/HIDDENECHO-SECRET-51/i.test(first.text), `hidden field echo:\n${first.text}`);
+      const filled = await act(tab, { action: 'fill', ref: refFor(first.text, 'textbox "Echo PIN"'), text: 'splitpin-secret-52' });
+      assert(!filled.error, `fill: ${filled.text}`);
+      assert(!/SPLITPIN|-SECRET-|HIDDENECHO/i.test(filled.text), `the fill reply shows a value:\n${filled.text}`);
+      const views = {
+        'all read': await read(tab, { all: true, full: true }),
+        'full read': await read(tab),
+        'find by value': await call('read', { tab, find: 'secret' }),
+        'find by echo': await call('read', { tab, find: 'echo' }),
+      };
+      for (const [name, view] of Object.entries(views)) {
+        assert(!view.error, `${name}: ${view.text}`);
+        const shown = view.text.replace(/No matches for ".*"\./, '');
+        assert(!/SPLITPIN|-SECRET-|HIDDENECHO/i.test(shown), `${name} shows the value:\n${view.text}`);
+        // Not its letters in a row either, across the lines of the page.
+        const letters = shown.split('\n').map((line) => line.replace(/^\s*e\d+\s+\S+\s+/, '').replace(/[^a-z0-9-]/gi, '')).join('');
+        assert(!/splitpin-secret-52/i.test(letters), `${name} shows the value across lines:\n${view.text}`);
+      }
+      assert(views['all read'].text.includes('ECHO2: <redacted>'), `the upper-cased echo is not marked:\n${views['all read'].text}`);
+    });
+
+    await check('a password the page sends in its address stays out of the title and address a reply shows', async () => {
+      const tab = await open('/login');
+      const first = await read(tab);
+      // As autofill or the owner would put it there: from the page, not through the tools.
+      await js(tab, 'document.querySelector("input[name=username]").value = "ada"; document.querySelector("input[type=password]").value = "GETLOGIN-SECRET-61"');
+      const clicked = await act(tab, { action: 'click', ref: refFor(first.text, 'button "Log in"') });
+      assert(!clicked.error, `click: ${clicked.text}`);
+      assert((await js(tab, 'location.search')).includes('GETLOGIN-SECRET-61'), 'the form did not send the value in the address');
+      assert(!/GETLOGIN-SECRET-61/i.test(clicked.text) && clicked.text.includes('password=<redacted>'), `the act reply shows the address:\n${clicked.text}`);
+      const listed = await call('tabs', { action: 'list' });
+      assert(!listed.error && !/GETLOGIN-SECRET-61/i.test(listed.text) && listed.text.includes('password=<redacted>'), `tabs list:\n${listed.text}`);
+      const again = await read(tab, { all: true });
+      assert(!/GETLOGIN-SECRET-61/i.test(again.text), `a later read shows the address:\n${again.text}`);
+    });
+
+    await check('a page of 3,000 masked fields and 200 buttons named from them is read in bounded time with no value in it', async () => {
+      const tab = await open('/hostile');
+      const view = await read(tab, { all: true });
+      assert(!view.error, `read: ${view.text.slice(0, 300)}`);
+      assert(view.ms < 20_000, `the read took ${view.ms} ms`);
+      assert(!/HOSTILE-PIN/i.test(view.text), `a value is in the read:\n${view.text.slice(0, 2000)}`);
+      // The extension still answers every session straight after.
+      const listed = await call('tabs', { action: 'list' });
+      assert(!listed.error && listed.ms < 5_000, `tabs list after the read: ${listed.ms} ms ${listed.text.slice(0, 200)}`);
+      console.log(`Real use: the hostile read took ${view.ms} ms, ${view.text.length} characters`);
     });
 
     await check('a modifier key can be pressed on its own', async () => {
