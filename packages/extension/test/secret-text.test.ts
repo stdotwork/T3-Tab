@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { forgetClosedTab, noteOpenedTab } from '../src/opened-tabs';
 import {
   addressForms,
   forgetSecrets,
@@ -103,5 +104,37 @@ describe('what is remembered about a tab', () => {
     expect(scrubReported(1, 'https://a.test/login?pw=p%40ss+w%26rd', true)).toBe('https://a.test/login?pw=<redacted>');
     expect(scrubReported(2, 'https://a.test/login?pw=p%40ss%20w%26rd', true)).toBe('https://a.test/login?pw=p%40ss%20w%26rd');
     expect(scrubReported(undefined, 'Welcome p@ss w&rd', false)).toBe('Welcome p@ss w&rd');
+  });
+
+  it('keeps no entry for a tab with no value, so tabs without secrets do not push out the values of one', () => {
+    rememberSecrets(1, ['hunter2x']);
+    for (let tab = 1_000; tab < 1_300; tab += 1) rememberSecrets(tab, ['abc', '']);
+    expect(knownSecrets(1)).toEqual(['hunter2x']);
+    expect(knownSecrets(1_000)).toEqual([]);
+  });
+
+  it('reaches every open tab of the tree of openers, which a form can be sent into by name, whenever it is learnt', () => {
+    // Tab 1 opened 2 and 3; 3 opened 4. Tab 9 is no relation.
+    noteOpenedTab(1, 2, Promise.resolve());
+    noteOpenedTab(1, 3, Promise.resolve());
+    noteOpenedTab(3, 4, Promise.resolve());
+    try {
+      // Learnt on the opener after its tabs were opened: a form with target="results" sent into tab 2.
+      rememberSecrets(1, ['NAMED-SECRET-91']);
+      expect(scrubReported(2, 'https://a.test/?pw=NAMED-SECRET-91', true)).toBe('https://a.test/?pw=<redacted>');
+      expect(knownSecrets(4)).toEqual(['NAMED-SECRET-91']);
+      expect(knownSecrets(9)).toEqual([]);
+      // A popup's form sent into its opener, or into a sibling, after the tab that opened them closed.
+      forgetClosedTab(1);
+      forgetSecrets(1);
+      rememberSecrets(2, ['popup-secret']);
+      expect(knownSecrets(4)).toEqual(['NAMED-SECRET-91', 'popup-secret']);
+      expect(knownSecrets(1)).toEqual([]);
+    } finally {
+      for (const tab of [1, 2, 3, 4]) {
+        forgetClosedTab(tab);
+        forgetSecrets(tab);
+      }
+    }
   });
 });

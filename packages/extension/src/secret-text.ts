@@ -1,3 +1,5 @@
+import { relatedTabs } from './opened-tabs';
+
 /** What stands in text for the part of it that held a hidden value. */
 export const HIDDEN = '<redacted>';
 /** A value shorter than this is only replaced as a whole word, and only in the names tied to its field. */
@@ -246,15 +248,33 @@ const MAX_TABS = 200;
 const MAX_PER_TAB = 400;
 const remembered = new Map<number, { at: number; needles: Set<string> }>();
 
-/** Remembers values (of `MIN_SUBSTRING` characters or more) seen in secret fields of a tab. */
+/**
+ * Remembers values (of `MIN_SUBSTRING` characters or more) seen in secret fields of a tab, for it and for every tab of its
+ * tree of openers (`relatedTabs`), since a form on it can be sent by name into any of them and put the values in that
+ * tab's address. A tab with no such value gets no entry; one it has already is kept for longer.
+ */
 export function rememberSecrets(tabId: number, needles: Iterable<string>, now = Date.now()): void {
   for (const [id, entry] of remembered) if (now - entry.at > REMEMBER_MS) remembered.delete(id);
-  const entry = remembered.get(tabId) ?? { at: now, needles: new Set<string>() };
-  entry.at = now;
+  const texts = new Set<string>();
   for (const needle of needles) {
     const text = collapse(needle);
-    if (text.length >= MIN_SUBSTRING && entry.needles.size < MAX_PER_TAB) entry.needles.add(text);
+    if (text.length >= MIN_SUBSTRING) texts.add(text);
   }
+  if (texts.size === 0) {
+    const entry = remembered.get(tabId);
+    if (entry !== undefined) keep(tabId, entry, now);
+    return;
+  }
+  for (const id of [tabId, ...relatedTabs(tabId)]) {
+    const entry = remembered.get(id) ?? { at: now, needles: new Set<string>() };
+    for (const text of texts) if (entry.needles.size < MAX_PER_TAB) entry.needles.add(text);
+    keep(id, entry, now);
+  }
+}
+
+/** Stores a tab's entry as its newest, dropping the oldest past `MAX_TABS`. */
+function keep(tabId: number, entry: { at: number; needles: Set<string> }, now: number): void {
+  entry.at = now;
   remembered.delete(tabId);
   remembered.set(tabId, entry);
   while (remembered.size > MAX_TABS) {

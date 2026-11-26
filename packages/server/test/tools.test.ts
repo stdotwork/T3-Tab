@@ -387,6 +387,26 @@ describe('act follow-through', () => {
     expect(reply.endsWith('3 more tabs opened that this session does not hold.')).toBe(true);
   });
 
+  it('keeps a failed batch within the cap too, its failure line included', async () => {
+    const big = page(buttonPage(900), { tab: 7 });
+    const longReport = page(buttonPage(140), { tab: 12, title: 'Annual report', url: 'http://localhost/report' });
+    const link = fakeBrowser({
+      'page.read': () => page(buttonPage(1)),
+      'page.act': () => ({
+        ...big,
+        failure: { step: 1, action: 'press', error: `navigation failed: ${'x'.repeat(5_000)}` },
+        opened: [{ tab: report, page: longReport }],
+      }),
+    });
+    await runTool(link, SESSION, 'read', { tab: 7 });
+    const error = await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'press', key: 'Enter' }] }).catch((caught: unknown) => caught);
+    const message = error instanceof Error ? error.message : '';
+    expect(message.startsWith('Step 1 (press) failed: navigation failed: xxx')).toBe(true);
+    expect(message.length).toBeLessThanOrEqual(12_000);
+    expect(message).toMatch(/… truncated at \d+ characters/);
+    expect(message).toContain('Opened tab 12: Annual report — http://localhost/report\n# Buttons');
+  });
+
   it('says how to see a tab it could not read yet, and counts tabs opened outside the session', async () => {
     const link = await afterRead({
       'page.act': () => ({ ...page(signInPage()), opened: [{ tab: report }, { tab: { ...report, id: 13 }, unread: 'It is still loading.' }], openedElsewhere: 2 }),

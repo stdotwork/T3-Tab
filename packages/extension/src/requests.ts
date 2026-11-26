@@ -298,6 +298,8 @@ async function describeOpened(
     await noteFullAccess();
     return { tab: await describe(), page };
   } catch (error) {
+    // The reply still shows the tab's title and address, which Full access may be what let through.
+    await noteFullAccess().catch(() => undefined);
     return { tab, unread: error instanceof Error ? error.message : String(error) };
   }
 }

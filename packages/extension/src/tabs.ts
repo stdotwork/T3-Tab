@@ -333,7 +333,9 @@ async function getTab(tabId: number): Promise<chrome.tabs.Tab> {
 export async function adoptPopupTab(tabId: number, sourceTabId: number, store: SessionStore): Promise<void> {
   // A form the opener sent into the new tab (a GET form with a target) puts its values in the new tab's address and title,
   // so the values known for the opener are known for it too. Done before anything else, while the tab is still loading.
-  rememberSecrets(tabId, knownSecrets(sourceTabId));
+  // Values the opener's tree learns later reach the tab through `rememberSecrets`.
+  const known = knownSecrets(sourceTabId);
+  if (known.length > 0) rememberSecrets(tabId, known);
   try {
     const opener = await chrome.tabs.get(sourceTabId);
     const owner = sessionForPopup(await store.list(), opener);

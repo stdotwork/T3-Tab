@@ -14,7 +14,7 @@ import { defineBackground } from 'wxt/utils/define-background';
 
 import { initCdp } from '../src/cdp';
 import { handleDaemonReply, noteDaemonClose, noteDaemonProblem, noteSocketClosed, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
-import { forgetOpener, noteOpenedTab } from '../src/opened-tabs';
+import { forgetClosedTab, noteOpenedTab } from '../src/opened-tabs';
 import { handlePanelRequest } from '../src/panel';
 import { isSidePanelSender } from '../src/panel-security';
 import { forgetPanelTab, keepPanelOnItsTab, openPanelOn } from '../src/panel-tab';
@@ -174,7 +174,7 @@ export default defineBackground(() => {
   chrome.tabs.onRemoved.addListener(reportTabClosed);
   chrome.tabs.onRemoved.addListener((tabId) => void sessionStore.forgetTab(tabId));
   chrome.tabs.onRemoved.addListener((tabId) => forgetSecrets(tabId));
-  chrome.tabs.onRemoved.addListener((tabId) => forgetOpener(tabId));
+  chrome.tabs.onRemoved.addListener((tabId) => forgetClosedTab(tabId));
   chrome.tabs.onRemoved.addListener((tabId) => void forgetPanelTab(tabId).catch(() => undefined));
   chrome.tabs.onReplaced.addListener(reportTabCount);
   chrome.tabs.onAttached.addListener(reportTabCount);

@@ -279,6 +279,21 @@ describe('a tab a step opened, further', () => {
       expect(listed[1]).toMatchObject({ origin: SHOP, tabId: popup, tabTitle: 'Receipt' });
     });
 
+    it('is listed with what Full access let through when its read fails and the reply still shows its title', async () => {
+      const { shopTab, opensOnKey, act, permissionPrompts } = await fullAccess();
+      const tab = await shopTab();
+      const before = permissionPrompts.autoAllowed().length;
+      const popup = opensOnKey(tab, { url: `${SHOP}/receipt`, title: 'Receipt' });
+      reader.duringRead = (read) => {
+        if (read === popup) throw new Error('The page could not be read.');
+      };
+      const [described] = (await act(tab)).opened ?? [];
+      expect(described).toMatchObject({ tab: { id: popup, title: 'Receipt' }, unread: 'The page could not be read.' });
+      const listed = permissionPrompts.autoAllowed().slice(before);
+      expect(listed.map((entry) => entry.tool)).toEqual(['act', 'read']);
+      expect(listed[1]).toMatchObject({ origin: SHOP, tabId: popup, tabTitle: 'Receipt' });
+    });
+
     it('does not count on another origin, which needs its own site setting', async () => {
       const { shopTab, opensOnKey, act, permissionPrompts, siteStore } = await fullAccess();
       const tab = await shopTab();

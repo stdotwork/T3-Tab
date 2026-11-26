@@ -137,9 +137,10 @@ export async function actOnPage(
       await assertActAccess(activeSession, tabId, expectedOrigin);
       const ref = actStepRef(step);
       const dialog = openDialog(tabId);
-      // A click or a key press can send a form, and a form that sends a field's value in the address puts it in the title and
-      // address this reply shows: note the page's secret values first, as of this moment.
-      if (dialog === undefined && (action === 'click' || action === 'press')) await rememberPageSecrets(tabId);
+      // Any step can send a form (a click, a key press, or page script it sets off: a `select` whose change submits, a
+      // timer during a `wait`), and a form that sends a field's value in the address puts it in the title and address this
+      // reply shows: note the page's secret values first, as of this moment. The read after the batch notes them again.
+      if (dialog === undefined) await rememberPageSecrets(tabId);
       if (dialog !== undefined) {
         await answerDialogStep(tabId, step, expectedOrigin);
       } else if (ref !== undefined) {

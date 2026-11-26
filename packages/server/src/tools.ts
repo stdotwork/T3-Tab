@@ -188,8 +188,11 @@ async function runAct(
     epoch: state.currentEpoch,
     skipReadOver: LOAD_REPLY_MAX,
   });
-  // The tabs the batch opened are told after its own reply, so that reply leaves them their room under the cap.
-  const cap = MAX_OUTPUT_CHARS - openedRoom(page);
+  // A failed step is told first and the tabs the batch opened after its own reply, so that reply leaves both their room
+  // under the cap.
+  const failed =
+    page.failure === undefined ? '' : `Step ${page.failure.step} (${page.failure.action}) failed: ${truncate(page.failure.error, MAX_FAILURE)}\n`;
+  const cap = MAX_OUTPUT_CHARS - failed.length - openedRoom(page);
   // A page paused on a dialog has nothing to read, and its refs and diff baselines stay as they were. A search, as `read`
   // with `find` gives it, answers only a batch that went through.
   const reply =
@@ -202,12 +205,12 @@ async function runAct(
             cap,
           });
   const whole = `${reply}${await openedLines(link, session, page)}`;
-  if (page.failure !== undefined) {
-    throw new Error(`Step ${page.failure.step} (${page.failure.action}) failed: ${page.failure.error}\n${whole}`);
-  }
+  if (failed !== '') throw new Error(`${failed}${whole}`);
   return whole;
 }
 
+/** Most characters of a failed step's error an `act` reply carries. */
+const MAX_FAILURE = 1_000;
 /** Most characters one opened tab's line takes when it comes without its page: the tab, and why it was not read. */
 const OPENED_LINE_MAX = 500;
 const OPENED_ELSEWHERE_MAX = 100;
