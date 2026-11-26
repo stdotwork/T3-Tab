@@ -1,7 +1,8 @@
 /**
- * The thread list, as T3 Code's sidebar draws it: a card per thread (project avatar and name, status or time, title,
- * the machine and the provider), hover actions to snooze and settle, and the Working, Snoozed and Settled shelves
- * at the foot of the list with slim rows. Nested controls make each row a `role="button"` rather than a button.
+ * The thread list, as T3 Code's sidebar draws it: the search row, a card per thread (project avatar and name, status or
+ * time, title and the provider's logo), hover actions to snooze and settle, and the Working, Snoozed and Settled shelves
+ * at the foot of the list with slim rows. Nested controls make each row a `role="button"` rather than a button. The
+ * agents using the browser, which T3 has no place for, sit under the list where T3 keeps its own status.
  */
 import {
   AlarmClock,
@@ -13,10 +14,8 @@ import {
   CircleDashed,
   CircleDotDashed,
   Clock,
-  History,
   MessageCircleQuestionMark,
   Pin,
-  Plus,
   Search,
   ShieldQuestionMark,
   Undo2,
@@ -25,14 +24,14 @@ import {
 } from 'lucide-react';
 import { useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 
-import { directRuns, useWakeClock, type Screen } from './Frame';
+import { Bar, BarActions, directRuns, useWakeClock, type Screen } from './Frame';
 import { ActiveSessions } from './Sessions';
 import { errorText } from './lib/api';
 import { useStored, type LiveState } from './lib/store';
 import { snoozeChoices } from './lib/snooze';
 import { t3, type T3State } from './lib/t3-client';
 import { SETTLED_FIRST, SETTLED_MORE, SHELF_LABEL, STATUS_LABEL, threadSections, wakeLabel, type ListRow, type RowStatus } from './lib/thread-sections';
-import { ICON, IconButton, MachineIcon, ProjectAvatar, ProviderIcon, timeAgo, useDismiss, useInkAlign } from './ui';
+import { ICON, ProjectAvatar, ProviderIcon, timeAgo, useDismiss } from './ui';
 
 const STATUS_ICON: Record<RowStatus, LucideIcon> = {
   working: CircleDashed,
@@ -49,7 +48,8 @@ const STATUS_ICON: Record<RowStatus, LucideIcon> = {
 interface Described {
   title: string;
   project: string;
-  driver: string | undefined;
+  /** The provider the thread runs on, for its logo; none when T3 lists no such provider, as T3 then draws none. */
+  provider: { driver: string; name: string } | undefined;
 }
 
 /** Runs the action without opening the row it sits in. */
@@ -76,7 +76,19 @@ function SnoozeMenu({ state, onPick, onClose }: { state: T3State; onPick: (until
   );
 }
 
-export function ThreadList({ live, state, onOpen, onClose }: { live: LiveState; state: T3State; onOpen: (screen: Screen) => void; onClose: () => void }): ReactNode {
+export function ThreadList({
+  live,
+  state,
+  onOpen,
+  onClose,
+  onSettings,
+}: {
+  live: LiveState;
+  state: T3State;
+  onOpen: (screen: Screen) => void;
+  onClose: () => void;
+  onSettings: () => void;
+}): ReactNode {
   const [query, setQuery] = useState('');
   // T3 keeps its shelves closed until the owner opens them, and remembers that; so does the panel.
   const [workingOpen, setWorkingOpen] = useStored('threads.workingOpen', false);
@@ -85,7 +97,6 @@ export function ThreadList({ live, state, onOpen, onClose }: { live: LiveState; 
   const [settledShown, setSettledShown] = useState(SETTLED_FIRST);
   const [snoozing, setSnoozing] = useState<string>();
   const [error, setError] = useState<string>();
-  const bar = useInkAlign<HTMLElement>({ edges: true });
   const now = useWakeClock(state);
   const needle = query.trim().toLowerCase();
   const projects = new Map(state.projects.map((project) => [project.id, project]));
@@ -98,13 +109,15 @@ export function ThreadList({ live, state, onOpen, onClose }: { live: LiveState; 
   const describe = (row: ListRow): Described => {
     if (row.source === 'direct') {
       const via = live.conversations.find((conversation) => conversation.id === row.id)?.via;
-      return { title: row.run.title, project: via === 'claude' ? 'Claude Code' : 'Codex', driver: via === 'claude' ? 'claudeAgent' : 'codex' };
+      const name = via === 'claude' ? 'Claude Code' : 'Codex';
+      return { title: row.run.title, project: name, provider: { driver: via === 'claude' ? 'claudeAgent' : 'codex', name } };
     }
     const project = projects.get(row.shell.projectId);
+    const provider = providers.get(row.shell.modelSelection?.instanceId ?? row.shell.providerInstanceId ?? '');
     return {
       title: row.shell.title,
       project: project !== undefined && project.workspaceRoot === state.scratchRoot ? 'No project' : (project?.title ?? 'T3 Code'),
-      driver: providers.get(row.shell.modelSelection?.instanceId ?? row.shell.providerInstanceId ?? '')?.driver,
+      provider: provider === undefined ? undefined : { driver: provider.driver, name: provider.displayName ?? provider.instanceId },
     };
   };
   const open = (row: ListRow): void => onOpen({ name: 'thread', id: row.id, source: row.source });
@@ -171,19 +184,28 @@ export function ThreadList({ live, state, onOpen, onClose }: { live: LiveState; 
   };
 
   const renderRow = (row: ListRow): ReactNode => {
-    const { title, project, driver } = describe(row);
+    const { title, project, provider } = describe(row);
     const lastAt = row.source === 'direct' ? row.run.updatedAt : Date.parse(row.shell.latestUserMessageAt ?? row.shell.updatedAt ?? '');
     const slim = row.section === 'snoozed' || row.section === 'settled';
     // A thread with nothing new to say reads quieter, as in T3.
     const read = row.status === undefined;
-    const environment = row.source === 't3' ? state.environmentLabel : undefined;
     const actions = actionsOf(row, slim);
     // The row is named by its thread, not by the actions inside it.
     const label = [title, project, row.status === undefined ? undefined : STATUS_LABEL[row.status]].filter((part) => part !== undefined).join(', ');
     const className = ['thread-row', slim ? 'slim' : 'card', read ? 'read' : ''].filter(Boolean).join(' ');
     return (
       <li className="thread-item" key={`${row.source}:${row.id}`}>
-        <div role="button" tabIndex={0} className={className} aria-label={label} data-thread-item data-section={row.section} onClick={() => open(row)} onKeyDown={keys(row)}>
+        <div
+          role="button"
+          tabIndex={0}
+          className={className}
+          aria-label={label}
+          data-thread-item
+          data-section={row.section}
+          data-provider={provider?.driver}
+          onClick={() => open(row)}
+          onKeyDown={keys(row)}
+        >
           {slim ? (
             <>
               <span className="thread-avatar">
@@ -208,21 +230,12 @@ export function ThreadList({ live, state, onOpen, onClose }: { live: LiveState; 
               </span>
               <span className="thread-row-title">
                 <span className="thread-title">{title}</span>
-                {environment === undefined ? (
+                {provider === undefined ? null : (
                   <span className="thread-provider">
-                    <ProviderIcon driver={driver} size={ICON.sm} />
+                    <ProviderIcon driver={provider.driver} name={provider.name} size={ICON.sm} />
                   </span>
-                ) : null}
+                )}
               </span>
-              {environment === undefined ? null : (
-                <span className="thread-row-env">
-                  <MachineIcon kind={state.environmentMachine} />
-                  <span className="thread-env-name">{environment}</span>
-                  <span className="thread-provider">
-                    <ProviderIcon driver={driver} size={ICON.sm} />
-                  </span>
-                </span>
-              )}
             </>
           )}
         </div>
@@ -270,20 +283,19 @@ export function ThreadList({ live, state, onOpen, onClose }: { live: LiveState; 
   const settledHidden = sections.settled.length - settledRows.length;
   return (
     <div className="screen thread-list-screen" data-slot="sidebar">
-      <header className="topbar" ref={bar}>
-        <IconButton label="Close threads" onClick={onClose}>
-          <History size={ICON.md} />
-        </IconButton>
+      <Bar
+        crumbs={['Threads']}
+        threads={{ onClick: onClose, open: true }}
+        actions={<BarActions onNew={() => onOpen({ name: 'home' })} onSettings={onSettings} />}
+      />
+      {/* T3's search row: the first row of the list, at the rows' inset; focused only when the owner clicks it. */}
+      <div className="list-search-row">
         <label className="list-search">
           <Search size={ICON.md} aria-hidden="true" />
-          <input autoFocus placeholder="Search" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <input aria-label="Search threads" placeholder="Search" value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <IconButton label="New thread" onClick={() => onOpen({ name: 'home' })}>
-          <Plus size={ICON.md} />
-        </IconButton>
-      </header>
+      </div>
       <div className="thread-list">
-        <ActiveSessions live={live} state={state} onOpen={onOpen} />
         {error === undefined ? null : <p className="error-line">{error}</p>}
         {searching ? (
           <ul className="thread-rows">
@@ -323,6 +335,7 @@ export function ThreadList({ live, state, onOpen, onClose }: { live: LiveState; 
           </>
         )}
       </div>
+      <ActiveSessions live={live} state={state} onOpen={onOpen} />
     </div>
   );
 }

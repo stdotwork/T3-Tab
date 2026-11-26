@@ -72,7 +72,7 @@ Full access is confirmed with a fake T3 per request with no live panel, and an u
 between turns with the conversation's Remove button; a missing, world-readable or replaced claim file warns in
 the conversation and in the agent's first tool reply. The thread list, given T3 threads as one shell snapshot, shows T3's
 sidebar sections in T3's order (pinned, active, then the Working, Snoozed and Settled shelves), leaves archived threads
-out, and the threads button carries a dot only while a thread waits on the owner's answer or approval. The composer
+out, ends each row in its provider's logo (none when T3 lists no such provider) and names no machine, and the threads button carries a dot only while a thread waits on the owner's answer or approval. The composer
 keeps the paperclip, model, mic and send in that order at 320, 360 and 400 px with no access row under it; the mic says why it cannot record without T3; a PDF for a direct run is named and holds the message; a pasted image is attached; a PNG
 dragged over the heading shows the whole-panel drop overlay, is attached when dropped there and
 reaches the fake Claude Code as an image block, while a file dropped on Settings is refused; Settings has a 28 px
@@ -86,7 +86,9 @@ controls sit at ink distances from its edges more than 1 px apart, when the comp
 the frame's foot as from its side, when the composer's controls are not one size or their ink (and the model chip's
 logo and words) is off one centre line, when its text does not start on the paperclip's ink, when the hero's project
 line is off the heading's ink centre, or when one bar's icons, or the composer row's glyphs, are drawn at different
-sizes or stroke weights. It renders the panel from that state and, when
+sizes or stroke weights. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
+each width and scheme the bars of all those screens must agree within 1 px (0.25 px for strokes): height, first and last
+ink insets, icon size and stroke, the thread toggle's ink, and the breadcrumb's start and baseline. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
 variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once that the earlier one ended, and that `status` reports each state of its link.
@@ -363,7 +365,12 @@ steps is refused until its new origin is approved. Site setting writes are seria
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
 `view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel lives in
 `packages/extension/entrypoints/sidepanel` (React: first-run setup, a new-thread screen, the thread view, and the
-thread list and settings behind icons, coloured only from T3's theme roles); its sharing and prompt calls live in
+thread list and settings behind icons, coloured only from T3's theme roles);
+every screen has the same top bar in T3's anatomy (`Bar` in `Frame.tsx`): T3's sidebar toggle, which opens and closes
+the thread list, then a breadcrumb, then the screen's icons (New thread and Settings), or, on Settings and its sheets,
+the breadcrumb (`Settings / General`) and Close, as T3's settings have. T3 Code's built-in theme is painted as T3's app
+paints it, not as its palette file lists it: in dark a black canvas with the thread list on the card surface, so the list
+sits lighter than the canvas in dark and darker in light (`T3_CODE_PAINTED_DARK` in `lib/theme.ts`); its sharing and prompt calls live in
 `packages/extension/src/panel.ts`, and the policy is in `permissions.ts`, `sessions.ts` and `tabs.ts`. The extension's icon
 is T3-Tab's own: `packages/extension/icon-source.svg`, rendered to `public/icons/`. T3 Code's mark appears only on the row
 that names T3 Code.
@@ -385,9 +392,11 @@ card for another tab says so and has a Go to tab button.
 
 The tab chip shows what the next message shares before it is sent: the tab, or the whole tab group when the owner made
 that group. In a thread, a tab waiting for the next message is outlined and says so, and a tab already shared is filled.
-The Threads screen starts with "Using the browser": every connected agent session, named by its T3 thread when it has one
-and otherwise by its agent, with its shared tabs and a control for the current tab. That control is left out on a page
-that cannot be shared. A green dot on the Threads button says at least one session is connected.
+The Threads screen is T3's sidebar: the search row, then the threads, each row ending in its provider's logo. Under it, where
+T3's sidebar keeps its own status, "Using the browser" lists every connected agent session in one slim row, named by its T3
+thread when it has one and otherwise by its agent, with how many tabs it holds and a toggle that shares the current tab
+with it. The toggle is left out on a page that cannot be shared. A green dot on the Threads button says at least one
+session is connected.
 
 A thread shows why a turn failed, using T3's failure message or the direct run's error. Follow-ups queued in a T3 thread
 are listed above the composer, where they can be removed; after a Stop, T3 holds them and the first has a Send now button.

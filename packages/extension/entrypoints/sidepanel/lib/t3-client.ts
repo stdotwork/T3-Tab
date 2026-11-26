@@ -160,15 +160,12 @@ export interface T3State {
   /** T3 can transcribe speech on this machine (its `voiceTranscription` capability). */
   voice: boolean;
   speech: SpeechOptions;
-  /** This T3's name for its machine, which its sidebar shows under each thread, and the kind of machine it is. */
-  environmentLabel?: string;
-  environmentMachine?: string;
   /** The snooze menu's presets: the owner's own from T3's settings, else T3's defaults. */
   snoozePresets: readonly SnoozePreset[];
 }
 
 type ConfigEvent =
-  | { type: 'snapshot'; config: { providers: Provider[]; scratchWorkspaceRoot?: string; settings: ServerSettings; environment?: { label?: string; platform?: { machine?: string }; capabilities?: { threadStop?: boolean; voiceTranscription?: boolean } } } }
+  | { type: 'snapshot'; config: { providers: Provider[]; scratchWorkspaceRoot?: string; settings: ServerSettings; environment?: { capabilities?: { threadStop?: boolean; voiceTranscription?: boolean } } } }
   | { type: 'providerStatuses'; payload: { providers: Provider[] } }
   | { type: 'settingsUpdated'; payload: { settings: ServerSettings } }
   | { type: string; payload?: unknown };
@@ -463,8 +460,6 @@ export class T3Client {
         voice: config.environment?.capabilities?.voiceTranscription === true,
         speech: speechOptions(config.settings),
         snoozePresets: snoozePresets(config.settings.snoozePresets),
-        ...(typeof config.environment?.label === 'string' && config.environment.label.trim() !== '' ? { environmentLabel: config.environment.label } : {}),
-        ...(typeof config.environment?.platform?.machine === 'string' ? { environmentMachine: config.environment.platform.machine } : {}),
         ...(config.scratchWorkspaceRoot === undefined ? {} : { scratchRoot: config.scratchWorkspaceRoot }),
       });
     } else if (event.type === 'providerStatuses') {

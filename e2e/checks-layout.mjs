@@ -7,6 +7,9 @@
 // - the composer's text does not start on the first control's ink,
 // - the new-thread hero's project line is off the heading's centre,
 // - the icon glyphs of one bar, or of the composer row, are drawn at different sizes or stroke weights,
+// - a screen's top bar is not the panel's one bar (`[data-bar]`, Bar in Frame.tsx), or the bars of the screens it walks
+//   differ from each other at one width and scheme: in height, in where their first and last ink sit, in their icons'
+//   size and stroke weight, in where the thread toggle's ink sits, or in where the breadcrumb's text sits,
 // by more than 1 px (0.25 px for stroke weights).
 import { dirname, join } from 'node:path';
 
@@ -29,31 +32,47 @@ async function measure(page) {
         .filter((entry) => entry.ink !== null);
     const name = (element) => element.getAttribute('aria-label') ?? element.className ?? element.tagName;
     const result = { bars: [], composer: null, hero: null };
-    for (const bar of document.querySelectorAll('.topbar, .sheet-head')) {
-      if (!shown(bar)) continue;
+    // Every header, so a screen that draws its own instead of the panel's one bar is caught.
+    for (const bar of document.querySelectorAll('header, [data-bar]')) {
+      if (!shown(bar) || bar.closest('.composer, .popover') !== null) continue;
       const frame = bar.getBoundingClientRect();
       const controls = controlsOf(bar);
       if (controls.length === 0) continue;
       const first = controls[0];
       const last = controls.at(-1);
-      // The glyph of each icon a control carries directly (a button's or the search field's icon), at its drawn size.
-      const glyphs = controls
-        .map(({ element }) => (element.matches('button, label') ? element.querySelector(':scope > svg') : null))
-        .filter((svg) => svg !== null)
+      // The glyph of each icon a control carries directly (a button's or the search field's icon), at its drawn size and stroke.
+      const svgs = controls.map(({ element }) => (element.matches('button, label') ? element.querySelector(':scope > svg') : null)).filter((svg) => svg !== null);
+      const glyphs = svgs.map((svg) => {
+        const rect = svg.getBoundingClientRect();
+        return Math.round(Math.max(rect.width, rect.height) * 10) / 10;
+      });
+      const strokes = svgs
         .map((svg) => {
-          const rect = svg.getBoundingClientRect();
-          return Math.round(Math.max(rect.width, rect.height) * 10) / 10;
-        });
+          const style = getComputedStyle(svg.querySelector('path, line, polyline, rect, circle') ?? svg);
+          return style.stroke === 'none' ? null : Math.round(Number.parseFloat(style.strokeWidth) * (svg.getScreenCTM()?.a ?? 1) * 100) / 100;
+        })
+        .filter((stroke) => stroke !== null);
       const boxes = controls.filter(({ element }) => element.matches('button, label')).map(({ element }) => element.getBoundingClientRect());
+      const toggle = bar.querySelector(':scope > #btn-threads');
+      const crumbs = bar.querySelector(':scope > .crumbs');
+      const toggleInk = toggle === null ? null : window.__ink(toggle.querySelector('svg') ?? toggle);
+      const crumbInk = crumbs === null ? null : window.__ink(crumbs);
       result.bars.push({
-        bar: bar.className,
+        bar: bar.className || bar.tagName.toLowerCase(),
+        unified: bar.hasAttribute('data-bar'),
         first: name(first.element),
         last: name(last.element),
+        height: Math.round(frame.height * 10) / 10,
         left: first.ink.left - frame.left,
         right: frame.right - last.ink.right,
         glyphs,
+        strokes,
         heights: boxes.map((rect) => Math.round(rect.height * 10) / 10),
         centres: boxes.map((rect) => Math.round((rect.top + rect.height / 2) * 10) / 10),
+        toggle: toggleInk === null ? null : toggleInk.left - frame.left,
+        crumbLeft: crumbInk === null ? null : crumbInk.left - frame.left,
+        // The crumb's text stands on its baseline (the ink's foot, see ink.mjs), measured from the bar's top.
+        crumbBaseline: crumbInk === null ? null : crumbInk.bottom - frame.top,
       });
     }
     const form = document.querySelector('.composer');
@@ -111,6 +130,8 @@ function problems(screen, found) {
   const out = [];
   for (const bar of found.bars) {
     const where = `${screen}: bar .${bar.bar.split(' ')[0]}`;
+    if (!bar.unified) out.push(`${where}: a top bar that is not the panel's one bar ([data-bar])`);
+    if (spread(bar.strokes) > 0.25) out.push(`${where}: icon strokes of ${bar.strokes.join(' / ')} px`);
     if (Math.abs(bar.left - bar.right) > TOLERANCE) out.push(`${where}: ink insets ${fixed(bar.left)} (${bar.first}) vs ${fixed(bar.right)} (${bar.last}) px`);
     if (spread(bar.glyphs) > TOLERANCE) out.push(`${where}: icon glyphs of ${bar.glyphs.join(' / ')} px`);
     if (spread(bar.heights) > TOLERANCE) out.push(`${where}: control heights ${bar.heights.join(' / ')} px`);
@@ -138,8 +159,31 @@ export async function layoutProblems(page, screen) {
   return problems(screen, await measure(page));
 }
 
-/** Measures one screen at every width and scheme; returns its problems and how many things it measured. */
-async function checkScreen(page, screen, shotsDir) {
+/**
+ * The bars of every screen walked, at one width and scheme, against each other: one height, first and last ink at the
+ * same insets, one icon size and stroke weight, the thread toggle's ink in one place, and the breadcrumb's text in one
+ * place (its left edge after the toggle, or at the inset where a bar has none, and one baseline for all).
+ */
+function barProblems(where, bars) {
+  const out = [];
+  const across = (label, values, tolerance = TOLERANCE) => {
+    const present = values.filter((entry) => entry.value !== null && entry.value !== undefined);
+    if (spread(present.map((entry) => entry.value)) > tolerance) out.push(`${where}: bars differ in ${label}: ${present.map((entry) => `${entry.screen} ${fixed(entry.value)}`).join(', ')}`);
+  };
+  across('height', bars.map(({ screen, bar }) => ({ screen, value: bar.height })));
+  across('first ink inset', bars.map(({ screen, bar }) => ({ screen, value: bar.left })));
+  across('last ink inset', bars.map(({ screen, bar }) => ({ screen, value: bar.right })));
+  across('icon size', bars.flatMap(({ screen, bar }) => bar.glyphs.map((value) => ({ screen, value }))));
+  across('icon stroke', bars.flatMap(({ screen, bar }) => bar.strokes.map((value) => ({ screen, value }))), 0.25);
+  across('thread toggle ink', bars.map(({ screen, bar }) => ({ screen, value: bar.toggle })));
+  across('breadcrumb start after the toggle', bars.filter(({ bar }) => bar.toggle !== null).map(({ screen, bar }) => ({ screen, value: bar.crumbLeft })));
+  across('breadcrumb start without a toggle', bars.filter(({ bar }) => bar.toggle === null).map(({ screen, bar }) => ({ screen, value: bar.crumbLeft })));
+  across('breadcrumb baseline', bars.map(({ screen, bar }) => ({ screen, value: bar.crumbBaseline })));
+  return out;
+}
+
+/** Measures one screen at every width and scheme; returns its problems, how many things it measured and its bars. */
+async function checkScreen(page, screen, shotsDir, bars) {
   const failures = [];
   let measured = 0;
   for (const width of WIDTHS) {
@@ -151,6 +195,9 @@ async function checkScreen(page, screen, shotsDir) {
       await sleep(250);
       const found = await measure(page);
       measured += found.bars.length + (found.composer === null ? 0 : 1) + (found.hero === null ? 0 : 1);
+      const key = `@${width} ${scheme}`;
+      bars[key] ??= [];
+      for (const bar of found.bars) bars[key].push({ screen, bar });
       failures.push(...problems(`${screen} @${width} ${scheme}`, found));
       if (shotsDir !== undefined) await page.screenshot({ path: join(shotsDir, `layout-${screen}-${width}-${scheme}.png`), animations: 'disabled' });
     }
@@ -167,8 +214,9 @@ export async function checkLayout({ livePanel, serviceWorker, screenshotPath }) 
   const shotsDir = screenshotPath === undefined ? undefined : dirname(screenshotPath);
   const failures = [];
   const counts = {};
+  const bars = {};
   const run = async (screen) => {
-    const { failures: found, measured } = await checkScreen(page, screen, shotsDir);
+    const { failures: found, measured } = await checkScreen(page, screen, shotsDir, bars);
     counts[screen] = measured;
     failures.push(...found);
   };
@@ -242,9 +290,9 @@ export async function checkLayout({ livePanel, serviceWorker, screenshotPath }) 
   const create = page.locator('.theme-popover').getByRole('button', { name: 'Create theme' });
   if ((await create.count()) > 0) {
     await create.click();
-    await page.locator('.sheet-head').waitFor();
+    await page.locator('.sheet [data-bar]').waitFor();
     await run('theme-sheet');
-    await page.locator('.sheet-head').getByRole('button', { name: 'Close' }).click();
+    await page.locator('.sheet [data-bar]').getByRole('button', { name: 'Close' }).click();
   }
   await page.locator('#btn-settings-back').click();
   await page.setViewportSize({ width: 360, height: 800 });
@@ -252,6 +300,14 @@ export async function checkLayout({ livePanel, serviceWorker, screenshotPath }) 
 
   const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
   for (const [screen, count] of Object.entries(counts)) assert(count > 0, `The layout check measured nothing on ${screen}`);
+  // Every screen walked has the one bar, and the bars agree with each other at each width and scheme.
+  for (const screen of Object.keys(counts)) {
+    for (const [key, list] of Object.entries(bars)) {
+      if (!list.some((entry) => entry.screen === screen && entry.bar.unified)) failures.push(`${screen} ${key}: no top bar ([data-bar])`);
+    }
+  }
+  for (const [key, list] of Object.entries(bars)) failures.push(...barProblems(key, list));
+  const barCount = Object.values(bars).reduce((sum, list) => sum + list.length, 0);
   assert(failures.length === 0, `Panel layout, measured on its ink (${failures.length} problems):\n${failures.join('\n')}`);
-  console.log(`Panel layout: ${total} bars, composers and heroes measured on ${Object.keys(counts).length} screens at ${WIDTHS.join('/')} px, light and dark; ink insets, centre lines, control sizes and glyph sizes within ${TOLERANCE} px`);
+  console.log(`Panel layout: ${total} bars, composers and heroes measured on ${Object.keys(counts).length} screens at ${WIDTHS.join('/')} px, light and dark; ink insets, centre lines, control sizes and glyph sizes within ${TOLERANCE} px; the ${barCount} top bars are the one bar and agree across screens in height, insets, icon size and stroke, toggle and breadcrumb position`);
 }

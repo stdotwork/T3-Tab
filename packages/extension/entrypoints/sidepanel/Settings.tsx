@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Copy, Download, Moon, MoreHorizontal, Paintbrush, Pencil, Plus, Sun, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, Download, Moon, MoreHorizontal, Paintbrush, Pencil, Plus, Sun, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { SitePermission } from '../../src/permissions';
@@ -22,21 +22,14 @@ import { t3, type T3State } from './lib/t3-client';
 import { freeThemeName, importCustomTheme, previewTheme, removeCustomTheme, saveCustomTheme, setScheme, setTheme, STOCK_THEME, useAppearance, type SchemeChoice } from './lib/theme';
 import { SITE_CHOICES, siteStatus } from './prompt-choices';
 import { AgentRow, HelperStep, T3Row } from './Setup';
-import { ICON, IconButton, timeAgo, useDismiss, useInkAlign } from './ui';
+import { Bar, CloseButton } from './Frame';
+import { ICON, IconButton, timeAgo, useDismiss } from './ui';
 
 export type SettingsTab = 'general' | 'sites';
 
-/** A sheet's title bar: its heading and Close, with their ink at the bar's inset like every other bar. */
+/** A sheet's bar: the panel's one bar, with the sheet's place under Settings and Close, as T3's dialogs have. */
 function SheetHead({ title, onClose }: { title: string; onClose: () => void }): ReactNode {
-  const bar = useInkAlign<HTMLElement>({ edges: true });
-  return (
-    <header className="sheet-head" ref={bar}>
-      <h2>{title}</h2>
-      <IconButton label="Close" onClick={onClose}>
-        <X size={ICON.md} />
-      </IconButton>
-    </header>
-  );
+  return <Bar crumbs={['Settings', title]} actions={<CloseButton label="Close" onClick={onClose} />} />;
 }
 
 function Orb({ colors }: { colors: ThemeColors | null }): ReactNode {
@@ -559,18 +552,10 @@ export function Settings({
   onTab: (tab: SettingsTab) => void;
   onClose: () => void;
 }): ReactNode {
-  const bar = useInkAlign<HTMLElement>({ edges: true });
   return (
     <div className="screen">
-      <header className="topbar" ref={bar}>
-        <span className="crumbs">
-          <strong>Settings</strong>
-        </span>
-        <span className="topbar-spacer" />
-        <IconButton label="Close settings" id="btn-settings-back" onClick={onClose}>
-          <X size={ICON.md} />
-        </IconButton>
-      </header>
+      {/* T3's settings bar: "Settings / <page>" and Close, with no sidebar toggle. */}
+      <Bar crumbs={['Settings', TABS.find((entry) => entry.id === tab)?.label ?? 'General']} actions={<CloseButton label="Close settings" id="btn-settings-back" onClick={onClose} />} />
       <nav className="settings-tabs" aria-label="Settings">
         {TABS.map((entry) => (
           <button type="button" key={entry.id} className={entry.id === tab ? 'active' : ''} aria-current={entry.id === tab ? 'page' : undefined} onClick={() => onTab(entry.id)}>

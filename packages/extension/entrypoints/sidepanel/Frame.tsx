@@ -1,7 +1,7 @@
 /** What the panel's screens share: where they can go, the top bar, the connection banner and the model catalog. */
 import type { ToolSession } from '@t3-tab/protocol';
-import { AlertCircle, History, Settings as SettingsIcon, SquarePen } from 'lucide-react';
-import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { AlertCircle, PanelLeft, Settings as SettingsIcon, SquarePen, X } from 'lucide-react';
+import { Fragment, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 
 import type { SettingsTab } from './Settings';
 import { helperNote } from './Setup';
@@ -77,39 +77,99 @@ export function useNeedsOwner(live: LiveState, state: T3State): boolean {
   return needsOwner(threadSections(state.threads, directRuns(live), now));
 }
 
+/** The button that opens the thread list, T3's sidebar toggle, with the dot that says a session or a thread needs a look. */
+export interface ThreadsToggle {
+  onClick: () => void;
+  /** The thread list is the screen showing, so the button closes it. */
+  open?: boolean;
+  sessions?: number;
+  /** A thread waits on the owner's approval or answer. */
+  needsYou?: boolean;
+}
+
+/**
+ * Every screen's top bar, in T3 Code's anatomy: on the screens T3 draws beside its sidebar, the sidebar toggle at the
+ * left (here it opens the thread list); then the breadcrumb, its parents muted and the current page last; then the
+ * screen's icon buttons at the right. Settings and the theme sheets have no toggle, as T3's settings and dialogs have
+ * none, and end in Close. One height, one inset and one icon size for all of them.
+ */
+export function Bar({ crumbs, threads, actions, chat = false }: { crumbs: readonly ReactNode[]; threads?: ThreadsToggle; actions: ReactNode; chat?: boolean }): ReactNode {
+  const bar = useInkAlign<HTMLElement>({ edges: true });
+  const parents = crumbs.slice(0, -1);
+  return (
+    <header className="topbar" data-bar data-chat-header={chat ? '' : undefined} ref={bar}>
+      {threads === undefined ? null : <ThreadsButton {...threads} />}
+      <nav className="crumbs" aria-label="Breadcrumb">
+        <ol>
+          {parents.map((crumb, index) => (
+            <Fragment key={index}>
+              <li className="crumb-muted">{crumb}</li>
+              <li className="sep" aria-hidden="true">
+                /
+              </li>
+            </Fragment>
+          ))}
+          <li className="crumb-current" aria-current="page">
+            {crumbs.at(-1)}
+          </li>
+        </ol>
+      </nav>
+      <span className="topbar-spacer" />
+      {actions}
+    </header>
+  );
+}
+
+function ThreadsButton({ onClick, open = false, sessions = 0, needsYou = false }: ThreadsToggle): ReactNode {
+  const label = [needsYou ? 'a thread needs you' : undefined, sessions === 0 ? undefined : `${sessions} using the browser`].filter((part) => part !== undefined).join(', ');
+  const name = open ? 'Close threads' : 'Threads';
+  return (
+    <IconButton label={label === '' ? name : `${name}, ${label}`} id="btn-threads" aria-pressed={open} onClick={onClick}>
+      <PanelLeft size={ICON.md} />
+      {needsYou ? <span className="needs-you-dot" aria-hidden="true" /> : sessions === 0 ? null : <span className="session-dot" aria-hidden="true" />}
+    </IconButton>
+  );
+}
+
+/** The bar of the screens that hold a composer: the thread list, the breadcrumb, then New thread and Settings. */
 export function TopBar({
-  title,
+  crumbs,
   onThreads,
   onNew,
   onSettings,
   sessions = 0,
   needsYou = false,
 }: {
-  title: ReactNode;
+  crumbs: readonly ReactNode[];
   onThreads: () => void;
   onNew?: () => void;
   onSettings: () => void;
   sessions?: number;
-  /** A thread waits on the owner's approval or answer. */
   needsYou?: boolean;
 }): ReactNode {
-  const bar = useInkAlign<HTMLElement>({ edges: true });
-  const label = [needsYou ? 'a thread needs you' : undefined, sessions === 0 ? undefined : `${sessions} using the browser`].filter((part) => part !== undefined).join(', ');
+  return <Bar chat crumbs={crumbs} threads={{ onClick: onThreads, sessions, needsYou }} actions={<BarActions onNew={onNew} onSettings={onSettings} />} />;
+}
+
+/** New thread and Settings, at the right of every bar that carries the thread toggle. */
+export function BarActions({ onNew, onSettings }: { onNew?: (() => void) | undefined; onSettings: () => void }): ReactNode {
   return (
-    <header className="topbar" data-chat-header ref={bar}>
-      <IconButton label={label === '' ? 'Threads' : `Threads, ${label}`} id="btn-threads" onClick={onThreads}>
-        <History size={ICON.md} />
-        {needsYou ? <span className="needs-you-dot" aria-hidden="true" /> : sessions === 0 ? null : <span className="session-dot" aria-hidden="true" />}
-      </IconButton>
-      <span className="crumbs">{title}</span>
-      <span className="topbar-spacer" />
+    <>
       <IconButton label="New thread" id="btn-new" disabled={onNew === undefined} onClick={onNew}>
         <SquarePen size={ICON.md} />
       </IconButton>
       <IconButton label="Settings" id="btn-settings" onClick={onSettings}>
         <SettingsIcon size={ICON.md} />
       </IconButton>
-    </header>
+    </>
+  );
+}
+
+/** Close, the last control of the Settings bar and of a sheet's. */
+export function CloseButton({ label, id, onClick }: { label: string; id?: string; onClick: () => void }): ReactNode {
+  return (
+    <IconButton label={label} id={id} onClick={onClick}>
+      <X size={ICON.md} />
+    </IconButton>
   );
 }
 

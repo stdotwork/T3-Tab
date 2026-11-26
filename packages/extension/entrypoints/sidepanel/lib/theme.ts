@@ -17,12 +17,31 @@ import {
 import { BUILT_IN_THEMES, T3_CODE_DARK_THEME_COLORS, T3_CODE_LIGHT_THEME_COLORS } from '../../../src/t3/theme-palettes';
 import { readStored, writeStored } from './api';
 
+/**
+ * T3 Code's built-in dark theme as T3's own app paints it, which is not the palette file's values: T3 gives the standard
+ * theme no theme id, so its stylesheet's dark block applies (`apps/web/src/index.css`): the canvas is black (T3's
+ * `getStandardThemeColors` sets `canvas: "#000000"` too), the sidebar is the card surface, and the sidebar's rows and
+ * controls are white at 3% (muted) and 4% (accent) over it, with the 8% border. So the thread list sits lighter than
+ * the canvas in dark and darker in light, as in T3. The tints are written as the opaque colours they paint on the
+ * surface, so the theme editor can show them.
+ */
+const T3_CODE_PAINTED_DARK: ThemeColors = {
+  ...T3_CODE_DARK_THEME_COLORS,
+  canvas: '#000000',
+  sidebar: T3_CODE_DARK_THEME_COLORS.surface,
+  sidebarControlSurface: '#181818',
+  sidebarRowHover: '#1b1b1b',
+  sidebarRowActive: '#1b1b1b',
+  sidebarRowSelected: '#181818',
+  sidebarBorder: '#242424',
+};
+
 export const STOCK_THEME: ThemeDefinition = {
   id: 't3-code',
   label: 'T3 Code',
   appearance: 'light',
   colors: T3_CODE_LIGHT_THEME_COLORS,
-  variants: { dark: T3_CODE_DARK_THEME_COLORS },
+  variants: { dark: T3_CODE_PAINTED_DARK },
 };
 
 export type SchemeChoice = 'system' | 'light' | 'dark';
