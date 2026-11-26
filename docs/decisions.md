@@ -43,8 +43,11 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   keep prompt overhead small.
 - **Accessibility-tree reading with short refs.** `read` fetches the Chrome DevTools Protocol (CDP)
   accessibility tree (`Accessibility.getFullAXTree`) instead of raw HTML or DOM dumps. By default
-  it returns interactive elements only, with short refs (`e1`, `e2`, ...) held in the daemon and
-  invalidated when the tab's document is replaced. Replies are capped at 12,000 characters. Password
+  it returns interactive elements with short refs (`e1`, `e2`, ...) held in the daemon and
+  invalidated when the tab's document is replaced, headings, and the page's text. Live regions and
+  dialogs always show their text; other text is held to a budget (4,000 characters, and never more
+  than the cap leaves after the elements), and a reply says what it left out and how to get it, so an
+  agent sees an error message, a list or a table row without a second read or a screenshot. Replies are capped at 12,000 characters. Password
   field values are stripped before the tree leaves the extension and rendered as `value=<redacted>`
   so neither the value nor its length leaks.
 - **Literal search by default, bounded regex opt-in.** `find` does case-insensitive literal

@@ -1,30 +1,15 @@
 import type { AxNode } from '@t3-tab/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { RefGoneError, renderTree } from '../src/reader/format.js';
+import { RefGoneError, renderLines, renderTree } from '../src/reader/format.js';
 import { RefTable } from '../src/reader/refs.js';
 import { ax, signInPage } from './ax-fixtures.js';
 
 describe('tree to text', () => {
-  it('lists interactive elements with refs, and headings and named containers as structure', () => {
-    const lines = renderTree(signInPage(), new RefTable(), { all: false });
-    expect(lines).toEqual([
-      '# Sign in',
-      'e1 form "Login"',
-      '  e2 textbox "Email" value="a@b.c" [required]',
-      '  e3 button "Submit"',
-    ]);
-  });
-
-  it('adds the text of the page in all mode, without echoing labels or a control\'s own text', () => {
-    const lines = renderTree(signInPage(), new RefTable(), { all: true });
-    expect(lines).toEqual([
-      '# Sign in',
-      'e1 form "Login"',
-      '  e2 textbox "Email" value="a@b.c" [required]',
-      '  e3 button "Submit"',
-      '"Hello there"',
-    ]);
+  it('lists interactive elements with refs, headings and named containers as structure, and the text, without echoing labels or a control\'s own text', () => {
+    const expected = ['# Sign in', 'e1 form "Login"', '  e2 textbox "Email" value="a@b.c" [required]', '  e3 button "Submit"', '"Hello there"'];
+    expect(renderTree(signInPage(), new RefTable(), { all: false })).toEqual(expected);
+    expect(renderTree(signInPage(), new RefTable(), { all: true })).toEqual(expected);
   });
 
   it('walks through ignored nodes and hoists unnamed wrappers', () => {
@@ -105,7 +90,7 @@ describe('tree to text', () => {
 
   it('limits nesting by depth, counting shown nodes only', () => {
     const lines = renderTree(signInPage(), new RefTable(), { all: false, depth: 0 });
-    expect(lines).toEqual(['# Sign in', 'e1 form "Login" …']);
+    expect(lines).toEqual(['# Sign in', 'e1 form "Login" …', '"Hello there"']);
     expect(renderTree(signInPage(), new RefTable(), { all: false, depth: 1 })).not.toContainEqual(expect.stringContaining('…'));
   });
 
@@ -142,6 +127,126 @@ describe('tree to text', () => {
       '  e3 button "Submit"',
     ]);
     expect(() => renderTree(signInPage(), refs, { all: false, target: 999 })).toThrow(RefGoneError);
+  });
+
+  it('prints a live region that says one short thing on one line, and nothing for an empty one', () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 4, 5, 8]),
+      ax(2, 'alert', '', [3]),
+      ax(3, 'StaticText', 'Incorrect username or password.'),
+      ax(4, 'status', '', []),
+      ax(5, 'status', 'Cart', [6, 7]),
+      ax(6, 'StaticText', '3 items'),
+      ax(7, 'button', 'Undo'),
+      ax(8, 'generic', '', [9], { props: { live: 'polite' } }),
+      ax(9, 'StaticText', 'Step 1 of 4'),
+    ];
+    const lines = renderLines(nodes, new RefTable(), { all: false });
+    expect(lines.map((item) => item.line)).toEqual([
+      'alert "Incorrect username or password."',
+      'e1 status "Cart"',
+      '  "3 items"',
+      '  e2 button "Undo"',
+      '"Step 1 of 4"',
+    ]);
+    // The text of a live region is kept whatever a size budget leaves out.
+    expect(lines.filter((item) => item.text).every((item) => item.keep)).toBe(true);
+  });
+
+  it('prints a long live message whole, up to a line of text', () => {
+    const message = `Your session expired. ${'Sign in again to keep your changes. '.repeat(8)}`.trim();
+    const nodes = [ax(1, 'RootWebArea', '', [2]), ax(2, 'status', '', [3]), ax(3, 'StaticText', message)];
+    expect(renderTree(nodes, new RefTable(), { all: false })).toEqual([`status ${JSON.stringify(message)}`]);
+  });
+
+  it('marks the text of a dialog to keep and the text of the main content as main', () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 4, 6]),
+      ax(2, 'paragraph', '', [3]),
+      ax(3, 'StaticText', 'Header blurb'),
+      ax(4, 'main', '', [5]),
+      ax(5, 'StaticText', 'The article'),
+      ax(6, 'dialog', 'Cookies', [7]),
+      ax(7, 'StaticText', 'We use cookies.'),
+    ];
+    const lines = renderLines(nodes, new RefTable(), { all: false });
+    expect(lines).toEqual([
+      { line: '"Header blurb"', text: true, keep: false, main: false },
+      { line: '"The article"', text: true, keep: false, main: true },
+      { line: 'e1 dialog "Cookies"', text: false, keep: true, main: false },
+      { line: '  "We use cookies."', text: true, keep: true, main: false },
+    ]);
+  });
+
+  it('prints a table row of text cells as one line', () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2]),
+      ax(2, 'table', 'Sales', [3, 4, 5]),
+      ax(3, 'row', '', [10, 11]),
+      ax(4, 'row', '', [12, 13]),
+      ax(5, 'row', '', [14, 15]),
+      ax(10, 'columnheader', '', [20]),
+      ax(11, 'columnheader', '', [21]),
+      ax(12, 'cell', '', [22]),
+      ax(13, 'cell', '', [23]),
+      ax(14, 'cell', '', [24]),
+      ax(15, 'cell', '', [25]),
+      ax(20, 'StaticText', 'Region'),
+      ax(21, 'StaticText', 'Revenue'),
+      ax(22, 'StaticText', 'West'),
+      ax(23, 'StaticText', '$14,784'),
+      ax(24, 'StaticText', 'East'),
+      ax(25, 'link', 'Details'),
+    ];
+    expect(renderTree(nodes, new RefTable(), { all: false })).toEqual([
+      'e1 table "Sales"',
+      '  "Region | Revenue"',
+      '  "West | $14,784"',
+      '  "East"',
+      '  e2 link "Details"',
+    ]);
+  });
+
+  it('runs the text of a block together across inline wrappers, but keeps blocks and long text apart', () => {
+    const long = 'word '.repeat(250);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 6, 9, 13]),
+      ax(2, 'paragraph', '', [3, 4]),
+      ax(3, 'StaticText', 'Account balance: '),
+      ax(4, 'strong', '', [5]),
+      ax(5, 'StaticText', '$1,284.50'),
+      ax(6, 'generic', '', [7, 8]),
+      ax(7, 'paragraph', '', [17]),
+      ax(8, 'paragraph', '', [18]),
+      ax(9, 'paragraph', '', [10, 11]),
+      ax(10, 'StaticText', long),
+      ax(11, 'emphasis', '', [12]),
+      ax(12, 'StaticText', 'end'),
+      ax(13, 'list', '', [14, 15]),
+      ax(14, 'listitem', '', [19]),
+      ax(15, 'listitem', '', [16]),
+      ax(16, 'StaticText', '#2 · User invited'),
+      ax(17, 'StaticText', 'First'),
+      ax(18, 'StaticText', 'Second'),
+      ax(19, 'StaticText', '#1 · Deploy finished'),
+    ];
+    const lines = renderTree(nodes, new RefTable(), { all: false });
+    expect(lines[0]).toBe('"Account balance: $1,284.50"');
+    expect(lines.slice(1, 3)).toEqual(['"First"', '"Second"']);
+    expect(lines[3]).toMatch(/^"word word .*…"$/);
+    expect(lines[4]).toBe('"end"');
+    expect(lines.slice(5)).toEqual(['"#1 · Deploy finished"', '"#2 · User invited"']);
+  });
+
+  it('leaves out separators between links and icon-font glyphs', () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 3, 4, 5]),
+      ax(2, 'link', 'new'),
+      ax(3, 'StaticText', ' | '),
+      ax(4, 'link', 'past'),
+      ax(5, 'StaticText', '\ue00c In stock'),
+    ];
+    expect(renderTree(nodes, new RefTable(), { all: false })).toEqual(['e1 link "new"', 'e2 link "past"', '"In stock"']);
   });
 
   it('survives a node that lists itself as a child', () => {

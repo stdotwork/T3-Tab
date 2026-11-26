@@ -1,8 +1,8 @@
 import type { PageReadResult } from '@t3-tab/protocol';
 
-import { elideEchoes, elideTextEchoes, type SetValue } from './echo.js';
+import { elideEchoes, type SetValue } from './echo.js';
 import { findLines } from './find.js';
-import { MORE_INSIDE, RefGoneError, renderTree, truncate } from './format.js';
+import { MORE_INSIDE, RefGoneError, renderLines, type RenderedLine, truncate } from './format.js';
 import { RefTable } from './refs.js';
 import { createSmartDiff } from './smart-diff.js';
 
@@ -13,8 +13,13 @@ const MAX_SESSIONS_PER_TAB = 16;
 const MAX_KEYS_PER_SESSION = 8;
 const MAX_TITLE = 80;
 const MAX_URL = 200;
-/** Most lines of new plain text added to a reply about changed elements. */
-const MAX_NEW_TEXT_LINES = 10;
+/**
+ * Most characters of plain text in a default read or a change: the rest is left out with a note. Elements,
+ * headings and the text of live regions and dialogs are always shown, up to the cap.
+ */
+export const TEXT_BUDGET = 4_000;
+/** Room kept under the cap for the header and the notes, so text never pushes an element past the cut. */
+const NOTE_ROOM = 1_000;
 const DEPTH_NOTE = '(… = more inside: read that ref)';
 
 export interface ReadOptions {
@@ -116,11 +121,11 @@ export async function formatRead(
   }
 
   const find = options.find === '' ? undefined : options.find;
-  // A search covers every node unless the caller narrowed it to interactive ones.
+  // A search covers every node unless the caller narrowed it to the default view.
   const all = options.all ?? find !== undefined;
-  let lines: string[];
+  let rendered: RenderedLine[];
   try {
-    lines = renderTree(page.nodes, state.refTable, {
+    rendered = renderLines(page.nodes, state.refTable, {
       all,
       target,
       depth: options.depth,
@@ -135,76 +140,126 @@ export async function formatRead(
     }
     throw error;
   }
+  const lines = rendered.map((item) => item.line);
 
   if (find !== undefined) {
     const found = await findLines(lines, find, { regex: options.regex });
     return limit(`${header}\n${found.text}`);
   }
 
-  const text = lines.join('\n') + (lines.some((line) => line.endsWith(MORE_INSIDE)) ? `\n${DEPTH_NOTE}` : '');
-  const key = `${all ? 'all' : 'interactive'}|${options.ref ?? ''}|${options.depth ?? ''}`;
+  const depthNote = lines.some((line) => line.endsWith(MORE_INSIDE)) ? `\n${DEPTH_NOTE}` : '';
+  // The baseline holds every line, so a change to text the reply left out is still a change.
+  const text = lines.join('\n') + depthNote;
+  const key = `${all ? 'all' : 'page'}|${options.ref ?? ''}|${options.depth ?? ''}`;
   const previous = state.baseline(session, key);
   state.setBaseline(session, key, text);
 
   if (lines.length === 0) {
-    return `${header}\n${all ? '(empty page)' : '(no interactive elements; use all to see the text)'}`;
+    return `${header}\n${all ? '(empty page)' : '(empty page; all also lists images)'}`;
   }
+  // A ref read is a request for that part, so only the cap limits its text; `all` has no text budget.
+  const budget = all || options.ref !== undefined ? Number.POSITIVE_INFINITY : TEXT_BUDGET;
+  const whole = (): string => {
+    if (all) return limit(`${header}\n${text}`);
+    const view = withinBudget(rendered, budget, header.length);
+    return limit(`${header}\n${view.text}${depthNote}`, view.note);
+  };
   // What the batch itself set is no news to the agent: the earlier read is settled to show it already.
   const echoes =
     previous === undefined || options.full === true || options.echoed === undefined
       ? undefined
       : elideEchoes(previous, text, options.echoed);
-  // The default view leaves plain text out, so its changes are tracked beside it: a page whose only change is
-  // a message must not read as unchanged.
-  const textChange = all ? undefined : trackPlainText(state, session, page, options, target, echoes?.pairs);
-  if (previous === undefined || options.full === true) return limit(`${header}\n${text}`);
+  if (previous === undefined || options.full === true) return whole();
 
-  const diff = createSmartDiff({ oldContent: echoes?.previous ?? previous, newContent: text });
+  // Both end in a newline, so a line added at the end does not also show the old last line as changed.
+  const diff = createSmartDiff({ oldContent: `${echoes?.previous ?? previous}\n`, newContent: `${text}\n` });
   const set = echoes === undefined || echoes.refs.length === 0 ? undefined : `Set ${echoes.refs.join(', ')}.`;
   if (diff.type === 'no-change') {
-    if (textChange === undefined) return `${header}\n${set === undefined ? 'No changes since the last read.' : `${set} Nothing else changed.`}`;
-    return limit(`${header}${set === undefined ? '' : `\n${set}`}\nText changed since the last read:\n${textChange.diff}`);
+    return `${header}\n${set === undefined ? 'No changes since the last read.' : `${set} Nothing else changed.`}`;
   }
   if (diff.type === 'diff') {
-    const added = textChange?.added.filter((line) => !diff.content.includes(line.slice(1, -1))).slice(0, MAX_NEW_TEXT_LINES) ?? [];
-    const newText = added.length === 0 ? '' : `\nNew text:\n${added.join('\n')}`;
-    return limit(`${header}${set === undefined ? '' : `\n${set}`}\nChanged since the last read:\n${diff.content}${newText}`);
+    const changed = all ? { text: diff.content, note: undefined } : diffWithinBudget(diff.content, rendered, budget);
+    return limit(`${header}${set === undefined ? '' : `\n${set}`}\nChanged since the last read:\n${changed.text}`, changed.note);
   }
-  return limit(`${header}\n${text}`);
+  return whole();
 }
 
-/** Records the page's full text for this view and returns how it differs from the last one, if it does. */
-function trackPlainText(
-  state: TabState,
-  session: string,
-  page: PageReadResult,
-  options: ReadOptions,
-  target: number | undefined,
-  echoes: Array<{ before: string; after: string }> | undefined,
-): { diff: string; added: string[] } | undefined {
-  // Its own ref table: rendering must not hand out refs the agent was never shown.
-  const lines = renderTree(page.nodes, new RefTable(), { all: true, target, depth: options.depth }).map((line) =>
-    line.replace(/^(\s*)e\d+ /, '$1'),
-  );
-  const text = lines.join('\n');
-  const key = `text|${options.ref ?? ''}|${options.depth ?? ''}`;
-  const previous = state.baseline(session, key);
-  state.setBaseline(session, key, text);
-  if (previous === undefined) return undefined;
-  // The same settling as for the elements: a field's value the batch set is not a change of the page's text.
-  const compared = echoes === undefined ? previous : elideTextEchoes(previous, text, echoes);
-  // Both end in a newline, so a line added at the end does not also show the old last line as changed.
-  const diff = createSmartDiff({ oldContent: `${compared}\n`, newContent: `${text}\n`, threshold: 1.01 });
-  if (diff.type === 'no-change') return undefined;
-  const before = new Set(compared.split('\n'));
-  const added = lines.filter((line) => line.trimStart().startsWith('"') && !before.has(line)).map((line) => line.trim());
-  return { diff: diff.content, added };
+/**
+ * The default view at its size: every element, heading and line of a live region or dialog, and as much of the
+ * rest of the text as the budget and the cap leave room for, the page's main content first. What it leaves out
+ * is said in one line at the end.
+ */
+function withinBudget(rendered: RenderedLine[], budget: number, headerLength: number): { text: string; note: string | undefined } {
+  const fixed = rendered.reduce((sum, item) => sum + (item.text && !item.keep ? 0 : item.line.length + 1), 0);
+  let room = Math.min(budget, Math.max(0, MAX_OUTPUT_CHARS - NOTE_ROOM - headerLength - fixed));
+  const optional = rendered.flatMap((item, index) => (item.text && !item.keep ? [index] : []));
+  const hasMain = optional.some((index) => rendered[index]?.main === true);
+  const order = hasMain
+    ? [...optional.filter((index) => rendered[index]?.main === true), ...optional.filter((index) => rendered[index]?.main !== true)]
+    : optional;
+  const shown = new Set<number>();
+  for (const index of order) {
+    const size = (rendered[index]?.line.length ?? 0) + 1;
+    if (size > room) break;
+    room -= size;
+    shown.add(index);
+  }
+  const text = rendered
+    .filter((item, index) => !item.text || item.keep || shown.has(index))
+    .map((item) => item.line)
+    .join('\n');
+  const left = optional.filter((index) => !shown.has(index));
+  const chars = left.reduce((sum, index) => sum + textLength(rendered[index]?.line ?? ''), 0);
+  return { text, note: left.length === 0 ? undefined : leftOutNote(left.length, chars) };
 }
 
-/** Cuts a reply at a line boundary once it is over the cap, and says how to get at the rest. */
-function limit(text: string): string {
-  if (text.length <= MAX_OUTPUT_CHARS) return text;
-  const cut = text.lastIndexOf('\n', MAX_OUTPUT_CHARS);
-  const kept = text.slice(0, cut > 0 ? cut : MAX_OUTPUT_CHARS);
-  return `${kept}\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use find, a ref subtree or depth to read the rest.`;
+/** A diff's text lines within the budget, the rest left out with a note; changed elements always stay. */
+function diffWithinBudget(diff: string, rendered: RenderedLine[], budget: number): { text: string; note: string | undefined } {
+  if (!Number.isFinite(budget)) return { text: diff, note: undefined };
+  const always = new Set(rendered.filter((item) => !item.text || item.keep).map((item) => item.line));
+  let room = budget;
+  let left = 0;
+  let chars = 0;
+  const hunks: string[][] = [];
+  for (const line of diff.split('\n')) {
+    if (line === '@@') {
+      hunks.push([line]);
+      continue;
+    }
+    const body = line.slice(1);
+    if (body.trimStart().startsWith('"') && !always.has(body)) {
+      if (line.length + 1 > room) {
+        room = 0;
+        if (!line.startsWith(' ')) {
+          left += 1;
+          chars += textLength(body);
+        }
+        continue;
+      }
+      room -= line.length + 1;
+    }
+    hunks.at(-1)?.push(line);
+  }
+  // A hunk whose changes were all left out says nothing.
+  const kept = hunks.filter((hunk) => hunk.some((line) => line.startsWith('+') || line.startsWith('-')));
+  return { text: kept.flat().join('\n'), note: left === 0 ? undefined : leftOutNote(left, chars, 'changed ') };
+}
+
+/** The characters of text a printed text line holds: without its indent and quotes. */
+function textLength(line: string): number {
+  return Math.max(0, line.trim().length - 2);
+}
+
+function leftOutNote(lines: number, chars: number, kind = ''): string {
+  return `(${lines} ${kind}text lines left out, ${chars} characters: find searches them, read a ref for one part, all for the whole page)`;
+}
+
+/** Cuts a reply at a line boundary once it is over the cap, and says how to get at the rest. A note always stays. */
+function limit(text: string, note?: string | undefined): string {
+  const tail = note === undefined ? '' : `\n${note}`;
+  if (text.length + tail.length <= MAX_OUTPUT_CHARS) return `${text}${tail}`;
+  const room = MAX_OUTPUT_CHARS - tail.length;
+  const cut = text.lastIndexOf('\n', room);
+  const kept = text.slice(0, cut > 0 ? cut : room);
+  return `${kept}\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use find, a ref subtree or depth to read the rest.${tail}`;
 }
