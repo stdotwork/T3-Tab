@@ -274,11 +274,15 @@ already had open, the tool says to ask the owner to answer it.
 an `act` batch on a hidden tab turns on `Emulation.setFocusEmulationEnabled` while its steps run and off afterwards.
 So do a screenshot and a load through `tabs`, because a hidden page gets no animation frames and would stay blank if it
 renders from script. A load replies after the first two frames and holds the tab visible until the page settles. The page sees itself as visible and focused for that long.
-A tab that has been in the background for a few seconds can ignore the mouse wheel and draw no frame. A wheel scroll reads
-the scroll position of the page and of the elements under the pointer (`packages/extension/src/scroll.ts`, in T3-Tab's own
-world) before and after, and the step fails with a reason when nothing moved although the page or one of them had room; a
-page at its end or one that does not scroll is not an error. A screenshot gives up after 3 seconds and says to bring the tab
-to the front with `tabs switch`, instead of waiting for the browser's 15 second limit.
+A tab the owner cannot see (not the active tab of its window, or in a window that is minimised or not in focus,
+`visibility.ts`) that has been in the background for a few seconds can ignore the mouse wheel and draw no frame. There a
+wheel scroll reads the scroll position of the page and of the elements under the pointer (`scroll.ts`, in T3-Tab's own
+world) before and after, and the step fails with a reason when nothing moved although the page or one of them had room. The
+reading stops at a scroller whose `overscroll-behavior` keeps the wheel, and treats a page with `overflow` hidden or clipped
+as having no room; a page at its end or one that does not scroll is not an error. In a tab the owner can see a scroll is never
+failed, because a page may take the wheel itself. A screenshot of a tab the owner cannot see gives up after 3 seconds
+(a `CommandTimeoutError` for `Page.captureScreenshot`) and says the tab is in the background; a tab the owner can see keeps the
+browser's 15 second limit. The messages do not tell the agent to `tabs switch`, which moves the owner's view.
 The settle probe runs in an isolated world (`privateWorld` in `cdp.ts`), so its observer and counter are not on the page.
 
 **Other extensions' frames.** Chromium drops `chrome.debugger` from a tab, and refuses to attach, while any frame in

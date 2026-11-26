@@ -40,6 +40,9 @@ const PAGES = {
   '/posted': page('Posted', '<p>sent</p>'),
   '/one': page('One', '<p>first</p>'),
   '/tall': page('Tall', '<div style="height:6000px">tall page</div>'),
+  '/trap': page('Trap', '<div style="height:6000px">wheel trap</div><script>addEventListener("wheel", (event) => event.preventDefault(), { passive: false })</script>'),
+  '/clip': '<!doctype html><html style="overflow:clip"><head><title>Clip</title></head><body><div style="height:6000px">clipped page</div></body></html>',
+  '/contained': '<!doctype html><html><head><title>Contained</title></head><body><div style="height:6000px">tall page</div><div id="box" style="position:fixed;inset:0;overflow:auto;overscroll-behavior:contain"><p>short content</p></div></body></html>',
   '/inner': '<!doctype html><html><head><title>Inner</title><style>html,body{margin:0;overflow:hidden}</style></head><body><div id="box" style="position:fixed;inset:0;overflow:auto"><div style="height:6000px">inner scroller</div></div></body></html>',
   '/two': page('Two', '<p>second</p>'),
 };
@@ -251,7 +254,7 @@ export async function checkAgentTools() {
       await sleep(3_000);
       const hidden = await call('act', { tab, steps: [{ action: 'scroll', dy: 3000 }] });
       const hiddenY = await scrollY(tab);
-      if (hidden.error) assert(/did not scroll/.test(hidden.text) && /tabs switch/.test(hidden.text), `a failed scroll does not say why: ${hidden.text}`);
+      if (hidden.error) assert(/did not scroll/.test(hidden.text) && /in the background/.test(hidden.text) && !/tabs switch/.test(hidden.text), `a failed scroll does not say why: ${hidden.text}`);
       else assert(hiddenY > 0, `the scroll was reported as done but the page is at ${hiddenY}: ${hidden.text}`);
 
       // In front it scrolls, and that is reported.
@@ -272,6 +275,25 @@ export async function checkAgentTools() {
       await browser.worker(`chrome.tabs.update(${front}, { active: true })`);
       await closeTab(inner);
 
+      // Where the wheel cannot move the page whatever the tab shows, nothing is reported: the root is clipped, or a
+      // scroller that keeps the wheel to itself sits under the pointer and has no room.
+      for (const path of ['/clip', '/contained']) {
+        const blocked = await openAllowed(path);
+        const refused = await call('act', { tab: blocked, steps: [{ action: 'scroll', dy: 500 }] });
+        assert(!refused.error, `a scroll on ${path} failed though the wheel cannot move it: ${refused.text}`);
+        await closeTab(blocked);
+      }
+
+      // A tab the owner can see is never failed for not moving: a page may take the wheel itself.
+      const trap = await openAllowed('/trap');
+      await call('tabs', { action: 'switch', tab: trap });
+      const trapStarted = Date.now();
+      const trapped = await call('act', { tab: trap, steps: [{ action: 'scroll', dy: 500 }] });
+      assert(!trapped.error, `a scroll in front of a page that takes the wheel failed: ${trapped.text}`);
+      assert(Date.now() - trapStarted < 1_500, `a scroll in front waited ${Date.now() - trapStarted} ms for a page that took the wheel`);
+      await browser.worker(`chrome.tabs.update(${front}, { active: true })`);
+      await closeTab(trap);
+
       // A page with nothing to scroll is not an error, and is not waited on.
       const flat = await openAllowed('/one');
       const started = Date.now();
@@ -287,7 +309,7 @@ export async function checkAgentTools() {
       const picture = await call('screenshot', { tab: idle });
       const took = Date.now() - shot;
       assert(took < 6_000, `the screenshot of an idle background tab took ${took} ms`);
-      if (picture.error) assert(/no picture of the page/.test(picture.text) && /tabs switch/.test(picture.text), `a failed screenshot does not say why: ${picture.text}`);
+      if (picture.error) assert(/no picture of the page/.test(picture.text) && /in the background/.test(picture.text) && !/tabs switch/.test(picture.text), `a failed screenshot does not say why: ${picture.text}`);
       else assert(picture.content.some((item) => item.type === 'image'), `a screenshot without an image: ${picture.text}`);
       await closeTab(idle);
     });

@@ -13,6 +13,8 @@ export interface FakeTab {
   text: string;
   frameId: string;
   context: { id: number; uniqueId: string };
+  /** Whether the tab is the active one of its window. Left out, the tab does not say. */
+  active?: boolean;
 }
 
 type EventListener = (source: { tabId?: number }, method: string, params?: unknown) => void;
@@ -27,6 +29,9 @@ export class FakeBrowser {
   beforeCommand: ((tabId: number, method: string) => Promise<void> | void) | undefined;
   /** Answers an expression before the page would run it: the place to say what a script in the real page would find. */
   evaluateHook: ((params: Record<string, unknown>) => unknown) | undefined;
+  /** What the one window says about itself. */
+  windowFocused = true;
+  windowState = 'normal';
   private readonly listeners: EventListener[] = [];
   private contextSeq = 0;
 
@@ -37,9 +42,11 @@ export class FakeBrowser {
     this.groupCalls.length = 0;
     this.beforeCommand = undefined;
     this.evaluateHook = undefined;
+    this.windowFocused = true;
+    this.windowState = 'normal';
   }
 
-  addTab(fields: { id: number; url: string; text?: string; title?: string; groupId?: number }): FakeTab {
+  addTab(fields: { id: number; url: string; text?: string; title?: string; groupId?: number; active?: boolean }): FakeTab {
     const tab: FakeTab = {
       id: fields.id,
       groupId: fields.groupId ?? -1,
@@ -48,6 +55,7 @@ export class FakeBrowser {
       text: fields.text ?? '',
       frameId: `frame-${fields.id}`,
       context: this.newContext(),
+      ...(fields.active === undefined ? {} : { active: fields.active }),
     };
     this.tabs.set(tab.id, tab);
     return tab;
@@ -93,6 +101,7 @@ export class FakeBrowser {
           return groupId;
         },
       },
+      windows: { get: async () => ({ id: 1, focused: this.windowFocused, state: this.windowState }) },
       tabGroups: { TAB_GROUP_ID_NONE: -1 },
       webNavigation: { onCommitted: { addListener: () => undefined } },
     };
@@ -165,7 +174,13 @@ export class FakeBrowser {
   }
 
   private snapshot(tab: FakeTab): chrome.tabs.Tab {
-    return { id: tab.id, groupId: tab.groupId, url: tab.url, title: tab.title } as chrome.tabs.Tab;
+    return {
+      id: tab.id,
+      groupId: tab.groupId,
+      url: tab.url,
+      title: tab.title,
+      ...(tab.active === undefined ? {} : { active: tab.active, windowId: 1 }),
+    } as chrome.tabs.Tab;
   }
 
   private mustTab(id: number): FakeTab {

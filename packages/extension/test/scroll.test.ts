@@ -15,7 +15,8 @@ beforeAll(() => {
 beforeEach(() => {
   browser.reset();
   tabId += 10;
-  browser.addTab({ id: tabId, url: 'http://a.test/long' });
+  // The tab the owner cannot see: another tab of its window is in front.
+  browser.addTab({ id: tabId, url: 'http://a.test/long', active: false });
 });
 
 const wheels = (): number => browser.commands.filter((command) => command.method === 'Input.dispatchMouseEvent').length;
@@ -42,7 +43,7 @@ describe('a wheel scroll', () => {
   it('fails when nothing moved though there was room, and says what to do', async () => {
     pageSays({ positions: [0, 0], room: true });
     const started = Date.now();
-    await expect(scrollWithWheel(tabId, 0, 3000, 120)).rejects.toThrow(/did not scroll.*tabs switch/s);
+    await expect(scrollWithWheel(tabId, 0, 3000, 120)).rejects.toThrow(/did not scroll.*in the background/s);
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(wheels()).toBe(1);
   });
@@ -58,5 +59,31 @@ describe('a wheel scroll', () => {
     pageSays('not a probe answer');
     await scrollWithWheel(tabId, 0, 300, 5_000);
     expect(wheels()).toBe(1);
+  });
+
+  it('fails nothing in a tab the owner can see, even where the page took the wheel itself', async () => {
+    browser.addTab({ id: tabId + 1, url: 'http://a.test/map', active: true });
+    pageSays({ positions: [0, 0], room: true });
+    await scrollWithWheel(tabId + 1, 0, 3000, 400);
+    expect(wheels()).toBe(1);
+    // Nothing is read, so nothing waits.
+    expect(probes()).toBe(0);
+  });
+
+  it('counts a tab of an unfocused or minimised window as one the owner cannot see', async () => {
+    browser.addTab({ id: tabId + 1, url: 'http://a.test/other', active: true });
+    pageSays({ positions: [0, 0], room: true });
+    browser.windowFocused = false;
+    await expect(scrollWithWheel(tabId + 1, 0, 3000, 80)).rejects.toThrow(/did not scroll/);
+    browser.windowFocused = true;
+    browser.windowState = 'minimized';
+    await expect(scrollWithWheel(tabId + 1, 0, 3000, 80)).rejects.toThrow(/did not scroll/);
+  });
+
+  it('does not tell the agent to switch tabs, which moves the owner view', async () => {
+    pageSays({ positions: [0, 0], room: true });
+    const error = await scrollWithWheel(tabId, 0, 3000, 60).catch((caught: Error) => caught);
+    expect(String(error)).toMatch(/in the background/);
+    expect(String(error)).not.toMatch(/tabs switch/);
   });
 });

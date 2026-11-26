@@ -48,6 +48,16 @@ export interface OpenDialog {
   input?: string;
 }
 
+/** A DevTools command that the browser did not answer in time. */
+export class CommandTimeoutError extends Error {
+  constructor(
+    readonly method: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 /** A command could not finish because the tab is waiting on a dialog. */
 export class DialogOpenError extends Error {}
 
@@ -525,7 +535,7 @@ async function send<T>(
   if (waiting !== undefined) throw new DialogOpenError(dialogNotice(tabId, waiting));
   if (!reachesPage) {
     const answered = chrome.debugger.sendCommand({ tabId }, method, params) as Promise<unknown>;
-    return (await withTimeout(answered, timeoutMs, `${method} timed out`)) as T;
+    return (await withTimeout(answered, timeoutMs, `${method} timed out`, method)) as T;
   }
   let stop = (): void => undefined;
   const paused = new Promise<never>((_resolve, reject) => {
@@ -536,7 +546,7 @@ async function send<T>(
   });
   const result = chrome.debugger.sendCommand({ tabId }, method, params) as Promise<unknown>;
   try {
-    return (await withTimeout(Promise.race([result, paused]), timeoutMs, `${method} timed out`)) as T;
+    return (await withTimeout(Promise.race([result, paused]), timeoutMs, `${method} timed out`, method)) as T;
   } finally {
     stop();
   }
@@ -638,10 +648,10 @@ function isForeignFrameError(error: unknown): boolean {
   return error instanceof Error && /chrome-extension:\/\/ URL of different extension/.test(error.message);
 }
 
-async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string, method?: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), milliseconds);
+    timer = setTimeout(() => reject(method === undefined ? new Error(message) : new CommandTimeoutError(method, message)), milliseconds);
   });
   try {
     return await Promise.race([promise, timeout]);
