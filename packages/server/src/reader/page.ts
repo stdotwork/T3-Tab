@@ -2,7 +2,7 @@ import type { PageReadResult } from '@t3-tab/protocol';
 
 import { elideEchoes, type SetValue } from './echo.js';
 import { findLines } from './find.js';
-import { MORE_INSIDE, RefGoneError, renderLines, type RenderedLine, truncate } from './format.js';
+import { type Keep, MORE_INSIDE, RefGoneError, renderLines, type RenderedLine, truncate } from './format.js';
 import { RefTable } from './refs.js';
 import { createSmartDiff } from './smart-diff.js';
 
@@ -14,8 +14,8 @@ const MAX_KEYS_PER_SESSION = 8;
 const MAX_TITLE = 80;
 const MAX_URL = 200;
 /**
- * Most characters of plain text in a default read or a change: the rest is left out with a note. Elements,
- * headings and the text of live regions and dialogs are always shown, up to the cap.
+ * Most characters of plain text in a default read or a change: the rest is left out with a note. The text of live
+ * regions and dialogs comes first. Elements and headings are always shown, up to the cap.
  */
 export const TEXT_BUDGET = 4_000;
 /** Room kept under the cap for the header and the notes, so text never pushes an element past the cut. */
@@ -38,7 +38,7 @@ export interface ReadOptions {
 export class TabState {
   private epoch = -1;
   private refs = new RefTable();
-  private readonly baselines = new Map<string, Map<string, string>>();
+  private readonly baselines = new Map<string, Map<string, Baseline>>();
   private readonly headers = new Map<string, string>();
 
   /** Drops refs and baselines when the document the tab shows is not the one they came from. */
@@ -72,11 +72,11 @@ export class TabState {
     return this.epoch;
   }
 
-  baseline(session: string, key: string): string | undefined {
+  baseline(session: string, key: string): Baseline | undefined {
     return this.baselines.get(session)?.get(key);
   }
 
-  setBaseline(session: string, key: string, text: string): void {
+  setBaseline(session: string, key: string, baseline: Baseline): void {
     let keys = this.baselines.get(session);
     if (keys === undefined) {
       if (this.baselines.size >= MAX_SESSIONS_PER_TAB) {
@@ -90,8 +90,14 @@ export class TabState {
       const oldest = keys.keys().next().value;
       if (oldest !== undefined) keys.delete(oldest);
     }
-    keys.set(key, text);
+    keys.set(key, baseline);
   }
+}
+
+/** The last read of one view: every line, and which of its text lines come first when a reply must leave text out. */
+export interface Baseline {
+  text: string;
+  kept: ReadonlyMap<string, Keep>;
 }
 
 /**
@@ -151,8 +157,10 @@ export async function formatRead(
   // The baseline holds every line, so a change to text the reply left out is still a change.
   const text = lines.join('\n') + depthNote;
   const key = `${all ? 'all' : 'page'}|${options.ref ?? ''}|${options.depth ?? ''}`;
-  const previous = state.baseline(session, key);
-  state.setBaseline(session, key, text);
+  const kept = keptLines(rendered);
+  const last = state.baseline(session, key);
+  const previous = last?.text;
+  state.setBaseline(session, key, { text, kept });
 
   if (lines.length === 0) {
     return `${header}\n${all ? '(empty page)' : '(empty page; all also lists images)'}`;
@@ -178,71 +186,106 @@ export async function formatRead(
     return `${header}\n${set === undefined ? 'No changes since the last read.' : `${set} Nothing else changed.`}`;
   }
   if (diff.type === 'diff') {
-    const changed = all ? { text: diff.content, note: undefined } : diffWithinBudget(diff.content, rendered, budget);
+    const room = MAX_OUTPUT_CHARS - NOTE_ROOM - header.length;
+    const changed = all ? { text: diff.content, note: undefined } : diffWithinBudget(diff.content, [kept, last?.kept ?? new Map()], budget, room);
     return limit(`${header}${set === undefined ? '' : `\n${set}`}\nChanged since the last read:\n${changed.text}`, changed.note);
   }
   return whole();
 }
 
+/** The text lines of a live region or a dialog in a view, and which end of them to keep. */
+function keptLines(rendered: RenderedLine[]): Map<string, Keep> {
+  const kept = new Map<string, Keep>();
+  for (const item of rendered) if (item.text && item.keep !== false) kept.set(item.line, item.keep);
+  return kept;
+}
+
 /**
- * The default view at its size: every element, heading and line of a live region or dialog, and as much of the
- * rest of the text as the budget and the cap leave room for, the page's main content first. What it leaves out
- * is said in one line at the end.
+ * Which of `candidates` (text lines, in page order, each with its size) fit in `room`: first the text of live regions
+ * and dialogs (a log from its newest line back, the others from their first), then the page's main content, then the
+ * rest, each in order until one does not fit.
+ */
+function chooseText(candidates: Array<{ index: number; size: number; keep: Keep; main: boolean }>, room: number): Set<number> {
+  const hasMain = candidates.some((item) => item.keep === false && item.main);
+  const groups = [
+    candidates.filter((item) => item.keep === 'start'),
+    candidates.filter((item) => item.keep === 'end').reverse(),
+    candidates.filter((item) => item.keep === false && (!hasMain || item.main)),
+    hasMain ? candidates.filter((item) => item.keep === false && !item.main) : [],
+  ];
+  const chosen = new Set<number>();
+  let left = room;
+  for (const group of groups) {
+    for (const item of group) {
+      if (item.size > left) {
+        left = 0;
+        break;
+      }
+      left -= item.size;
+      chosen.add(item.index);
+    }
+  }
+  return chosen;
+}
+
+/**
+ * The default view at its size: every element and heading, and as much text as the budget and the cap leave room
+ * for, chosen by `chooseText`. What it leaves out is said in one line at the end.
  */
 function withinBudget(rendered: RenderedLine[], budget: number, headerLength: number): { text: string; note: string | undefined } {
-  const fixed = rendered.reduce((sum, item) => sum + (item.text && !item.keep ? 0 : item.line.length + 1), 0);
-  let room = Math.min(budget, Math.max(0, MAX_OUTPUT_CHARS - NOTE_ROOM - headerLength - fixed));
-  const optional = rendered.flatMap((item, index) => (item.text && !item.keep ? [index] : []));
-  const hasMain = optional.some((index) => rendered[index]?.main === true);
-  const order = hasMain
-    ? [...optional.filter((index) => rendered[index]?.main === true), ...optional.filter((index) => rendered[index]?.main !== true)]
-    : optional;
-  const shown = new Set<number>();
-  for (const index of order) {
-    const size = (rendered[index]?.line.length ?? 0) + 1;
-    if (size > room) break;
-    room -= size;
-    shown.add(index);
-  }
+  const fixed = rendered.reduce((sum, item) => sum + (item.text ? 0 : item.line.length + 1), 0);
+  const room = Math.min(budget, Math.max(0, MAX_OUTPUT_CHARS - NOTE_ROOM - headerLength - fixed));
+  const candidates = rendered.flatMap((item, index) => (item.text ? [{ index, size: item.line.length + 1, keep: item.keep, main: item.main }] : []));
+  const shown = chooseText(candidates, room);
   const text = rendered
-    .filter((item, index) => !item.text || item.keep || shown.has(index))
+    .filter((item, index) => !item.text || shown.has(index))
     .map((item) => item.line)
     .join('\n');
-  const left = optional.filter((index) => !shown.has(index));
-  const chars = left.reduce((sum, index) => sum + textLength(rendered[index]?.line ?? ''), 0);
+  const left = candidates.filter((item) => !shown.has(item.index));
+  const chars = left.reduce((sum, item) => sum + textLength(rendered[item.index]?.line ?? ''), 0);
   return { text, note: left.length === 0 ? undefined : leftOutNote(left.length, chars) };
 }
 
-/** A diff's text lines within the budget, the rest left out with a note; changed elements always stay. */
-function diffWithinBudget(diff: string, rendered: RenderedLine[], budget: number): { text: string; note: string | undefined } {
-  if (!Number.isFinite(budget)) return { text: diff, note: undefined };
-  const always = new Set(rendered.filter((item) => !item.text || item.keep).map((item) => item.line));
-  let room = budget;
+/**
+ * A diff's text lines within the budget and the room the cap leaves after its other lines, the rest left out with a
+ * note; changed elements always stay. A line of a live region or dialog, on either side of the diff, comes first.
+ */
+function diffWithinBudget(
+  diff: string,
+  kept: [ReadonlyMap<string, Keep>, ReadonlyMap<string, Keep>],
+  budget: number,
+  room: number,
+): { text: string; note: string | undefined } {
+  const lines = diff.split('\n');
+  const isText = (line: string): boolean => line !== '@@' && line.slice(1).trimStart().startsWith('"');
+  const fixed = lines.reduce((sum, line) => sum + (isText(line) ? 0 : line.length + 1), 0);
+  const candidates = lines.flatMap((line, index) => {
+    if (!isText(line)) return [];
+    const body = line.slice(1);
+    const keep = kept[0].get(body) ?? kept[1].get(body) ?? false;
+    return [{ index, size: line.length + 1, keep, main: false }];
+  });
+  const shown = chooseText(candidates, Math.min(budget, Math.max(0, room - fixed)));
+  const hunks: string[][] = [];
   let left = 0;
   let chars = 0;
-  const hunks: string[][] = [];
-  for (const line of diff.split('\n')) {
+  for (const [index, line] of lines.entries()) {
     if (line === '@@') {
       hunks.push([line]);
       continue;
     }
-    const body = line.slice(1);
-    if (body.trimStart().startsWith('"') && !always.has(body)) {
-      if (line.length + 1 > room) {
-        room = 0;
-        if (!line.startsWith(' ')) {
-          left += 1;
-          chars += textLength(body);
-        }
-        continue;
+    if (isText(line) && !shown.has(index)) {
+      if (!line.startsWith(' ')) {
+        left += 1;
+        chars += textLength(line.slice(1));
       }
-      room -= line.length + 1;
+      continue;
     }
     hunks.at(-1)?.push(line);
   }
   // A hunk whose changes were all left out says nothing.
-  const kept = hunks.filter((hunk) => hunk.some((line) => line.startsWith('+') || line.startsWith('-')));
-  return { text: kept.flat().join('\n'), note: left === 0 ? undefined : leftOutNote(left, chars, 'changed ') };
+  const changed = hunks.filter((hunk) => hunk.some((line) => line.startsWith('+') || line.startsWith('-')));
+  return { text: changed.flat().join('\n'), note: left === 0 ? undefined : leftOutNote(left, chars, 'changed ') };
 }
 
 /** The characters of text a printed text line holds: without its indent and quotes. */
@@ -254,12 +297,14 @@ function leftOutNote(lines: number, chars: number, kind = ''): string {
   return `(${lines} ${kind}text lines left out, ${chars} characters: find searches them, read a ref for one part, all for the whole page)`;
 }
 
-/** Cuts a reply at a line boundary once it is over the cap, and says how to get at the rest. A note always stays. */
+const TRUNCATED = `\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use find, a ref subtree or depth to read the rest.`;
+
+/** Cuts a reply at a line boundary so that all of it, notes included, fits the cap, and says how to get at the rest. */
 function limit(text: string, note?: string | undefined): string {
   const tail = note === undefined ? '' : `\n${note}`;
   if (text.length + tail.length <= MAX_OUTPUT_CHARS) return `${text}${tail}`;
-  const room = MAX_OUTPUT_CHARS - tail.length;
+  const room = Math.max(0, MAX_OUTPUT_CHARS - tail.length - TRUNCATED.length);
   const cut = text.lastIndexOf('\n', room);
   const kept = text.slice(0, cut > 0 ? cut : room);
-  return `${kept}\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use find, a ref subtree or depth to read the rest.${tail}`;
+  return `${kept}${TRUNCATED}${tail}`;
 }

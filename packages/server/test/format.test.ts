@@ -149,8 +149,8 @@ describe('tree to text', () => {
       '  e2 button "Undo"',
       '"Step 1 of 4"',
     ]);
-    // The text of a live region is kept whatever a size budget leaves out.
-    expect(lines.filter((item) => item.text).every((item) => item.keep)).toBe(true);
+    // The text of a live region comes first when a size budget leaves text out.
+    expect(lines.filter((item) => item.text).every((item) => item.keep === 'start')).toBe(true);
   });
 
   it('prints a long live message whole, up to a line of text', () => {
@@ -159,7 +159,7 @@ describe('tree to text', () => {
     expect(renderTree(nodes, new RefTable(), { all: false })).toEqual([`status ${JSON.stringify(message)}`]);
   });
 
-  it('marks the text of a dialog to keep and the text of the main content as main', () => {
+  it('marks the text of a dialog to come first and the text of the main content as main', () => {
     const nodes = [
       ax(1, 'RootWebArea', '', [2, 4, 6]),
       ax(2, 'paragraph', '', [3]),
@@ -173,8 +173,8 @@ describe('tree to text', () => {
     expect(lines).toEqual([
       { line: '"Header blurb"', text: true, keep: false, main: false },
       { line: '"The article"', text: true, keep: false, main: true },
-      { line: 'e1 dialog "Cookies"', text: false, keep: true, main: false },
-      { line: '  "We use cookies."', text: true, keep: true, main: false },
+      { line: 'e1 dialog "Cookies"', text: false, keep: 'start', main: false },
+      { line: '  "We use cookies."', text: true, keep: 'start', main: false },
     ]);
   });
 
@@ -236,6 +236,90 @@ describe('tree to text', () => {
     expect(lines[3]).toMatch(/^"word word .*…"$/);
     expect(lines[4]).toBe('"end"');
     expect(lines.slice(5)).toEqual(['"#1 · Deploy finished"', '"#2 · User invited"']);
+  });
+
+  it('runs inline text together as the page wrote it, with no space added', () => {
+    // Shapes as Chromium builds them: inline text keeps its real spaces in the text itself.
+    const paragraph = (children: number[], ...nodes: AxNode[]): string[] =>
+      renderTree([ax(1, 'RootWebArea', '', [2]), ax(2, 'paragraph', '', children), ...nodes], new RefTable(), { all: false });
+    // $<span>1,284</span>.50
+    expect(paragraph([3, 4, 5], ax(3, 'StaticText', '$'), ax(4, 'StaticText', '1,284'), ax(5, 'StaticText', '.50'))).toEqual(['"$1,284.50"']);
+    // <em>Java</em>Script
+    expect(paragraph([3, 5], ax(3, 'emphasis', '', [4]), ax(4, 'StaticText', 'Java'), ax(5, 'StaticText', 'Script'))).toEqual(['"JavaScript"']);
+    // H<sub>2</sub>O
+    expect(paragraph([3, 4, 5], ax(3, 'StaticText', 'H'), ax(4, 'subscript', '', [6]), ax(5, 'StaticText', 'O'), ax(6, 'StaticText', '2'))).toEqual(['"H2O"']);
+    // a<span id="x">b</span>c: a span with an id is a generic node of its own, and still inline.
+    expect(paragraph([3, 4, 5], ax(3, 'StaticText', 'a'), ax(4, 'generic', '', [6]), ax(5, 'StaticText', 'c'), ax(6, 'StaticText', 'b'))).toEqual(['"abc"']);
+    // Account balance: <strong>$1,284.50</strong>
+    expect(paragraph([3, 4], ax(3, 'StaticText', 'Account balance: '), ax(4, 'strong', '', [5]), ax(5, 'StaticText', '$1,284.50'))).toEqual([
+      '"Account balance: $1,284.50"',
+    ]);
+    // line1<br>line2: a line break is a space.
+    expect(paragraph([3, 4, 5], ax(3, 'StaticText', 'line1'), ax(4, 'LineBreak', '\n'), ax(5, 'StaticText', 'line2'))).toEqual(['"line1 line2"']);
+  });
+
+  it('puts a space between boxes side by side, which Chromium gives no space between', () => {
+    const read = (nodes: AxNode[]): string[] => renderTree(nodes, new RefTable(), { all: false });
+    // Flex items (ignored spans), inline blocks (generic spans) and block divs: <div><span>Price</span><span>$5</span></div>.
+    for (const role of ['', 'generic']) {
+      const nodes = [
+        ax(1, 'RootWebArea', '', [2]),
+        ax(2, 'generic', '', [3, 4]),
+        ax(3, role, '', [5], role === '' ? { ignored: true } : {}),
+        ax(4, role, '', [6], role === '' ? { ignored: true } : {}),
+        ax(5, 'StaticText', 'Price'),
+        ax(6, 'StaticText', '$5'),
+      ];
+      expect(read(nodes)).toEqual(['"Price $5"']);
+    }
+    // Two text-level elements side by side still run together.
+    const pair = [ax(1, 'RootWebArea', '', [2]), ax(2, 'paragraph', '', [3, 4]), ax(3, 'strong', '', [5]), ax(4, 'emphasis', '', [6]), ax(5, 'StaticText', 'Bold'), ax(6, 'StaticText', 'Italic')];
+    expect(read(pair)).toEqual(['"BoldItalic"']);
+  });
+
+  it('does not repeat the value of an editable combobox as its text, and keeps a select\'s options', () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 4]),
+      ax(2, 'combobox', 'Search', [3], { value: 'shoes' }),
+      ax(3, 'StaticText', 'shoes'),
+      ax(4, 'combobox', 'Country', [5, 6], { value: 'Brazil' }),
+      ax(5, 'option', 'Australia'),
+      ax(6, 'option', 'Brazil', [], { props: { selected: true } }),
+    ];
+    expect(renderTree(nodes, new RefTable(), { all: false })).toEqual([
+      'e1 combobox "Search" value="shoes"',
+      'e2 combobox "Country" value="Brazil"',
+      '  e3 option "Australia"',
+      '  e4 option "Brazil" [selected]',
+    ]);
+  });
+
+  it('reads a big highlighted code block and deep nesting in time proportional to their size', () => {
+    // 48,000 text nodes in one <code>, as Chromium gives a 4,000-line highlighted block; it took over 5 s before.
+    const tokens = Array.from({ length: 48_000 }, (_, index) => ax(100 + index, 'StaticText', index % 2 === 1 ? ' ' : `token${index}`));
+    const code = [ax(1, 'RootWebArea', '', [2, 4]), ax(2, 'generic', '', [3]), ax(3, 'code', '', tokens.map((node) => Number(node.id))), ax(4, 'button', 'Copy'), ...tokens];
+    let start = performance.now();
+    const lines = renderTree(code, new RefTable(), { all: false });
+    expect(performance.now() - start).toBeLessThan(2_000);
+    expect(lines.at(-1)).toBe('e1 button "Copy"');
+    expect(lines[0]).toMatch(/^"token0 token2 .*…"$/);
+    // 50 texts, each 400 wrappers deep.
+    const nested: AxNode[] = [ax(1, 'RootWebArea', '', [])];
+    for (let branch = 0; branch < 50; branch += 1) {
+      let parent = nested[0]!;
+      for (let level = 0; level < 400; level += 1) {
+        const node = ax(1_000 + branch * 1_000 + level, 'generic', '', []);
+        parent.children.push(node.id);
+        nested.push(node);
+        parent = node;
+      }
+      const text = ax(900_000 + branch, 'StaticText', `Leaf ${branch}`);
+      parent.children.push(text.id);
+      nested.push(text);
+    }
+    start = performance.now();
+    expect(renderTree(nested, new RefTable(), { all: false })).toHaveLength(1);
+    expect(performance.now() - start).toBeLessThan(2_000);
   });
 
   it('leaves out separators between links and icon-font glyphs', () => {

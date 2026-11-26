@@ -104,10 +104,19 @@ const WRAPPERS = new Set([
   'listitem',
   'menulistpopup',
 ]);
-/** Dropped with everything below them. */
+/** Dropped with everything below them. A line break is not printed on its own, but is a space in a line of text. */
 const SKIP = new Set(['inlinetextbox', 'linebreak', 'listmarker']);
 /** Live regions: what they say is the page's answer to the last thing done (an error, a count, a saved note). */
 const LIVE_ROLES = new Set(['alert', 'status', 'log']);
+/** Live regions that say one thing at a time: one short message prints on one line. A log keeps its entries apart. */
+const MESSAGE_ROLES = new Set(['alert', 'status']);
+/**
+ * Text-level elements that never start a block, so their text runs on from the text beside them with no space added:
+ * `<em>Java</em>Script`, `H<sub>2</sub>O`. Chromium keeps the real spaces of inline text in the text itself.
+ */
+const INLINE_ROLES = new Set(['emphasis', 'strong', 'subscript', 'superscript', 'code', 'mark', 'abbr', 'time', 'insertion', 'deletion']);
+/** Roles whose own text is part of a line of text. */
+const TEXT_ROLES = new Set(['statictext', 'linebreak']);
 /** Roles that start a block of their own: their text is never run together with the text around them. */
 const BLOCKS = new Set([
   'paragraph',
@@ -149,12 +158,18 @@ const MAIN_ROLES = new Set(['main', 'article']);
 
 type Kind = 'interactive' | 'container' | 'heading' | 'text' | 'other' | 'skip' | 'hoist';
 
+/**
+ * Text a reply shows before any other text when not all of it fits: the text of a live region or a dialog. `start` keeps
+ * its first lines, `end` (a log, whose newest entries come last) its last ones.
+ */
+export type Keep = false | 'start' | 'end';
+
 interface Item {
   indent: number;
   line: string;
   isText: boolean;
   name: string;
-  keep: boolean;
+  keep: Keep;
   main: boolean;
 }
 
@@ -163,8 +178,8 @@ export interface RenderedLine {
   line: string;
   /** Plain text, not an element or a heading. */
   text: boolean;
-  /** Text of a live region or a dialog: shown whatever the budget. */
-  keep: boolean;
+  /** Text of a live region or a dialog, shown first. */
+  keep: Keep;
   /** Inside the page's `main` or an `article`. */
   main: boolean;
 }
@@ -173,12 +188,17 @@ export interface RenderedLine {
 interface Context {
   level: number;
   ancestorName: string;
+  /** The value of the nearest field above: text inside it repeating that value says nothing the field's line does not. */
+  value: string;
   axDepth: number;
-  keep: boolean;
+  keep: Keep;
   main: boolean;
 }
 
-/** The text of a node that holds nothing but text, and whether a block of its own is somewhere inside it. */
+/**
+ * The text of a node that holds nothing but text, with its whitespace runs already one space, and whether a block of
+ * its own is somewhere inside it.
+ */
 interface Inline {
   text: string;
   blocks: boolean;
@@ -210,14 +230,16 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
   const visitChildren = (node: AxNode, at: Context): void => {
     let run: string[] = [];
     const flush = (): void => {
-      if (run.length > 0) emitText(joinText(run), at);
+      // Sibling text runs on as the page wrote it: Chromium keeps its real spaces in the text.
+      if (run.length > 0) emitText(run.join(''), at);
       run = [];
     };
     for (const childId of node.children) {
       const child = byId.get(childId);
       if (child === undefined) continue;
-      if (child.ignored !== true && child.role.toLowerCase() === 'statictext') {
-        run.push(child.name);
+      const role = child.ignored === true ? '' : child.role.toLowerCase();
+      if (TEXT_ROLES.has(role)) {
+        run.push(role === 'linebreak' ? ' ' : child.name);
         continue;
       }
       flush();
@@ -229,7 +251,7 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
   const emitText = (raw: string, at: Context): void => {
     const text = normalize(raw);
     // Separators such as `|`, `(` or `·` between links say nothing on a line of their own.
-    if (!/[\p{L}\p{N}]/u.test(text) || (at.ancestorName !== '' && at.ancestorName.includes(text))) return;
+    if (!/[\p{L}\p{N}]/u.test(text) || (at.ancestorName !== '' && at.ancestorName.includes(text)) || text === at.value) return;
     if (options.depth !== undefined && at.level > options.depth) {
       hidden += 1;
       return;
@@ -241,7 +263,7 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
   const emitInline = (node: AxNode, at: Context): boolean => {
     if (node.role.toLowerCase() === 'row') return emitRow(node, at);
     const text = inline.of(node);
-    if (text === undefined || text.blocks || normalize(text.text).length > MAX_TEXT) return false;
+    if (text === undefined || text.blocks) return false;
     emitText(text.text, at);
     return true;
   };
@@ -256,7 +278,7 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
     }
     if (cells.length < 2) return false;
     const line = cells.join(' | ');
-    if (line.length > MAX_TEXT) return false;
+    if (normalize(line).length > MAX_TEXT) return false;
     if (cells.some((cell) => cell !== '')) emitText(line, at);
     return true;
   };
@@ -269,7 +291,8 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
       return;
     }
     const role = node.role.toLowerCase();
-    const at: Context = { ...outer, keep: outer.keep || isLive(node) || ALWAYS_CONTAINERS.has(role), main: outer.main || MAIN_ROLES.has(role) };
+    const keep: Keep = role === 'log' ? 'end' : outer.keep !== false ? outer.keep : isLive(node) || ALWAYS_CONTAINERS.has(role) ? 'start' : false;
+    const at: Context = { ...outer, keep, main: outer.main || MAIN_ROLES.has(role) };
     let kind = classify(node, options.all);
     if (force && (kind === 'hoist' || kind === 'text' || kind === 'skip')) kind = 'other';
     switch (kind) {
@@ -289,12 +312,13 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
         let name = normalize(node.name);
         // A live region that says one short thing prints it on one line, `alert "Wrong password."`, with no ref: there
         // is nothing in it to act on or read further. An empty one prints nothing.
-        const said = LIVE_ROLES.has(role) && name === '' ? inline.contents(node) : undefined;
-        const oneLine = said !== undefined && !said.blocks && normalize(said.text).length <= MAX_TEXT;
+        const said = MESSAGE_ROLES.has(role) && name === '' ? inline.contents(node) : undefined;
+        const oneLine = said !== undefined && !said.blocks;
         if (oneLine) {
           name = normalize(said.text);
           if (name === '') return;
         }
+        if (role === 'log' && name === '' && inline.contents(node)?.text.trim() === '') return;
         const item: Item = {
           indent: at.level,
           line: oneLine ? `${role} ${JSON.stringify(limit(name, MAX_TEXT))}` : elementLine(node, kind, name, refs, limit, showAddress(node)),
@@ -306,13 +330,14 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
         items.push(item);
         if (oneLine || VALUE_ONLY_CHILDREN.has(role)) return;
         const hiddenBefore = hidden;
-        visitChildren(node, { ...at, level: at.level + 1, ancestorName: name !== '' ? name : at.ancestorName });
+        const value = VALUE_ROLES.has(role) && node.value !== undefined ? normalize(node.value) : at.value;
+        visitChildren(node, { ...at, level: at.level + 1, ancestorName: name !== '' ? name : at.ancestorName, value });
         if (at.level === options.depth && hidden > hiddenBefore) item.line += MORE_INSIDE;
       }
     }
   };
 
-  visit(root, { level: 0, ancestorName: '', axDepth: 0, keep: false, main: false }, options.target !== undefined);
+  visit(root, { level: 0, ancestorName: '', value: '', axDepth: 0, keep: false, main: false }, options.target !== undefined);
   return dropLabelEchoes(items).map((item) => ({
     line: `${'  '.repeat(item.indent)}${item.line}`,
     text: item.isText,
@@ -341,8 +366,14 @@ function visibleChildren(node: AxNode, byId: Map<string, AxNode>, depth = 0): Ax
 
 /**
  * The text of a node with nothing inside it but text and the wrappers around text, or `undefined` when something
- * inside it prints a line of its own (an element, a heading, a named container). `contents` is the same for what a
- * node holds, whatever the node itself is. Both are remembered per node.
+ * inside it prints a line of its own (an element, a heading, a named container) or its text is longer than a line.
+ * `contents` is the same for what a node holds, whatever the node itself is. Each node's text is built once and never
+ * grows past a line, so a page of many small text nodes (highlighted code) costs time in proportion to its size.
+ *
+ * Pieces run together with no space added where they flow as one line of text: Chromium keeps the real spaces of
+ * inline text in the text itself (`$<span>1,284</span>.50` is "$", "1,284", ".50"). They flow when the node holds text
+ * of its own beside them, or when both are text-level elements (`<em>`, `<sub>`). Boxes side by side with nothing
+ * between them (flex items, block `<div>`s, inline blocks: "Price" and "$5") are apart by a space, as on screen.
  */
 function inlineText(
   byId: Map<string, AxNode>,
@@ -351,17 +382,26 @@ function inlineText(
   const memo = new Map<string, Inline | null>();
   const busy = new Set<string>();
   const contents = (node: AxNode, depth: number): Inline | undefined => {
-    const parts: string[] = [];
-    let blocks = false;
+    const children: AxNode[] = [];
     for (const id of node.children) {
       const child = byId.get(id);
-      if (child === undefined) continue;
+      if (child !== undefined) children.push(child);
+    }
+    const flows = children.some((child) => child.ignored !== true && TEXT_ROLES.has(child.role.toLowerCase()));
+    const line = new LineText();
+    let blocks = false;
+    let previousFlows = false;
+    for (const child of children) {
+      const role = child.ignored === true ? '' : child.role.toLowerCase();
       const inner = of(child, depth + 1);
       if (inner === undefined) return undefined;
-      parts.push(inner.text);
-      blocks ||= inner.blocks || (child.ignored !== true && BLOCKS.has(child.role.toLowerCase()));
+      const block = BLOCKS.has(role);
+      const flowing = !block && (flows || TEXT_ROLES.has(role) || INLINE_ROLES.has(role));
+      if (!line.add(inner.text, !(flowing && previousFlows))) return undefined;
+      previousFlows = flowing;
+      blocks ||= inner.blocks || block;
     }
-    return { text: joinText(parts), blocks };
+    return { text: line.text(), blocks };
   };
   const of = (node: AxNode, depth: number): Inline | undefined => {
     const known = memo.get(node.id);
@@ -371,9 +411,12 @@ function inlineText(
     const role = node.role.toLowerCase();
     let result: Inline | undefined;
     if (node.ignored === true) result = contents(node, depth);
+    else if (role === 'linebreak') result = { text: ' ', blocks: false };
     else if (SKIP.has(role)) result = { text: '', blocks: false };
-    else if (role === 'statictext') result = { text: node.name, blocks: false };
-    else if (classify(node, all) === 'hoist') result = contents(node, depth);
+    else if (role === 'statictext') {
+      const text = collapse(node.name);
+      result = text.trim().length > MAX_TEXT ? undefined : { text, blocks: false };
+    } else if (classify(node, all) === 'hoist') result = contents(node, depth);
     busy.delete(node.id);
     memo.set(node.id, result ?? null);
     return result;
@@ -381,15 +424,33 @@ function inlineText(
   return { of: (node) => of(node, 0), contents: (node) => contents(node, 0) };
 }
 
-/** Runs pieces of text together, with a space between two pieces only where neither already has one. */
-function joinText(parts: string[]): string {
-  let out = '';
-  for (const part of parts) {
-    if (part === '') continue;
-    const gap = out !== '' && !/\s$/.test(out) && !/^[\s.,;:!?)\]}]/.test(part) && !/[([{]$/.test(out);
-    out += gap ? ` ${part}` : part;
+/** A line of text built from pieces whose whitespace runs are one space; it refuses to grow past `MAX_TEXT`. */
+class LineText {
+  private readonly parts: string[] = [];
+  private length = 0;
+  private endsInSpace = true;
+
+  /** Adds a piece, after a space when `apart` and there is none at the joint. False once the line is too long. */
+  add(piece: string, apart: boolean): boolean {
+    let text = piece;
+    if (this.endsInSpace && text.startsWith(' ')) text = text.slice(1);
+    else if (apart && !this.endsInSpace && text !== '' && !text.startsWith(' ')) text = ` ${text}`;
+    if (text === '') return true;
+    this.parts.push(text);
+    this.length += text.length;
+    this.endsInSpace = text.endsWith(' ');
+    // A space may sit at each end; it is trimmed when the line is printed.
+    return this.length <= MAX_TEXT + 2;
   }
-  return out;
+
+  text(): string {
+    return this.parts.join('');
+  }
+}
+
+/** Whitespace runs as one space, with the ends kept: whether a piece starts or ends in a space decides how it joins. */
+function collapse(value: string): string {
+  return value.replace(/\p{Co}/gu, '').replace(/\s+/g, ' ');
 }
 
 function classify(node: AxNode, all: boolean): Kind {

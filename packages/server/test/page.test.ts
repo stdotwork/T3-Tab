@@ -115,7 +115,7 @@ describe('reading a page', () => {
 
   it('cuts a long reply at a line and says how to read the rest', async () => {
     const reply = await formatRead(new TabState(), 's1', page(buttonPage(2_000)), {});
-    expect(reply.length).toBeLessThan(MAX_OUTPUT_CHARS + 200);
+    expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
     expect(reply).toMatch(/… truncated at 12000 characters\. Use find, a ref subtree or depth to read the rest\.$/);
     expect(reply).not.toContain('"Button 2000"');
   });
@@ -213,6 +213,57 @@ describe('text in the default view', () => {
     const reply = await formatRead(new TabState(), 's1', page(nodes), {});
     expect(reply).toContain('… truncated at 12000 characters.');
     expect(reply).toMatch(/\(1 text lines left out, 9 characters: .*\)$/);
+  });
+
+  it('holds a long log to the budget, newest entries first, and keeps the controls after it', async () => {
+    const ids = Array.from({ length: 400 }, (_, index) => 1_000 + index * 2);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 3, 4]),
+      ax(2, 'log', 'Chat', ids),
+      ax(3, 'textbox', 'Message'),
+      ax(4, 'button', 'Send'),
+      ...ids.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', `Message ${index + 1}: hello there, this is a chat line.`)]),
+    ];
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toContain('e1 log "Chat"');
+    expect(reply).toContain('Message 400: hello');
+    expect(reply).not.toContain('"Message 1: hello');
+    expect(reply).toContain('e3 button "Send"');
+    expect(reply).toMatch(/\(\d+ text lines left out, \d+ characters: .*\)$/);
+    expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
+    const text = reply.split('\n').filter((line) => line.trimStart().startsWith('"')).join('\n');
+    expect(text.length).toBeLessThanOrEqual(TEXT_BUDGET);
+  });
+
+  it('keeps a dialog\'s buttons and the start of its text when the text is long', async () => {
+    const ids = Array.from({ length: 300 }, (_, index) => 1_000 + index * 2);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2]),
+      ax(2, 'dialog', 'Terms', [...ids, 3]),
+      ax(3, 'button', 'Accept'),
+      ...ids.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', `Clause ${index + 1}. The service is provided as is, without warranty of any kind.`)]),
+    ];
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toContain('"Clause 1. The service');
+    expect(reply).not.toContain('Clause 300.');
+    expect(reply).toContain('e2 button "Accept"');
+    expect(reply).toMatch(/text lines left out/);
+  });
+
+  it('keeps a change within the cap, its changed elements before its text', async () => {
+    const state = new TabState();
+    await formatRead(state, 's1', page(buttonPage(450)), {});
+    // One button in five renamed (about 10,000 characters of diff), and 80 paragraphs of new text.
+    const nodes = buttonPage(450).map((node) => (node.role === 'button' && Number(node.id) % 5 === 0 ? { ...node, name: `${node.name} renamed` } : node));
+    const ids = Array.from({ length: 80 }, (_, index) => 9_000 + index * 2);
+    nodes[0] = { ...nodes[0]!, children: [...nodes[0]!.children, ...ids.map(String)] };
+    nodes.push(...ids.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', `New paragraph ${index + 1}, which says something long enough to count.`)]));
+    const reply = await formatRead(state, 's1', page(nodes), {});
+    expect(reply).toContain('Changed since the last read:');
+    expect(reply).toContain('+e446 button "Button 446 renamed"');
+    expect(reply).not.toContain('truncated at');
+    expect(reply).toMatch(/\(\d+ changed text lines left out, \d+ characters: .*\)$/);
+    expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
   });
 
   it('gives a ref read all the text that fits under the cap', async () => {

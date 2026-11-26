@@ -263,17 +263,24 @@ A child frame of another origin, or one the browser cannot name (a sandboxed fra
 not filtered for iframes.
 
 The default view shows the page's text as well as its elements and headings (`format.ts`): paragraphs, list items, and
-a table row of text cells as one line with its cells apart by `|`. The text of a block is run together across inline
-wrappers while it fits on one 1,000-character line, and separators with no letter or digit (`|`, `(`) and icon-font glyphs
-are left out. A live region (`alert`, `status`, `log` or `aria-live`) and a dialog always show their text; a live region
-that says one short thing is one line, `e5 alert "Incorrect username or password."`, and an empty one prints nothing.
-Other text is held to `TEXT_BUDGET` (4,000 characters, `page.ts`), the page's `main` or `article` first, and gets only
-the room the 12,000-character cap leaves after every element, heading and kept line, so text never pushes an element
-past the cut. What is left out is said in one last line, `(N text lines left out, M characters: find searches them,
-read a ref for one part, all for the whole page)`, which stays even when the reply is cut. A `ref` read and `all` have no
-text budget, only the cap. The diff baseline holds every line, text left out included, and the text lines of a diff
-are held to the same budget with the same kind of note. With `all`, images are also listed with a ref, named or not, so
-they can be hovered or clicked.
+a table row of text cells as one line with its cells apart by `|`. The text of a block is run together while it fits on
+one 1,000-character line: with no space added where it flows as one line (the parent holds text of its own, or both
+pieces are text-level elements such as `<em>` or `<sub>`), because Chromium keeps the real spaces of inline text in the
+text (`$<span>1,284</span>.50` is `"$1,284.50"`); with a space between boxes side by side, such as flex items or block
+`<div>`s, which Chromium gives no space between (`"Price $5"`); a line break is a space. Each node's text is built once
+and never past a line, so a page of many small text nodes (highlighted code) reads in time proportional to its size.
+Separators with no letter or digit (`|`, `(`) and icon-font glyphs are left out, and so is text inside a field that only
+repeats the field's value (an editable combobox's text). A live region (`alert`, `status`, `log` or `aria-live`) and a
+dialog always print; an `alert` or `status` that says one short thing is one line with no ref, `alert "Incorrect
+username or password."`, and an empty one prints nothing. Text is held to `TEXT_BUDGET` (4,000 characters, `page.ts`)
+and gets only the room the 12,000-character cap leaves after every element and heading, so text never pushes an element
+past the cut. Within it, the text of live regions and dialogs comes first (a `log` from its newest entry back, others from
+their start), then the page's `main` or `article`, then the rest. What is left out is said in one last line, `(N text
+lines left out, M characters: find searches them, read a ref for one part, all for the whole page)`, which stays even
+when the reply is cut; the whole reply, notes included, stays within the cap. A `ref` read and `all` have no text budget,
+only the cap. The diff baseline holds every line, text left out included; a diff's text lines are held to the same
+budget and to the room its other lines leave, live-region and dialog lines (judged on both sides of the diff) first, with
+the same kind of note. With `all`, images are also listed with a ref, named or not, so they can be hovered or clicked.
 An `act` reply leaves out what the batch itself set: a changed line whose only change is the value a `fill`, a `type` with a
 ref or a `select` gave it (`packages/server/src/reader/echo.ts`) is settled against the earlier read, so it is not a change, and
 the reply names those refs on one line (`Set e7, e8, e10.`). A line the page changed in any other way, or to another value
