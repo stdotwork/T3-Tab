@@ -144,11 +144,13 @@ export interface UninstallOptions {
   run?: RegistryRunner;
   /** Removes the entry from one agent's config and says what happened, in one line. */
   removeAgent(agent: Agent): Promise<string>;
+  /** Called after each stage of a full uninstall; tests use it to widen the gaps between stages. */
+  pause?(stage: 'browser link' | 'daemon'): Promise<void>;
 }
 
 /**
- * Removes everything setup (or the developer `install`) added: agent entries, browser registrations, the program, and its
- * state. With agents named it removes only their entries: the helper, state, browser links and daemon stay, because the
+ * Removes everything setup (or the developer `install`) added, in this order: the browser link (registrations and the
+ * host launcher), the daemon, agent entries, the program, the daemon again, and its state. With agents named it removes only their entries: the helper, state, browser links and daemon stay, because the
  * other agent's entry, and the browser, still use them.
  */
 export async function uninstallHelper(options: UninstallOptions): Promise<void> {
@@ -162,12 +164,8 @@ export async function uninstallHelper(options: UninstallOptions): Promise<void> 
     return;
   }
 
-  if (await stopDaemon(options.stateDir)) say('Stopped the background program.');
-
-  for (const agent of options.agents ?? (await findAgents(host.home, host.env))) {
-    say(await options.removeAgent(agent));
-  }
-
+  // The browser link goes first. While it stands, the browser can reconnect through the native host and start a new
+  // daemon right after the old one is stopped, which would leave one running.
   // What setup wrote down, plus every usual place, so an older or hand-made install is found too.
   const recorded = (await readMarker(layout.marker))?.registrations ?? [];
   const usual = planRegistrations(BROWSERS, host, await runningProfiles(host, options.processDeps));
@@ -182,12 +180,29 @@ export async function uninstallHelper(options: UninstallOptions): Promise<void> 
   if (removed.length === 0) say('Browser link: nothing registered.');
   for (const entry of removed) say(`Removed the browser link: ${entry.kind === 'registry' ? entry.key : entry.manifestPath}`);
 
+  // What a browser would run to start the helper goes with the registrations.
   let removedFiles = 0;
-  for (const file of [layout.cli, layout.launcher, layout.hostLauncher, layout.marker, layout.windowsManifest, p.join(layout.root, 'cli.js.map')]) {
-    if (await unlink(file).then(() => true, () => false)) removedFiles += 1;
+  const removeFiles = async (files: string[]): Promise<void> => {
+    for (const file of files) {
+      if (await unlink(file).then(() => true, () => false)) removedFiles += 1;
+    }
+  };
+  await removeFiles([layout.hostLauncher, layout.windowsManifest]);
+  await options.pause?.('browser link');
+
+  if (await stopDaemon(options.stateDir)) say('Stopped the background program.');
+  await options.pause?.('daemon');
+
+  for (const agent of options.agents ?? (await findAgents(host.home, host.env))) {
+    say(await options.removeAgent(agent));
   }
+
+  await removeFiles([layout.cli, layout.launcher, layout.marker, p.join(layout.root, 'cli.js.map')]);
   await rmdir(layout.root).catch(() => undefined);
   say(removedFiles === 0 ? `Helper: nothing installed in ${layout.root}.` : `Removed the helper from ${layout.root}`);
+
+  // A native host the browser had already started can still have started a daemon between the stop and now.
+  for (let attempt = 0; attempt < 5 && (await stopDaemon(options.stateDir)); attempt += 1) say('Stopped the background program.');
 
   if (await rm(options.stateDir, { recursive: true, force: true }).then(() => true, () => false)) say(`Removed ${options.stateDir}`);
 }

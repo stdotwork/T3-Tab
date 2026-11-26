@@ -24,10 +24,24 @@ export type Row =
 export interface ApprovalOption {
   decision: string;
   label: string;
+  /** T3's caution for an answer, shown on it as T3 shows it. */
+  warning?: string;
 }
+
+/** What T3's own client offers when an approval names no options (`DEFAULT_APPROVAL_OPTIONS` in T3's web app). */
+export const T3_DEFAULT_APPROVAL_OPTIONS: readonly ApprovalOption[] = [
+  { decision: 'cancel', label: 'Cancel' },
+  { decision: 'decline', label: 'Decline' },
+  { decision: 'acceptForSession', label: 'Always allow this session' },
+  { decision: 'accept', label: 'Approve' },
+];
 
 export interface PendingApproval {
   requestId: string;
+  /** T3's word on whether the provider can still take an answer; T3 offers no answer unless it is `live`. */
+  responseCapability: 'live' | 'not_resumable';
+  /** The work-log entry that stands for this request while it waits, where the card is drawn in T3's place for it. */
+  entryId?: string;
   kind: string;
   title: string;
   detail?: string;
@@ -249,7 +263,7 @@ interface T3Item {
 export interface T3Projection {
   thread: { id: string; title: string; runtimeMode?: string; projectId?: string; providerInstanceId?: string; modelSelection?: { instanceId?: string; model?: string; options?: Array<{ id: string; value: string | boolean }> } };
   runs: Array<{ id: string; status: string; ordinal?: number; startedAt?: string | null; workStartedAt?: string; requestedAt?: string; completedAt?: string | null; userMessageId?: string; queuePosition?: number; queueHeld?: boolean }>;
-  runtimeRequests: Array<{ id: string; status: string; kind: string }>;
+  runtimeRequests: Array<{ id: string; status: string; kind: string; responseCapability?: { type?: string } }>;
   /** The conversation's messages, where a queued follow-up's text is before it has a place in the timeline. */
   messages?: Array<{ id: string; text?: string; context?: { guest?: { text?: string } } | null }>;
   visibleTurnItems: Array<{ item: T3Item }>;
@@ -416,13 +430,12 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
     } else if (item?.type === 'approval_request' && view.approval === undefined) {
       view.approval = {
         requestId: request.id,
+        responseCapability: request.responseCapability?.type === 'live' ? 'live' : 'not_resumable',
+        entryId: item.id,
         kind: item.requestKind ?? request.kind,
         title: approvalLabel(item.prompt ?? item.title ?? 'The agent asks for approval'),
         ...(item.reason == null ? {} : { detail: item.reason }),
-        options: item.options ?? [
-          { decision: 'decline', label: 'Decline' },
-          { decision: 'accept', label: 'Approve' },
-        ],
+        options: item.options ?? [...T3_DEFAULT_APPROVAL_OPTIONS],
       };
     }
   }

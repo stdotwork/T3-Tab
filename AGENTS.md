@@ -60,8 +60,10 @@ read and action prompts, cross-origin navigation and `window.open`, restricted p
 and a regex timeout. It also checks the review fixes: a read-only site grant that act, run_js and open
 still prompt past, a `run_js` escape expression, a screenshot and a key press that land on a page that
 changed, popups opened by the owner and by a session tab, member tabs shown only by origin until approved,
-a cross-origin iframe left out of `read`, and prompt buttons locked when rows shift. Existing tool checks
-run with the site still set to ask and the harness answering prompts with Allow once. The action run fills and submits the
+a cross-origin iframe left out of `read`, and prompt buttons locked when rows shift. Three act prompts are answered
+from the panel's own card: Enter allows once and Escape declines (each after the same key typed in the composer
+answered nothing), and the More menu's "Always allow everything on this site" sets the site to `allow`. Other tool
+checks run with the site still set to ask and the harness answering prompts with Allow once. The action run fills and submits the
 test form, checks a stale ref after navigation, evaluates page JavaScript and waits past the extension
 worker's idle timeout before another `status` call. It checks the install command through direct config
 edits, `--print`, a second install, uninstall and, when both agent CLIs are available, their CLI path and
@@ -82,16 +84,27 @@ reaches the fake Claude Code as an image block, while a file dropped on Settings
 color scheme row, T3 Code's built-in theme with T3's shared theme ignored, and a theme menu with swatches, Create
 theme and Add theme, and each theme's actions beside it; and with T3's config handed to the panel, the access level is chosen in
 the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e/ink.mjs`) walks the new-thread
-screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, Settings
-and a theme sheet at 320, 360 and 400 px in light and dark, and measures visible ink (SVG strokes and fills, text glyphs
+screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, a T3
+thread waiting on an approval (at its work-log row and above the composer), three browser prompts on the new-thread
+screen (one a `goto` on another tab), Settings and a theme sheet at 320, 360 and 400 px in light and dark (and the sheet opened from each scheme, which must open on that scheme's tab with every panel role unchanged and its fields painted with the panel's surface and border), and measures visible ink (SVG strokes and fills, text glyphs
 on their baseline, painted boxes), never padding boxes. It fails when a bar's or the composer row's first and last
 controls sit at ink distances from its edges more than 1 px apart, when the composer's send circle is not as far from
 the frame's foot as from its side, when the composer's controls are not one size or their ink (and the model chip's
 logo and words) is off one centre line, when its text does not start on the paperclip's ink, when the hero's project
-line is off the heading's ink centre, or when one bar's icons, or the composer row's glyphs, are drawn at different
-sizes or stroke weights. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
+line is off the heading's ink centre, when one bar's icons, or the composer row's glyphs, are drawn at different
+sizes or stroke weights, when an approval card's ink is over 160 px tall or its three answers are not on one row of
+one-line 28 px buttons inside it, or when browser prompts on the new-thread screen move its heading or composer or
+cover the composer. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
 each width and scheme the bars of all those screens must agree within 1 px (0.25 px for strokes): height, first and last
-ink insets, icon size and stroke, the thread toggle's ink, and the breadcrumb's start and baseline. It renders the panel from that state and, when
+ink insets, icon size and stroke, the thread toggle's ink, and the breadcrumb's start and baseline.
+`e2e/checks-approval-keys.mjs` then, on the headless panel with the panel's answers recorded,
+checks that a T3 approval under a browser prompt is locked when the prompt goes (a second click and an Enter at once
+answer nothing) and takes no keys at all, only a click; that an Enter held through the change of card answers nothing
+until released; that Enter answers nothing while a popover is open; that showing the panel again locks its cards; that a
+card scrolled out of the prompt list takes no key; that a T3 approval without `accept` or `decline` draws only More;
+that one T3 cannot take an answer for (not `live`) has its answers disabled and says why; that Escape on another control
+does nothing; that T3's warning shows on its answer; and that a `goto` card names its address, its tab and that it is
+another tab. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
 variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once that the earlier one ended, and that `status` reports each state of its link.
@@ -157,8 +170,9 @@ the prototype build shows until the package is published, behind one constant, `
 - `--agents` also adds T3-Tab to Claude Code and Codex when found; the panel's Add buttons do the same one agent at
   a time (`Setup.addAgent`). The entry is the launcher with `mcp` (`mcpCommand`), or Node and the installed file on
   Windows, never a checkout path or the npx cache. `--print` describes without writing.
-- `uninstall` (also from the installed `t3-tab`) stops the daemon, removes agent entries, every registration in
-  `install.json` and the usual places, the helper folder and the state folder; a manifest that is not T3-Tab's is
+- `uninstall` (also from the installed `t3-tab`) first removes every registration in `install.json` and the usual places and
+  the native host launcher, so the browser can no longer start the helper, then stops the daemon, removes agent entries, the
+  helper folder, stops a daemon that started in between, and removes the state folder; a manifest that is not T3-Tab's is
   left alone. With `--claude` or `--codex` it removes only those agents' entries and keeps the rest, which the other
   agent and the browser still use.
 - With no browser link written, `setup` says how to name one (`--browser`, `--user-data-dir`) and exits 1. `--help`,
@@ -245,7 +259,9 @@ last saw that same title and address for the tab, it starts with `tab <id>` alon
 
 Text is cut for display, never for search. The extension keeps each name up to 8,000 characters (2 MB a page, then 300
 each) and drops the line-wrap boxes the reader never prints; the reader prints a line of text up to 1,000 and a name up to 160, and `find` searches all of it
-and prints a window around the match. Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
+and prints a window around the match. A run of text longer than a line is split into lines of up to 1,000 between its pieces
+(text nodes, links, text-level elements); only one piece longer than a line is cut. `find` prints a matching line up to
+320 characters whole (a longer one around its match) and a context line up to 120 (a longer one keeps its start). Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
 site) when another link of the same name goes elsewhere, when it has no name, when it is the element a `ref` read asks
 for, and in `find`. With `depth`, an element with more inside ends in `…`.
 
@@ -292,7 +308,15 @@ A child frame of another origin, or one the browser cannot name (a sandboxed fra
 not filtered for iframes.
 
 The default view shows the page's text as well as its elements and headings (`format.ts`): paragraphs, list items, and
-a table row of text cells as one line with its cells apart by `|`. The text of a block is run together while it fits on
+a table row of text cells as one line with its cells apart by `|`. A link inside running text (its parent holds text of
+its own) is written into that line as `[name](e12)`, with the ref its own line would carry (and its address, `[name](e12 →
+/path)`, only where its name is ambiguous, in `find` too), when the line is prose: it does not start with a link, and the letters and digits outside its links are at least as many
+as those in its links. Otherwise (a story line on a news site, a menu with `|` between its links, a product's link and
+the line about it) the links print on lines of their own as before, between the text around them. Text lines and headings
+escape `[`, `]` and `\` with a backslash (a link's name inside its mark too), so a page that writes `[Cancel](e3)` or names
+a link `Continue](e3)` cannot pass for a mark; a printed text line is a JSON string, so the escape shows doubled
+(`\\[Cancel\\](e3)`), and `LINK_MARK` in `format.ts` finds the real marks. In `find`, a matching line also carries
+the address of every link written into it, so a search for an address finds a link in text; the lines beside it do not. The text of a block is run together while it fits on
 one 1,000-character line: with no space added where it flows as one line (the parent holds text of its own, or both
 pieces are text-level elements such as `<em>` or `<sub>`), because Chromium keeps the real spaces of inline text in the
 text (`$<span>1,284</span>.50` is `"$1,284.50"`); with a space between boxes side by side, such as flex items or block
@@ -305,11 +329,26 @@ username or password."`, and an empty one prints nothing. Text is held to `TEXT_
 and gets only the room the 12,000-character cap leaves after every element and heading, so text never pushes an element
 past the cut. Within it, the text of live regions and dialogs comes first (a `log` from its newest entry back, others from
 their start), then the page's `main` or `article`, then the rest. What is left out is said in one last line, `(N text
-lines left out, M characters: find searches them, read a ref for one part, all for the whole page)`, which stays even
-when the reply is cut; the whole reply, notes included, stays within the cap. A `ref` read and `all` have no text budget,
+lines left out, M characters, K links in them: find searches them, read a ref for one part, all for the whole page)`
+(the links part only when there are some), which stays even when the reply is cut; the whole reply, notes included, stays within the cap. A `ref` read and `all` have no text budget,
 only the cap. The diff baseline holds every line, text left out included; a diff's text lines are held to the same
 budget and to the room its other lines leave, live-region and dialog lines (judged on both sides of the diff) first, with
 the same kind of note. With `all`, images are also listed with a ref, named or not, so they can be hovered or clicked.
+
+Long lists of links or buttons give way to the page's text (`renderView` and `collapseGroups` in `format.ts`). A group is
+the outermost node below the page whose lines hold at least 8 links, buttons, menu items, tabs, options, tree items or
+disclosure triangles, no heading, field, live region or dialog, and no more characters of text than of elements: a
+sidebar, a menu bar, a footer, a table of files, a browser-compatibility table. When the default view's elements and
+`TEXT_BUDGET` characters of its text (or all of it, if less) would not fit under the cap with the notes' room, groups fold
+to one line each until they do: first those around the content (in a `navigation`, `banner`, `contentinfo` or
+`complementary` landmark, or outside `main` and `article` on a page that has one), then the rest, largest first. A group
+in the content folds only when at least 1,000 characters of text lie outside it, so a page that is mostly its links (a
+news site's stories, search results) keeps them, and a cut at the cap still shows the first. The folded line is the
+group's own line, or a ref for its node, then the count and the first names: `e14 navigation "Docs sidebar" (66 links, 5
+buttons; read e14): "Getting Started", "Installation", …`, and the last name too when it moves on (`Next`, `More`, `Older`,
+`»`). The text a folded list held counts in the note on what was left out. Reading that ref lists them with the refs they already had, and
+`find` searches them. Only the default view of a whole page folds; a `ref` read, `depth`, `all`, `find` and diffs do not,
+and the diff baseline holds every line.
 An `act` reply leaves out what the batch itself set: a changed line whose only change is the value a `fill`, a `type` with a
 ref or a `select` gave it (`packages/server/src/reader/echo.ts`) is settled against the earlier read, so it is not a change, and
 the reply names those refs on one line (`Set e7, e8, e10.`). A line the page changed in any other way, or to another value
@@ -392,7 +431,9 @@ from a tab of a session, through `chrome.webNavigation.onCreatedNavigationTarget
 group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own
 (shared or not), is left alone. A prompt names its site and its tab's title, or, for a page being opened (which has no tab yet), the address it would load; it can time out or be declined, and one session may
 have at most three waiting prompts. The side panel keeps prompt rows stable and disables a prompt's buttons
-for 500 ms when it appears and again whenever a row is removed or inserted above another.
+for 500 ms when it appears, again whenever a row is removed or inserted above another, whenever it becomes the card
+Enter and Escape answer, and when the panel is shown again after it was hidden. A thread's T3 approval is in the same
+lock list as the browser prompts (after them), so a prompt answered above it locks it too.
 
 Membership, restricted-page and approved-origin checks run again after every permission wait and before
 every `act` step. `run_js` runs only in the main frame's JavaScript context after the browser reports that
@@ -419,7 +460,8 @@ sits lighter than the canvas in dark and darker in light (`T3_CODE_PAINTED_DARK`
 is T3-Tab's own: `packages/extension/icon-source.svg`, rendered to `public/icons/`. T3 Code's mark appears only on the row
 that names T3 Code.
 
-The panel loads the markdown renderer and Settings when they are first needed. It asks the worker on a timer only as a
+The panel bundles Inter Variable's Latin and Latin-ext faces only (`entrypoints/sidepanel/inter.css`); text in another script
+is drawn by the system's fonts through the `--font-sans` fallbacks. The panel loads the markdown renderer and Settings when they are first needed. It asks the worker on a timer only as a
 safety net: the worker's `panel.changed` message, `chrome.storage.onChanged` and tab events bring changes at once. The
 timers are 5 seconds for prompts and sessions, 10 seconds for the helper (3 while it is missing or a screen shows setup
 details), 15 seconds for the list of direct runs (1.5 while one runs) and one minute for the agent and T3 checks. An open
@@ -444,8 +486,29 @@ session is connected.
 
 A thread shows why a turn failed, using T3's failure message or the direct run's error. Follow-ups queued in a T3 thread
 are listed above the composer, where they can be removed; after a Stop, T3 holds them and the first has a Send now button.
-A direct run cannot queue, so its composer says to wait and keeps Stop visible. Approval cards name what is asked (a
-command, a file read, a file change or a permission) and show the command or path. In a question card, keys 1 to 9 choose
+A direct run cannot queue, so its composer says to wait and keeps Stop visible.
+
+Browser prompts and a T3 thread's approvals share one card (`Approval.tsx`, built from `approval-model.ts`) in T3 Code's
+anatomy: a line saying what is asked (who asks, the action and the site, or the command or path T3 asks about), then
+the address a prompt would load or T3's reason, then the tab it is about by its title (`in "<title>"` under an
+address, as for `goto`, `back`, `forward` and `reload`), then Decline, the primary answer (the once answer or Approve)
+and More, in T3's order on one row. More holds the other answers with what each grants: for a browser prompt the
+lasting choice and Manage sites, for T3 its own (such as Always allow this session and Cancel), with T3's warning on an
+answer shown as T3 shows it. A T3 approval draws only the answers T3 offers: with no `accept` there is no primary
+answer, with no `decline` no Decline; with no options at all it offers T3's own defaults. Unless T3 reports the request's
+`responseCapability` as `live`, its answers are disabled and the card says, in T3's words, that the provider process is
+gone. A card about another tab says so and has a Go to tab button.
+
+The cards of a screen share one `ApprovalStack`: their locks are one list. Only browser prompts take keys: a T3 approval
+is answered by click, as in T3's own client. Enter (the primary answer) and Escape (Decline) answer only the keyed
+card, the first browser prompt that is at least 98% on screen (an `IntersectionObserver`, so a card scrolled out of the
+prompt list is never answered). A key answers only a press that began after that card became keyed: an Enter or Escape
+still held from before the change answers nothing until it is released. Keys never act while a popover, menu or dialog
+is open, from a text field (the composer included), during composition, with a modifier, held down, or while the card
+is locked; Enter on a button is that button's own, and Escape declines only from the panel's body or from inside the
+card. The keyed card shows the two keys, hidden below 360 px. A T3 approval is drawn at its row in the running work log, as T3 does, and above the composer when that
+row is not among the last eight steps shown; browser prompts sit above the composer, and on the new-thread screen they
+float over the hero's lower part so nothing moves. In a question card, keys 1 to 9 choose
 an option unless the owner is typing, and Enter in the answer box moves on or submits. Browser steps name the action and
 site, and never the text typed into a field.
 
@@ -534,7 +597,11 @@ directly through the daemon and feeds the same thread view.
   light and dark swatches, then Create theme and Add theme); edit, duplicate, export and remove for the current theme
   sit in a menu beside it. A fresh install uses T3 Code's built-in theme with the System scheme. The panel does not
   follow T3's theme, and a stored "follow T3 Code" choice from an earlier version, or a theme that is gone, falls back
-  to that default (`known` in `lib/theme.ts`). T3 theme files can be imported. The owner's themes can be
+  to that default (`known` in `lib/theme.ts`). The theme sheet (Create, Duplicate and Edit) opens on the scheme the panel is
+  drawn in and in the panel's own palette: a new theme starts as a copy of the theme in use for that scheme (`currentPalette`
+  in `lib/theme.ts`), so the sheet looks the same a moment after it opens as before, and picking a new Canvas or Accent is
+  what makes the other colours from the two seeds. While it is open the whole panel previews the draft, as T3's editor does:
+  its Light and Dark tabs preview those schemes, and closing it brings the saved theme back. T3 theme files can be imported. The owner's themes can be
   edited, and any theme can be duplicated with all its colours and both of its modes. A name already in use gets a number
   instead of replacing that theme. A change reaches panels open on other tabs through `chrome.storage.onChanged`. Custom
   CSS goes through T3's own filter, which removes rules that load remote files.

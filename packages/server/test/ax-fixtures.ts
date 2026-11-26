@@ -84,3 +84,29 @@ export function feed(count: number): AxNode[] {
     ...ids.flatMap((id, index) => [ax(id, 'listitem', '', [id + 1]), ax(id + 1, 'StaticText', `#${index + 1} · Entry`)]),
   ];
 }
+
+/**
+ * A documentation page: a sidebar navigation of `links` links (e1 the sidebar), then a main article of `paragraphs`
+ * paragraphs, each with a link in its text, and a button.
+ */
+export function docsPage(links: number, paragraphs: number): AxNode[] {
+  const nav = Array.from({ length: links }, (_, index) => ax(10_000 + index, 'link', `Guide to topic ${index}`));
+  const body = Array.from({ length: paragraphs }, (_, index) => {
+    const id = 20_000 + index * 4;
+    return [
+      ax(id, 'paragraph', '', [id + 1, id + 2, id + 3]),
+      ax(id + 1, 'StaticText', `Paragraph ${index} explains one part of the subject, in words, and then points to `),
+      ax(id + 2, 'link', `related page ${index}`),
+      ax(id + 3, 'StaticText', ' for the details that this page leaves out.'),
+    ];
+  }).flat();
+  return [
+    ax(1, 'RootWebArea', 'Docs', [2, 3]),
+    ax(2, 'navigation', 'Sidebar', nav.map((node) => Number(node.id))),
+    ax(3, 'main', '', [4, ...body.filter((node) => node.role === 'paragraph').map((node) => Number(node.id)), 5]),
+    ax(4, 'heading', 'Getting started', [], { props: { level: 1 } }),
+    ax(5, 'button', 'Edit this page'),
+    ...nav,
+    ...body,
+  ];
+}

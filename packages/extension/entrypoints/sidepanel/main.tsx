@@ -1,4 +1,4 @@
-import '@fontsource-variable/inter';
+import './inter.css';
 import './styles.css';
 
 import { createRoot } from 'react-dom/client';
@@ -17,8 +17,9 @@ if (headlessRender) {
     applyHeadlessState;
 }
 
-// The harness that carries the panel's requests can also answer a thread's request the way T3's own app would.
-if (window.__t3tabPanelBridge !== undefined) (globalThis as typeof globalThis & { __t3tabT3?: typeof t3 }).__t3tabT3 = t3;
+// The harness that carries the panel's requests, or draws the panel from state it supplies, can also hand the panel's
+// T3 client threads and answer a thread's request the way T3's own app would.
+if (window.__t3tabPanelBridge !== undefined || headlessRender) (globalThis as typeof globalThis & { __t3tabT3?: typeof t3 }).__t3tabT3 = t3;
 
 guardPanelDrops();
 

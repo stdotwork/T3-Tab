@@ -155,6 +155,42 @@ const BLOCKS = new Set([
 ]);
 /** Text inside these is the page's main content, shown first when not all of the page's text fits. */
 const MAIN_ROLES = new Set(['main', 'article']);
+/** Landmarks around a page's content: their long lists of links give way first. */
+const CHROME_ROLES = new Set(['navigation', 'banner', 'contentinfo', 'complementary']);
+/** Fewest links or buttons a list must hold to be folded to one line. */
+const MIN_GROUP = 8;
+/** Characters of names a folded list's line shows. */
+const GROUP_PREVIEW = 80;
+/** The name of a link that moves on through a list: its next page, more of it. */
+const ONWARD = /\b(next|more|older|newer|previous|prev|load|show all|see all|view all|page \d+)\b|[›»→]/i;
+/** Least text outside a list in the main content that folding the list makes room for. */
+const MIN_TEXT_ROOM = 1_000;
+/** What a folded list may hold: elements an agent finds again by reading its ref or with `find`. */
+const GROUP_ROLES = new Set(['link', 'button', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'option', 'treeitem', 'disclosuretriangle', 'popupbutton']);
+/** A list holding one of these is not folded: headings, fields, and the elements a page says something with. */
+const BLOCKING_ROLES = new Set([
+  'heading',
+  'textbox',
+  'searchbox',
+  'combobox',
+  'checkbox',
+  'radio',
+  'switch',
+  'slider',
+  'spinbutton',
+  'listbox',
+  'textfield',
+  'colorwell',
+  'date',
+  'datetime',
+  'inputtime',
+  'time',
+  'dialog',
+  'alertdialog',
+  'alert',
+  'status',
+  'log',
+]);
 
 type Kind = 'interactive' | 'container' | 'heading' | 'text' | 'other' | 'skip' | 'hoist';
 
@@ -171,6 +207,10 @@ interface Item {
   name: string;
   keep: Keep;
   main: boolean;
+  /** The role of the element on this line; empty for text. */
+  role: string;
+  /** The node whose own line this is. */
+  source?: AxNode | undefined;
 }
 
 /** One printed line, and what a size budget needs to know about it. */
@@ -182,6 +222,8 @@ export interface RenderedLine {
   keep: Keep;
   /** Inside the page's `main` or an `article`. */
   main: boolean;
+  /** In a search, the line with the address of every link written into it, which `find` searches. */
+  search?: string | undefined;
 }
 
 /** Where a node sits: what its lines inherit from the nodes above it. */
@@ -193,6 +235,8 @@ interface Context {
   axDepth: number;
   keep: Keep;
   main: boolean;
+  /** Inside a navigation, banner, footer or sidebar landmark. */
+  chrome: boolean;
 }
 
 /**
@@ -202,6 +246,38 @@ interface Context {
 interface Inline {
   text: string;
   blocks: boolean;
+  /** Letters and digits outside link names and inside them: text is prose when its own words outweigh its links'. */
+  words: number;
+  linkWords: number;
+  links: number;
+  /** Whether its first words are a link's: a line headed by a link (a product, a story) is that link's, not prose. */
+  linkFirst: boolean;
+}
+
+/** A piece of a line of text: text, or a node whose text runs on with it (a link, a `<b>`), kept to visit on its own. */
+interface Piece {
+  inline: Inline;
+  node?: AxNode;
+}
+
+/**
+ * A long list of links or buttons in a view (a menu, a sidebar, a footer, a table of files): its lines can give way to
+ * one line that counts them and names the ref that lists them, so the page's text has room.
+ */
+export interface Group {
+  /** Its lines, `lines[start]` up to but not including `lines[end]`. */
+  start: number;
+  end: number;
+  /** Outside the page's main content, or in a navigation, banner, footer or sidebar landmark: given way first. */
+  chrome: boolean;
+  /** The line that stands for the group; it hands out the group's ref. */
+  summary: () => RenderedLine;
+}
+
+/** A view: its lines, and the long lists of links or buttons in it, which never overlap. */
+export interface View {
+  lines: RenderedLine[];
+  groups: Group[];
 }
 
 /** The page as one line per shown node, indented by nesting, with refs on the elements an agent can act on. */
@@ -211,27 +287,55 @@ export function renderTree(nodes: AxNode[], refs: RefTable, options: RenderOptio
 
 /** `renderTree`, with each line marked as text or not, so a reply can leave text out to stay short. */
 export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOptions): RenderedLine[] {
+  return renderView(nodes, refs, options).lines;
+}
+
+/** `renderLines`, and the long lists of links or buttons in the view, which `collapseGroups` can fold away. */
+export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptions): View {
   const byId = new Map<string, AxNode>();
   for (const node of nodes) byId.set(node.id, node);
   const root = options.target === undefined ? nodes[0] : nodes.find((node) => node.backendId === options.target && node.ignored !== true);
   if (root === undefined) {
     if (options.target !== undefined) throw new RefGoneError('The element is no longer on the page');
-    return [];
+    return { lines: [], groups: [] };
   }
 
   const items: Item[] = [];
+  /** The lines each node printed, for finding the long lists of links among them. */
+  const spans: Span[] = [];
   const seen = new Set<string>();
   const limit = (text: string, max: number): string => (options.uncut === true ? text : truncate(text, max));
   const showAddress = addressRule(nodes, options);
-  const inline = inlineText(byId, options.all);
+  // A link in a line of text is written into it, `[name](e12)`; its ref is the one its own line would carry. Its address
+  // shows only where its name is ambiguous, in a search too: prose holds many links, and reading one's ref shows it.
+  const markAddress = options.linkAddresses === 'all' ? addressRule(nodes, { ...options, linkAddresses: 'ambiguous' }) : showAddress;
+  /** In a search, the address of each link written into text without one, so the search still finds it. */
+  const searchAddress = new Map<string, string>();
+  const linkMark = (node: AxNode): string | undefined => {
+    const name = normalize(node.name);
+    if (name === '' || node.backendId === undefined || flagList(node.props).length > 0) return undefined;
+    const ref = refs.refFor(node.backendId);
+    const address = markAddress(node);
+    const full = showAddress(node);
+    if (address === undefined && full !== undefined) searchAddress.set(ref, full);
+    // The name is escaped like all text, so neither a page's text nor a link's name can pass for a link.
+    return `[${escapeMarks(limit(name, MAX_NAME))}](${ref}${address === undefined ? '' : ` → ${address}`})`;
+  };
+  const inline = inlineText(byId, options.all, linkMark);
   /** How many nodes the depth limit has hidden so far. */
   let hidden = 0;
 
   const visitChildren = (node: AxNode, at: Context): void => {
-    let run: string[] = [];
+    const inner = { ...at, axDepth: at.axDepth + 1 };
+    // Text, and the links and text-level elements it flows around, run on as the page wrote them: Chromium keeps
+    // their real spaces in the text.
+    const flows = node.children.some((id) => {
+      const child = byId.get(id);
+      return child !== undefined && child.ignored !== true && TEXT_ROLES.has(child.role.toLowerCase());
+    });
+    let run: Piece[] = [];
     const flush = (): void => {
-      // Sibling text runs on as the page wrote it: Chromium keeps its real spaces in the text.
-      if (run.length > 0) emitText(run.join(''), at);
+      if (run.length > 0) emitRun(run, inner);
       run = [];
     };
     for (const childId of node.children) {
@@ -239,51 +343,113 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
       if (child === undefined) continue;
       const role = child.ignored === true ? '' : child.role.toLowerCase();
       if (TEXT_ROLES.has(role)) {
-        run.push(role === 'linebreak' ? ' ' : child.name);
+        run.push({ inline: plainInline(role === 'linebreak' ? ' ' : escapeMarks(collapse(child.name))) });
+        continue;
+      }
+      const joins = flows && !BLOCKS.has(role) ? inline.of(child, true) : undefined;
+      if (joins !== undefined && !joins.blocks) {
+        run.push({ inline: joins, node: child });
         continue;
       }
       flush();
-      visit(child, { ...at, axDepth: at.axDepth + 1 }, false);
+      visit(child, inner, false);
     }
     flush();
   };
 
-  const emitText = (raw: string, at: Context): void => {
-    const text = normalize(raw);
+  /**
+   * Prints a run of pieces as lines of text, its links written in, when it is prose. Otherwise its links (and the
+   * elements holding them) print on lines of their own, between the text around them, so a list of links stays a list.
+   */
+  const emitRun = (run: Piece[], at: Context): void => {
+    if (isProse(sumInline(run.map((piece) => piece.inline)))) {
+      // A paragraph too long for one line is cut between pieces, never inside a link.
+      let line: Inline[] = [];
+      let length = 0;
+      for (const piece of run) {
+        if (line.length > 0 && length + piece.inline.text.length > MAX_TEXT) {
+          emitText(sumInline(line), at);
+          line = [];
+          length = 0;
+        }
+        line.push(piece.inline);
+        length += piece.inline.text.length;
+      }
+      if (line.length > 0) emitText(sumInline(line), at);
+      return;
+    }
+    let text: Inline[] = [];
+    for (const piece of run) {
+      if (piece.node === undefined) {
+        text.push(piece.inline);
+        continue;
+      }
+      if (text.length > 0) emitText(sumInline(text), at);
+      text = [];
+      visit(piece.node, at, false);
+    }
+    if (text.length > 0) emitText(sumInline(text), at);
+  };
+
+  const emitText = (inline: Inline, at: Context): void => {
+    const text = normalize(inline.text);
+    const plain = unescapeMarks(text);
     // Separators such as `|`, `(` or `·` between links say nothing on a line of their own.
-    if (!/[\p{L}\p{N}]/u.test(text) || (at.ancestorName !== '' && at.ancestorName.includes(text)) || text === at.value) return;
+    if (!/[\p{L}\p{N}]/u.test(text) || (at.ancestorName !== '' && at.ancestorName.includes(plain)) || plain === at.value) return;
     if (options.depth !== undefined && at.level > options.depth) {
       hidden += 1;
       return;
     }
-    items.push({ indent: at.level, line: JSON.stringify(limit(text, MAX_TEXT)), isText: true, name: text, keep: at.keep, main: at.main });
+    items.push({
+      indent: at.level,
+      line: JSON.stringify(limit(text, MAX_TEXT)),
+      isText: true,
+      name: plain,
+      keep: at.keep,
+      main: at.main,
+      role: '',
+    });
   };
 
-  /** A node that holds only text, short enough for one line, prints as that one line. */
+  /** A node that holds only text and the links in it, short enough for one line, prints as that one line. */
   const emitInline = (node: AxNode, at: Context): boolean => {
     if (node.role.toLowerCase() === 'row') return emitRow(node, at);
     const text = inline.of(node);
-    if (text === undefined || text.blocks) return false;
-    emitText(text.text, at);
+    if (text === undefined || text.blocks || !isProse(text)) return false;
+    emitText(text, at);
     return true;
   };
 
   /** A table row of text cells prints as one line, its cells apart by `|`. */
   const emitRow = (node: AxNode, at: Context): boolean => {
-    const cells: string[] = [];
+    const cells: Inline[] = [];
     for (const child of visibleChildren(node, byId)) {
       const cell = inline.of(child);
       if (cell === undefined || cell.blocks) return false;
-      cells.push(normalize(cell.text));
+      cells.push({ ...cell, text: normalize(cell.text) });
     }
     if (cells.length < 2) return false;
-    const line = cells.join(' | ');
-    if (normalize(line).length > MAX_TEXT) return false;
-    if (cells.some((cell) => cell !== '')) emitText(line, at);
+    const row = sumInline(cells, ' | ');
+    if (normalize(row.text).length > MAX_TEXT || !isProse(row)) return false;
+    if (cells.some((cell) => cell.text !== '')) emitText(row, at);
     return true;
   };
 
   const visit = (node: AxNode, outer: Context, force: boolean): void => {
+    const start = items.length;
+    const role = node.role.toLowerCase();
+    const at: Context = {
+      ...outer,
+      main: outer.main || MAIN_ROLES.has(role),
+      chrome: outer.chrome || CHROME_ROLES.has(role),
+    };
+    visitNode(node, at, force);
+    if (node.ignored !== true && node.backendId !== undefined && items.length - start >= MIN_GROUP) {
+      spans.push({ node, start, end: items.length, main: at.main, chrome: at.chrome });
+    }
+  };
+
+  const visitNode = (node: AxNode, outer: Context, force: boolean): void => {
     if (outer.axDepth > MAX_AX_DEPTH || seen.has(node.id)) return;
     seen.add(node.id);
     if (node.ignored === true) {
@@ -292,7 +458,7 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
     }
     const role = node.role.toLowerCase();
     const keep: Keep = role === 'log' ? 'end' : outer.keep !== false ? outer.keep : isLive(node) || ALWAYS_CONTAINERS.has(role) ? 'start' : false;
-    const at: Context = { ...outer, keep, main: outer.main || MAIN_ROLES.has(role) };
+    const at: Context = { ...outer, keep };
     let kind = classify(node, options.all);
     if (force && (kind === 'hoist' || kind === 'text' || kind === 'skip')) kind = 'other';
     switch (kind) {
@@ -302,7 +468,7 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
         if (!emitInline(node, at)) visitChildren(node, at);
         return;
       case 'text':
-        emitText(node.name, at);
+        emitText(plainInline(escapeMarks(node.name)), at);
         return;
       default: {
         if (options.depth !== undefined && at.level > options.depth) {
@@ -313,7 +479,7 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
         // A live region that says one short thing prints it on one line, `alert "Wrong password."`, with no ref: there
         // is nothing in it to act on or read further. An empty one prints nothing.
         const said = MESSAGE_ROLES.has(role) && name === '' ? inline.contents(node) : undefined;
-        const oneLine = said !== undefined && !said.blocks;
+        const oneLine = said !== undefined && !said.blocks && said.links === 0;
         if (oneLine) {
           name = normalize(said.text);
           if (name === '') return;
@@ -326,6 +492,8 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
           name,
           keep: at.keep,
           main: at.main,
+          role,
+          source: node,
         };
         items.push(item);
         if (oneLine || VALUE_ONLY_CHILDREN.has(role)) return;
@@ -337,13 +505,167 @@ export function renderLines(nodes: AxNode[], refs: RefTable, options: RenderOpti
     }
   };
 
-  visit(root, { level: 0, ancestorName: '', value: '', axDepth: 0, keep: false, main: false }, options.target !== undefined);
-  return dropLabelEchoes(items).map((item) => ({
-    line: `${'  '.repeat(item.indent)}${item.line}`,
-    text: item.isText,
-    keep: item.keep,
-    main: item.main,
-  }));
+  visit(root, { level: 0, ancestorName: '', value: '', axDepth: 0, keep: false, main: false, chrome: false }, options.target !== undefined);
+  const kept = dropLabelEchoes(items);
+  const lines = kept.map(renderedLine);
+  if (searchAddress.size > 0) {
+    for (const line of lines) {
+      if (!line.text) continue;
+      const search = line.line.replace(LINK_MARK, (mark: string, ref: string) => {
+        const address = searchAddress.get(ref);
+        return address === undefined ? mark : `${mark} → ${address}`;
+      });
+      if (search !== line.line) line.search = search;
+    }
+  }
+  return { lines, groups: findGroups(items, kept, spans.filter((span) => span.node !== root), refs) };
+}
+
+function renderedLine(item: Item): RenderedLine {
+  return { line: `${'  '.repeat(item.indent)}${item.line}`, text: item.isText, keep: item.keep, main: item.main };
+}
+
+/** The lines one node printed, `items[start]` up to `items[end]`. */
+interface Span {
+  node: AxNode;
+  start: number;
+  end: number;
+  main: boolean;
+  chrome: boolean;
+}
+
+/**
+ * The long lists of links or buttons in a view: the outermost nodes below the root whose lines hold at least `MIN_GROUP`
+ * of them, nothing else an agent needs in view (no heading, field, live region or dialog), and no more text than links.
+ */
+function findGroups(items: Item[], kept: Item[], spans: Span[], refs: RefTable): Group[] {
+  const index = new Map<Item, number>();
+  kept.forEach((item, at) => index.set(item, at));
+  // How many links or buttons, lines that keep a list in view, and characters of text and of elements come before each line.
+  const actionsBefore = [0];
+  const blockersBefore = [0];
+  const textBefore = [0];
+  const elementsBefore = [0];
+  for (const item of items) {
+    actionsBefore.push((actionsBefore.at(-1) ?? 0) + Number(GROUP_ROLES.has(item.role)));
+    blockersBefore.push((blockersBefore.at(-1) ?? 0) + Number(item.keep !== false || BLOCKING_ROLES.has(item.role)));
+    textBefore.push((textBefore.at(-1) ?? 0) + (item.isText ? item.line.length : 0));
+    elementsBefore.push((elementsBefore.at(-1) ?? 0) + (item.isText ? 0 : item.line.length));
+  }
+  const count = (before: number[], span: Span): number => (before[span.end] ?? 0) - (before[span.start] ?? 0);
+  // Without a main landmark, nothing on the page is known to be around its content.
+  const hasMain = items.some((item) => item.main);
+  // Outermost first; of nodes that printed the same lines, the innermost, which names the list best.
+  const ordered = spans.map((span, order) => ({ span, order })).sort((a, b) => a.span.start - b.span.start || b.span.end - a.span.end || a.order - b.order);
+  const groups: Group[] = [];
+  let taken = -1;
+  for (const { span } of ordered) {
+    // A list, not a section: no more of its text than of its links.
+    if (span.start < taken || count(actionsBefore, span) < MIN_GROUP || count(blockersBefore, span) > 0) continue;
+    if (count(textBefore, span) > count(elementsBefore, span)) continue;
+    const members = items.slice(span.start, span.end);
+    const actions = members.filter((item) => GROUP_ROLES.has(item.role));
+    const shown = members.filter((item) => index.has(item));
+    const first = shown[0];
+    const last = shown.at(-1);
+    if (first === undefined || last === undefined) continue;
+    taken = span.end;
+    const start = index.get(first) ?? 0;
+    const end = (index.get(last) ?? 0) + 1;
+    groups.push({
+      start,
+      end,
+      chrome: span.chrome || (hasMain && !span.main),
+      summary: () => groupSummary(span.node, first, actions, refs),
+    });
+  }
+  return groups;
+}
+
+/** One line for a group: its own line when it has one, else a ref for it, then how many links or buttons it holds. */
+function groupSummary(node: AxNode, first: Item, actions: Item[], refs: RefTable): RenderedLine {
+  const own = first.source === node;
+  const ref = refs.refFor(node.backendId ?? 0);
+  const role = node.role.toLowerCase();
+  const head = own ? first.line : `${ref} ${WRAPPERS.has(role) ? 'group' : role}`;
+  const counts = new Map<string, number>();
+  for (const item of actions) counts.set(item.role, (counts.get(item.role) ?? 0) + 1);
+  const count = [...counts]
+    .sort((a, b) => b[1] - a[1])
+    .map(([role, n]) => `${n} ${n === 1 ? role : `${role}s`}`)
+    .join(', ');
+  const names: string[] = [];
+  let length = 0;
+  for (const item of actions) {
+    if (item.name === '') continue;
+    const name = JSON.stringify(truncate(item.name, 40));
+    if (length + name.length > GROUP_PREVIEW) break;
+    names.push(name);
+    length += name.length + 2;
+  }
+  // A list's last link often moves on (Next, More, Older): it stays named, so folding never hides the way forward.
+  const last = actions.at(-1);
+  const onward = last !== undefined && last.name !== '' && names.length < actions.length && ONWARD.test(last.name);
+  const more = names.length < actions.length ? `, …${onward && last !== undefined ? `, ${JSON.stringify(truncate(last.name, 40))}` : ''}` : '';
+  const line = `${head} (${count}; read ${ref})${names.length > 0 ? `: ${names.join(', ')}${more}` : ''}`;
+  return { line: `${'  '.repeat(first.indent)}${line}`, text: false, keep: false, main: first.main };
+}
+
+/**
+ * The view with as many groups folded to one line each as it takes for its elements and `textBudget` characters of its
+ * text (or all of it, if less) to fit in `room`: first those outside the page's main content, then the rest, largest
+ * first. A group in the main content is folded only to make room for text outside it: where the page is mostly its
+ * links (the stories of a news site, the results of a search), they stay, and a cut at the cap still shows the first.
+ * Also returns the text lines inside the folded groups, which the reply counts as left out.
+ */
+export function collapseGroups(view: View, room: number, textBudget: number): { lines: RenderedLine[]; folded: string[] } {
+  const size = (line: RenderedLine): number => line.line.length + 1;
+  let elements = 0;
+  let text = 0;
+  for (const line of view.lines) {
+    if (line.text) text += size(line);
+    else elements += size(line);
+  }
+  const fits = (): boolean => elements + Math.min(textBudget, text) <= room;
+  if (fits()) return { lines: view.lines, folded: [] };
+  const measured = view.groups.map((group) => {
+    let groupElements = 0;
+    let groupText = 0;
+    for (const line of view.lines.slice(group.start, group.end)) {
+      if (line.text) groupText += size(line);
+      else groupElements += size(line);
+    }
+    return { group, elements: groupElements, text: groupText };
+  });
+  const candidates = measured
+    .filter((item) => item.group.chrome || text - item.text >= MIN_TEXT_ROOM)
+    .sort((a, b) => Number(b.group.chrome) - Number(a.group.chrome) || b.elements - a.elements);
+  const folded = new Map<number, RenderedLine>();
+  for (const item of candidates) {
+    if (fits()) break;
+    const summary = item.group.summary();
+    if (size(summary) >= item.elements) continue;
+    folded.set(item.group.start, summary);
+    elements -= item.elements - size(summary);
+    text -= item.text;
+  }
+  if (folded.size === 0) return { lines: view.lines, folded: [] };
+  const out: RenderedLine[] = [];
+  // The text a folded list held, for the note that says what a reply left out.
+  const foldedText: string[] = [];
+  for (let at = 0; at < view.lines.length; at += 1) {
+    const summary = folded.get(at);
+    const line = view.lines[at];
+    if (summary === undefined) {
+      if (line !== undefined) out.push(line);
+      continue;
+    }
+    out.push(summary);
+    const end = view.groups.find((group) => group.start === at)?.end ?? at + 1;
+    for (const inside of view.lines.slice(at, end)) if (inside.text) foldedText.push(inside.line);
+    at = end - 1;
+  }
+  return { lines: out, folded: foldedText };
 }
 
 /** An `aria-live` region that announces its changes, or a role that does. */
@@ -378,10 +700,12 @@ function visibleChildren(node: AxNode, byId: Map<string, AxNode>, depth = 0): Ax
 function inlineText(
   byId: Map<string, AxNode>,
   all: boolean,
-): { of: (node: AxNode) => Inline | undefined; contents: (node: AxNode) => Inline | undefined } {
+  linkMark: (node: AxNode) => string | undefined,
+): { of: (node: AxNode, inFlow?: boolean) => Inline | undefined; contents: (node: AxNode) => Inline | undefined } {
   const memo = new Map<string, Inline | null>();
   const busy = new Set<string>();
-  const contents = (node: AxNode, depth: number): Inline | undefined => {
+  /** `inFlow`: the node sits in running text, so a link inside it is part of that text. */
+  const contents = (node: AxNode, depth: number, inFlow: boolean): Inline | undefined => {
     const children: AxNode[] = [];
     for (const id of node.children) {
       const child = byId.get(id);
@@ -391,37 +715,83 @@ function inlineText(
     const line = new LineText();
     let blocks = false;
     let previousFlows = false;
+    let words = 0;
+    let linkWords = 0;
+    let links = 0;
+    let linkFirst: boolean | undefined;
     for (const child of children) {
       const role = child.ignored === true ? '' : child.role.toLowerCase();
-      const inner = of(child, depth + 1);
-      if (inner === undefined) return undefined;
       const block = BLOCKS.has(role);
+      const inner = of(child, depth + 1, !block && (flows || inFlow));
+      if (inner === undefined) return undefined;
       const flowing = !block && (flows || TEXT_ROLES.has(role) || INLINE_ROLES.has(role));
       if (!line.add(inner.text, !(flowing && previousFlows))) return undefined;
       previousFlows = flowing;
       blocks ||= inner.blocks || block;
+      words += inner.words;
+      linkWords += inner.linkWords;
+      links += inner.links;
+      if (linkFirst === undefined && inner.words + inner.linkWords > 0) linkFirst = inner.linkFirst;
     }
-    return { text: line.text(), blocks };
+    return { text: line.text(), blocks, words, linkWords, links, linkFirst: linkFirst ?? false };
   };
-  const of = (node: AxNode, depth: number): Inline | undefined => {
-    const known = memo.get(node.id);
+  const of = (node: AxNode, depth: number, inFlow: boolean): Inline | undefined => {
+    const key = inFlow ? `${node.id} flow` : node.id;
+    const known = memo.get(key);
     if (known !== undefined) return known ?? undefined;
-    if (busy.has(node.id) || depth > MAX_AX_DEPTH) return { text: '', blocks: false };
+    if (busy.has(node.id) || depth > MAX_AX_DEPTH) return plainInline('');
     busy.add(node.id);
     const role = node.role.toLowerCase();
     let result: Inline | undefined;
-    if (node.ignored === true) result = contents(node, depth);
-    else if (role === 'linebreak') result = { text: ' ', blocks: false };
-    else if (SKIP.has(role)) result = { text: '', blocks: false };
+    if (node.ignored === true) result = contents(node, depth, inFlow);
+    else if (role === 'linebreak') result = plainInline(' ');
+    else if (SKIP.has(role)) result = plainInline('');
     else if (role === 'statictext') {
       const text = collapse(node.name);
-      result = text.trim().length > MAX_TEXT ? undefined : { text, blocks: false };
-    } else if (classify(node, all) === 'hoist') result = contents(node, depth);
+      result = text.trim().length > MAX_TEXT ? undefined : plainInline(escapeMarks(text));
+    } else if (role === 'link') result = inFlow ? linkInline(node, contents(node, depth, false), linkMark) : undefined;
+    else if (classify(node, all) === 'hoist') result = contents(node, depth, inFlow);
     busy.delete(node.id);
-    memo.set(node.id, result ?? null);
+    memo.set(key, result ?? null);
     return result;
   };
-  return { of: (node) => of(node, 0), contents: (node) => contents(node, 0) };
+  return { of: (node, inFlow = false) => of(node, 0, inFlow), contents: (node) => contents(node, 0, false) };
+}
+
+/** A link with only text inside, written into the text around it; `undefined` for one that needs a line of its own. */
+function linkInline(node: AxNode, inside: Inline | undefined, linkMark: (node: AxNode) => string | undefined): Inline | undefined {
+  if (inside === undefined || inside.blocks || inside.links > 0) return undefined;
+  const mark = linkMark(node);
+  return mark === undefined ? undefined : { text: mark, blocks: false, words: 0, linkWords: wordCount(node.name), links: 1, linkFirst: true };
+}
+
+function plainInline(text: string): Inline {
+  return { text, blocks: false, words: wordCount(text), linkWords: 0, links: 0, linkFirst: false };
+}
+
+/** Pieces as one: their text run on (or apart by `separator`), their counts added. */
+function sumInline(pieces: Inline[], separator = ''): Inline {
+  return {
+    text: pieces.map((piece) => piece.text).join(separator),
+    blocks: pieces.some((piece) => piece.blocks),
+    words: pieces.reduce((sum, piece) => sum + piece.words, 0),
+    linkWords: pieces.reduce((sum, piece) => sum + piece.linkWords, 0),
+    links: pieces.reduce((sum, piece) => sum + piece.links, 0),
+    linkFirst: pieces.find((piece) => piece.words + piece.linkWords > 0)?.linkFirst ?? false,
+  };
+}
+
+/**
+ * Text that is mostly its own words, with links in it (a paragraph), rather than mostly links with a little text
+ * between them (a menu, a list of stories) or a link with a line about it (a product, a search result): the first prints
+ * as one line with its links written in.
+ */
+function isProse(inline: Inline): boolean {
+  return inline.links === 0 || (!inline.linkFirst && inline.words >= inline.linkWords);
+}
+
+function wordCount(text: string): number {
+  return text.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
 }
 
 /** A line of text built from pieces whose whitespace runs are one space; it refuses to grow past `MAX_TEXT`. */
@@ -530,7 +900,7 @@ function elementLine(
   if (kind === 'heading') {
     const level = node.props?.level;
     const marks = typeof level === 'number' ? Math.min(Math.max(Math.trunc(level), 1), 6) : 2;
-    return `${'#'.repeat(marks)} ${limit(name, MAX_NAME)}`;
+    return `${'#'.repeat(marks)} ${escapeMarks(limit(name, MAX_NAME))}`;
   }
   const parts: string[] = [];
   if ((kind === 'interactive' || kind === 'container' || role === 'image') && node.backendId !== undefined) {
@@ -588,6 +958,25 @@ function dropLabelEchoes(items: Item[]): Item[] {
 function stripColon(value: string): string {
   return value.endsWith(':') ? value.slice(0, -1).trimEnd() : value;
 }
+
+/**
+ * Text with `[`, `]` and `\\` escaped by a backslash. Text lines and headings are escaped, so only T3-Tab's own marks,
+ * `[name](e12)`, read as links: a page that writes `[Cancel](e2)` gets `\\[Cancel\\](e2)`.
+ */
+export function escapeMarks(value: string): string {
+  return value.replace(/[\\[\]]/g, '\\$&');
+}
+
+function unescapeMarks(value: string): string {
+  return value.replace(/\\([\\[\]])/g, '$1');
+}
+
+/**
+ * A link written into a printed line of text: `](e12)` or `](e12 → /path)` closing a name. A printed text line is a JSON
+ * string, which doubles every backslash, so a bracket the escaping kept (`\\]`) prints after 2, 6, 10… backslashes and a
+ * mark's own after 0, 4, 8….
+ */
+export const LINK_MARK = /(?<!\\)(?:\\{4})*\]\((e\d+)(?=\)| →)/g;
 
 /** Whitespace collapsed, and no private-use characters: icon fonts draw those, and they mean nothing as text. */
 function normalize(value: string): string {

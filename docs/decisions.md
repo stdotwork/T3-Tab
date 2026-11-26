@@ -47,7 +47,10 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   invalidated when the tab's document is replaced, headings, and the page's text. Text is held to a
   budget (4,000 characters, and never more than the cap leaves after the elements), the text of live
   regions and dialogs first, and a reply says what it left out and how to get it, so an agent sees an
-  error message, a list or a table row without a second read or a screenshot. Replies are capped at 12,000 characters. Password
+  error message, a list or a table row without a second read or a screenshot. Links in running prose are written into
+  its line (`[name](e12)`) instead of a line each, and when the elements would leave the text no room, long lists of
+  links or buttons (sidebars, menus, footers, file tables) fold to one line with a count and a ref that lists them,
+  those around the content first; a page that is mostly links keeps them. Replies are capped at 12,000 characters. Password
   field values are stripped before the tree leaves the extension and rendered as `value=<redacted>`
   so neither the value nor its length leaks.
 - **Literal search by default, bounded regex opt-in.** `find` does case-insensitive literal
@@ -292,9 +295,20 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   at most 30 days after it was made.
 
 - **The panel looks and works like T3 Code.** It has a new-thread screen, a thread view, and a thread list and settings
-  behind icons. It is React, styled only from T3's theme roles, so any T3 theme applies in full. Waiting permission,
-  approval and question cards sit above the composer, because that is where the owner is already looking. Prompts can come
-  from any MCP session, so the Threads screen also lists every connected session, named by its thread.
+  behind icons. It is React, styled only from T3's theme roles, so any T3 theme applies in full. Waiting permission and
+  question cards sit above the composer, because that is where the owner is already looking. Prompts can come from any
+  MCP session, so the Threads screen also lists every connected session, named by its thread.
+- **One approval card, in T3 Code's anatomy.** Browser prompts and a T3 thread's approvals use one card: what is asked,
+  where, then Decline, the primary answer and More on one row, as T3 orders them. It stays small (at most 160 px) so the
+  conversation stays in view. The lasting browser choice lives under More, stated in full, rather than as a third button:
+  at 320 px three buttons whose labels say what they grant do not fit on one row, and T3 also keeps its lasting answer
+  under More. A T3 approval is drawn at its work-log row, where T3 draws it, and falls back above the composer when that
+  row is not shown. A T3 approval draws only the answers T3 offers, and none unless T3 says the provider can still take
+  one. It is answered by click only, as in T3's own client. On browser prompts Enter answers with the primary answer and
+  Escape declines, only when no field has focus and nothing covers the panel, only on the first prompt fully on screen,
+  and only with a press that began after that card became keyed, so a key meant for the composer, a card the owner
+  cannot see or a double press never answers a card. All of a screen's cards share one lock list, so a card answered
+  above another locks the one that moves, and every card is locked again when the panel is shown after being hidden.
 - **The panel does little while idle.** Changes reach it through a message from the worker, stored-state events and tab
   events, and its timers are only a safety net. Markdown and Settings load on first use. It adds nothing a website can
   see: no content script, no web-accessible resource and no page change.
