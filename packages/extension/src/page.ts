@@ -1,8 +1,8 @@
 import type { PageReadResult } from '@t3-tab/protocol';
 
 import { restrictToOriginFrames, slimAxNodes, type FrameInfo, type FramePolicy } from './ax';
-import { DialogOpenError, documentEpoch, ensureAttached, privateWorld, sendCommand, setRecoveryOrigin } from './cdp';
-import { redactPasswordValues } from './password';
+import { DialogOpenError, documentEpoch, ensureAttached, forgetPrivateWorld, privateWorld, sendCommand, setRecoveryOrigin } from './cdp';
+import { redactPasswordValues, type FieldAnswer } from './password';
 import { originOf } from './permissions';
 import type { StoredSession } from './sessions';
 import { resolveSessionTab } from './tabs';
@@ -36,7 +36,12 @@ export async function readPage(
       ownerOrigin: async (backendId) => await ownerFrameOrigin(tabId, backendId, frames.byId, expectedOrigin),
     } satisfies FramePolicy);
   // Before the tree is trimmed, so a value is taken whole and every node's relations are still there.
-  const nodes = slimAxNodes(await redactPasswordValues(restricted, (backendIds) => inspectFields(tabId, backendIds)));
+  const nodes = slimAxNodes(
+    await redactPasswordValues(restricted, (backendIds) => inspectFields(tabId, backendIds), {
+      // A dialog opening mid-read is the read's failure, not a field that could not be checked.
+      rethrow: (error) => error instanceof DialogOpenError,
+    }),
+  );
   return { tab: tabId, title: after.title ?? '', url: after.url ?? after.pendingUrl ?? '', epoch, nodes };
 }
 
@@ -167,13 +172,20 @@ const INSPECT_FIELDS = `function (...fields) {
   const SECRET_AUTOCOMPLETE = ['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc'];
   return fields.map((field) => {
     try {
-      if (field.nodeName === 'INPUT' && String(field.type).toLowerCase() === 'password') return true;
-      const hints = String(field.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/);
-      if (hints.some((hint) => SECRET_AUTOCOMPLETE.includes(hint))) return true;
-      const view = field.ownerDocument && field.ownerDocument.defaultView;
-      if (!view) return null;
-      const security = view.getComputedStyle(field).getPropertyValue('-webkit-text-security');
-      return security !== 'none';
+      if (field.nodeType !== 1) return null;
+      let secret = false;
+      if (field.nodeName === 'INPUT' && String(field.type).toLowerCase() === 'password') secret = true;
+      if (!secret) {
+        const hints = String(field.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/);
+        secret = hints.some((hint) => SECRET_AUTOCOMPLETE.includes(hint));
+      }
+      if (!secret) {
+        const view = field.ownerDocument && field.ownerDocument.defaultView;
+        if (!view) return null;
+        secret = view.getComputedStyle(field).getPropertyValue('-webkit-text-security') !== 'none';
+      }
+      const holdsValue = field.nodeName === 'INPUT' || field.nodeName === 'TEXTAREA';
+      return secret && holdsValue && typeof field.value === 'string' ? { secret, value: field.value.slice(0, 5000) } : { secret };
     } catch (error) {
       return null;
     }
@@ -202,17 +214,32 @@ async function resolveFields(tabId: number, backendIds: number[], context: numbe
 }
 
 /**
- * For each field, whether its value must be hidden: a password input, whatever its role, or a field masked with
- * `-webkit-text-security` (a PIN or card number typed into `type=text`). One round trip per field to find it and one for
- * the whole batch to ask; the answer is `undefined` for a field the browser could not resolve or inspect.
+ * For each field, whether it holds a secret (a password input, whatever its role, a field masked with
+ * `-webkit-text-security`, or one whose `autocomplete` says so) and the value it really holds. One round trip per field to
+ * find it and one for the whole batch to ask; `undefined` for a field the browser could not resolve or inspect. When the
+ * private world is gone (a navigation destroyed it) it is made again and the batch asked once more.
  */
-async function inspectFields(tabId: number, backendIds: number[]): Promise<Array<boolean | undefined>> {
+async function inspectFields(tabId: number, backendIds: number[]): Promise<Array<FieldAnswer | undefined>> {
+  try {
+    return await askAboutFields(tabId, backendIds, true);
+  } catch (error) {
+    if (error instanceof DialogOpenError) throw error;
+    forgetPrivateWorld(tabId);
+    return await askAboutFields(tabId, backendIds, false);
+  }
+}
+
+/** With `strict`, a batch no node of which could be resolved is an error: the world they were resolved in may be gone. */
+async function askAboutFields(tabId: number, backendIds: number[], strict: boolean): Promise<Array<FieldAnswer | undefined>> {
   const context = await privateWorld(tabId);
   const group = `t3tab-fields-${(inspections += 1)}`;
   try {
     const resolved = await resolveFields(tabId, backendIds, context, group);
     const found = resolved.filter((objectId): objectId is string => objectId !== undefined);
-    if (found.length === 0) return backendIds.map(() => undefined);
+    if (found.length === 0) {
+      if (strict && backendIds.length > 0) throw new Error('None of the fields could be resolved');
+      return backendIds.map(() => undefined);
+    }
     const answer = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.callFunctionOn', {
       objectId: found[0],
       functionDeclaration: INSPECT_FIELDS,
@@ -220,12 +247,14 @@ async function inspectFields(tabId: number, backendIds: number[]): Promise<Array
       returnByValue: true,
     });
     const flags = answer.result?.value;
-    if (!Array.isArray(flags) || flags.length !== found.length) return backendIds.map(() => undefined);
+    if (!Array.isArray(flags) || flags.length !== found.length) throw new Error('The browser gave no answer about the fields');
     let next = 0;
     return resolved.map((objectId) => {
       if (objectId === undefined) return undefined;
       const flag: unknown = flags[next++];
-      return typeof flag === 'boolean' ? flag : undefined;
+      if (typeof flag !== 'object' || flag === null) return undefined;
+      const { secret, value } = flag as { secret?: unknown; value?: unknown };
+      return typeof secret === 'boolean' ? { secret, value: typeof value === 'string' ? value : undefined } : undefined;
     });
   } finally {
     await sendCommand(tabId, 'Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined);

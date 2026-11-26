@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { slimAxNodes } from '../src/ax';
-import { redactPasswordValues } from '../src/password';
+import { redactPasswordValues, type FieldAnswer, type InspectFields } from '../src/password';
 
 type Raw = Record<string, unknown>;
 
@@ -20,6 +20,10 @@ interface Spec {
   labelFor?: number[];
   /** Related nodes of a source the browser set aside. */
   supersededBy?: number[];
+  /** The name is built from the node's content. */
+  contents?: boolean;
+  /** The address of a link. */
+  url?: string;
 }
 
 let nextBackend = 1000;
@@ -48,6 +52,7 @@ function node(spec: Spec): Raw {
       attributeValue: { type: 'idrefList', relatedNodes: spec.supersededBy.map((id) => ({ backendDOMNodeId: id })) },
     });
   }
+  if (spec.contents === true) sources.push({ type: 'contents', value: { type: 'computedString', value: spec.name ?? '' } });
   const result: Raw = {
     nodeId: spec.id,
     ignored: spec.ignored === true,
@@ -56,13 +61,18 @@ function node(spec: Spec): Raw {
     childIds: spec.children ?? [],
   };
   if (spec.value !== undefined) result.value = { type: 'string', value: spec.value };
+  if (spec.url !== undefined) result.properties = [{ name: 'url', value: { type: 'string', value: spec.url } }];
   if (spec.backend !== null) result.backendDOMNodeId = spec.backend ?? (nextBackend += 1);
   return result;
 }
 
-const flagAll = async (ids: number[]): Promise<boolean[]> => ids.map(() => true);
-const flagNone = async (ids: number[]): Promise<boolean[]> => ids.map(() => false);
-const flagOnly = (...backends: number[]) => async (ids: number[]): Promise<boolean[]> => ids.map((id) => backends.includes(id));
+const secret = (value?: string): FieldAnswer => ({ secret: true, value });
+const plain: FieldAnswer = { secret: false };
+/** An inspector that gives the answer set for a DOM id, and `plain` for any other. */
+const answering = (answers: Record<number, FieldAnswer | undefined>): InspectFields => async (ids) =>
+  ids.map((id) => (id in answers ? answers[id] : plain));
+const allSecret: InspectFields = async (ids) => ids.map(() => secret());
+const nonSecret: InspectFields = async (ids) => ids.map(() => plain);
 
 const field = (id: string, backend: number, value: string, extra: Partial<Spec> = {}): Raw =>
   node({ id, role: 'textbox', name: `Field ${id}`, value, backend, ...extra });
@@ -77,18 +87,18 @@ const valueOf = (nodes: unknown[], id: string): unknown => (byId(nodes, id).valu
 const isRedacted = (nodes: unknown[], id: string): boolean => byId(nodes, id).t3Password === true && byId(nodes, id).value === undefined;
 
 describe('password redaction', () => {
-  it('redacts masked fields beyond the first 200 without inspecting them', async () => {
+  it('redacts masked fields whatever the page says, and still asks about them for what they hold', async () => {
     const nodes = Array.from({ length: 260 }, (_, index) => field(String(index + 1), index + 1, '••••••••'));
-    let inspections = 0;
+    let asked = 0;
     const result = await redactPasswordValues(nodes, async (ids) => {
-      inspections += 1;
-      return ids.map(() => false);
+      asked += ids.length;
+      return ids.map(() => plain);
     });
-    expect(inspections).toBe(0);
+    expect(asked).toBe(260);
     expect(result.every((item) => (item as Raw).value === undefined && (item as Raw).t3Password === true)).toBe(true);
   });
 
-  it('inspects every unmasked field in batches and redacts a password after field 200', async () => {
+  it('inspects every field in batches and redacts a password after field 200', async () => {
     const nodes = Array.from({ length: 260 }, (_, index) => field(String(index + 1), index + 1, `text-${index + 1}`));
     let active = 0;
     let maximumActive = 0;
@@ -102,9 +112,9 @@ describe('password redaction', () => {
         await new Promise((resolve) => setTimeout(resolve, 1));
         active -= 1;
         expect(ids.length).toBeLessThanOrEqual(10);
-        return ids.map((id) => id === 240);
+        return ids.map((id) => (id === 240 ? secret() : plain));
       },
-      10,
+      { batchSize: 10 },
     );
     expect(inspected).toHaveLength(260);
     expect(maximumActive).toBe(1);
@@ -126,6 +136,20 @@ describe('password redaction', () => {
     expect(isRedacted(unanswered, '3')).toBe(true);
   });
 
+  it('lets an error the caller names stop the read instead of redacting', async () => {
+    class Stop extends Error {}
+    const nodes = [field('1', 1, 'text')];
+    await expect(
+      redactPasswordValues(
+        nodes,
+        async () => {
+          throw new Stop('a dialog opened');
+        },
+        { rethrow: (error) => error instanceof Stop },
+      ),
+    ).rejects.toThrow('a dialog opened');
+  });
+
   it('redacts a field with no DOM node to inspect', async () => {
     const orphan = [field('1', 0, 'secret', { backend: null })];
     await redactPasswordValues(orphan, async () => []);
@@ -140,10 +164,28 @@ describe('password redaction', () => {
         node({ id: 'b', role: 'StaticText', name: '•••••••••' }),
         node({ id: 'k', role: 'StaticText', name: 'Label' }),
       ];
-      const result = await redactPasswordValues(nodes, flagNone);
+      const result = await redactPasswordValues(nodes, nonSecret);
       expect((result as Raw[]).map((item) => item.nodeId)).toEqual(['1', 'k']);
       expect(isRedacted(result, '1')).toBe(true);
       expect(byId(result, '1').childIds).toEqual([]);
+    },
+  );
+
+  it.each(['link', 'checkbox', 'switch', 'button', 'menuitem'])(
+    'inspects a %s that holds a value and redacts it when it is a secret field, whatever role the page gave it',
+    async (role) => {
+      const nodes = [
+        node({ id: '1', role, name: 'Field', value: 'CARD-4242-4242', backend: 7 }),
+        node({ id: '2', role, name: 'Other', value: 'visible', backend: 8 }),
+      ];
+      const asked: number[][] = [];
+      await redactPasswordValues(nodes, async (ids) => {
+        asked.push(ids);
+        return ids.map((id) => (id === 7 ? secret('CARD-4242-4242') : plain));
+      });
+      expect(asked).toEqual([[7, 8]]);
+      expect(isRedacted(nodes, '1')).toBe(true);
+      expect(valueOf(nodes, '2')).toBe('visible');
     },
   );
 
@@ -157,7 +199,7 @@ describe('password redaction', () => {
       const asked: number[][] = [];
       await redactPasswordValues(nodes, async (ids) => {
         asked.push(ids);
-        return ids.map((id) => id === 7);
+        return ids.map((id) => (id === 7 ? secret() : plain));
       });
       expect(asked).toEqual([[7, 8]]);
       expect(isRedacted(nodes, '7')).toBe(true);
@@ -166,21 +208,24 @@ describe('password redaction', () => {
     },
   );
 
-  it('leaves a node that is not a field and has no bullet value alone', async () => {
-    const heading = [node({ id: '1', role: 'heading', name: 'Title', value: 'Title' })];
-    let inspections = 0;
-    await redactPasswordValues(heading, async (ids) => {
-      inspections += 1;
-      return ids.map(() => true);
-    });
-    expect(inspections).toBe(0);
+  it('leaves a node that holds a value but is not a secret alone', async () => {
+    const heading = [node({ id: '1', role: 'heading', name: 'Title', value: 'Title', backend: 1 })];
+    await redactPasswordValues(heading, nonSecret);
     expect(valueOf(heading, '1')).toBe('Title');
+    expect(byId(heading, '1').t3Password).toBeUndefined();
   });
 
   it('keeps an empty password field marked, so the agent can tell it apart from a text box', async () => {
     const empty = [node({ id: '1', role: 'textbox', name: 'Password', backend: 1 })];
-    await redactPasswordValues(empty, flagAll);
+    await redactPasswordValues(empty, allSecret);
     expect(byId(empty, '1').t3Password).toBe(true);
+  });
+
+  it('returns the tree as it was when no field holds a secret', async () => {
+    const nodes = [field('1', 1, 'Ada'), node({ id: 'b', role: 'button', name: 'Hello Ada', labelledBy: [777] })];
+    const result = await redactPasswordValues(nodes, nonSecret);
+    expect(result).toBe(nodes);
+    expect(nameOf(nodes, 'b')).toBe('Hello Ada');
   });
 
   describe('what the trimmed tree sends', () => {
@@ -212,19 +257,20 @@ describe('password redaction', () => {
         field('pin', 5, '4242'),
         node({ id: 'other', role: 'link', name: 'Item 4242 elsewhere' }),
       ];
-      await redactPasswordValues(nodes, flagOnly(5));
+      await redactPasswordValues(nodes, answering({ 5: secret('4242') }));
       expect(nameOf(nodes, 'button')).toBe('Pay <redacted>');
       expect(nameOf(nodes, 'cell')).toBe('Cell <redacted> and <redacted> again');
-      expect(nameOf(nodes, 'other')).toBe('Item 4242 elsewhere');
       expect(nameOf(nodes, 'root')).toBe('Shop');
+      // Not tied to the field, but the secret is known: the net takes it out of every name.
+      expect(nameOf(nodes, 'other')).toBe('Item <redacted> elsewhere');
     });
 
     it('replaces the bullets of a password input in the name of what it sits in', async () => {
       const nodes = [
         node({ id: 'tab', role: 'tab', name: 'Tab •••••••••', children: ['pw'] }),
-        node({ id: 'pw', role: 'combobox', name: 'Field', value: '•••••••••' }),
+        node({ id: 'pw', role: 'combobox', name: 'Field', value: '•••••••••', backend: 3 }),
       ];
-      await redactPasswordValues(nodes, flagNone);
+      await redactPasswordValues(nodes, nonSecret);
       expect(nameOf(nodes, 'tab')).toBe('Tab <redacted>');
     });
 
@@ -234,16 +280,16 @@ describe('password redaction', () => {
         node({ id: 'viaAttribute', role: 'button', name: 'Card 4242', labelledBy: [5] }),
         node({ id: 'viaScript', role: 'button', name: '4242', labelledBy: [5] }),
         node({ id: 'viaLabelFor', role: 'textbox', name: 'Lbl 4242', labelFor: [5] }),
-        node({ id: 'elsewhere', role: 'button', name: 'Visible 4242', labelledBy: [999] }),
+        node({ id: 'elsewhere', role: 'button', name: 'Visible', labelledBy: [999] }),
         node({ id: 'plain', role: 'button', name: 'Buy', labelledBy: [998] }),
         node({ id: 'label', role: 'generic', name: 'Label', backend: 998 }),
         node({ id: 'other', role: 'generic', name: 'Other', backend: 999 }),
       ];
-      await redactPasswordValues(nodes, flagOnly(5));
+      await redactPasswordValues(nodes, answering({ 5: secret('4242') }));
       expect(nameOf(nodes, 'viaAttribute')).toBe('Card <redacted>');
       expect(nameOf(nodes, 'viaScript')).toBe('<redacted>');
       expect(nameOf(nodes, 'viaLabelFor')).toBe('Lbl <redacted>');
-      expect(nameOf(nodes, 'elsewhere')).toBe('Visible 4242');
+      expect(nameOf(nodes, 'elsewhere')).toBe('Visible');
       expect(nameOf(nodes, 'plain')).toBe('Buy');
     });
 
@@ -255,14 +301,14 @@ describe('password redaction', () => {
         node({ id: 'button', role: 'button', name: 'PIN SHADOWPIN1', labelledBy: [50] }),
         node({ id: 'closed', role: 'button', name: 'SHADOWPIN1', labelledBy: [51] }),
       ];
-      await redactPasswordValues(nodes, flagOnly(5));
+      await redactPasswordValues(nodes, answering({ 5: secret('SHADOWPIN1') }));
       expect(nameOf(nodes, 'button')).toBe('PIN <redacted>');
       expect(nameOf(nodes, 'closed')).toBe('<redacted>');
     });
 
     it('replaces the whole name when the value is not found in it', async () => {
       const nodes = [field('pin', 5, '4242'), node({ id: 'button', role: 'button', name: 'Number forty-two', labelledBy: [5] })];
-      await redactPasswordValues(nodes, flagOnly(5));
+      await redactPasswordValues(nodes, answering({ 5: secret('4242') }));
       expect(nameOf(nodes, 'button')).toBe('<redacted>');
     });
 
@@ -272,38 +318,32 @@ describe('password redaction', () => {
         node({ id: 'button', role: 'button', name: 'Hidden label text', labelledBy: [777] }),
         node({ id: 'link', role: 'link', name: 'Fine', labelledBy: [5000] }),
       ];
-      await redactPasswordValues(nodes, flagOnly(5));
+      await redactPasswordValues(nodes, answering({ 5: secret('4242') }));
       expect(nameOf(nodes, 'button')).toBe('<redacted>');
       // Every name built from something the tree does not hold is as unknown as that one.
       expect(nameOf(nodes, 'link')).toBe('<redacted>');
     });
 
-    it('leaves names alone when no field was redacted', async () => {
-      const nodes = [field('name', 5, 'Ada'), node({ id: 'button', role: 'button', name: 'Hello Ada', labelledBy: [777] })];
-      await redactPasswordValues(nodes, flagNone);
-      expect(nameOf(nodes, 'button')).toBe('Hello Ada');
-    });
-
     it('ignores a source the browser set aside', async () => {
-      const nodes = [field('pin', 5, '4242'), node({ id: 'button', role: 'button', name: 'Pay 4242', supersededBy: [5] })];
-      await redactPasswordValues(nodes, flagOnly(5));
-      expect(nameOf(nodes, 'button')).toBe('Pay 4242');
+      const nodes = [field('pin', 5, '4242'), node({ id: 'button', role: 'button', name: 'Pay', supersededBy: [5] })];
+      await redactPasswordValues(nodes, answering({ 5: secret('4242') }));
+      expect(nameOf(nodes, 'button')).toBe('Pay');
     });
 
     it('scrubs every element named from the field, with no limit on how many', async () => {
-      const buttons = Array.from({ length: 205 }, (_, index) => node({ id: `b${index}`, role: 'button', name: 'Card 4242', labelledBy: [5] }));
+      const buttons = Array.from({ length: 205 }, () => node({ id: `b${nextBackend}`, role: 'button', name: 'Card 4242', labelledBy: [5] }));
       const nodes = [field('pin', 5, '4242'), ...buttons];
-      await redactPasswordValues(nodes, flagOnly(5));
+      await redactPasswordValues(nodes, answering({ 5: secret('4242') }));
       expect(buttons.every((button) => (button.name as { value: string }).value === 'Card <redacted>')).toBe(true);
     });
 
     it('takes a value longer than the reader keeps whole, so no tail is left in a name', async () => {
-      const secret = `${'0123456789'.repeat(26)}`;
+      const long = '0123456789'.repeat(26);
       const nodes = [
-        node({ id: 'button', role: 'button', name: `Pay ${secret} now`, children: ['pin'] }),
-        field('pin', 5, secret),
+        node({ id: 'button', role: 'button', name: `Pay ${long} now`, children: ['pin'] }),
+        field('pin', 5, long),
       ];
-      const result = await redactPasswordValues(nodes, flagOnly(5));
+      const result = await redactPasswordValues(nodes, answering({ 5: secret(long) }));
       const trimmed = slimAxNodes(result);
       expect(trimmed.find((item) => item.id === 'button')?.name).toBe('Pay <redacted> now');
       expect(JSON.stringify(trimmed)).not.toContain('0123456789');
@@ -315,7 +355,7 @@ describe('password redaction', () => {
         node({ id: 'code', role: 'textbox', name: 'Code', value: 'e', backend: 5, labelFor: [60] }),
         node({ id: 'selfish', role: 'textbox', name: '•••', value: '•••', backend: 6, labelledBy: [6] }),
       ];
-      await redactPasswordValues(nodes, flagOnly(5));
+      await redactPasswordValues(nodes, answering({ 5: secret('e') }));
       expect(nameOf(nodes, 'code')).toBe('Code');
       expect(nameOf(nodes, 'selfish')).toBe('<redacted>');
     });
@@ -328,7 +368,7 @@ describe('password redaction', () => {
         field('c', 3, '12'),
         field('d', 4, '1234'),
       ];
-      await redactPasswordValues(nodes, flagAll);
+      await redactPasswordValues(nodes, allSecret);
       expect(nameOf(nodes, 'group')).toBe('Pay <redacted> <redacted> <redacted> <redacted>');
     });
 
@@ -338,36 +378,33 @@ describe('password redaction', () => {
         field('a', 1, '12  34.*+'),
         field('b', 2, '1234'),
       ];
-      await redactPasswordValues(nodes, flagAll);
+      await redactPasswordValues(nodes, allSecret);
       expect(nameOf(nodes, 'group')).toBe('Codes <redacted> and <redacted>');
     });
 
-    it('replaces a short value only as a whole word, so other names and words keep their text', async () => {
+    it('replaces a short value only as a whole word in the names tied to its field, and nowhere else', async () => {
       const nodes = [
         node({ id: 'button', role: 'button', name: 'Pay e', children: ['pin'] }),
         node({ id: 'link', role: 'link', name: 'Item 142 and a cell', children: ['pin2'] }),
         field('pin', 5, 'e', { name: 'Code' }),
         field('pin2', 6, '42'),
-        node({ id: 'page', role: 'heading', name: 'Page 42 of 142' }),
+        node({ id: 'page', role: 'heading', name: 'Page 42 of 142 and free energy' }),
       ];
-      await redactPasswordValues(nodes, flagAll);
+      await redactPasswordValues(nodes, allSecret);
       expect(nameOf(nodes, 'button')).toBe('Pay <redacted>');
       expect(nameOf(nodes, 'pin')).toBe('Code');
       expect(nameOf(nodes, 'link')).toBe('Item 142 and a cell');
-      expect(nameOf(nodes, 'page')).toBe('Page 42 of 142');
+      expect(nameOf(nodes, 'page')).toBe('Page 42 of 142 and free energy');
     });
 
-    it('looks for values only of fields known to be secret, never of one it could not check', async () => {
+    it('looks for the value of a field it could not check as well, since the field is hidden anyway', async () => {
       const nodes = [
-        node({ id: 'button', role: 'button', name: 'Pay 4242', children: ['pin'] }),
-        node({ id: 'other', role: 'button', name: 'Pay 5252', children: ['gone'] }),
-        field('pin', 5, '4242'),
-        field('gone', 6, '5252'),
+        node({ id: 'button', role: 'button', name: 'Pay SECRETN2', children: ['gone'] }),
+        field('gone', 6, 'SECRETN2'),
       ];
-      await redactPasswordValues(nodes, async (ids) => ids.map((id) => (id === 5 ? true : undefined)));
+      await redactPasswordValues(nodes, async (ids) => ids.map(() => undefined));
       expect(isRedacted(nodes, 'gone')).toBe(true);
       expect(nameOf(nodes, 'button')).toBe('Pay <redacted>');
-      expect(nameOf(nodes, 'other')).toBe('Pay 5252');
     });
 
     it('does not scrub names of a page whose fields were not secret', async () => {
@@ -375,8 +412,164 @@ describe('password redaction', () => {
         node({ id: 'page', role: 'main', name: 'Checkout 1 of 3', children: ['qty'] }),
         field('qty', 5, '1'),
       ];
-      await redactPasswordValues(nodes, flagNone);
+      await redactPasswordValues(nodes, nonSecret);
       expect(nameOf(nodes, 'page')).toBe('Checkout 1 of 3');
+    });
+  });
+
+  describe('fields out of sight, and values that travel', () => {
+    it.each(['hidden', 'aria-hidden', 'display:none', 'closed dialog'])(
+      'finds a secret field inside content a name was built from that is %s, though the tree ignores it',
+      async () => {
+        const nodes = [
+          node({ id: 'div', ignored: true, backend: 50, children: ['text', 'input'] }),
+          node({ id: 'text', ignored: true, backend: 51 }),
+          node({ id: 'input', ignored: true, backend: 52 }),
+          node({ id: 'button', role: 'button', name: 'Password Tr0ub4dor&3', labelledBy: [50] }),
+          node({ id: 'plain', role: 'button', name: 'Sign in' }),
+        ];
+        const asked: number[] = [];
+        await redactPasswordValues(nodes, async (ids) => {
+          asked.push(...ids);
+          return ids.map((id) => (id === 52 ? secret('Tr0ub4dor&3') : plain));
+        });
+        expect([...asked].sort()).toEqual([50, 51, 52]);
+        expect(nameOf(nodes, 'button')).toBe('Password <redacted>');
+        expect(nameOf(nodes, 'plain')).toBe('Sign in');
+      },
+    );
+
+    it('does not ask about content nobody built a name from', async () => {
+      const nodes = [node({ id: 'div', ignored: true, backend: 50, children: ['input'] }), node({ id: 'input', ignored: true, backend: 52 })];
+      let asked = 0;
+      await redactPasswordValues(nodes, async (ids) => {
+        asked += ids.length;
+        return ids.map(() => plain);
+      });
+      expect(asked).toBe(0);
+    });
+
+    it('hides names built from hidden content it could not look into, once it knows the page holds a secret', async () => {
+      const crowd = Array.from({ length: 5 }, (_, index) => node({ id: `i${index}`, ignored: true, backend: 100 + index }));
+      const nodes = [
+        node({ id: 'div', ignored: true, backend: 50, children: crowd.map((item) => String(item.nodeId)) }),
+        ...crowd,
+        node({ id: 'button', role: 'button', name: 'Hidden label text', labelledBy: [50] }),
+        field('pin', 5, 'SECRETN3'),
+      ];
+      await redactPasswordValues(nodes, allSecret, { maxIgnored: 3 });
+      expect(nameOf(nodes, 'button')).toBe('<redacted>');
+      // With no secret on the page there is nothing to hide.
+      const quiet = [
+        node({ id: 'div', ignored: true, backend: 50, children: crowd.map((item) => String(item.nodeId)) }),
+        ...crowd,
+        node({ id: 'button', role: 'button', name: 'Hidden label text', labelledBy: [50] }),
+      ];
+      await redactPasswordValues(quiet, nonSecret, { maxIgnored: 3 });
+      expect(nameOf(quiet, 'button')).toBe('Hidden label text');
+    });
+
+    it('hides names built from hidden content when asking about it fails', async () => {
+      const nodes = [
+        node({ id: 'div', ignored: true, backend: 50, children: ['input'] }),
+        node({ id: 'input', ignored: true, backend: 52 }),
+        node({ id: 'button', role: 'button', name: 'Password hunter22', labelledBy: [50] }),
+        node({ id: 'other', role: 'button', name: 'Plain' }),
+      ];
+      await redactPasswordValues(nodes, async () => {
+        throw new Error('page unavailable');
+      });
+      expect(nameOf(nodes, 'button')).toBe('<redacted>');
+      expect(nameOf(nodes, 'other')).toBe('Plain');
+    });
+
+    it('follows a hidden value through every name that took it in, not one step', async () => {
+      const nodes = [
+        field('pw', 5, 'SECRETN1'),
+        // A span named from the field, inside a label for a text box, and inside a button.
+        node({ id: 'label', role: 'LabelText', backend: 60, name: '', children: ['span1'] }),
+        node({ id: 'span1', role: 'generic', name: 'SECRETN1', labelledBy: [5] }),
+        node({ id: 't2', role: 'textbox', name: 'PIN SECRETN1', labelFor: [60] }),
+        node({ id: 'button', role: 'button', name: 'Pay SECRETN1', children: ['span2'] }),
+        node({ id: 'span2', role: 'generic', name: 'SECRETN1', labelledBy: [5] }),
+        // A third step: a button named from the text box.
+        node({ id: 'again', role: 'button', name: 'Confirm PIN SECRETN1', labelledBy: [61] }),
+        node({ id: 't2host', role: 'generic', name: '', backend: 61, children: ['t2'] }),
+      ];
+      await redactPasswordValues(nodes, answering({ 5: secret('SECRETN1') }));
+      expect(nameOf(nodes, 'span1')).toBe('<redacted>');
+      expect(nameOf(nodes, 't2')).toBe('PIN <redacted>');
+      expect(nameOf(nodes, 'button')).toBe('Pay <redacted>');
+      expect(nameOf(nodes, 'again')).toBe('Confirm PIN <redacted>');
+    });
+
+    it('hides the names above a name it had to hide whole, when they are built from content', async () => {
+      const nodes = [
+        field('pw', 5, 'SECRETN1'),
+        node({ id: 'button', role: 'button', name: 'Pay forty-two', contents: true, children: ['span'] }),
+        node({ id: 'span', role: 'generic', name: 'forty-two', labelledBy: [5] }),
+        node({ id: 'region', role: 'region', name: 'Shop forty-two', children: ['button'] }),
+        node({ id: 'plain', role: 'group', name: 'Shop', children: ['span'] }),
+      ];
+      await redactPasswordValues(nodes, answering({ 5: secret('SECRETN1') }));
+      expect(nameOf(nodes, 'span')).toBe('<redacted>');
+      expect(nameOf(nodes, 'button')).toBe('<redacted>');
+      // Its name does not come from its content, so it holds nothing of it.
+      expect(nameOf(nodes, 'region')).toBe('Shop forty-two');
+      expect(nameOf(nodes, 'plain')).toBe('Shop');
+    });
+
+    it('takes a value of four characters or more out of every name, value and address on the page', async () => {
+      const nodes = [
+        node({ id: 'pw', role: 'textbox', name: 'Password', value: '••••••••', backend: 5 }),
+        node({ id: 'echo', role: 'StaticText', name: 'You typed hunter2x just now' }),
+        node({ id: 'user', role: 'textbox', name: 'Username', value: 'hunter2x', backend: 6 }),
+        node({ id: 'link', role: 'link', name: 'Reset', url: 'https://a.test/reset?pw=hunter2x' }),
+        node({ id: 'short', role: 'StaticText', name: 'Item 42 here' }),
+        node({ id: 'ok', role: 'StaticText', name: 'Nothing here' }),
+      ];
+      await redactPasswordValues(nodes, answering({ 5: secret('hunter2x'), 6: plain }));
+      expect(nameOf(nodes, 'echo')).toBe('You typed <redacted> just now');
+      expect(valueOf(nodes, 'user')).toBe('<redacted>');
+      const address = ((byId(nodes, 'link').properties as Raw[])[0] as { value: { value: string } }).value.value;
+      expect(address).toBe('https://a.test/reset?pw=<redacted>');
+      expect(nameOf(nodes, 'ok')).toBe('Nothing here');
+    });
+
+    it('does not take a short value out of the page, only out of the names tied to its field', async () => {
+      const nodes = [field('pw', 5, '42'), node({ id: 'a', role: 'StaticText', name: 'Item 42 here' })];
+      await redactPasswordValues(nodes, answering({ 5: secret('42') }));
+      expect(nameOf(nodes, 'a')).toBe('Item 42 here');
+    });
+
+    it('never matches inside its own marker', async () => {
+      const nodes = [
+        node({ id: 'group', role: 'group', name: 'Pay reda now', children: ['pw'] }),
+        field('pw', 5, 'reda'),
+        node({ id: 'other', role: 'StaticText', name: 'a <redacted> and reda' }),
+      ];
+      await redactPasswordValues(nodes, answering({ 5: secret('reda') }));
+      expect(nameOf(nodes, 'group')).toBe('Pay <redacted> now');
+      expect(nameOf(nodes, 'other')).toBe('a <redacted> and <redacted>');
+    });
+
+    it('takes out the longer of two values that start alike, wherever they stand', async () => {
+      const nodes = [
+        field('a', 5, 'hunter2x'),
+        field('b', 6, 'hunter2xyz'),
+        node({ id: 'echo', role: 'StaticText', name: 'a hunter2xyz b hunter2x c hunter2' }),
+      ];
+      await redactPasswordValues(nodes, allSecret);
+      expect(nameOf(nodes, 'echo')).toBe('a <redacted> b <redacted> c hunter2');
+    });
+
+    it('uses the value the field really holds, not only the bullets the tree shows', async () => {
+      const nodes = [
+        node({ id: 'pw', role: 'textbox', name: 'Password', value: '••••••••', backend: 5 }),
+        node({ id: 'echo', role: 'StaticText', name: 'Tr0ub4dor&3' }),
+      ];
+      await redactPasswordValues(nodes, answering({ 5: secret('Tr0ub4dor&3') }));
+      expect(nameOf(nodes, 'echo')).toBe('<redacted>');
     });
   });
 });

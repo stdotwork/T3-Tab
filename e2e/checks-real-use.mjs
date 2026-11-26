@@ -82,6 +82,23 @@ const pages = (otherSite) => ({
        for (let i = 0; i < 205; i += 1) { const b = document.createElement('button'); b.type = 'button'; b.setAttribute('aria-labelledby', 'mainpin'); b.textContent = 'Referrer ' + i; crowd.append(b); }
      </script>`,
   ),
+  // Secrets the tree does not show as fields: hidden in several ways, under other roles, passed on through names, echoed in text.
+  '/secrets-hidden': page(
+    'Hidden secrets',
+    `<style>.disc{-webkit-text-security:disc}</style>
+     <div hidden id="l1">Password <input type="password" value="Tr0ub4dor&amp;3"></div><button type="button" aria-labelledby="l1">Sign in 1</button>
+     <div aria-hidden="true" id="l2">Password <input type="password" value="ARIAHIDDEN-SECRET-31"></div><button type="button" aria-labelledby="l2">Sign in 2</button>
+     <div style="display:none" id="l3">Card <input type="text" class="disc" value="DISPLAYNONE-SECRET-32"></div><button type="button" aria-labelledby="l3">Sign in 3</button>
+     <div style="visibility:hidden" id="l4">Card <input type="text" autocomplete="cc-number" value="VISIBILITY-SECRET-33"></div><button type="button" aria-labelledby="l4">Sign in 4</button>
+     <dialog id="l5">Password <input type="password" value="DIALOG-SECRET-34"></dialog><button type="button" aria-labelledby="l5">Sign in 5</button>
+     <input type="text" role="link" autocomplete="cc-number" value="LINKROLE-SECRET-41" aria-label="Role link">
+     <input type="text" role="checkbox" class="disc" value="CHECKROLE-SECRET-42" aria-label="Role check">
+     <input type="text" role="switch" autocomplete="cc-csc" value="SWITCHROLE-SECRET-43" aria-label="Role switch">
+     <label>Taint password <input type="password" id="pwtaint"></label>
+     <label for="t2">PIN <span aria-labelledby="pwtaint">y</span></label><input type="text" id="t2">
+     <button type="button">Pay <span aria-labelledby="pwtaint">z</span></button>
+     <label>Net PIN <input type="text" class="disc" id="netpin" oninput="echo.textContent = 'You typed ' + this.value"></label><p id="echo">Nothing typed</p>`,
+  ),
   '/keys': page('Keys', '<p id="k">0</p><script>addEventListener("keydown",(e)=>{if(e.key==="/")k.textContent=+k.textContent+1})</script>'),
   '/dialogs': page(
     'Dialogs',
@@ -436,6 +453,43 @@ export async function checkRealUse() {
       }
       const redactedButtons = text.split('\n').filter((line) => /button "<redacted>"/.test(line)).length;
       assert(redactedButtons >= 208, `only ${redactedButtons} of the 209 buttons named from the PIN are redacted:\n${text.slice(0, 3000)}`);
+    });
+
+    await check('hidden fields, other roles, names that pass a secret on, and text that echoes one', async () => {
+      const tab = await open('/secrets-hidden');
+      const first = await read(tab, { all: true });
+      const filled = await act(
+        tab,
+        { action: 'fill', ref: refFor(first.text, 'textbox "Taint password"'), text: 'TAINT-SECRET-35' },
+        { action: 'fill', ref: refFor(first.text, 'textbox "Net PIN"'), text: 'NET-SECRET-37' },
+      );
+      assert(!filled.error, `fill: ${filled.text}`);
+      const leak = /SECRET|Tr0ub4dor|•|■/;
+      assert(!leak.test(filled.text), `the fill reply shows a value or its length:\n${filled.text}`);
+      const all = await read(tab, { all: true, full: true });
+      const views = {
+        'all read': all,
+        'full read': await read(tab),
+        'find by value': await call('read', { tab, find: 'SECRET' }),
+        'find by password': await call('read', { tab, find: 'Tr0ub4dor' }),
+        'find by echo': await call('read', { tab, find: 'You typed' }),
+        'diff read': await call('read', { tab }),
+      };
+      for (const [name, view] of Object.entries(views)) {
+        assert(!view.error, `${name}: ${view.text}`);
+        assert(!leak.test(view.text.replace(/No matches for ".*"\./, '')), `${name} shows a value or its length:\n${view.text}`);
+      }
+      const text = all.text;
+      for (const expected of [
+        'Password <redacted>',
+        'Card <redacted>',
+        'textbox "PIN <redacted>"',
+        'button "Pay <redacted>"',
+        'You typed <redacted>',
+      ]) {
+        assert(text.includes(expected), `${expected} is missing from the read:\n${text}`);
+      }
+      assert((text.match(/^e[1-5] button ".*<redacted>"$/gm) ?? []).length === 5, `five buttons named from hidden fields should be redacted:\n${text}`);
     });
 
     await check('a modifier key can be pressed on its own', async () => {
