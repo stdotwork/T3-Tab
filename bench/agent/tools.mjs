@@ -2,14 +2,11 @@
 // T3-Tab its extension and daemon) and returns the MCP server entry that Claude Code is told to start. The servers
 // are started the way bench/compare starts them. Every browser has a debugging port so the harness can read the
 // page itself after the run, whatever the tool says.
-import { spawn } from 'node:child_process';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { connectMcp, createHome, installNativeHost, launchUndrivenBrowser, requireBuild, sleep, stopDaemon, waitForBrowser } from '../../e2e/harness.mjs';
-import { chromium } from 'playwright';
-
-import { pageStates } from '../compare/lib.mjs';
+import { evaluateOver, launchChromium, pageStates } from '../compare/lib.mjs';
 
 const root = new URL('../../', import.meta.url).pathname;
 const bin = (name) => join(root, 'node_modules', '.bin', name);
@@ -18,36 +15,25 @@ const bin = (name) => join(root, 'node_modules', '.bin', name);
 const dropped = (key) => /^(CLAUDE|CODEX|T3CODE_|T3_TAB_|OMARCHY_AGENT|AI_AGENT)/.test(key) || key === 'CLAUDECODE';
 
 /**
- * Headless Chromium with a debugging port, like bench/compare's, plus `--disable-extensions`: this machine registers
- * Claude in Chrome system-wide (/usr/share/chromium/extensions), so a browser with a new profile installs it from the
- * web store and, a few seconds in, opens a claude.ai sign-in tab that a tool would list and a model would trip over.
+ * The headless Chromium of bench/compare: a debugging port and `--disable-extensions`. This machine registers Claude in
+ * Chrome system-wide (/usr/share/chromium/extensions), so a browser with a new profile would install it and, a few
+ * seconds in, open a claude.ai sign-in tab that a tool would list and a model would trip over.
  */
-async function plainBrowser({ dir, env }) {
-  const profileDir = join(dir, 'profile');
-  const child = spawn(
-    chromium.executablePath(),
-    ['--headless=new', '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--disable-extensions', `--user-data-dir=${profileDir}`, '--remote-debugging-port=0', '--window-size=1600,1000', 'about:blank'],
-    // A short TMPDIR: a long one makes Chromium abort on its socket path.
-    { env: { ...process.env, ...env, TMPDIR: '/tmp' }, stdio: 'ignore' },
-  );
-  const close = async () => {
-    if (child.exitCode !== null) return;
-    const exited = new Promise((resolve) => child.once('exit', resolve));
-    child.kill('SIGTERM');
-    await Promise.race([exited, sleep(3_000)]);
-    if (child.exitCode === null) child.kill('SIGKILL');
-  };
-  try {
-    for (let attempt = 0; attempt < 150; attempt += 1) {
-      const port = await readFile(join(profileDir, 'DevToolsActivePort'), 'utf8').then((content) => content.split('\n')[0], () => undefined);
-      if (port !== undefined) return { port: Number(port), close };
-      await sleep(100);
-    }
-    throw new Error('Chromium did not report a debugging port');
-  } catch (error) {
-    await close();
-    throw error;
+// A short TMPDIR: a long one makes Chromium abort on its socket path.
+const plainBrowser = ({ dir, env }) => launchChromium({ profileDir: join(dir, 'profile'), env: { ...process.env, ...env, TMPDIR: '/tmp' } });
+
+/**
+ * What a real-site check reads: `expression`, run in every page whose address is on one of `origins`, over a short-lived
+ * debugging connection each, whatever the tool says. A page that does not answer is left out.
+ */
+export async function probePages(port, origins, expression) {
+  const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
+  const values = [];
+  for (const target of targets) {
+    if (target.type !== 'page' || !origins.some((origin) => target.url.startsWith(`${origin}/`))) continue;
+    values.push(await evaluateOver(target.webSocketDebuggerUrl, expression).catch(() => undefined));
   }
+  return values.filter((value) => value !== undefined && value !== null);
 }
 
 function cdpTool({ id, label, server, command, args, extraEnv, hint, notes }) {
@@ -64,6 +50,7 @@ function cdpTool({ id, label, server, command, args, extraEnv, hint, notes }) {
         mcp: { command: bin(command), args: args({ url, port }), env: { ...env, ...extraEnv?.({ dir, run, port }) } },
         hint: hint?.({ port }),
         states: () => pageStates(port, site),
+        probe: (origins, expression) => probePages(port, origins, expression),
         stop: () => browser.close(),
       };
     },
@@ -83,11 +70,23 @@ const chromeDevtools = (id, label, slim, notes) =>
 
 export const TOOLS = [
   {
+    // The no-tool baseline: Claude Code with no browser server at all, run on every task with the same prompt. What a run
+    // of any tool spends beyond this (system prompt, task, answer) is what the tool is responsible for.
+    id: 'none',
+    label: 'No tools (baseline)',
+    server: undefined,
+    baseline: true,
+    notes: 'Claude Code with no MCP server and no tools; the same prompt. It cannot do the task, so its success is not counted.',
+    async start() {
+      return { mcp: undefined, states: async () => [], probe: async () => [], stop: async () => undefined };
+    },
+  },
+  {
     id: 't3tab',
     label: 'T3-Tab',
     server: 't3-tab',
     notes: 'Built extension in headless Chromium that only the extension debugs, real daemon, the task site set to allow (no prompt waits).',
-    async start({ site, env }) {
+    async start({ site, env, origins = [site] }) {
       const home = await createHome();
       home.childEnv.T3TAB_AGENT_RUN = env.T3TAB_AGENT_RUN;
       await requireBuild(home);
@@ -98,12 +97,14 @@ export const TOOLS = [
         const watcher = await connectMcp(home, 't3-tab-agent-bench-watch');
         await waitForBrowser(watcher.client);
         await watcher.client.close().catch(() => undefined);
-        await browser.panel({ type: 'panel.setSite', origin: site, setting: 'allow' });
+        // `allow` for every origin the task may touch, so no permission prompt waits (the same for the local site and the real ones).
+        for (const origin of origins) await browser.panel({ type: 'panel.setSite', origin, setting: 'allow' });
         const port = Number((await readFile(join(home.profileDir, 'DevToolsActivePort'), 'utf8')).split('\n')[0]);
         const childEnv = Object.fromEntries(Object.entries(home.childEnv).filter(([key]) => !dropped(key) && !key.startsWith('ANTHROPIC_')));
         return {
           mcp: { command: process.execPath, args: [home.cliPath, 'mcp'], env: childEnv },
           states: () => pageStates(port, site),
+          probe: (origins, expression) => probePages(port, origins, expression),
           async stop() {
             await browser.close().catch(() => undefined);
             await stopDaemon(home.statePath);

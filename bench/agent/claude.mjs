@@ -29,9 +29,10 @@ export function claudeEnv(dir, mark) {
   };
 }
 
-export const PROMPT = (goal, hint) =>
+/** The prompt of a run. `real` is a task on a public website (the goal names it); the others are on the local test site. */
+export const PROMPT = (goal, hint, real = false) =>
   [
-    'You control a web browser through the tools you have been given. Do the task below on the local test site.',
+    `You control a web browser through the tools you have been given. Do the task below${real ? '' : ' on the local test site'}.`,
     '',
     `Task: ${goal}`,
     ...(hint === undefined ? [] : ['', hint]),
@@ -41,13 +42,14 @@ export const PROMPT = (goal, hint) =>
 
 /**
  * Runs Claude Code once. `maxTurns` and `timeoutMs` only stop a run that is stuck; a run they stop is a failure.
+ * Without `mcpEntry` it runs with no MCP server at all, which is the no-tool baseline.
  * Returns the parsed stream and the numbers that go in the results.
  */
 export async function runClaude({ dir, model, prompt, serverName, mcpEntry, env, transcriptFile, maxTurns, timeoutMs }) {
   const work = join(dir, 'work');
   await mkdir(work, { recursive: true });
   const mcpConfig = join(dir, 'mcp.json');
-  await writeFile(mcpConfig, JSON.stringify({ mcpServers: { [serverName]: { type: 'stdio', command: mcpEntry.command, args: mcpEntry.args, env: mcpEntry.env } } }, null, 2));
+  if (mcpEntry !== undefined) await writeFile(mcpConfig, JSON.stringify({ mcpServers: { [serverName]: { type: 'stdio', command: mcpEntry.command, args: mcpEntry.args, env: mcpEntry.env } } }, null, 2));
   const args = [
     '-p',
     '--output-format', 'stream-json',
@@ -55,8 +57,7 @@ export async function runClaude({ dir, model, prompt, serverName, mcpEntry, env,
     '--model', model,
     '--tools', '',
     '--strict-mcp-config',
-    '--mcp-config', mcpConfig,
-    '--allowedTools', `mcp__${serverName}`,
+    ...(mcpEntry === undefined ? [] : ['--mcp-config', mcpConfig, '--allowedTools', `mcp__${serverName}`]),
     '--permission-mode', 'dontAsk',
     '--setting-sources', '',
     '--disable-slash-commands',
@@ -121,14 +122,16 @@ export function parseStream(lines) {
       const message = event.message;
       if (!calls.has(message.id)) calls.set(message.id, { usage: message.usage, model: message.model, order: calls.size });
       for (const block of message.content ?? []) {
-        if (block.type === 'tool_use') toolCalls.push({ id: block.id, name: block.name, input: block.input, order: calls.get(message.id).order });
+        if (block.type === 'tool_use') toolCalls.push({ id: block.id, name: block.name, input: block.input, order: calls.get(message.id).order, at: Date.parse(event.timestamp) });
       }
     } else if (event.type === 'user') {
       for (const block of event.message?.content ?? []) {
-        if (block.type === 'tool_result') toolResults.set(block.tool_use_id, { error: block.is_error === true, content: block.content });
+        if (block.type === 'tool_result') toolResults.set(block.tool_use_id, { error: block.is_error === true, content: block.content, at: Date.parse(event.timestamp) });
       }
     }
   }
+  // How long each tool took to answer: from the event that carried the call to the one that carried its reply.
+  const toolMs = toolCalls.map((call) => toolResults.get(call.id)?.at - call.at).filter((ms) => Number.isFinite(ms) && ms >= 0);
   const usageOf = (usage) => ({
     uncached: usage?.input_tokens ?? 0,
     cacheRead: usage?.cache_read_input_tokens ?? 0,
@@ -151,6 +154,7 @@ export function parseStream(lines) {
     toolCalls: toolCalls.length,
     toolErrors: toolCalls.filter((call) => toolResults.get(call.id)?.error === true).length,
     toolNames: toolCalls.map((call) => call.name),
+    toolMs,
     usage: { ...total, input: total.uncached + total.cacheRead + total.cacheWrite },
     first: { ...first, input: first.uncached + first.cacheRead + first.cacheWrite },
     perCallUsage: perCall,

@@ -33,7 +33,10 @@ It needs network access once: dev-browser's launcher downloads its 96 MB native 
   server that connects to its browser on the first call.
 - **Setup is not counted**: starting the server and, for Playwriter, its one `session_new` call.
 
-Every tool gets a new temporary `HOME` and XDG folders and its own browser. T3-Tab runs as `pnpm bench` runs it
+Every tool gets a new temporary `HOME` and XDG folders and its own browser. The plain browsers start with
+`--disable-extensions`: this machine registers Claude in Chrome system-wide (`/usr/share/chromium/extensions`), and a
+Chromium with a new profile installs it from the web store and, a few seconds in, opens a claude.ai sign-in tab that a tool
+would list. T3-Tab runs as `pnpm bench` runs it
 (built extension in headless Chromium, the real daemon, the site set to `allow`). Every other tool is attached
 over the debugging port to a plain headless Chromium (the same binary, a 1600x1000 window, nothing else attached),
 which lets the harness check the page without trusting the tool; none of them is given a fixed viewport, so each

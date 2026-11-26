@@ -18,7 +18,8 @@ work, with the browser tools injected.
 - `docs/decisions.md` — lasting v1 design decisions, tradeoffs and out-of-scope boundaries.
 - `e2e/` — the Playwright end-to-end harness; `e2e/harness.mjs` holds the setup the end-to-end run and the
   benchmark share (temporary HOME, headless Chromium with the extension, MCP clients).
-- `bench/` — the token benchmark, its fixed pages and its budget.
+- `bench/` — the token benchmark, its fixed pages and its budget; `bench/compare` (T3-Tab against other browser MCP
+  servers, scripted calls) and `bench/agent` (the same, with a real model in the loop).
 - `.github/workflows/ci.yml` — the pull request and `main` checks.
 
 ## Commands
@@ -33,6 +34,8 @@ pnpm test
 pnpm build
 pnpm e2e
 pnpm bench
+pnpm bench:compare
+pnpm bench:agent
 ```
 
 `pnpm build` writes the Chromium extension to `packages/extension/.output/chrome-mv3` and the packed helper's
@@ -109,6 +112,19 @@ has no limit, or when a limit measures nothing. `pnpm bench --update-budget` rew
 current run (the measured number plus 5%, plus 40% for JPEG bytes, which vary with fonts); commit that
 change only on purpose and give the reason in the PR. `pnpm bench --check results.json` judges a saved
 results file without a browser. Changing `bench/pages.mjs` changes every number, so redo the budget with it.
+
+`pnpm bench:compare` and `pnpm bench:agent` (after `pnpm build`) set T3-Tab against `chrome-devtools-mcp` (default and
+`--slim`), Playwright MCP, agent-browser and Playwriter; neither is part of CI or `pnpm test`, and each has a README in its folder.
+`bench:compare` sends each tool a fixed call sequence, no model, and counts what comes back. `bench:agent` runs a real model
+(headless Claude Code, Haiku 5.5 by default, one MCP server and no built-in tools, a temporary HOME) on ten local tasks, or with
+`--sites real` on the frozen held-out set of eight public-site tasks (`bench/agent/real-tasks.mjs`: change a task only because
+its site changed, never to suit a tool; needs network and keeps the rate low). Success is checked from the page or a known answer,
+never from the model's words. Every run is also measured net of a no-tool baseline run on the same task, so a tool is judged on
+tool-attributable tokens (a run's tokens minus the baseline's median) and model requests, as the geometric mean over tasks of
+per-task ratios against T3-Tab with a 90% bootstrap interval; `--repeats` defaults to 5. It needs a model route in the
+environment (`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN`) and spends real quota: run it
+with a small `--repeats`, `--tools` and `--tasks` while developing. The other tools' browsers start with `--disable-extensions`,
+because this machine registers Claude in Chrome system-wide and a browser with a new profile would install it.
 
 ## Installing the helper
 
@@ -590,7 +606,8 @@ plugin are proprietary: study their behaviour and tool design, never copy their 
 - Before merge: the end-to-end run (Chromium with the extension loaded, driving a local test page through
   the real tools).
 - When the tools or page reading change: the token benchmark (`pnpm bench`), with its results in the PR
-  and the change from the base branch's numbers. CI runs it and fails when a number is over its budget.
+  and the change from the base branch's numbers. CI runs it and fails when a number is over its budget. For a change
+  meant to make agents cheaper, also `pnpm bench:agent` (local, then `--sites real`).
 
 Browser checks run headless or on another machine, never on the owner's desktop display.
 

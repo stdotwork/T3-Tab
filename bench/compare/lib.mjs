@@ -46,7 +46,12 @@ export function imageSize(bytes) {
   return undefined;
 }
 
-/** Headless Chromium that only opens a debugging port; nothing attaches to it but the tool under test. */
+/**
+ * Headless Chromium that only opens a debugging port; nothing attaches to it but the tool under test. It starts with
+ * `--disable-extensions`: this machine registers Claude in Chrome system-wide (/usr/share/chromium/extensions), so a
+ * browser with a new profile installs it from the web store and, a few seconds in, opens a claude.ai sign-in tab that
+ * a tool would list and a model would trip over.
+ */
 export async function launchChromium({ profileDir, env }) {
   const browser = spawn(
     chromium.executablePath(),
@@ -55,6 +60,7 @@ export async function launchChromium({ profileDir, env }) {
       '--no-sandbox',
       '--no-first-run',
       '--no-default-browser-check',
+      '--disable-extensions',
       `--user-data-dir=${profileDir}`,
       '--remote-debugging-port=0',
       // The same window the T3-Tab run uses, so every tool sees the same viewport.
@@ -106,7 +112,7 @@ export async function pageStates(port, site) {
   return states.filter((state) => state !== undefined);
 }
 
-async function evaluateOver(url, expression) {
+export async function evaluateOver(url, expression) {
   const socket = new WebSocket(url);
   await new Promise((resolve, reject) => {
     socket.onopen = resolve;
