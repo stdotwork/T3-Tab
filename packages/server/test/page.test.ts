@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatRead, MAX_OUTPUT_CHARS, TabState } from '../src/reader/page.js';
-import { ax, buttonPage, page, signInPage } from './ax-fixtures.js';
+import { formatRead, MAX_OUTPUT_CHARS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
+import { ax, buttonPage, feed, longArticle, page, signInPage } from './ax-fixtures.js';
 
 describe('reading a page', () => {
   it('returns the full text on the first read, with a header line', async () => {
@@ -98,7 +98,7 @@ describe('reading a page', () => {
 
   it('says there is nothing to show on an empty view', async () => {
     const empty = page([ax(1, 'RootWebArea')]);
-    expect(await formatRead(new TabState(), 's1', empty, {})).toContain('(no interactive elements; use all to see the text)');
+    expect(await formatRead(new TabState(), 's1', empty, {})).toContain('(empty page; all also lists images)');
     expect(await formatRead(new TabState(), 's1', empty, { all: true })).toContain('(empty page)');
   });
 
@@ -115,19 +115,24 @@ describe('reading a page', () => {
 
   it('cuts a long reply at a line and says how to read the rest', async () => {
     const reply = await formatRead(new TabState(), 's1', page(buttonPage(2_000)), {});
-    expect(reply.length).toBeLessThan(MAX_OUTPUT_CHARS + 200);
+    expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
     expect(reply).toMatch(/… truncated at 12000 characters\. Use find, a ref subtree or depth to read the rest\.$/);
     expect(reply).not.toContain('"Button 2000"');
   });
 });
 
 describe('find', () => {
-  it('returns only the matching lines, searching all text unless told otherwise', async () => {
+  it('returns only the matching lines, searching every node unless told otherwise', async () => {
     const reply = await formatRead(new TabState(), 's1', page(signInPage()), { find: 'hello' });
     expect(reply).toBe('tab 7: Test page — http://localhost/test\n  e3 button "Submit"\n"Hello there"');
-    expect(await formatRead(new TabState(), 's1', page(signInPage()), { find: 'hello', all: false })).toContain(
-      'No matches for "hello"',
-    );
+    const pictured = [ax(1, 'RootWebArea', '', [2]), ax(2, 'image', 'A hello sign')];
+    expect(await formatRead(new TabState(), 's1', page(pictured), { find: 'hello' })).toContain('img "A hello sign"');
+    expect(await formatRead(new TabState(), 's1', page(pictured), { find: 'hello', all: false })).toContain('No matches for "hello"');
+  });
+
+  it('searches text the default view left out', async () => {
+    const reply = await formatRead(new TabState(), 's1', page(longArticle(400)), { find: 'Sentence 399 ' });
+    expect(reply).toContain('"Sentence 399 of the article');
   });
 
   it('treats an empty query as no query', async () => {
@@ -147,6 +152,158 @@ describe('find', () => {
     const found = await formatRead(new TabState(), 's1', page(buttonPage(200)), { find: 'Button 77"' });
     expect(found.split('\n')).toHaveLength(1 + 3);
     expect(found.length).toBeLessThan(full.length / 20);
+  });
+});
+
+describe('text in the default view', () => {
+  it('shows a short page whole: its text, lists and live regions', async () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 3, 5, 7]),
+      ax(2, 'heading', 'Activity log', [], { props: { level: 1 } }),
+      ax(3, 'alert', '', [4]),
+      ax(4, 'StaticText', 'Incorrect username or password.'),
+      ax(5, 'list', 'Entries', [6]),
+      ax(6, 'listitem', '', [8]),
+      ax(7, 'button', 'Load more'),
+      ax(8, 'StaticText', '#1 · Deploy finished · ref XD-8919'),
+    ];
+    expect(await formatRead(new TabState(), 's1', page(nodes), {})).toBe(
+      [
+        'tab 7: Test page — http://localhost/test',
+        '# Activity log',
+        'alert "Incorrect username or password."',
+        'e1 list "Entries"',
+        '  "#1 · Deploy finished · ref XD-8919"',
+        'e2 button "Load more"',
+      ].join('\n'),
+    );
+  });
+
+  it('keeps every element and as much text as the budget allows, the main content first, and says what it left out', async () => {
+    const reply = await formatRead(new TabState(), 's1', page(longArticle(400)), {});
+    const lines = reply.split('\n');
+    expect(reply).toContain('e1 link "Home"');
+    expect(reply).toContain('e2 button "Subscribe"');
+    expect(reply).toContain('"Sentence 1 of the article');
+    expect(reply).not.toContain('Sentence 399 ');
+    // The footer's text comes after the article's, so it is the part left out.
+    expect(reply).not.toContain('Footer text');
+    expect(reply).toContain('alert "Saved."');
+    const text = lines.filter((line) => line.trimStart().startsWith('"')).join('\n');
+    expect(text.length).toBeLessThanOrEqual(TEXT_BUDGET);
+    expect(text.length).toBeGreaterThan(TEXT_BUDGET - 200);
+    expect(lines.at(-1)).toMatch(/^\(\d+ text lines left out, \d+ characters: find searches them, read a ref for one part, all for the whole page\)$/);
+  });
+
+  it('gives text no more room than the cap leaves after the elements', async () => {
+    const nodes = buttonPage(450);
+    nodes[0] = { ...nodes[0]!, children: [...nodes[0]!.children, '9000'] };
+    nodes.push(ax(9000, 'paragraph', '', [9001]), ax(9001, 'StaticText', 'A closing remark that does not fit.'));
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toContain('"Button 450"');
+    expect(reply).not.toContain('closing remark');
+    expect(reply).toMatch(/\(1 text lines left out, 35 characters/);
+    expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
+  });
+
+  it('keeps the note when the elements alone pass the cap', async () => {
+    const nodes = buttonPage(2_000);
+    nodes[0] = { ...nodes[0]!, children: ['9000', ...nodes[0]!.children] };
+    nodes.push(ax(9000, 'paragraph', '', [9001]), ax(9001, 'StaticText', 'An intro.'));
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toContain('… truncated at 12000 characters.');
+    expect(reply).toMatch(/\(1 text lines left out, 9 characters: .*\)$/);
+  });
+
+  it('holds a long log to the budget, newest entries first, and keeps the controls after it', async () => {
+    const ids = Array.from({ length: 400 }, (_, index) => 1_000 + index * 2);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 3, 4]),
+      ax(2, 'log', 'Chat', ids),
+      ax(3, 'textbox', 'Message'),
+      ax(4, 'button', 'Send'),
+      ...ids.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', `Message ${index + 1}: hello there, this is a chat line.`)]),
+    ];
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toContain('e1 log "Chat"');
+    expect(reply).toContain('Message 400: hello');
+    expect(reply).not.toContain('"Message 1: hello');
+    expect(reply).toContain('e3 button "Send"');
+    expect(reply).toMatch(/\(\d+ text lines left out, \d+ characters: .*\)$/);
+    expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
+    const text = reply.split('\n').filter((line) => line.trimStart().startsWith('"')).join('\n');
+    expect(text.length).toBeLessThanOrEqual(TEXT_BUDGET);
+  });
+
+  it('keeps a dialog\'s buttons and the start of its text when the text is long', async () => {
+    const ids = Array.from({ length: 300 }, (_, index) => 1_000 + index * 2);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2]),
+      ax(2, 'dialog', 'Terms', [...ids, 3]),
+      ax(3, 'button', 'Accept'),
+      ...ids.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', `Clause ${index + 1}. The service is provided as is, without warranty of any kind.`)]),
+    ];
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toContain('"Clause 1. The service');
+    expect(reply).not.toContain('Clause 300.');
+    expect(reply).toContain('e2 button "Accept"');
+    expect(reply).toMatch(/text lines left out/);
+  });
+
+  it('keeps a change within the cap, its changed elements before its text', async () => {
+    const state = new TabState();
+    await formatRead(state, 's1', page(buttonPage(450)), {});
+    // One button in five renamed (about 10,000 characters of diff), and 80 paragraphs of new text.
+    const nodes = buttonPage(450).map((node) => (node.role === 'button' && Number(node.id) % 5 === 0 ? { ...node, name: `${node.name} renamed` } : node));
+    const ids = Array.from({ length: 80 }, (_, index) => 9_000 + index * 2);
+    nodes[0] = { ...nodes[0]!, children: [...nodes[0]!.children, ...ids.map(String)] };
+    nodes.push(...ids.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', `New paragraph ${index + 1}, which says something long enough to count.`)]));
+    const reply = await formatRead(state, 's1', page(nodes), {});
+    expect(reply).toContain('Changed since the last read:');
+    expect(reply).toContain('+e446 button "Button 446 renamed"');
+    expect(reply).not.toContain('truncated at');
+    expect(reply).toMatch(/\(\d+ changed text lines left out, \d+ characters: .*\)$/);
+    expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
+  });
+
+  it('gives a ref read all the text that fits under the cap', async () => {
+    const state = new TabState();
+    await formatRead(state, 's1', page(longArticle(400)), {});
+    const reply = await formatRead(state, 's1', page(longArticle(400)), { ref: 'e3' });
+    expect(reply).toContain('Sentence 150 ');
+    expect(reply.length).toBeGreaterThan(TEXT_BUDGET * 2);
+  });
+
+  it('shows new text in a change, within the budget', async () => {
+    const state = new TabState();
+    await formatRead(state, 's1', page(feed(10)), {});
+    const grown = await formatRead(state, 's1', page(feed(14)), {});
+    expect(grown).toContain('Changed since the last read:');
+    expect(grown).toContain('+  "#14 · Entry"');
+    const flooded = await formatRead(state, 's1', page(feed(600)), {});
+    expect(flooded).toContain('"#15 · Entry"');
+    expect(flooded).not.toContain('"#600 · Entry"');
+    expect(flooded).toMatch(/text lines left out/);
+  });
+
+  it('shows a live region\'s message on the page a form posts back to', async () => {
+    const state = new TabState();
+    const form = (message: string | undefined, epoch: number) =>
+      page(
+        [
+          ax(1, 'RootWebArea', '', message === undefined ? [2, 3] : [4, 2, 3]),
+          ax(2, 'textbox', 'Password', [], { props: { password: true }, value: 'hunter2' }),
+          ax(3, 'button', 'Sign in'),
+          ax(4, 'paragraph', '', [5], { props: { live: 'assertive' } }),
+          ax(5, 'StaticText', message ?? ''),
+        ],
+        { epoch },
+      );
+    await formatRead(state, 's1', form(undefined, 1), {});
+    const reloaded = await formatRead(state, 's1', form('Incorrect username or password.', 2), {});
+    expect(reloaded).toContain('"Incorrect username or password."');
+    expect(reloaded).toContain('textbox "Password" value=<redacted>');
+    expect(reloaded).not.toContain('hunter2');
   });
 });
 

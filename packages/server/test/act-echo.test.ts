@@ -50,9 +50,9 @@ describe('an act reply leaves out what the batch set', () => {
       [
         'tab 7',
         'Set e2, e3, e4.',
-        'Text changed since the last read:',
+        'Changed since the last read:',
         '@@',
-        '   button "Create account"',
+        '   e8 button "Create account"',
         '+"Welcome Ada Lovelace (ada@example.com)"',
       ].join('\n'),
     );

@@ -1,8 +1,8 @@
 import type { PageReadResult } from '@t3-tab/protocol';
 
-import { elideEchoes, elideTextEchoes, type SetValue } from './echo.js';
+import { elideEchoes, type SetValue } from './echo.js';
 import { findLines } from './find.js';
-import { MORE_INSIDE, RefGoneError, renderTree, truncate } from './format.js';
+import { type Keep, MORE_INSIDE, RefGoneError, renderLines, type RenderedLine, truncate } from './format.js';
 import { RefTable } from './refs.js';
 import { createSmartDiff } from './smart-diff.js';
 
@@ -13,8 +13,13 @@ const MAX_SESSIONS_PER_TAB = 16;
 const MAX_KEYS_PER_SESSION = 8;
 const MAX_TITLE = 80;
 const MAX_URL = 200;
-/** Most lines of new plain text added to a reply about changed elements. */
-const MAX_NEW_TEXT_LINES = 10;
+/**
+ * Most characters of plain text in a default read or a change: the rest is left out with a note. The text of live
+ * regions and dialogs comes first. Elements and headings are always shown, up to the cap.
+ */
+export const TEXT_BUDGET = 4_000;
+/** Room kept under the cap for the header and the notes, so text never pushes an element past the cut. */
+const NOTE_ROOM = 1_000;
 const DEPTH_NOTE = '(… = more inside: read that ref)';
 
 export interface ReadOptions {
@@ -33,7 +38,7 @@ export interface ReadOptions {
 export class TabState {
   private epoch = -1;
   private refs = new RefTable();
-  private readonly baselines = new Map<string, Map<string, string>>();
+  private readonly baselines = new Map<string, Map<string, Baseline>>();
   private readonly headers = new Map<string, string>();
 
   /** Drops refs and baselines when the document the tab shows is not the one they came from. */
@@ -67,11 +72,11 @@ export class TabState {
     return this.epoch;
   }
 
-  baseline(session: string, key: string): string | undefined {
+  baseline(session: string, key: string): Baseline | undefined {
     return this.baselines.get(session)?.get(key);
   }
 
-  setBaseline(session: string, key: string, text: string): void {
+  setBaseline(session: string, key: string, baseline: Baseline): void {
     let keys = this.baselines.get(session);
     if (keys === undefined) {
       if (this.baselines.size >= MAX_SESSIONS_PER_TAB) {
@@ -85,8 +90,14 @@ export class TabState {
       const oldest = keys.keys().next().value;
       if (oldest !== undefined) keys.delete(oldest);
     }
-    keys.set(key, text);
+    keys.set(key, baseline);
   }
+}
+
+/** The last read of one view: every line, and which of its text lines come first when a reply must leave text out. */
+export interface Baseline {
+  text: string;
+  kept: ReadonlyMap<string, Keep>;
 }
 
 /**
@@ -116,11 +127,11 @@ export async function formatRead(
   }
 
   const find = options.find === '' ? undefined : options.find;
-  // A search covers every node unless the caller narrowed it to interactive ones.
+  // A search covers every node unless the caller narrowed it to the default view.
   const all = options.all ?? find !== undefined;
-  let lines: string[];
+  let rendered: RenderedLine[];
   try {
-    lines = renderTree(page.nodes, state.refTable, {
+    rendered = renderLines(page.nodes, state.refTable, {
       all,
       target,
       depth: options.depth,
@@ -135,76 +146,165 @@ export async function formatRead(
     }
     throw error;
   }
+  const lines = rendered.map((item) => item.line);
 
   if (find !== undefined) {
     const found = await findLines(lines, find, { regex: options.regex });
     return limit(`${header}\n${found.text}`);
   }
 
-  const text = lines.join('\n') + (lines.some((line) => line.endsWith(MORE_INSIDE)) ? `\n${DEPTH_NOTE}` : '');
-  const key = `${all ? 'all' : 'interactive'}|${options.ref ?? ''}|${options.depth ?? ''}`;
-  const previous = state.baseline(session, key);
-  state.setBaseline(session, key, text);
+  const depthNote = lines.some((line) => line.endsWith(MORE_INSIDE)) ? `\n${DEPTH_NOTE}` : '';
+  // The baseline holds every line, so a change to text the reply left out is still a change.
+  const text = lines.join('\n') + depthNote;
+  const key = `${all ? 'all' : 'page'}|${options.ref ?? ''}|${options.depth ?? ''}`;
+  const kept = keptLines(rendered);
+  const last = state.baseline(session, key);
+  const previous = last?.text;
+  state.setBaseline(session, key, { text, kept });
 
   if (lines.length === 0) {
-    return `${header}\n${all ? '(empty page)' : '(no interactive elements; use all to see the text)'}`;
+    return `${header}\n${all ? '(empty page)' : '(empty page; all also lists images)'}`;
   }
+  // A ref read is a request for that part, so only the cap limits its text; `all` has no text budget.
+  const budget = all || options.ref !== undefined ? Number.POSITIVE_INFINITY : TEXT_BUDGET;
+  const whole = (): string => {
+    if (all) return limit(`${header}\n${text}`);
+    const view = withinBudget(rendered, budget, header.length);
+    return limit(`${header}\n${view.text}${depthNote}`, view.note);
+  };
   // What the batch itself set is no news to the agent: the earlier read is settled to show it already.
   const echoes =
     previous === undefined || options.full === true || options.echoed === undefined
       ? undefined
       : elideEchoes(previous, text, options.echoed);
-  // The default view leaves plain text out, so its changes are tracked beside it: a page whose only change is
-  // a message must not read as unchanged.
-  const textChange = all ? undefined : trackPlainText(state, session, page, options, target, echoes?.pairs);
-  if (previous === undefined || options.full === true) return limit(`${header}\n${text}`);
+  if (previous === undefined || options.full === true) return whole();
 
-  const diff = createSmartDiff({ oldContent: echoes?.previous ?? previous, newContent: text });
+  // Both end in a newline, so a line added at the end does not also show the old last line as changed.
+  const diff = createSmartDiff({ oldContent: `${echoes?.previous ?? previous}\n`, newContent: `${text}\n` });
   const set = echoes === undefined || echoes.refs.length === 0 ? undefined : `Set ${echoes.refs.join(', ')}.`;
   if (diff.type === 'no-change') {
-    if (textChange === undefined) return `${header}\n${set === undefined ? 'No changes since the last read.' : `${set} Nothing else changed.`}`;
-    return limit(`${header}${set === undefined ? '' : `\n${set}`}\nText changed since the last read:\n${textChange.diff}`);
+    return `${header}\n${set === undefined ? 'No changes since the last read.' : `${set} Nothing else changed.`}`;
   }
   if (diff.type === 'diff') {
-    const added = textChange?.added.filter((line) => !diff.content.includes(line.slice(1, -1))).slice(0, MAX_NEW_TEXT_LINES) ?? [];
-    const newText = added.length === 0 ? '' : `\nNew text:\n${added.join('\n')}`;
-    return limit(`${header}${set === undefined ? '' : `\n${set}`}\nChanged since the last read:\n${diff.content}${newText}`);
+    const room = MAX_OUTPUT_CHARS - NOTE_ROOM - header.length;
+    const changed = all ? { text: diff.content, note: undefined } : diffWithinBudget(diff.content, [kept, last?.kept ?? new Map()], budget, room);
+    return limit(`${header}${set === undefined ? '' : `\n${set}`}\nChanged since the last read:\n${changed.text}`, changed.note);
   }
-  return limit(`${header}\n${text}`);
+  return whole();
 }
 
-/** Records the page's full text for this view and returns how it differs from the last one, if it does. */
-function trackPlainText(
-  state: TabState,
-  session: string,
-  page: PageReadResult,
-  options: ReadOptions,
-  target: number | undefined,
-  echoes: Array<{ before: string; after: string }> | undefined,
-): { diff: string; added: string[] } | undefined {
-  // Its own ref table: rendering must not hand out refs the agent was never shown.
-  const lines = renderTree(page.nodes, new RefTable(), { all: true, target, depth: options.depth }).map((line) =>
-    line.replace(/^(\s*)e\d+ /, '$1'),
-  );
-  const text = lines.join('\n');
-  const key = `text|${options.ref ?? ''}|${options.depth ?? ''}`;
-  const previous = state.baseline(session, key);
-  state.setBaseline(session, key, text);
-  if (previous === undefined) return undefined;
-  // The same settling as for the elements: a field's value the batch set is not a change of the page's text.
-  const compared = echoes === undefined ? previous : elideTextEchoes(previous, text, echoes);
-  // Both end in a newline, so a line added at the end does not also show the old last line as changed.
-  const diff = createSmartDiff({ oldContent: `${compared}\n`, newContent: `${text}\n`, threshold: 1.01 });
-  if (diff.type === 'no-change') return undefined;
-  const before = new Set(compared.split('\n'));
-  const added = lines.filter((line) => line.trimStart().startsWith('"') && !before.has(line)).map((line) => line.trim());
-  return { diff: diff.content, added };
+/** The text lines of a live region or a dialog in a view, and which end of them to keep. */
+function keptLines(rendered: RenderedLine[]): Map<string, Keep> {
+  const kept = new Map<string, Keep>();
+  for (const item of rendered) if (item.text && item.keep !== false) kept.set(item.line, item.keep);
+  return kept;
 }
 
-/** Cuts a reply at a line boundary once it is over the cap, and says how to get at the rest. */
-function limit(text: string): string {
-  if (text.length <= MAX_OUTPUT_CHARS) return text;
-  const cut = text.lastIndexOf('\n', MAX_OUTPUT_CHARS);
-  const kept = text.slice(0, cut > 0 ? cut : MAX_OUTPUT_CHARS);
-  return `${kept}\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use find, a ref subtree or depth to read the rest.`;
+/**
+ * Which of `candidates` (text lines, in page order, each with its size) fit in `room`: first the text of live regions
+ * and dialogs (a log from its newest line back, the others from their first), then the page's main content, then the
+ * rest, each in order until one does not fit.
+ */
+function chooseText(candidates: Array<{ index: number; size: number; keep: Keep; main: boolean }>, room: number): Set<number> {
+  const hasMain = candidates.some((item) => item.keep === false && item.main);
+  const groups = [
+    candidates.filter((item) => item.keep === 'start'),
+    candidates.filter((item) => item.keep === 'end').reverse(),
+    candidates.filter((item) => item.keep === false && (!hasMain || item.main)),
+    hasMain ? candidates.filter((item) => item.keep === false && !item.main) : [],
+  ];
+  const chosen = new Set<number>();
+  let left = room;
+  for (const group of groups) {
+    for (const item of group) {
+      if (item.size > left) {
+        left = 0;
+        break;
+      }
+      left -= item.size;
+      chosen.add(item.index);
+    }
+  }
+  return chosen;
+}
+
+/**
+ * The default view at its size: every element and heading, and as much text as the budget and the cap leave room
+ * for, chosen by `chooseText`. What it leaves out is said in one line at the end.
+ */
+function withinBudget(rendered: RenderedLine[], budget: number, headerLength: number): { text: string; note: string | undefined } {
+  const fixed = rendered.reduce((sum, item) => sum + (item.text ? 0 : item.line.length + 1), 0);
+  const room = Math.min(budget, Math.max(0, MAX_OUTPUT_CHARS - NOTE_ROOM - headerLength - fixed));
+  const candidates = rendered.flatMap((item, index) => (item.text ? [{ index, size: item.line.length + 1, keep: item.keep, main: item.main }] : []));
+  const shown = chooseText(candidates, room);
+  const text = rendered
+    .filter((item, index) => !item.text || shown.has(index))
+    .map((item) => item.line)
+    .join('\n');
+  const left = candidates.filter((item) => !shown.has(item.index));
+  const chars = left.reduce((sum, item) => sum + textLength(rendered[item.index]?.line ?? ''), 0);
+  return { text, note: left.length === 0 ? undefined : leftOutNote(left.length, chars) };
+}
+
+/**
+ * A diff's text lines within the budget and the room the cap leaves after its other lines, the rest left out with a
+ * note; changed elements always stay. A line of a live region or dialog, on either side of the diff, comes first.
+ */
+function diffWithinBudget(
+  diff: string,
+  kept: [ReadonlyMap<string, Keep>, ReadonlyMap<string, Keep>],
+  budget: number,
+  room: number,
+): { text: string; note: string | undefined } {
+  const lines = diff.split('\n');
+  const isText = (line: string): boolean => line !== '@@' && line.slice(1).trimStart().startsWith('"');
+  const fixed = lines.reduce((sum, line) => sum + (isText(line) ? 0 : line.length + 1), 0);
+  const candidates = lines.flatMap((line, index) => {
+    if (!isText(line)) return [];
+    const body = line.slice(1);
+    const keep = kept[0].get(body) ?? kept[1].get(body) ?? false;
+    return [{ index, size: line.length + 1, keep, main: false }];
+  });
+  const shown = chooseText(candidates, Math.min(budget, Math.max(0, room - fixed)));
+  const hunks: string[][] = [];
+  let left = 0;
+  let chars = 0;
+  for (const [index, line] of lines.entries()) {
+    if (line === '@@') {
+      hunks.push([line]);
+      continue;
+    }
+    if (isText(line) && !shown.has(index)) {
+      if (!line.startsWith(' ')) {
+        left += 1;
+        chars += textLength(line.slice(1));
+      }
+      continue;
+    }
+    hunks.at(-1)?.push(line);
+  }
+  // A hunk whose changes were all left out says nothing.
+  const changed = hunks.filter((hunk) => hunk.some((line) => line.startsWith('+') || line.startsWith('-')));
+  return { text: changed.flat().join('\n'), note: left === 0 ? undefined : leftOutNote(left, chars, 'changed ') };
+}
+
+/** The characters of text a printed text line holds: without its indent and quotes. */
+function textLength(line: string): number {
+  return Math.max(0, line.trim().length - 2);
+}
+
+function leftOutNote(lines: number, chars: number, kind = ''): string {
+  return `(${lines} ${kind}text lines left out, ${chars} characters: find searches them, read a ref for one part, all for the whole page)`;
+}
+
+const TRUNCATED = `\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use find, a ref subtree or depth to read the rest.`;
+
+/** Cuts a reply at a line boundary so that all of it, notes included, fits the cap, and says how to get at the rest. */
+function limit(text: string, note?: string | undefined): string {
+  const tail = note === undefined ? '' : `\n${note}`;
+  if (text.length + tail.length <= MAX_OUTPUT_CHARS) return `${text}${tail}`;
+  const room = Math.max(0, MAX_OUTPUT_CHARS - tail.length - TRUNCATED.length);
+  const cut = text.lastIndexOf('\n', room);
+  const kept = text.slice(0, cut > 0 ? cut : room);
+  return `${kept}${TRUNCATED}${tail}`;
 }

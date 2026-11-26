@@ -244,7 +244,7 @@ same tab do not take each other's diffs. A reply starts with `tab <id>: <title> 
 last saw that same title and address for the tab, it starts with `tab <id>` alone.
 
 Text is cut for display, never for search. The extension keeps each name up to 8,000 characters (2 MB a page, then 300
-each) and drops the line-wrap boxes the reader never prints; the reader prints up to 300, and `find` searches all of it
+each) and drops the line-wrap boxes the reader never prints; the reader prints a line of text up to 1,000 and a name up to 160, and `find` searches all of it
 and prints a window around the match. Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
 site) when another link of the same name goes elsewhere, when it has no name, when it is the element a `ref` read asks
 for, and in `find`. With `depth`, an element with more inside ends in `…`.
@@ -280,9 +280,25 @@ A child frame of another origin, or one the browser cannot name (a sandboxed fra
 `frame omitted: <origin>` in its place (`restrictToOriginFrames` in `packages/extension/src/ax.ts`). Screenshots are
 not filtered for iframes.
 
-With `all`, images are listed with a ref, named or not, so they can be hovered or clicked. The default view leaves
-plain text out but still tracks it: a read or `act` whose only change is plain text replies `Text changed since the
-last read:` with that diff, and a reply about changed elements adds up to 10 lines of `New text:`.
+The default view shows the page's text as well as its elements and headings (`format.ts`): paragraphs, list items, and
+a table row of text cells as one line with its cells apart by `|`. The text of a block is run together while it fits on
+one 1,000-character line: with no space added where it flows as one line (the parent holds text of its own, or both
+pieces are text-level elements such as `<em>` or `<sub>`), because Chromium keeps the real spaces of inline text in the
+text (`$<span>1,284</span>.50` is `"$1,284.50"`); with a space between boxes side by side, such as flex items or block
+`<div>`s, which Chromium gives no space between (`"Price $5"`); a line break is a space. Each node's text is built once
+and never past a line, so a page of many small text nodes (highlighted code) reads in time proportional to its size.
+Separators with no letter or digit (`|`, `(`) and icon-font glyphs are left out, and so is text inside a field that only
+repeats the field's value (an editable combobox's text). A live region (`alert`, `status`, `log` or `aria-live`) and a
+dialog always print; an `alert` or `status` that says one short thing is one line with no ref, `alert "Incorrect
+username or password."`, and an empty one prints nothing. Text is held to `TEXT_BUDGET` (4,000 characters, `page.ts`)
+and gets only the room the 12,000-character cap leaves after every element and heading, so text never pushes an element
+past the cut. Within it, the text of live regions and dialogs comes first (a `log` from its newest entry back, others from
+their start), then the page's `main` or `article`, then the rest. What is left out is said in one last line, `(N text
+lines left out, M characters: find searches them, read a ref for one part, all for the whole page)`, which stays even
+when the reply is cut; the whole reply, notes included, stays within the cap. A `ref` read and `all` have no text budget,
+only the cap. The diff baseline holds every line, text left out included; a diff's text lines are held to the same
+budget and to the room its other lines leave, live-region and dialog lines (judged on both sides of the diff) first, with
+the same kind of note. With `all`, images are also listed with a ref, named or not, so they can be hovered or clicked.
 An `act` reply leaves out what the batch itself set: a changed line whose only change is the value a `fill`, a `type` with a
 ref or a `select` gave it (`packages/server/src/reader/echo.ts`) is settled against the earlier read, so it is not a change, and
 the reply names those refs on one line (`Set e7, e8, e10.`). A line the page changed in any other way, or to another value
