@@ -608,6 +608,9 @@ async function answerInPanel(panelPage, serviceWorker, prompt, answer) {
     const card = panelPage.locator(`li.prompt-card[data-prompt-id="${prompt.id}"]`);
     await card.waitFor();
     assert((await card.locator('.answer-btn').first().isDisabled()) === true, 'A new card took answers at once');
+    // Keys go to the top card once the panel sees it whole, which locks it for another 500 ms. That sighting comes from
+    // an IntersectionObserver and, in this headless panel tab, sometimes about a second late: wait for it, then the lock.
+    await card.locator('[data-keyed="true"]').waitFor({ timeout: 5_000 });
     await sleep(650);
     const stillWaiting = async () => (await pendingPrompts(serviceWorker)).some((entry) => entry.id === prompt.id);
     if (answer === 'Enter' || answer === 'Escape') {
