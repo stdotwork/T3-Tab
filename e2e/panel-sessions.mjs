@@ -329,9 +329,14 @@ async function checkThreadSections(livePanel, screenshotPath) {
       window.__t3tabT3.onShell({ kind: 'snapshot', snapshot: { threads, projects: [{ id: 'shot-project', title: 'shop-site', workspaceRoot: '/tmp/shop-site' }] } });
     }, threads);
   const running = { status: 'running', activityRunStatus: 'running', activeRunId: 'run-busy', latestRunCompletedAt: null };
+  // T3's providers and its machine name, so the rows can show each thread's provider logo and must not show the machine.
+  const configure = async (providers, environment) =>
+    await livePanel.evaluate(([list, env]) => window.__t3tabT3.onConfig({ type: 'snapshot', config: { providers: list, settings: {}, environment: env } }), [providers, environment]);
+  const provider = (instanceId, driver) => ({ instanceId, driver, enabled: true, installed: true, status: 'ready', models: [{ slug: `${driver}-model`, name: driver, isDefault: true }] });
+  await configure([provider('claudeAgent', 'claudeAgent'), provider('codex', 'codex')], { label: 'layout-desktop', platform: { machine: 'desktop' }, capabilities: {} });
   await supply([
-    ['pinned', 'Pinned plan', { pinnedAt: -500 }],
-    ['active', 'Fix the checkout form', { latestRunCompletedAt: -3, lastVisitedAt: -10 }],
+    ['pinned', 'Pinned plan', { pinnedAt: -500, modelSelection: { instanceId: 'claudeAgent', model: 'claudeAgent-model' } }],
+    ['active', 'Fix the checkout form', { latestRunCompletedAt: -3, lastVisitedAt: -10, modelSelection: { instanceId: 'codex', model: 'codex-model' } }],
     ['asks', 'Pick a colour', { ...running, status: 'waiting', activityRunStatus: 'waiting', pendingRuntimeRequest: { id: 'q1', kind: 'user_input', createdAt: -1 } }],
     ['busy', 'Refactor the cart', { ...running, latestUserAuthoredMessageAt: -2 }],
     ['snoozed', 'Wait for the deploy', { snoozedAt: -5, snoozedUntil: 90 }],
@@ -347,6 +352,13 @@ async function checkThreadSections(livePanel, screenshotPath) {
   assert(rows[0] === 'pinned:Pinned plan' && rows.includes('active:Pick a colour') && rows.includes('active:Fix the checkout form'), `Pinned and active rows: ${JSON.stringify(rows)}`);
   assert(!rows.some((row) => /Refactor the cart|Wait for the deploy|Old landing page|Archived thread/.test(row)), `Closed shelves or an archived thread showed rows: ${JSON.stringify(rows)}`);
   assert((await livePanel.locator('.thread-row').filter({ hasText: 'Pick a colour' }).locator('.thread-badge.input').textContent()) === 'Input', 'The waiting thread does not say Input, as T3 does');
+  // Each row ends in its provider's logo, as T3's do, and none names the machine: T3 shows that only across machines.
+  const logos = await livePanel.locator('.thread-row').evaluateAll((nodes) =>
+    Object.fromEntries(nodes.map((node) => [node.querySelector('.thread-title').textContent, `${node.dataset.provider ?? '-'}:${node.querySelectorAll('.thread-provider svg.provider-logo').length}`])),
+  );
+  assert(logos['Pinned plan'] === 'claudeAgent:1' && logos['Fix the checkout form'] === 'codex:1', `Thread rows' provider logos: ${JSON.stringify(logos)}`);
+  assert(logos['Pick a colour'] === '-:0', `A row whose provider T3 does not list drew a logo anyway: ${JSON.stringify(logos)}`);
+  assert((await livePanel.locator('.thread-list').getByText('layout-desktop').count()) === 0, 'A thread row names the machine');
   for (const shelf of ['working', 'snoozed', 'settled']) await livePanel.locator(`.shelf[data-shelf="${shelf}"]`).click();
   rows = await visibleRows();
   const tail = rows.slice(rows.indexOf('working:Refactor the cart'));
@@ -375,7 +387,8 @@ async function checkThreadSections(livePanel, screenshotPath) {
   await livePanel.locator('#btn-threads .needs-you-dot').waitFor({ state: 'detached' });
   assert((await livePanel.getByText('Refactor the cart').count()) === 0, 'The new-thread screen shows a working thread');
   await supply([]);
-  console.log(`Panel thread list: T3's sections in T3's order (${rows.length} rows with the shelves open); the needs-you dot follows a waiting question`);
+  await configure([], { capabilities: {} });
+  console.log(`Panel thread list: T3's sections in T3's order (${rows.length} rows with the shelves open), each row with its provider's logo and no machine line; the needs-you dot follows a waiting question`);
 }
 
 /**

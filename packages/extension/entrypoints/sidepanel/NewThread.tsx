@@ -225,7 +225,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
 
   return (
     <div className="screen">
-      <TopBar title={<strong>New thread</strong>} onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} needsYou={needsYou} />
+      <TopBar crumbs={['New thread']}onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} needsYou={needsYou} />
       <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />
       <main className="home">
         <div className="hero" ref={hero}>
