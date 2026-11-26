@@ -1,4 +1,5 @@
 import {
+  type ActStep,
   actStepRef,
   DEFAULT_SCREENSHOT_MAX_EDGE,
   type TabInfo,
@@ -10,6 +11,7 @@ import {
 import type { z } from 'zod';
 
 import type { BrowserLink } from './browser-link.js';
+import type { SetValue } from './reader/echo.js';
 import { truncate } from './reader/format.js';
 import { formatRead, MAX_OUTPUT_CHARS } from './reader/page.js';
 import { actParams, convertStep, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
@@ -132,11 +134,25 @@ async function runAct(
     epoch: state.currentEpoch,
   });
   // A page paused on a dialog has nothing to read, and its refs and diff baselines stay as they were.
-  const reply = page.dialog === undefined ? await formatRead(state, session.id, page, {}) : `tab ${page.tab}\n${page.dialog}`;
+  const reply =
+    page.dialog === undefined
+      ? await formatRead(state, session.id, page, { echoed: setValues(steps.slice(0, page.failure === undefined ? undefined : page.failure.step - 1)) })
+      : `tab ${page.tab}\n${page.dialog}`;
   if (page.failure !== undefined) {
     throw new Error(`Step ${page.failure.step} (${page.failure.action}) failed: ${page.failure.error}\n${reply}`);
   }
   return reply;
+}
+
+/** The values a batch's steps set on elements, for the reply to leave out what the page shows back. */
+function setValues(steps: ActStep[]): SetValue[] {
+  const sets: SetValue[] = [];
+  for (const step of steps) {
+    if ('fill' in step) sets.push({ ref: step.fill.ref, kind: 'value', text: step.fill.value });
+    else if ('type' in step && step.type.ref !== undefined) sets.push({ ref: step.type.ref, kind: 'value', text: step.type.text, appends: true });
+    else if ('select' in step) sets.push({ ref: step.select.ref, kind: 'select', text: step.select.value });
+  }
+  return sets;
 }
 
 async function runJs(link: BrowserLink, session: ToolSession, params: z.infer<typeof runJsParams>): Promise<string> {

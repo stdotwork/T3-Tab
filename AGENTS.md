@@ -259,6 +259,10 @@ not filtered for iframes.
 With `all`, images are listed with a ref, named or not, so they can be hovered or clicked. The default view leaves
 plain text out but still tracks it: a read or `act` whose only change is plain text replies `Text changed since the
 last read:` with that diff, and a reply about changed elements adds up to 10 lines of `New text:`.
+An `act` reply leaves out what the batch itself set: a changed line whose only change is the value a `fill`, a `type` with a
+ref or a `select` gave it (`packages/server/src/reader/echo.ts`) is settled against the earlier read, so it is not a change, and
+the reply names those refs on one line (`Set e7, e8, e10.`). A line the page changed in any other way, or to another value
+(a mask, a rejected option, an `invalid` flag), and any line it cannot match to the step, stays in the reply.
 
 **JavaScript dialogs.** A dialog pauses the page, so every command that reaches it would hang. `cdp.ts` tracks
 `Page.javascriptDialogOpening` and fails such commands at once with a notice naming the dialog. `act` answers it:
