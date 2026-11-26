@@ -52,7 +52,7 @@ to a new one, that `uninstall` removes the helper folder, manifest, state and ag
 that `scripts/install-test-build.sh` (through a `file://` address) installs the same helper, and that a browser
 started with its own `--user-data-dir` finds it once `setup` names that folder. Then `e2e/checks-real-use.mjs` runs in a headless Chromium only the extension debugs, because Playwright answers
 dialogs itself and makes hidden tabs act focused: dialogs, background input, another extension's frame
-(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs and same-origin frames. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that every tool works on that hidden tab, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
+(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs and same-origin frames. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that its reply carries the page (drawn by script too) and is the baseline of the next `read`, that `read` and `goto` with a url open a tab in an empty session behind the same prompt and take `find`, that a load's reply leaves out a page a redirect took to an unapproved origin and names a dialog the page opened, that every tool works on that hidden tab, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
 two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
 links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
 `screenshot`, `act` and `run_js`. It also checks session tab groups, socket-bound session ids, tab sharing,
@@ -105,7 +105,7 @@ dark to the folder named by `T3_TAB_FLOW_SHOTS`.
 `pnpm bench` (after `pnpm build`) measures what an agent is sent, in characters and estimated tokens: the
 `tools/list` payload (total and per tool) and each tool reply on four fixed tasks over three local pages
 (`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link, and search a longer page
-with `find`, a ref subtree, `all` and a screenshot (text part, JPEG bytes and size, estimated image tokens).
+with `read` given its address and `find`, then with `find`, a ref subtree, `all` and a screenshot (text part, JPEG bytes and size, estimated image tokens).
 It drives the real tools through `e2e/harness.mjs` the way the end-to-end run does, with the bench site
 set to `allow` so no prompt waits. It prints a markdown table and writes `bench/results/latest.json` (not
 committed) and the replies it measured to `bench/results/latest.replies.txt`. Text tokens are an estimate:
@@ -254,6 +254,17 @@ for, and in `find`. With `depth`, an element with more inside ends in `…`.
 for on that tab. The browser's reload resends a form's POST without asking, so unless the debugger saw the document come
 from a GET, `reload` fetches the address with a new GET (`location.replace`, which keeps the history).
 
+A load (`open`, `goto`, `back`, `forward`, `reload`) replies with the page as `read` would show it, header first (`Opened
+tab <id>: <title> — <url>`), and that reply is the tab's diff baseline for the MCP server process, as a `read` is; with
+`find` it replies with the matching lines instead. The extension reads the page in the same request (`describeLanding` in
+`requests.ts`), after the load, its first frames and at most one more second for the page to settle (`LOAD_SETTLE_MS`), and
+only where a `read` would pass without a prompt: the origin the load was approved for, or one the session already holds on
+that tab or the owner lets it read. A redirect to any other origin replies as before, with the origin only and how to ask;
+a page that could not be read (a dialog opened on load, say) replies with the tab and the reason. `read` with a `url` is a
+`goto` of the tab it names, or the current one, followed by that read (a `ref` does not go with it). A `goto` that names no
+tab, in a session with no tab, opens one (`opened` in the result), asking as `open` does, so `read {url}` and `tabs goto`
+work from an empty session; every other tool says in one line how to get a tab (`NO_TAB_MESSAGE` in the protocol package).
+
 A call that names no tab uses the session's current tab, marked `[current]`: the last it opened, switched to or was
 handed by the owner, else the tab in front, else its first. The owner moving between tabs does not change it, so an
 action cannot land on a tab the agent did not mean.
@@ -354,7 +365,8 @@ group. It can list and use only tabs in that group or tabs the owner shares from
 `tabs open` asks first, for the requested address: nothing is created, fetched or run until the owner says yes. Then
 the page loads in a new tab behind the one the owner is on, with the debugger attached on `about:blank` first. If a
 redirect takes it to another origin, the tab stays in the session's group unapproved, and the reply names the origin and
-says to read it to ask for access; an origin that is already allowed just carries on.
+says to read it to ask for access; an origin that is already allowed just carries on. `read` or `tabs goto` with a url in
+a session that has no tab asks the same `open` prompt, with no tab named, before anything is created.
 
 When the control connection closes (the daemon stopped or restarted), that session is over: the daemon forgot
 it, with its tab group, approvals and shared tabs. An MCP server does not resume it. A call that was in flight

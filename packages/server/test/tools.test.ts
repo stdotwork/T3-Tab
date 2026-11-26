@@ -1,4 +1,4 @@
-import type { BrowserMethod, BrowserMethods, TabInfo } from '@t3-tab/protocol';
+import type { BrowserMethod, BrowserMethods, PageReadResult, TabInfo, ToolContent } from '@t3-tab/protocol';
 import { describe, expect, it } from 'vitest';
 
 import type { BrowserLink } from '../src/browser-link.js';
@@ -37,6 +37,12 @@ function fakeBrowser(handlers: Handlers): BrowserLink & { calls: string[]; forgo
 
 const SESSION = { id: 's', name: 'Session s' };
 
+function text(content: ToolContent[]): string {
+  const [first] = content;
+  if (first?.type !== 'text') throw new Error('expected a text reply');
+  return first.text;
+}
+
 const first: TabInfo = { id: 4, title: 'First', url: 'http://localhost/a', active: true };
 const second: TabInfo = { id: 9, title: 'Second', url: 'http://localhost/b', active: false };
 
@@ -64,13 +70,13 @@ describe('tabs tool', () => {
 
   it('opens, switches and closes', async () => {
     const link = fakeBrowser({
-      'tabs.open': () => ({ tab: second }),
+      'tabs.open': () => ({ tab: second, page: page(signInPage(), { tab: 9, title: 'Second', url: 'http://localhost/b' }) }),
       'tabs.switch': () => ({ tab: first }),
       'tabs.close': (params) => ({ closed: params.tab }),
     });
-    expect(await runTool(link, SESSION, 'tabs', { action: 'open', url: 'http://localhost/b' })).toEqual([
-      { type: 'text', text: 'Opened tab 9 Second — http://localhost/b' },
-    ]);
+    const opened = text(await runTool(link, SESSION, 'tabs', { action: 'open', url: 'http://localhost/b' }));
+    expect(opened.split('\n').slice(0, 2)).toEqual(['Opened tab 9: Second — http://localhost/b', '# Sign in']);
+    expect(opened).toContain('"Hello there"');
     expect(await runTool(link, SESSION, 'tabs', { action: 'switch', tab: 4 })).toEqual([
       { type: 'text', text: 'Switched to tab 4 [current] First — http://localhost/a' },
     ]);
@@ -84,6 +90,76 @@ describe('tabs tool', () => {
     await expect(runTool(link, SESSION, 'tabs', { action: 'close' })).rejects.toThrow('close needs a tab id');
     await expect(runTool(link, SESSION, 'tabs', { action: 'burn' })).rejects.toThrow(/Invalid arguments: action/);
     expect(link.calls).toEqual([]);
+  });
+});
+
+describe('loads', () => {
+  const landing = (overrides: Partial<PageReadResult> = {}): PageReadResult =>
+    page(signInPage(), { tab: 9, title: 'Second', url: 'http://localhost/b', ...overrides });
+
+  it('reply with the page, which is the baseline the next read is diffed against', async () => {
+    const link = fakeBrowser({ 'tabs.open': () => ({ tab: second, page: landing() }), 'page.read': () => landing() });
+    const opened = text(await runTool(link, SESSION, 'tabs', { action: 'open', url: 'http://localhost/b' }));
+    expect(opened).toMatch(/^Opened tab 9: Second — http:\/\/localhost\/b\n/);
+    expect(text(await runTool(link, SESSION, 'read', {}))).toBe('tab 9\nNo changes since the last read.');
+  });
+
+  it('name the move, and say only the tab id when the session already saw that title and address', async () => {
+    const replies: PageReadResult[] = [landing(), landing({ epoch: 1 })];
+    const link = fakeBrowser({
+      'tabs.open': () => ({ tab: second, page: landing() }),
+      'tabs.navigate': () => ({ tab: second, page: replies.shift() ?? landing({ epoch: 2 }) }),
+    });
+    await runTool(link, SESSION, 'tabs', { action: 'open', url: 'http://localhost/b' });
+    // The same document (a move within it) is a diff; a new one is the whole page again.
+    expect(text(await runTool(link, SESSION, 'tabs', { action: 'back' }))).toBe('Back in tab 9\nNo changes since the last read.');
+    expect(text(await runTool(link, SESSION, 'tabs', { action: 'forward' }))).toBe('Forward in tab 9\nNo changes since the last read.');
+    expect(text(await runTool(link, SESSION, 'tabs', { action: 'reload' }))).toMatch(/^Reloaded tab 9: Second — http:\/\/localhost\/b\n# Sign in/);
+  });
+
+  it('give only the matching lines with find', async () => {
+    const link = fakeBrowser({ 'tabs.open': () => ({ tab: second, page: landing() }) });
+    const found = text(await runTool(link, SESSION, 'tabs', { action: 'open', url: 'http://localhost/b', find: 'hello' }));
+    expect(found.split('\n')[0]).toBe('Opened tab 9: Second — http://localhost/b');
+    expect(found).toContain('Hello there');
+    expect(found).not.toContain('Sign in');
+  });
+
+  it('show only the origin of a tab a redirect took to an origin nobody approved', async () => {
+    const elsewhere: TabInfo = { id: 9, title: '', url: 'http://mail.test', active: true, needsApproval: true };
+    const link = fakeBrowser({ 'tabs.open': () => ({ tab: elsewhere, redirectedFrom: 'http://localhost' }) });
+    expect(text(await runTool(link, SESSION, 'tabs', { action: 'open', url: 'http://localhost/b' }))).toBe(
+      'Opened tab 9 [current] [needs approval] http://mail.test\nRedirected from http://localhost. read this tab to ask the owner for access.',
+    );
+  });
+
+  it('say why the page is not in the reply', async () => {
+    const link = fakeBrowser({
+      'tabs.open': () => ({ tab: { ...second, active: true }, unread: 'A dialog is open: alert "Hi".' }),
+      'tabs.navigate': () => ({ tab: { ...second, active: true } }),
+    });
+    expect(text(await runTool(link, SESSION, 'tabs', { action: 'open', url: 'http://localhost/b' }))).toBe(
+      'Opened tab 9 [current] Second — http://localhost/b\nA dialog is open: alert "Hi".',
+    );
+    expect(text(await runTool(link, SESSION, 'tabs', { action: 'reload' }))).toBe(
+      'Reloaded tab 9 [current] Second — http://localhost/b\nread it for the page.',
+    );
+  });
+
+  it('read with a url loads it, opening a tab when the session has none', async () => {
+    const link = fakeBrowser({ 'tabs.navigate': () => ({ tab: second, page: landing(), opened: true }) });
+    const reply = text(await runTool(link, SESSION, 'read', { url: 'http://localhost/b', find: 'hello' }));
+    expect(link.calls).toEqual(['tabs.navigate {"action":"goto","url":"http://localhost/b"}']);
+    expect(reply.split('\n')[0]).toBe('Opened tab 9: Second — http://localhost/b');
+    expect(reply).toContain('Hello there');
+    expect(text(await runTool(link, SESSION, 'tabs', { action: 'goto', url: 'http://localhost/b' }))).toMatch(/^Opened tab 9/);
+  });
+
+  it('read with a url says Loaded for a tab it moved, and refuses a ref', async () => {
+    const link = fakeBrowser({ 'tabs.navigate': () => ({ tab: second, page: landing() }) });
+    expect(text(await runTool(link, SESSION, 'read', { url: 'http://localhost/b', tab: 9 }))).toMatch(/^Loaded tab 9: Second/);
+    expect(link.calls).toEqual(['tabs.navigate {"action":"goto","url":"http://localhost/b","tab":9}']);
+    await expect(runTool(link, SESSION, 'read', { url: 'http://localhost/b', ref: 'e1' })).rejects.toThrow('ref does not go with url');
   });
 });
 

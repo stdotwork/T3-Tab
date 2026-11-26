@@ -1,4 +1,4 @@
-import type { BrowserMethods, BrowserRequestMessage, ToolSession } from '@t3-tab/protocol';
+import type { BrowserMethods, BrowserRequestMessage, TabLoadResult, ToolSession } from '@t3-tab/protocol';
 
 import { actOnPage } from './actions';
 import { claimTabs } from './claims';
@@ -8,6 +8,7 @@ import { readPage } from './page';
 import { originOf, promptAddress, restrictedPageError, type AuthorizeResult, type PromptTab } from './permissions';
 import { claimStore, permissionPrompts, sessionStore, siteStore } from './runtime';
 import { captureViewport } from './screenshot';
+import { sleep } from './settle';
 import type { StoredSession } from './sessions';
 import {
   closeSessionTab,
@@ -20,9 +21,18 @@ import {
   openSessionTab,
   reloadTab,
   resolveSessionTab,
+  sessionCurrentTab,
   switchSessionTab,
+  type Landing,
   type SiteSetting,
 } from './tabs';
+
+/**
+ * Longest a load's reply waits for the page to settle before reading it. A load already waited for the document and
+ * its first frames; this catches what a page fetches or draws just after, without holding the agent for a page that
+ * never goes quiet.
+ */
+const LOAD_SETTLE_MS = 1_000;
 
 /**
  * What a session may see of a tab it holds no approval for. Full access shows it while T3 confirms the mode, and records
@@ -154,12 +164,12 @@ function loadableOrigin(url: string): string {
 async function openTabForSession(
   session: StoredSession,
   url: string,
-): Promise<BrowserMethods['tabs.open']['result']> {
+): Promise<TabLoadResult> {
   const origin = loadableOrigin(url);
   const pass = await permissionPrompts.authorize(origin, 'open', session, undefined, promptAddress(url));
-  const tabId = await openSessionTab(await registeredSession(session), url, sessionStore);
+  const { tabId, settled } = await openSessionTab(await registeredSession(session), url, sessionStore);
   try {
-    return await describeLanding(session, tabId, origin, pass);
+    return await describeLanding(session, tabId, origin, pass, { settled });
   } catch (failure) {
     await chrome.tabs.remove(tabId).catch(() => undefined);
     throw failure;
@@ -169,13 +179,18 @@ async function openTabForSession(
 /**
  * Moves an existing tab. A new address is asked for like `open`, every time, because it is one the agent chose and
  * loading it can change something on the site. Going through history or reloading revisits a page this tab has already
- * shown, so it asks only when that page is on an origin the session holds no approval for on this tab.
+ * shown, so it asks only when that page is on an origin the session holds no approval for on this tab. A `goto` that
+ * names no tab, in a session with no tab, opens one instead.
  */
 async function navigateTab(
   session: StoredSession,
   params: BrowserMethods['tabs.navigate']['params'],
 ): Promise<BrowserMethods['tabs.navigate']['result']> {
   const { action } = params;
+  if (action === 'goto' && params.tab === undefined && (await sessionCurrentTab(session)) === undefined) {
+    if (params.url === undefined) throw new Error('goto needs a url');
+    return { ...(await openTabForSession(session, params.url)), opened: true };
+  }
   const tab = await resolveSessionTab(session, params.tab);
   const tabId = tab.id ?? -1;
   const origin = tabOrigin(tab);
@@ -202,29 +217,49 @@ async function navigateTab(
   const current = await resolveSessionTab(await registeredSession(session), tabId);
   // Only a move from the page that was asked about: the tab may have gone elsewhere while the prompt waited.
   assertSameOrigin(current, origin);
-  if (action === 'goto') await loadAddress(tabId, url);
-  else if (action === 'reload') await reloadTab(tabId, current.url ?? url);
-  else await goToHistoryEntry(tabId, entryId ?? -1);
+  let landing: Landing;
+  if (action === 'goto') landing = await loadAddress(tabId, url);
+  else if (action === 'reload') landing = await reloadTab(tabId, current.url ?? url);
+  else landing = await goToHistoryEntry(tabId, entryId ?? -1);
   await sessionStore.setCurrentTab(session.id, tabId);
-  return await describeLanding(session, tabId, target, pass);
+  return await describeLanding(session, tabId, target, pass, landing);
 }
 
 /**
- * Where a load ended up. The approval covers the origin that was asked for, so a tab that a redirect took elsewhere stays
- * in the session unapproved: the agent is told the new origin, and its next read asks the owner unless the site is allowed.
+ * Where a load ended up, and the page once it settled (for at most `LOAD_SETTLE_MS`). The approval covers the origin
+ * that was asked for, so a tab that a redirect took elsewhere stays in the session unapproved: the agent is told the new
+ * origin, and its next read asks the owner unless the site is allowed. The page is read only where a `read` would pass
+ * without a prompt: the origin this load was approved for, or one the session already holds or the owner lets it read.
  */
 async function describeLanding(
   session: StoredSession,
   tabId: number,
   requested: string,
   pass: AuthorizeResult,
-): Promise<BrowserMethods['tabs.open']['result']> {
+  landing: Landing,
+): Promise<TabLoadResult> {
+  await Promise.race([landing.settled, sleep(LOAD_SETTLE_MS)]);
   const landed = await resolveSessionTab(await registeredSession(session), tabId);
   const origin = tabOrigin(landed);
   await sessionStore.observeTabOrigin(tabId, origin);
   if (origin === requested) await recordApproval(pass, session.id, tabId, origin);
-  const described = await describeSessionTab(await registeredSession(session), tabId, tabAccess(session));
-  return origin === requested ? { tab: described } : { tab: described, redirectedFrom: requested };
+  const current = await registeredSession(session);
+  const described = await describeSessionTab(current, tabId, tabAccess(session));
+  const result: TabLoadResult = origin === requested ? { tab: described } : { tab: described, redirectedFrom: requested };
+  if (!(await readableAfterLoad(current, tabId, origin, requested))) return result;
+  try {
+    return { ...result, page: await readPage(current, tabId, origin, async () => await registeredSession(session)) };
+  } catch (error) {
+    return { ...result, unread: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Whether a load's reply may carry the page: never past what a `read` would need a prompt for. */
+async function readableAfterLoad(session: StoredSession, tabId: number, origin: string, requested: string): Promise<boolean> {
+  if (origin === requested) return true;
+  if (await sessionStore.hasApprovedOrigin(session.id, tabId, origin)) return true;
+  const setting = await siteStore.get(origin);
+  return setting === 'read' || setting === 'allow';
 }
 
 async function authorizeRead(

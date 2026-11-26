@@ -90,10 +90,12 @@ export async function checkRealUse() {
         return { error: true, text: `no reply: ${error.message}`, ms: Date.now() - started };
       }
     };
+    let lastOpened = '';
     const open = async (path) => {
       const opened = await call('tabs', { action: 'open', url: `${siteUrl}${path}` });
       const tab = Number(/^Opened tab (\d+)/.exec(opened.text)?.[1]);
       assert(Number.isInteger(tab), `tabs open ${path}: ${opened.text}`);
+      lastOpened = opened.text;
       return tab;
     };
     const act = (tab, ...steps) => call('act', { tab, steps });
@@ -168,6 +170,7 @@ export async function checkRealUse() {
 
     await check('a dialog during page load does not lock the new tab', async () => {
       const tab = await open('/alert-on-load');
+      assert(lastOpened.includes('on load'), `the open reply does not name the dialog: ${lastOpened}`);
       const seen = await read(tab);
       assert(seen.error && seen.text.includes('on load'), seen.text);
       assert(!(await act(tab, { action: 'press', key: 'Enter' })).error, 'Enter');
@@ -176,6 +179,7 @@ export async function checkRealUse() {
 
     await check("another origin's dialog hides its text and can only be dismissed", async () => {
       const tab = await open('/foreign-dialog');
+      assert(!lastOpened.includes('FOREIGN-SECRET'), `the open reply shows another origin's dialog: ${lastOpened}`);
       await sleep(300);
       const seen = await read(tab);
       assert(seen.error && seen.text.includes(otherUrl) && !seen.text.includes('FOREIGN-SECRET'), seen.text);

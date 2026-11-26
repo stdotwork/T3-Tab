@@ -127,7 +127,12 @@ export async function checkAgentTools() {
       assert(Number.isInteger(id), `tabs open: ${reply.text}`);
       return id;
     };
-    const openAllowed = async (path) => opened(await call('tabs', { action: 'open', url: `${urls.allowed}${path}` }));
+    // A load replies with the page, so its refs come from the reply and a read after it has nothing new.
+    const openAllowedPage = async (path) => {
+      const reply = await call('tabs', { action: 'open', url: `${urls.allowed}${path}` });
+      return { tab: opened(reply), text: reply.text };
+    };
+    const openAllowed = async (path) => (await openAllowedPage(path)).tab;
     const closeTab = (tab) => call('tabs', { action: 'close', tab });
     const check = async (name, run) => {
       try {
@@ -155,7 +160,10 @@ export async function checkAgentTools() {
 
       const again = call('tabs', { action: 'open', url: `${urls.ask}/private` });
       await decide(await waitPrompt((item) => item.tool === 'open' && item.origin === urls.ask), 'allow-once');
-      const tab = opened(await again);
+      const loaded = await again;
+      const tab = opened(loaded);
+      assert(loaded.text.includes('"private page"'), `the open reply does not carry the page: ${loaded.text}`);
+      assert((await pending()).length === 0, 'reading the page it opened asked again');
       for (let attempt = 0; attempt < 40 && !hits.ask.includes('/js-ran'); attempt += 1) await sleep(50);
       assert(hits.ask.includes('/private') && hits.ask.includes('/js-ran'), `the allowed page did not load: ${hits.ask.join(' ')}`);
       await closeTab(tab);
@@ -171,7 +179,7 @@ export async function checkAgentTools() {
 
     await check('a tab opens in the background and every tool works on it', async () => {
       const front = await frontTab();
-      const tab = await openAllowed('/red');
+      const { tab, text: loaded } = await openAllowedPage('/red');
       assert((await frontTab()) === front, 'opening a tab took the owner away from their tab');
       const info = await tabInfo(tab);
       assert(info.active === false, 'the new tab is in front');
@@ -179,7 +187,8 @@ export async function checkAgentTools() {
 
       const read = await call('read', {});
       assert(!read.error && read.text.startsWith(`tab ${tab}`), `read without a tab did not use the new tab: ${read.text}`);
-      const ref = refFor(read.text, 'button "Press"');
+      assert(read.text.endsWith('No changes since the last read.'), `the open reply is not the read baseline: ${read.text}`);
+      const ref = refFor(loaded, 'button "Press"');
       const acted = await call('act', { steps: [{ action: 'click', ref }] });
       assert(!acted.error && acted.text.includes('pressed'), `act without a tab: ${acted.text}`);
       const js = await call('run_js', { expression: 'document.title' });
@@ -201,7 +210,8 @@ export async function checkAgentTools() {
       assert(new RegExp(`^${tab} \\[current\\]`, 'm').test(list.text), `the list does not mark the current tab: ${list.text}`);
       await closeTab(tab);
 
-      const painted = await openAllowed('/painted');
+      const { tab: painted, text: paintedReply } = await openAllowedPage('/painted');
+      assert(paintedReply.includes('painted by script'), `the open reply is from before the page drew: ${paintedReply}`);
       const content = await call('read', { tab: painted, all: true });
       assert(content.text.includes('painted by script'), `a page that renders in animation frames stayed blank in the background: ${content.text}`);
       let visibility;
@@ -221,7 +231,8 @@ export async function checkAgentTools() {
       assert(!result.error, `the redirect failed the open: ${result.text}`);
       const tab = opened(result);
       assert(result.text.includes('[needs approval]') && result.text.includes(urls.other), `the reply does not say where it went: ${result.text}`);
-      assert(!result.text.includes('Landing'), `the reply shows an unapproved page's title: ${result.text}`);
+      assert(!result.text.includes('Landing') && !result.text.includes('landed'), `the reply shows an unapproved page: ${result.text}`);
+      assert(/read this tab to ask/.test(result.text), `the reply does not say how to ask: ${result.text}`);
       assert((await tabInfo(tab)).groupId !== -1, 'the redirected tab left the session group');
       const list = await call('tabs', {});
       assert(list.text.includes(`${tab} [current] [needs approval] ${urls.other}`), `tabs list: ${list.text}`);
@@ -239,6 +250,7 @@ export async function checkAgentTools() {
       const result = await reply;
       const tab = opened(result);
       assert(!result.text.includes('[needs approval]') && result.text.includes('Landing'), `allowed target: ${result.text}`);
+      assert(result.text.includes('"landed"'), `the reply does not carry an allowed target's page: ${result.text}`);
       const read = await call('read', { tab, all: true });
       assert(!read.error && read.text.includes('landed'), `read of an allowed target: ${read.text}`);
       await closeTab(tab);
@@ -336,6 +348,36 @@ export async function checkAgentTools() {
       assert(/open/.test(list.text) && /share/.test(list.text), `tabs: ${list.text}`);
       const acted = await call('act', { steps: [{ action: 'press', key: 'Enter' }] }, idle.client);
       assert(acted.error && /open/i.test(acted.text) && /share/.test(acted.text), `act: ${acted.text}`);
+      assert(!acted.text.includes('\n'), `the no-tab error is more than one line: ${acted.text}`);
+    });
+
+    await check('read and goto with a url open a tab in an empty session, asking as open does', async () => {
+      const fresh = await connectMcp(home, 'agent-tools-fresh');
+      try {
+        const before = await tabCount();
+        const seen = hits.ask.length;
+        const reply = call('read', { url: `${urls.ask}/private`, find: 'page' }, fresh.client);
+        const prompt = await waitPrompt((item) => item.tool === 'open' && item.origin === urls.ask);
+        assert(hits.ask.length === seen, `the page was fetched before the answer: ${hits.ask.slice(seen).join(' ')}`);
+        assert((await tabCount()) === before, 'a tab was created before the answer');
+        assert(prompt.tab === undefined && prompt.url === `${urls.ask}/private`, `read's open prompt: ${JSON.stringify(prompt)}`);
+        await decide(prompt, 'allow-once');
+        const result = await reply;
+        assert(!result.error && /^Opened tab \d+: Private/.test(result.text), `read with a url: ${result.text}`);
+        assert(result.text.includes('"private page"'), `find on the load: ${result.text}`);
+        const tab = opened(result);
+        assert((await tabInfo(tab)).groupId !== -1, 'the tab read opened is not in the session group');
+
+        const goto = await call('tabs', { action: 'goto', url: `${urls.allowed}/long`, find: 'needle-429' }, fresh.client);
+        assert(!goto.error && goto.text.startsWith(`Loaded tab ${tab}: Long`), `goto with a tab moves it: ${goto.text}`);
+        assert(goto.text.includes('needle-429') && goto.text.length < 900, `find on goto: ${goto.text}`);
+        await call('tabs', { action: 'close', tab }, fresh.client);
+        const reopened = await call('tabs', { action: 'goto', url: `${urls.allowed}/two` }, fresh.client);
+        assert(!reopened.error && /^Opened tab \d+: Two/.test(reopened.text) && reopened.text.includes('second'), `goto with no tab: ${reopened.text}`);
+        await call('tabs', { action: 'close', tab: opened(reopened) }, fresh.client);
+      } finally {
+        await fresh.client.close().catch(() => undefined);
+      }
     });
 
     await check('read shows the address of links it cannot otherwise tell apart', async () => {
@@ -361,8 +403,8 @@ export async function checkAgentTools() {
       assert(keys.text === '"Enter,Escape,Tab,F5,F12,PageDown, ,ArrowUp, ,"', `keys the page saw: ${keys.text}`);
       await closeTab(tab);
 
-      const dialog = await openAllowed('/dialog');
-      const page = await call('read', { tab: dialog });
+      const { tab: dialog, text: dialogPage } = await openAllowedPage('/dialog');
+      const page = { text: dialogPage };
       await call('act', { tab: dialog, steps: [{ action: 'click', ref: refFor(page.text, 'button "Ask"') }, { action: 'press', key: 'enter' }] });
       const answered = await call('run_js', { tab: dialog, expression: 'r.textContent' });
       assert(answered.text === '"yes"', `a dialog answered with "enter": ${answered.text}`);
@@ -372,9 +414,9 @@ export async function checkAgentTools() {
     await check('tabs goes to an address, back, forward and reloads', async () => {
       const tab = await openAllowed('/one');
       const went = await call('tabs', { action: 'goto', tab, url: `${urls.allowed}/two` });
-      assert(!went.error && went.text.includes('Two'), `goto: ${went.text}`);
+      assert(!went.error && went.text.includes('Two') && went.text.includes('"second"'), `goto: ${went.text}`);
       const back = await call('tabs', { action: 'back', tab });
-      assert(!back.error && back.text.includes('One'), `back: ${back.text}`);
+      assert(!back.error && back.text.includes('One') && back.text.includes('"first"'), `back: ${back.text}`);
       const forward = await call('tabs', { action: 'forward', tab });
       assert(!forward.error && forward.text.includes('Two'), `forward: ${forward.text}`);
       const loads = hits.allowed.filter((path) => path === '/two').length;
@@ -429,8 +471,8 @@ export async function checkAgentTools() {
     });
 
     await check('reload never sends a form again', async () => {
-      const tab = await openAllowed('/form-post');
-      const form = await call('read', { tab });
+      const { tab, text: formPage } = await openAllowedPage('/form-post');
+      const form = { text: formPage };
       await call('act', { tab, steps: [{ action: 'click', ref: refFor(form.text, 'button "Send"') }] });
       assert(hits.allowed.filter((hit) => hit === 'POST /posted').length === 1, `the form was not sent once: ${hits.allowed.join(' ')}`);
       const entries = () => call('run_js', { tab, expression: 'history.length' });
@@ -444,8 +486,8 @@ export async function checkAgentTools() {
     });
 
     await check('a field change that starts a page load is waited for before the next step uses the old page', async () => {
-      const tab = await openAllowed('/jump-select');
-      const read = await call('read', { tab });
+      const { tab, text: readText } = await openAllowedPage('/jump-select');
+      const read = { text: readText };
       const acted = await call('act', {
         tab,
         steps: [
@@ -460,8 +502,8 @@ export async function checkAgentTools() {
     });
 
     await check('a field change that asks the server something is answered before the click after it', async () => {
-      const tab = await openAllowed('/slow-field');
-      const read = await call('read', { tab });
+      const { tab, text: readText } = await openAllowedPage('/slow-field');
+      const read = { text: readText };
       const acted = await call('act', {
         tab,
         steps: [
@@ -476,8 +518,8 @@ export async function checkAgentTools() {
     });
 
     await check('a click waits for a check the page runs a moment after a field change', async () => {
-      const tab = await openAllowed('/debounced');
-      const read = await call('read', { tab });
+      const { tab, text: readText } = await openAllowedPage('/debounced');
+      const read = { text: readText };
       const before = hits.allowed.filter((hit) => hit === '/submitted').length;
       const acted = await call('act', {
         tab,
@@ -501,11 +543,10 @@ export async function checkAgentTools() {
     });
 
     await check('an action leaves nothing in the page for a site to find', async () => {
-      const tab = await openAllowed('/red');
+      const { tab, text: redPage } = await openAllowedPage('/red');
       const globals = async () => JSON.parse((await call('run_js', { tab, expression: 'Object.getOwnPropertyNames(globalThis).filter((name) => !/^(on|webkit|[A-Z])/.test(name))' })).text);
       const before = new Set(await globals());
-      const page = await call('read', { tab });
-      await call('act', { tab, steps: [{ action: 'click', ref: refFor(page.text, 'button "Press"') }] });
+      await call('act', { tab, steps: [{ action: 'click', ref: refFor(redPage, 'button "Press"') }] });
       const added = (await globals()).filter((name) => !before.has(name));
       assert(added.length === 0, `page-visible globals: ${added.join(' ')}`);
       await closeTab(tab);

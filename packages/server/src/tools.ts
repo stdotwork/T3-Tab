@@ -2,7 +2,9 @@ import {
   type ActStep,
   actStepRef,
   DEFAULT_SCREENSHOT_MAX_EDGE,
+  NO_TAB_MESSAGE,
   type TabInfo,
+  type TabLoadResult,
   type TabNavigation,
   type ToolContent,
   type ToolMethod,
@@ -13,12 +15,11 @@ import type { z } from 'zod';
 import type { BrowserLink } from './browser-link.js';
 import type { SetValue } from './reader/echo.js';
 import { truncate } from './reader/format.js';
-import { formatRead, MAX_OUTPUT_CHARS } from './reader/page.js';
+import { formatRead, MAX_OUTPUT_CHARS, type ReadOptions } from './reader/page.js';
 import { actParams, convertStep, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
 
 const MAX_TAB_TITLE = 80;
 const MAX_TAB_URL = 150;
-const NO_TABS = 'No tabs in this session. Open one with action "open" and a url, or ask the owner to share one from the T3-Tab panel.';
 const NAVIGATED: Record<TabNavigation, string> = { goto: 'Loaded', back: 'Back in', forward: 'Forward in', reload: 'Reloaded' };
 
 /** Runs one browser tool call and returns what the agent sees. Throws a readable message on a bad call or a failure. */
@@ -53,12 +54,12 @@ async function runTabs(
   switch (action) {
     case 'list': {
       const { tabs } = await link.request(session, 'tabs.list', {});
-      return tabs.length === 0 ? NO_TABS : tabs.map(tabLine).join('\n');
+      return tabs.length === 0 ? NO_TAB_MESSAGE : tabs.map(tabLine).join('\n');
     }
     case 'open': {
       if (params.url === undefined) throw new Error('open needs a url');
       const opened = await link.request(session, 'tabs.open', { url: params.url });
-      return `Opened tab ${tabLine(opened.tab)}${redirectNote(opened)}`;
+      return await loadReply(link, session, 'Opened', opened, { find: params.find });
     }
     case 'goto':
     case 'back':
@@ -70,7 +71,7 @@ async function runTabs(
         ...(params.tab === undefined ? {} : { tab: params.tab }),
         ...(action !== 'goto' || params.url === undefined ? {} : { url: params.url }),
       });
-      return `${NAVIGATED[action]} tab ${tabLine(moved.tab)}${redirectNote(moved)}`;
+      return await loadReply(link, session, moved.opened === true ? 'Opened' : NAVIGATED[action], moved, { find: params.find });
     }
     case 'switch': {
       if (params.tab === undefined) throw new Error('switch needs a tab id');
@@ -87,8 +88,38 @@ async function runTabs(
 }
 
 async function runRead(link: BrowserLink, session: ToolSession, params: z.infer<typeof readParams>): Promise<string> {
+  const { url, ...options } = params;
+  if (url !== undefined) {
+    // Refs belong to the document they came from, and a load replaces it.
+    if (options.ref !== undefined) throw new Error('Invalid arguments: ref does not go with url');
+    const moved = await link.request(session, 'tabs.navigate', {
+      action: 'goto',
+      url,
+      ...(params.tab === undefined ? {} : { tab: params.tab }),
+    });
+    return await loadReply(link, session, moved.opened === true ? 'Opened' : 'Loaded', moved, options);
+  }
   const page = await link.request(session, 'page.read', params.tab === undefined ? {} : { tab: params.tab });
-  return await formatRead(link.tabState(page.tab), session.id, page, params);
+  return await formatRead(link.tabState(page.tab), session.id, page, options);
+}
+
+/**
+ * The reply to a load: the page as a `read` with the same options would show it, which is also the baseline the next
+ * read is diffed against. A tab a redirect took to an origin nobody approved shows only its origin, and how to ask.
+ */
+async function loadReply(
+  link: BrowserLink,
+  session: ToolSession,
+  verb: string,
+  loaded: TabLoadResult,
+  options: ReadOptions,
+): Promise<string> {
+  if (loaded.page === undefined) {
+    const why = loaded.unread === undefined ? '' : `\n${loaded.unread}`;
+    const note = redirectNote(loaded) || (loaded.tab.needsApproval === true || why !== '' ? '' : '\nread it for the page.');
+    return `${verb} tab ${tabLine(loaded.tab)}${note}${why}`;
+  }
+  return `${verb} ${await formatRead(link.tabState(loaded.page.tab), session.id, loaded.page, options)}`;
 }
 
 async function runScreenshot(
@@ -167,7 +198,7 @@ async function runJs(link: BrowserLink, session: ToolSession, params: z.infer<ty
 async function currentTabId(link: BrowserLink, session: ToolSession): Promise<number> {
   const { tabs } = await link.request(session, 'tabs.list', {});
   const front = tabs.find((tab) => tab.active) ?? tabs[0];
-  if (front === undefined) throw new Error(NO_TABS);
+  if (front === undefined) throw new Error(NO_TAB_MESSAGE);
   return front.id;
 }
 

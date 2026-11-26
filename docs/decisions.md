@@ -160,9 +160,15 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **Opening a page asks first, and does not take the owner's tab.** The prompt names the address and nothing is
   fetched or run until the owner says yes, because a page loaded before the answer has already used their cookies. The
   page opens behind the tab they are on, so the side panel stays in view for the answer. A hidden page gets no animation
-  frames, so it counts as visible until it has settled and for a screenshot, then goes back to hidden; the reply does
-  not wait for the settling, only for the first frames. A redirect to
+  frames, so it counts as visible until it has settled and for a screenshot, then goes back to hidden; the reply waits
+  for the first frames and at most one more second of settling, then carries the page. A redirect to
   another origin keeps the tab, unapproved, rather than failing: the approval covers only the origin asked for.
+- **A load replies with the page.** Agents followed every `open` with a `read`, and some called `read`, `goto` or `act`
+  before opening any tab and were refused, each a model request that re-reads the whole context. So `open`, `goto`,
+  `back`, `forward` and `reload` reply with what `read` would show (or the lines a `find` matches), and `read` and `goto`
+  with an address open a tab when the session has none. The page is in the reply only where a `read` would need no
+  prompt; the empty-session path asks the same `open` prompt before anything loads. A load now also takes the
+  accessibility fetch, which the `read` it replaces took anyway, and up to a second of settling, which it did not.
 - **A session has a current tab.** With tabs opening in the background, the tab in front no longer says what the agent
   is working on. Calls that name no tab use the last one the session opened, switched to or was handed. The owner moving
   between tabs does not change it, so an action cannot land on a tab the agent did not mean.

@@ -1,4 +1,4 @@
-import type { TabInfo } from '@t3-tab/protocol';
+import { NO_TAB_MESSAGE, type TabInfo } from '@t3-tab/protocol';
 
 import {
   DialogOpenError,
@@ -30,7 +30,13 @@ import {
 const OPEN_TIMEOUT_MS = 15_000;
 const OPENABLE_PROTOCOLS = new Set(['http:', 'https:']);
 const grouping = new Map<string, Promise<unknown>>();
-const NO_TAB = 'No tab is available in this session. Open one with tabs (action "open", url) or ask the owner to share one from the T3-Tab panel.';
+
+/** A load that has arrived: `settled` resolves once the page has settled after it, or at once when there is nothing to wait for. */
+export interface Landing {
+  settled: Promise<void>;
+}
+
+const ARRIVED: Landing = { settled: Promise.resolve() };
 
 /** What the browser tools may show for a tab: the site setting for an origin, from the owner's site list. */
 export type SiteSetting = (origin: string) => Promise<SitePermission | undefined>;
@@ -70,21 +76,30 @@ export async function resolveSessionTab(session: StoredSession, tab: number | un
     assertAllowedTab(found);
     return found;
   }
+  const selected = await sessionCurrentTab(session);
+  if (selected === undefined) throw new Error(NO_TAB_MESSAGE);
+  assertAllowedTab(selected);
+  return selected;
+}
+
+/** The tab a call that names none uses, or nothing when the session has no tab. */
+export async function sessionCurrentTab(session: StoredSession): Promise<chrome.tabs.Tab | undefined> {
   const [all, front] = await Promise.all([
     chrome.tabs.query({}),
     chrome.tabs.query({ active: true, lastFocusedWindow: true }),
   ]);
-  const selected = currentSessionTab(session, usableSessionTabs(session, all), front[0]?.id);
-  if (selected === undefined) throw new Error(NO_TAB);
-  assertAllowedTab(selected);
-  return selected;
+  return currentSessionTab(session, usableSessionTabs(session, all), front[0]?.id);
 }
 
 /**
  * Opens the page in a new tab of the session's group, behind the tab the owner is on, and makes it the session's
  * current tab. Call it only after the owner's answer: this is what sends the request and runs the page.
  */
-export async function openSessionTab(session: StoredSession, url: string, store: SessionStore): Promise<number> {
+export async function openSessionTab(
+  session: StoredSession,
+  url: string,
+  store: SessionStore,
+): Promise<Landing & { tabId: number }> {
   const restricted = restrictedPageError(url);
   if (restricted !== undefined) throw new Error(restricted);
   if (!isOpenableUrl(url)) throw new Error('Only http and https URLs can be opened');
@@ -94,9 +109,9 @@ export async function openSessionTab(session: StoredSession, url: string, store:
   try {
     await attachToSessionGroup(session, created.id, store);
     await ensureAttached(created.id);
-    await loadAddress(created.id, url);
+    const landing = await loadAddress(created.id, url);
     await store.setCurrentTab(session.id, created.id);
-    return created.id;
+    return { ...landing, tabId: created.id };
   } catch (error) {
     await chrome.tabs.remove(created.id).catch(() => undefined);
     throw error;
@@ -104,8 +119,8 @@ export async function openSessionTab(session: StoredSession, url: string, store:
 }
 
 /** Loads an address in the tab and waits for it. A fragment change on the same document has nothing to wait for. */
-export async function loadAddress(tabId: number, url: string): Promise<void> {
-  await navigated(tabId, async () => {
+export async function loadAddress(tabId: number, url: string): Promise<Landing> {
+  return await navigated(tabId, async () => {
     const result = await sendCommand<{ loaderId?: string; errorText?: string }>(tabId, 'Page.navigate', { url });
     if (result.errorText !== undefined && result.errorText !== '') throw new Error(`Could not load ${url}: ${result.errorText}`);
     return result.loaderId !== undefined;
@@ -115,25 +130,29 @@ export async function loadAddress(tabId: number, url: string): Promise<void> {
 /**
  * Runs a command that moves the tab, then waits for the new document to load and paint its first frames. A dialog that
  * opens counts as arrived. A hidden page gets no animation frames and slow timers, so a page that renders from script
- * would stay blank: the tab counts as visible until it has settled, which goes on after this returns so the agent is not
- * kept waiting, and then goes back to hidden.
+ * would stay blank: the tab counts as visible until it has settled, which goes on after this returns (the landing's
+ * `settled` says when), and then goes back to hidden.
  */
-async function navigated(tabId: number, go: () => Promise<boolean>, throughHistory = false): Promise<void> {
+async function navigated(tabId: number, go: () => Promise<boolean>, throughHistory = false): Promise<Landing> {
   const since = documentEpoch(tabId);
   // A history entry can belong to this same document (a fragment, `pushState`), which fires no load event.
   const moves = throughHistory ? sameDocumentMoveCount(tabId) : undefined;
   const release = await holdInputFocus(tabId);
   let settling = false;
   try {
-    if (!(await go())) return;
+    if (!(await go())) return ARRIVED;
     await waitForDocumentLoad(tabId, since, OPEN_TIMEOUT_MS, moves);
     await firstFrames(tabId);
     settling = true;
-    void settlePage(tabId)
-      .catch(() => undefined)
-      .finally(() => void release());
+    const settled = settlePage(tabId).then(
+      () => undefined,
+      () => undefined,
+    );
+    void settled.finally(() => void release());
+    return { settled };
   } catch (error) {
     if (!(error instanceof DialogOpenError)) throw error;
+    return ARRIVED;
   } finally {
     if (!settling) await release();
   }
@@ -165,8 +184,8 @@ export async function historyTarget(tabId: number, direction: 'back' | 'forward'
   return { entryId: entry.id, url: entry.url };
 }
 
-export async function goToHistoryEntry(tabId: number, entryId: number): Promise<void> {
-  await navigated(tabId, async () => {
+export async function goToHistoryEntry(tabId: number, entryId: number): Promise<Landing> {
+  return await navigated(tabId, async () => {
     await sendCommand(tabId, 'Page.navigateToHistoryEntry', { entryId });
     return true;
   }, true);
@@ -178,17 +197,16 @@ export async function goToHistoryEntry(tabId: number, entryId: number): Promise<
  * own world, which keeps the history as it is (`Page.navigate` and `chrome.tabs.update` each add an entry). That drops
  * the fragment, which would otherwise make it a same-document move that loads nothing.
  */
-export async function reloadTab(tabId: number, url: string): Promise<void> {
+export async function reloadTab(tabId: number, url: string): Promise<Landing> {
   if (documentMethod(tabId) === 'GET') {
-    await navigated(tabId, async () => {
+    return await navigated(tabId, async () => {
       await sendCommand(tabId, 'Page.reload');
       return true;
     });
-    return;
   }
   const address = new URL(url);
   address.hash = '';
-  await navigated(tabId, async () => {
+  return await navigated(tabId, async () => {
     await sendCommand(tabId, 'Runtime.evaluate', {
       contextId: await privateWorld(tabId),
       expression: `location.replace(${JSON.stringify(address.href)})`,
