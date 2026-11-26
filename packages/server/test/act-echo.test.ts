@@ -147,4 +147,30 @@ describe('an act reply leaves out what the batch set', () => {
     expect(again).toContain('+  e3 textbox "Email" value="a@b.c"');
     expect(again).not.toMatch(/^[+-] +e2/m);
   });
+
+  it('keeps a typed value that left only its own text in a field that had one: the page wiped it', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(form({ name: 'abc' })), {});
+    const reply = await formatRead(state, 's', page(form({ name: 'x' })), {
+      echoed: [{ ref: 'e2', kind: 'value', text: 'x', appends: true }],
+    });
+    expect(reply).not.toContain('Set e2');
+    expect(reply).toContain('+  e2 textbox "Name" value="x" [required]');
+  });
+
+  it('knows a typed value into an empty field', async () => {
+    const state = await readBlank();
+    const reply = await formatRead(state, 's', page(form({ name: 'x' })), {
+      echoed: [{ ref: 'e2', kind: 'value', text: 'x', appends: true }],
+    });
+    expect(reply).toBe('tab 7\nSet e2. Nothing else changed.');
+  });
+
+  it('keeps a field the page still marks invalid, whatever changed in it', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(form({ name: 'A', nameFlags: { invalid: true } })), {});
+    const reply = await formatRead(state, 's', page(form({ name: 'AB', nameFlags: { invalid: true } })), { echoed: [fillName('AB')] });
+    expect(reply).not.toContain('Set e2');
+    expect(reply).toContain('+  e2 textbox "Name" value="AB" [required invalid]');
+  });
 });

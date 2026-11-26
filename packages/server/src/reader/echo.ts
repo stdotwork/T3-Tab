@@ -81,9 +81,17 @@ function valueEcho(old: string, now: string, set: SetValue): Array<[number, stri
   const was = splitValue(old);
   const is = splitValue(now);
   if (was.rest !== is.rest) return undefined;
+  // A line still marked invalid is the page's answer to the value, so it stays in the reply.
+  if (isInvalid(now)) return undefined;
   // `undefined` is the line of an empty field, which has no value on it.
-  const wanted = new Set<string | undefined>([set.text === '' ? undefined : valueToken(set.text)]);
-  if (set.appends === true && was.value !== undefined) {
+  const wanted = new Set<string | undefined>();
+  if (set.appends !== true) {
+    wanted.add(set.text === '' ? undefined : valueToken(set.text));
+  } else if (was.token === undefined) {
+    // A type into an empty field leaves its text. Into a field that had a value it leaves that value with the text
+    // added; the text alone would mean the page wiped the field, which the agent has to be told.
+    wanted.add(set.text === '' ? undefined : valueToken(set.text));
+  } else if (was.value !== undefined) {
     wanted.add(valueToken(was.value + set.text));
     wanted.add(valueToken(set.text + was.value));
   }
@@ -100,7 +108,7 @@ function selectEcho(
 ): Array<[number, string]> | undefined {
   const head = splitValue(before[from] ?? '');
   const now = splitValue(after[to] ?? '');
-  if (head.rest !== now.rest) return undefined;
+  if (head.rest !== now.rest || isInvalid(after[to] ?? '')) return undefined;
   const options = subtree(before, from);
   const chosen = subtree(after, to);
   if (options.length === 0 || options.length !== chosen.length) return undefined;
@@ -108,7 +116,7 @@ function selectEcho(
   const lines: Array<[number, string]> = [[0, after[to] ?? '']];
   for (const [index, line] of chosen.entries()) {
     // The same option, in the same place: the line changes only by its selected mark.
-    if (withoutSelected(options[index] ?? '') !== withoutSelected(line)) return undefined;
+    if (withoutSelected(options[index] ?? '') !== withoutSelected(line) || isInvalid(line)) return undefined;
     if (isSelected(line)) {
       if (marked !== undefined) return undefined;
       marked = line;
@@ -183,6 +191,10 @@ function splitValue(line: string): { rest: string; token: string | undefined; va
 /** How the reader prints a field's value, so a value a step set can be compared with the line. */
 function valueToken(text: string): string {
   return `value=${JSON.stringify(shownValue(text))}`;
+}
+
+function isInvalid(line: string): boolean {
+  return /\[(?:[^\]]* )?invalid(?: [^\]]*)?\]/.test(line);
 }
 
 function isSelected(line: string): boolean {
