@@ -290,9 +290,14 @@ from a GET, `reload` fetches the address with a new GET (`location.replace`, whi
 
 A load (`open`, `goto`, `back`, `forward`, `reload`) replies with the page as `read` would show it, header first (`Opened
 tab <id>: <title> — <url>`), and that reply is the tab's diff baseline for the MCP server process, as a `read` is; with
-`find` it replies with the matching lines instead. The extension reads the page in the same request (`describeLanding` in
-`requests.ts`), after the load, its first frames and at most one more second for the page to settle (`LOAD_SETTLE_MS`), and
-only where a `read` would pass without a prompt: the origin the load was approved for, or one the session already holds on
+`find` it replies with the matching lines instead. A page whose view is over `LOAD_REPLY_MAX` (4,000 characters, `page.ts`)
+is left out of a load's reply, which says how long it is and sets no baseline: agents send a `read` (or a `find`) in the
+same turn as the load, before they see its reply, and that read then gets the page once. A `read` with `full` right after a
+load reply that showed the whole page, with nothing changed, says so instead of sending it again (once; the next one is
+whole). The extension reads the page in the same request (`describeLanding` in `requests.ts`), after the load and its first
+frames: the read starts at once, beside the settle wait (at most one more second, `LOAD_SETTLE_MS`), and is kept when the
+settle's last snapshot (document, layout and network activity, `settleSnapshot`) matches the one taken before it; otherwise
+the page is read again. It reads only where a `read` would pass without a prompt: the origin the load was approved for, or one the session already holds on
 that tab or the owner lets it read. A redirect to any other origin replies as before, with the origin only and how to ask;
 a page that could not be read (a dialog opened on load, say) replies with the tab and the reason. `read` with a `url` is a
 `goto` of the tab it names, or the current one, followed by that read (a `ref` does not go with it). A `goto` that names no

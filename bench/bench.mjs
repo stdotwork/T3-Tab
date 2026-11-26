@@ -161,9 +161,10 @@ async function measure() {
     await run('navigate', 'act-click-link', 'act', { steps: [{ action: 'click', ref: need(productsRead, 'link "Day pack"') }] });
     await run('navigate', 'tabs-list', 'tabs', {});
 
-    // 4. Search a longer page: on the load itself, then in the page it holds.
+    // 4. Search a longer page: on the load itself, then in the page it holds. Its load reply leaves the page to the read.
     await run('long', 'read-url-find', 'read', { url: `${siteUrl}/docs`, find: 'rate limit' });
-    const longRead = await run('long', 'open', 'tabs', { action: 'open', url: `${siteUrl}/docs` });
+    await run('long', 'open', 'tabs', { action: 'open', url: `${siteUrl}/docs` });
+    const longRead = await run('long', 'read-first', 'read', {});
     await run('long', 'find', 'read', { find: 'rate limit' });
     await run('long', 'read-subtree', 'read', { ref: need(longRead, 'region "Topic 12: Tokens"') });
     await run('long', 'read-all', 'read', { all: true });

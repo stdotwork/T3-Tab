@@ -13,7 +13,7 @@ import {
 } from './cdp';
 
 import { originOf, restrictedPageError, type SitePermission } from './permissions';
-import { settlePage } from './settle';
+import { settlePage, type SettleResult } from './settle';
 import {
   assertSessionTab,
   currentSessionTab,
@@ -31,12 +31,15 @@ const OPEN_TIMEOUT_MS = 15_000;
 const OPENABLE_PROTOCOLS = new Set(['http:', 'https:']);
 const grouping = new Map<string, Promise<unknown>>();
 
-/** A load that has arrived: `settled` resolves once the page has settled after it, or at once when there is nothing to wait for. */
+/**
+ * A load that has arrived: `settled` resolves once the page has settled after it, with what the settle wait last saw, or at
+ * once, with nothing, when there is nothing to wait for.
+ */
 export interface Landing {
-  settled: Promise<void>;
+  settled: Promise<SettleResult | undefined>;
 }
 
-const ARRIVED: Landing = { settled: Promise.resolve() };
+const ARRIVED: Landing = { settled: Promise.resolve(undefined) };
 
 /** What the browser tools may show for a tab: the site setting for an origin, from the owner's site list. */
 export type SiteSetting = (origin: string) => Promise<SitePermission | undefined>;
@@ -145,7 +148,7 @@ async function navigated(tabId: number, go: () => Promise<boolean>, throughHisto
     await firstFrames(tabId);
     settling = true;
     const settled = settlePage(tabId).then(
-      () => undefined,
+      (result) => result,
       () => undefined,
     );
     void settled.finally(() => void release());

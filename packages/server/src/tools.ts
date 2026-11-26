@@ -59,7 +59,7 @@ async function runTabs(
     case 'open': {
       if (params.url === undefined) throw new Error('open needs a url');
       const opened = await link.request(session, 'tabs.open', { url: params.url });
-      return await loadReply(link, session, 'Opened', opened, { find: params.find });
+      return await loadReply(link, session, 'Opened', opened, { find: params.find, load: true });
     }
     case 'goto':
     case 'back':
@@ -71,7 +71,7 @@ async function runTabs(
         ...(params.tab === undefined ? {} : { tab: params.tab }),
         ...(action !== 'goto' || params.url === undefined ? {} : { url: params.url }),
       });
-      return await loadReply(link, session, moved.opened === true ? 'Opened' : NAVIGATED[action], moved, { find: params.find });
+      return await loadReply(link, session, moved.opened === true ? 'Opened' : NAVIGATED[action], moved, { find: params.find, load: true });
     }
     case 'switch': {
       if (params.tab === undefined) throw new Error('switch needs a tab id');
@@ -104,8 +104,10 @@ async function runRead(link: BrowserLink, session: ToolSession, params: z.infer<
 }
 
 /**
- * The reply to a load: the page as a `read` with the same options would show it, which is also the baseline the next
- * read is diffed against. A tab a redirect took to an origin nobody approved shows only its origin, and how to ask.
+ * The reply to a page loaded by `tabs` (and to `read` with a url, which is a read): the page as a `read` with the same
+ * options would show it, which is also the baseline the next read is diffed against. For a `tabs` load, a page over
+ * `LOAD_REPLY_MAX` characters is left to the `read` an agent sends with it. A tab a redirect took to an origin nobody
+ * approved shows only its origin, and how to ask.
  */
 async function loadReply(
   link: BrowserLink,

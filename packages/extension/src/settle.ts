@@ -18,6 +18,8 @@ export interface SettleResult {
   settled: boolean;
   timedOut: boolean;
   elapsedMs: number;
+  /** The page as the last probe saw it; none when the wait ended without one (a dialog, a closed tab). */
+  last?: SettleSnapshot;
 }
 
 interface PageProbe {
@@ -68,21 +70,29 @@ export async function settlePage(tabId: number): Promise<SettleResult> {
     if (openDialog(tabId) !== undefined) return { settled: true, timedOut: false, elapsedMs: Date.now() - startedAt };
     // The tab closed: its epoch is forgotten, and there is nothing left to wait for.
     if (documentEpoch(tabId) === 0) return { settled: false, timedOut: false, elapsedMs: Date.now() - startedAt };
-    const probe = await probePage(tabId);
+    const snapshot = await settleSnapshot(tabId);
     const now = Date.now();
-    const snapshot: SettleSnapshot = {
-      ready: probe.ready && probe.url !== '',
-      revision: probe.revision,
-      layout: `${documentEpoch(tabId)}|${probe.width}|${probe.height}|${probe.scrollWidth}|${probe.scrollHeight}|${probe.url}`,
-      networkRevision: networkRevision(tabId),
-    };
     const state = tracker.observe(snapshot, now);
     if (state === 'settled') {
-      return { settled: now - startedAt < MAX_SETTLE_MS, timedOut: tracker.timedOut(now), elapsedMs: now - startedAt };
+      return { settled: now - startedAt < MAX_SETTLE_MS, timedOut: tracker.timedOut(now), elapsedMs: now - startedAt, last: snapshot };
     }
-    if (tracker.timedOut(now)) return { settled: false, timedOut: true, elapsedMs: now - startedAt };
+    if (tracker.timedOut(now)) return { settled: false, timedOut: true, elapsedMs: now - startedAt, last: snapshot };
     await sleep(POLL_MS);
   }
+}
+
+/**
+ * The page's state as the settle wait compares it: two snapshots that are the same mean nothing in the document, its
+ * layout or its network traffic moved between them.
+ */
+export async function settleSnapshot(tabId: number): Promise<SettleSnapshot> {
+  const probe = await probePage(tabId);
+  return {
+    ready: probe.ready && probe.url !== '',
+    revision: probe.revision,
+    layout: `${documentEpoch(tabId)}|${probe.width}|${probe.height}|${probe.scrollWidth}|${probe.scrollHeight}|${probe.url}`,
+    networkRevision: networkRevision(tabId),
+  };
 }
 
 async function probePage(tabId: number): Promise<PageProbe> {
@@ -130,7 +140,7 @@ async function probePage(tabId: number): Promise<PageProbe> {
   }
 }
 
-function sameSnapshot(a: SettleSnapshot, b: SettleSnapshot): boolean {
+export function sameSnapshot(a: SettleSnapshot, b: SettleSnapshot): boolean {
   return (
     a.ready === b.ready &&
     a.revision === b.revision &&

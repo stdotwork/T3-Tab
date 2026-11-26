@@ -171,7 +171,10 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   `back`, `forward` and `reload` reply with what `read` would show (or the lines a `find` matches), and `read` and `goto`
   with an address open a tab when the session has none. The page is in the reply only where a `read` would need no
   prompt; the empty-session path asks the same `open` prompt before anything loads. A load now also takes the
-  accessibility fetch, which the `read` it replaces took anyway, and up to a second of settling, which it did not.
+  accessibility fetch, which the `read` it replaces took anyway (it runs beside the settle wait), and the settle wait
+  (150 ms on a quiet page, at most a second), which it did not. Models send a `read` or `find` with the load in the same
+  turn, before they see its reply, so a page over 4,000 characters is left out of the load's reply and comes with that
+  read, and a `read` with `full` right after a load that showed the page says it is unchanged instead of resending it.
 - **A session has a current tab.** With tabs opening in the background, the tab in front no longer says what the agent
   is working on. Calls that name no tab use the last one the session opened, switched to or was handed. The owner moving
   between tabs does not change it, so an action cannot land on a tab the agent did not mean.

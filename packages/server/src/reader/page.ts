@@ -32,7 +32,16 @@ export interface ReadOptions {
   full?: boolean | undefined;
   /** Values the `act` batch that this read follows set. Lines whose only change is such a value are left out. */
   echoed?: SetValue[] | undefined;
+  /**
+   * The reply to a load (`tabs open`, `goto`, `back`, `forward`, `reload`). A whole page longer than `LOAD_REPLY_MAX` is
+   * left out of it and sets no baseline, so the `read` an agent sends with the load gets the page once; a page that fits
+   * is the baseline, and a `full` read right after it that finds nothing changed says so instead of sending it again.
+   */
+  load?: boolean | undefined;
 }
+
+/** Longest whole page a load's reply carries, in characters; a longer one is left to `read` or `find`. */
+export const LOAD_REPLY_MAX = 4_000;
 
 /** What the background program holds for one tab: its refs and, per calling session, the last text read. */
 export class TabState {
@@ -92,12 +101,20 @@ export class TabState {
     }
     keys.set(key, baseline);
   }
+
+  /** Puts back the baseline a reply replaced, or none, when that reply did not show the view after all. */
+  restoreBaseline(session: string, key: string, baseline: Baseline | undefined): void {
+    if (baseline !== undefined) this.setBaseline(session, key, baseline);
+    else this.baselines.get(session)?.delete(key);
+  }
 }
 
 /** The last read of one view: every line, and which of its text lines come first when a reply must leave text out. */
 export interface Baseline {
   text: string;
   kept: ReadonlyMap<string, Keep>;
+  /** Set when a load's reply showed this whole view; the next read replaces the baseline and drops it. */
+  loaded?: true;
 }
 
 /**
@@ -181,12 +198,27 @@ export async function formatRead(
     const within = withinBudget(shown.lines, budget, header.length, shown.folded);
     return limit(`${header}\n${within.text}${depthNote}`, within.note);
   };
+  // A load's reply carries the page only when it is short; otherwise the agent's read gets it.
+  const wholeReply = (): string => {
+    const reply = whole();
+    if (options.load !== true || all || options.ref !== undefined) return reply;
+    if (reply.length - header.length > LOAD_REPLY_MAX) {
+      state.restoreBaseline(session, key, last);
+      return `${header}\n(The page is ${(reply.length - header.length - 1).toLocaleString('en-US')} characters, too long for this reply: read shows it, find searches it.)`;
+    }
+    state.setBaseline(session, key, { text, kept, loaded: true });
+    return reply;
+  };
+  // The agent asked for the whole page and has it, unchanged, from the load it sent this read with.
+  if (options.full === true && last?.loaded === true && previous === text) {
+    return `${header}\nNo changes since the load's reply, which showed the whole page.`;
+  }
   // What the batch itself set is no news to the agent: the earlier read is settled to show it already.
   const echoes =
     previous === undefined || options.full === true || options.echoed === undefined
       ? undefined
       : elideEchoes(previous, text, options.echoed);
-  if (previous === undefined || options.full === true) return whole();
+  if (previous === undefined || options.full === true) return wholeReply();
 
   // Both end in a newline, so a line added at the end does not also show the old last line as changed.
   const diff = createSmartDiff({ oldContent: `${echoes?.previous ?? previous}\n`, newContent: `${text}\n` });
@@ -199,7 +231,7 @@ export async function formatRead(
     const changed = all ? { text: diff.content, note: undefined } : diffWithinBudget(diff.content, [kept, last?.kept ?? new Map()], budget, room);
     return limit(`${header}${set === undefined ? '' : `\n${set}`}\nChanged since the last read:\n${changed.text}`, changed.note);
   }
-  return whole();
+  return wholeReply();
 }
 
 /** The text lines of a live region or a dialog in a view, and which end of them to keep. */

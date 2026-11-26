@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatRead, MAX_OUTPUT_CHARS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
+import { formatRead, LOAD_REPLY_MAX, MAX_OUTPUT_CHARS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
 import { ax, buttonPage, docsPage, feed, longArticle, page, signInPage } from './ax-fixtures.js';
 
 describe('reading a page', () => {
@@ -145,6 +145,45 @@ describe('reading a page', () => {
     expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
     expect(reply).toMatch(/… truncated at 12000 characters\. Use find, a ref subtree or depth to read the rest\.$/);
     expect(reply).not.toContain('"Button 2000"');
+  });
+});
+
+describe('a load reply', () => {
+  it('carries a short page and is the baseline: a full read right after it, unchanged, is not sent again', async () => {
+    const state = new TabState();
+    const loaded = await formatRead(state, 's', page(signInPage()), { load: true });
+    expect(loaded).toContain('# Sign in');
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toBe(
+      'tab 7\nNo changes since the load\'s reply, which showed the whole page.',
+    );
+    // Only right after the load: a second full read is the whole page again.
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
+  });
+
+  it('sends a full read whole when the page changed since the load', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(signInPage()), { load: true });
+    const changed = await formatRead(state, 's', page(buttonPage(3)), { full: true });
+    expect(changed).toContain('# Buttons');
+  });
+
+  it('leaves a long page to the read sent with it, and sets no baseline', async () => {
+    const state = new TabState();
+    const long = page(buttonPage(400));
+    const loaded = await formatRead(state, 's', long, { load: true });
+    expect(loaded).toMatch(/^tab 7: Test page — http:\/\/localhost\/test\n\(The page is [\d,]+ characters, too long for this reply: read shows it, find searches it\.\)$/);
+    const read = await formatRead(state, 's', long, {});
+    expect(read.length).toBeGreaterThan(LOAD_REPLY_MAX);
+    expect(read).toContain('Button 400');
+    // A find on a long page is still answered.
+    expect(await formatRead(new TabState(), 's', long, { load: true, find: 'Button 399' })).toContain('Button 399');
+  });
+
+  it('keeps the earlier baseline when a long page is left out', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(buttonPage(400)), {});
+    await formatRead(state, 's', page(buttonPage(400)), { load: true });
+    expect(await formatRead(state, 's', page(buttonPage(400)), {})).toBe('tab 7\nNo changes since the last read.');
   });
 });
 

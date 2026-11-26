@@ -1,4 +1,4 @@
-import type { BrowserMethods, BrowserRequestMessage, TabLoadResult, ToolSession } from '@t3-tab/protocol';
+import type { BrowserMethods, BrowserRequestMessage, PageReadResult, TabLoadResult, ToolSession } from '@t3-tab/protocol';
 
 import { actOnPage } from './actions';
 import { claimTabs } from './claims';
@@ -8,7 +8,7 @@ import { readPage } from './page';
 import { originOf, promptAddress, restrictedPageError, type AuthorizeResult, type PromptTab } from './permissions';
 import { claimStore, permissionPrompts, sessionStore, siteStore } from './runtime';
 import { captureViewport } from './screenshot';
-import { sleep } from './settle';
+import { sameSnapshot, settleSnapshot, sleep, type SettleSnapshot } from './settle';
 import type { StoredSession } from './sessions';
 import {
   closeSessionTab,
@@ -238,7 +238,9 @@ async function describeLanding(
   pass: AuthorizeResult,
   landing: Landing,
 ): Promise<TabLoadResult> {
-  await Promise.race([landing.settled, sleep(LOAD_SETTLE_MS)]);
+  // The page is read while the settle wait runs, and that read is kept if nothing moved from its start to the settle's end.
+  const early = await readEarly(session, tabId, requested);
+  const settled = await Promise.race([landing.settled, sleep(LOAD_SETTLE_MS).then(() => undefined)]);
   const landed = await resolveSessionTab(await registeredSession(session), tabId);
   const origin = tabOrigin(landed);
   await sessionStore.observeTabOrigin(tabId, origin);
@@ -247,10 +249,36 @@ async function describeLanding(
   const described = await describeSessionTab(current, tabId, tabAccess(session));
   const result: TabLoadResult = origin === requested ? { tab: described } : { tab: described, redirectedFrom: requested };
   if (!(await readableAfterLoad(current, tabId, origin, requested))) return result;
+  if (early !== undefined && early.origin === origin && settled?.last !== undefined && sameSnapshot(early.before, settled.last)) {
+    const page = await early.page;
+    if (page !== undefined) return { ...result, page };
+  }
   try {
     return { ...result, page: await readPage(current, tabId, origin, async () => await registeredSession(session)) };
   } catch (error) {
     return { ...result, unread: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Starts reading the page as the load left it, when its reply could carry it, with the settle snapshot taken first. The
+ * read's failure is not an answer: the page is read again after the settle wait.
+ */
+async function readEarly(
+  session: StoredSession,
+  tabId: number,
+  requested: string,
+): Promise<{ origin: string; before: SettleSnapshot; page: Promise<PageReadResult | undefined> } | undefined> {
+  try {
+    const current = await registeredSession(session);
+    const origin = tabOrigin(await resolveSessionTab(current, tabId));
+    if (!(await readableAfterLoad(current, tabId, origin, requested))) return undefined;
+    const before = await settleSnapshot(tabId);
+    if (!before.ready) return undefined;
+    const page = readPage(current, tabId, origin, async () => await registeredSession(session)).catch(() => undefined);
+    return { origin, before, page };
+  } catch {
+    return undefined;
   }
 }
 

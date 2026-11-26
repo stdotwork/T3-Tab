@@ -29,6 +29,7 @@ const PAGES = {
   '/red': '<!doctype html><html><head><title>Red</title><style>html,body{margin:0;height:100%;background:#f00}</style></head><body><button onclick="this.textContent=\'pressed\'">Press</button></body></html>',
   '/painted': page('Painted', '<p id="r">not yet</p><script>requestAnimationFrame(() => requestAnimationFrame(() => { r.textContent = "painted by script"; }))</script>'),
   '/long': page('Long', `<p>${LONG_TEXT}</p>`),
+  '/huge': page('Huge', Array.from({ length: 60 }, (_, index) => `<button>Item ${index + 1}</button><p>Line ${index + 1} of a page too long for a load's reply.</p>`).join('')),
   '/links': page(
     'Links',
     '<ul><li>One <a href="/items/1/edit">Edit</a></li><li>Two <a href="/items/2/edit?tab=a">Edit</a></li></ul><a href="/about">About us</a><a href="/picture"><img alt="" width="20" height="20" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="></a>',
@@ -224,6 +225,20 @@ export async function checkAgentTools() {
       await closeTab(painted);
     });
 
+    await check('a long page is left out of the load reply and comes with the read after it', async () => {
+      const { tab, text: loaded } = await openAllowedPage('/huge');
+      assert(/too long for this reply: read shows it, find searches it/.test(loaded) && !loaded.includes('Item 1'), `the load reply of a long page: ${loaded}`);
+      const read = await call('read', { tab });
+      assert(read.text.includes('button "Item 60"') && read.text.includes('Line 60'), `the read after a left-out page: ${read.text.slice(0, 300)}`);
+      const full = await call('read', { tab, full: true });
+      assert(full.text.includes('button "Item 60"'), `a full read after it: ${full.text.slice(0, 300)}`);
+      const short = await openAllowedPage('/one');
+      const again = await call('read', { tab: short.tab, full: true });
+      assert(/^tab \d+\nNo changes since the load's reply, which showed the whole page\.$/.test(again.text), `a full read right after a short load: ${again.text}`);
+      await closeTab(tab);
+      await closeTab(short.tab);
+    });
+
     await check('a redirect to another origin keeps the tab, unapproved, and says where it went', async () => {
       const reply = call('tabs', { action: 'open', url: `${urls.ask}/to-other` });
       await decide(await waitPrompt((item) => item.tool === 'open' && item.origin === urls.ask), 'allow-once');
@@ -381,8 +396,8 @@ export async function checkAgentTools() {
     });
 
     await check('read shows the address of links it cannot otherwise tell apart', async () => {
-      const tab = await openAllowed('/links');
-      const read = await call('read', { tab, full: true });
+      const { tab, text: linksPage } = await openAllowedPage('/links');
+      const read = { text: linksPage };
       assert(read.text.includes('/items/1/edit') && read.text.includes('/items/2/edit?tab=a'), `two Edit links: ${read.text}`);
       assert(!read.text.includes(urls.allowed.slice(7) + '/items'), `a same-site address is not shortened: ${read.text}`);
       assert(read.text.includes('/picture'), `a link with no name: ${read.text}`);
