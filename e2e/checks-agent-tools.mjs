@@ -39,6 +39,18 @@ const PAGES = {
   '/form-post': page('Post form', '<form method="post" action="/posted"><button>Send</button></form>'),
   '/posted': page('Posted', '<p>sent</p>'),
   '/one': page('One', '<p>first</p>'),
+  '/jump-select': page(
+    'Jump select',
+    '<select aria-label="Section" onchange="location.href = \'/landing\'"><option>Pick</option><option>Landing</option></select><label>Note <input id="note"></label>',
+  ),
+  '/debounced': page(
+    'Debounced',
+    '<label>Code <input id="code" oninput="clearTimeout(window.later); window.later = setTimeout(() => { send.disabled = false }, 100)"></label><button id="send" disabled onclick="fetch(\'/submitted\')">Send</button>',
+  ),
+  '/slow-field': page(
+    'Slow field',
+    '<label>Code <input id="code" oninput="fetch(\'/hint\').then(() => { hint.textContent = \'checked\' })"></label><button onclick="seen.textContent = hint.textContent">Send</button><p id="hint">unchecked</p><p id="seen">nothing</p>',
+  ),
   '/tall': page('Tall', '<div style="height:6000px">tall page</div>'),
   '/trap': page('Trap', '<div style="height:6000px">wheel trap</div><script>addEventListener("wheel", (event) => event.preventDefault(), { passive: false })</script>'),
   '/clip': '<!doctype html><html style="overflow:clip"><head><title>Clip</title></head><body><div style="height:6000px">clipped page</div></body></html>',
@@ -56,6 +68,10 @@ export async function checkAgentTools() {
       const { pathname } = new URL(request.url ?? '/', 'http://x');
       hits[name].push(request.method === 'POST' ? `POST ${pathname}` : pathname);
       request.resume();
+      if (pathname === '/hint') {
+        setTimeout(() => response.end('ok'), 60);
+        return;
+      }
       if (pathname === '/to-other') {
         response.writeHead(302, { location: `${urls.other}/landing` });
         response.end();
@@ -424,6 +440,55 @@ export async function checkAgentTools() {
       assert(hits.allowed.filter((hit) => hit === 'POST /posted').length === 1, `reload sent the form again: ${hits.allowed.join(' ')}`);
       assert(hits.allowed.at(-1) === '/posted', `reload did not fetch the page: ${hits.allowed.at(-1)}`);
       assert((await entries()).text === before, 'reload added a history entry');
+      await closeTab(tab);
+    });
+
+    await check('a field change that starts a page load is waited for before the next step uses the old page', async () => {
+      const tab = await openAllowed('/jump-select');
+      const read = await call('read', { tab });
+      const acted = await call('act', {
+        tab,
+        steps: [
+          { action: 'select', ref: refFor(read.text, 'combobox "Section"'), text: 'Landing' },
+          { action: 'fill', ref: refFor(read.text, 'textbox "Note"'), text: 'x' },
+        ],
+      });
+      assert(/no longer on the page/.test(acted.text), `the second step ran on the old page: ${acted.text}`);
+      assert(/step 1 \(select\) replaced the page/.test(acted.text), `the error does not name the step that moved the page: ${acted.text}`);
+      assert(acted.text.includes('Landing'), `the reply is not the new page: ${acted.text}`);
+      await closeTab(tab);
+    });
+
+    await check('a field change that asks the server something is answered before the click after it', async () => {
+      const tab = await openAllowed('/slow-field');
+      const read = await call('read', { tab });
+      const acted = await call('act', {
+        tab,
+        steps: [
+          { action: 'fill', ref: refFor(read.text, 'textbox "Code"'), text: '123' },
+          { action: 'click', ref: refFor(read.text, 'button "Send"') },
+        ],
+      });
+      assert(!acted.error, `act: ${acted.text}`);
+      const seen = await call('run_js', { tab, expression: 'seen.textContent' });
+      assert(seen.text === '"checked"', `the click ran before the server's answer was in: ${seen.text}`);
+      await closeTab(tab);
+    });
+
+    await check('a click waits for a check the page runs a moment after a field change', async () => {
+      const tab = await openAllowed('/debounced');
+      const read = await call('read', { tab });
+      const before = hits.allowed.filter((hit) => hit === '/submitted').length;
+      const acted = await call('act', {
+        tab,
+        steps: [
+          { action: 'fill', ref: refFor(read.text, 'textbox "Code"'), text: '123' },
+          { action: 'click', ref: refFor(read.text, 'button "Send"') },
+        ],
+      });
+      assert(!acted.error, `act: ${acted.text}`);
+      for (let attempt = 0; attempt < 40 && hits.allowed.filter((hit) => hit === '/submitted').length === before; attempt += 1) await sleep(50);
+      assert(hits.allowed.filter((hit) => hit === '/submitted').length === before + 1, 'the click ran before the page enabled Send, so nothing was sent');
       await closeTab(tab);
     });
 

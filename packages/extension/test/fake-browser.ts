@@ -76,6 +76,11 @@ export class FakeBrowser {
     this.emitContext(tab);
   }
 
+  /** A network request the page started, as the debugger reports it. */
+  request(tabId: number): void {
+    this.emit(tabId, 'Network.requestWillBeSent', { type: 'XHR', loaderId: 'x', request: { method: 'GET' } });
+  }
+
   install(): void {
     const fake = {
       debugger: {
