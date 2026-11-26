@@ -11,6 +11,7 @@
 //   differ from each other at one width and scheme: in height, in where their first and last ink sit, in their icons'
 //   size and stroke weight, in where the thread toggle's ink sits, or in where the breadcrumb's text sits,
 // by more than 1 px (0.25 px for stroke weights); and when
+// - the theme sheet does not open on the colour scheme in force, in the panel's own palette (see `themeSheetProblems`), or
 // - an approval card (a browser prompt or a T3 approval) is more than 160 px tall, its answers are not on one row of
 //   one-line buttons inside the card, or a card on the new-thread screen moves the hero or the composer or covers it.
 import { dirname, join } from 'node:path';
@@ -212,6 +213,78 @@ function barProblems(where, bars) {
   across('breadcrumb start after the toggle', bars.filter(({ bar }) => bar.toggle !== null).map(({ screen, bar }) => ({ screen, value: bar.crumbLeft })));
   across('breadcrumb start without a toggle', bars.filter(({ bar }) => bar.toggle === null).map(({ screen, bar }) => ({ screen, value: bar.crumbLeft })));
   across('breadcrumb baseline', bars.map(({ screen, bar }) => ({ screen, value: bar.crumbBaseline })));
+  return out;
+}
+
+/** The roles the panel draws its surfaces, lines and text with; a sheet that opens in another palette has changed one. */
+const SHEET_ROLES = ['--app-theme-canvas', '--app-theme-surface', '--app-theme-surface-raised', '--app-theme-border', '--app-theme-text', '--app-theme-muted-foreground', '--app-theme-message-action'];
+
+/**
+ * The theme sheet, opened in each colour scheme from Settings: it opens on that scheme (its Light or Dark tab is the one
+ * picked, and the page is drawn in that scheme), and it opens in the panel's own palette, so none of the panel's roles
+ * differ from a moment before and its fields are painted with the panel's surface and border, not a tint of their own.
+ * Picking the other scheme's tab then draws that scheme, which is the preview, and picking the first again restores it.
+ */
+async function themeSheetProblems(page) {
+  const out = [];
+  const roles = async () =>
+    await page.evaluate((names) => {
+      const probe = document.createElement('div');
+      document.body.append(probe);
+      const resolve = (css) => {
+        probe.style.background = css;
+        return getComputedStyle(probe).backgroundColor;
+      };
+      const values = Object.fromEntries(names.map((name) => [name, resolve(`var(${name})`)]));
+      probe.remove();
+      return { values, dark: document.documentElement.classList.contains('dark') };
+    }, SHEET_ROLES);
+  await page.setViewportSize({ width: 360, height: 800 });
+  for (const scheme of SCHEMES) {
+    const where = `theme sheet in ${scheme}`;
+    await page.emulateMedia({ colorScheme: scheme });
+    await sleep(200);
+    const before = await roles();
+    await page.locator('.theme-trigger').click();
+    await page.locator('.theme-popover').getByRole('button', { name: 'Create theme' }).click();
+    await page.locator('.sheet [data-bar]').waitFor();
+    await sleep(200);
+    const label = scheme === 'dark' ? 'Dark' : 'Light';
+    const checked = await page.locator('.sheet [role="radio"][aria-checked="true"]').allInnerTexts();
+    if (checked.length !== 1 || checked[0].trim() !== label) out.push(`${where}: opens on the ${checked.join('/') || 'no'} tab, expected ${label}`);
+    const opened = await roles();
+    if (opened.dark !== (scheme === 'dark')) out.push(`${where}: the page is drawn ${opened.dark ? 'dark' : 'light'}`);
+    for (const name of SHEET_ROLES) if (opened.values[name] !== before.values[name]) out.push(`${where}: ${name} ${before.values[name]} before, ${opened.values[name]} once it opens`);
+    // Its fields and its page use the panel's own roles: the field's fill is the surface, its edge the border, the sheet the canvas.
+    const painted = await page.evaluate(() => {
+      const probe = document.createElement('div');
+      document.body.append(probe);
+      const resolve = (css) => {
+        probe.style.background = css;
+        return getComputedStyle(probe).backgroundColor;
+      };
+      const field = getComputedStyle(document.querySelector('.sheet .field input'));
+      const result = { field: field.backgroundColor, fieldWant: resolve('var(--surface)'), edge: field.borderTopColor, edgeWant: resolve('var(--line)'), sheet: getComputedStyle(document.querySelector('.sheet')).backgroundColor, sheetWant: resolve('var(--bg)') };
+      probe.remove();
+      return result;
+    });
+    if (painted.field !== painted.fieldWant) out.push(`${where}: its fields are ${painted.field}, not the panel's surface ${painted.fieldWant}`);
+    if (painted.edge !== painted.edgeWant) out.push(`${where}: its fields' edge is ${painted.edge}, not the panel's border ${painted.edgeWant}`);
+    if (painted.sheet !== painted.sheetWant) out.push(`${where}: the sheet is ${painted.sheet}, not the panel's canvas ${painted.sheetWant}`);
+    // The other tab previews the other scheme, and the first tab brings this one back.
+    const other = scheme === 'dark' ? 'Light' : 'Dark';
+    await page.locator('.sheet [role="radio"]').filter({ hasText: other }).click();
+    await sleep(150);
+    if ((await roles()).dark !== (scheme !== 'dark')) out.push(`${where}: the ${other} tab does not draw ${other.toLowerCase()}`);
+    await page.locator('.sheet [role="radio"]').filter({ hasText: label }).click();
+    await sleep(150);
+    const back = await roles();
+    for (const name of SHEET_ROLES) if (back.values[name] !== before.values[name]) out.push(`${where}: back on the ${label} tab ${name} is ${back.values[name]}, not ${before.values[name]}`);
+    await page.locator('.sheet [data-bar]').getByRole('button', { name: 'Close' }).click();
+    await sleep(150);
+    const after = await roles();
+    for (const name of SHEET_ROLES) if (after.values[name] !== before.values[name]) out.push(`${where}: after closing, ${name} is ${after.values[name]}, not ${before.values[name]}`);
+  }
   return out;
 }
 
@@ -429,6 +502,7 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
     await page.locator('.sheet [data-bar]').waitFor();
     await run('theme-sheet');
     await page.locator('.sheet [data-bar]').getByRole('button', { name: 'Close' }).click();
+    failures.push(...(await themeSheetProblems(page)));
   }
   await page.locator('#btn-settings-back').click();
   await page.setViewportSize({ width: 360, height: 800 });
