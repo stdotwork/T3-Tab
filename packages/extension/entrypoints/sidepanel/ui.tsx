@@ -210,6 +210,17 @@ export function timeAgo(at: number | undefined): string {
 
 export const clockTime = (at: number): string => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
+/**
+ * The running header's time, as T3 Code's timer counts: whole seconds, then minutes. Nothing before the first full second, so
+ * a turn that has only just begun reads "Working…" and never "Working for 0.0s" (T3 prints "0s" there; this leaves it out).
+ */
+export function workingTime(ms: number): string | undefined {
+  const seconds = Math.floor(Math.max(0, ms) / 1000);
+  if (seconds < 1) return undefined;
+  if (seconds < 60) return `${seconds}s`;
+  return formatDuration(seconds * 1000);
+}
+
 export function formatDuration(ms: number): string {
   const seconds = Math.max(0, ms) / 1000;
   if (seconds < 10) return `${seconds.toFixed(1)}s`;

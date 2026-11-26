@@ -20,6 +20,7 @@ import { forgetPanelTab, keepPanelOnItsTab, openPanelOn } from '../src/panel-tab
 import { originOf } from '../src/permissions';
 import { handleRequest } from '../src/requests';
 import { sessionStore } from '../src/runtime';
+import { forgetSecrets } from '../src/secret-text';
 import { adoptPopupTab } from '../src/tabs';
 
 const browserId = crypto.randomUUID();
@@ -170,12 +171,18 @@ export default defineBackground(() => {
   chrome.tabs.onRemoved.addListener(reportTabCount);
   chrome.tabs.onRemoved.addListener(reportTabClosed);
   chrome.tabs.onRemoved.addListener((tabId) => void sessionStore.forgetTab(tabId));
+  chrome.tabs.onRemoved.addListener((tabId) => forgetSecrets(tabId));
   chrome.tabs.onRemoved.addListener((tabId) => void forgetPanelTab(tabId).catch(() => undefined));
   chrome.tabs.onReplaced.addListener(reportTabCount);
   chrome.tabs.onAttached.addListener(reportTabCount);
   chrome.tabs.onDetached.addListener(reportTabCount);
   chrome.runtime.onStartup.addListener(() => void connect());
-  chrome.runtime.onInstalled.addListener(() => void connect());
+  chrome.runtime.onInstalled.addListener((details) => {
+    void connect();
+    // Once, on a fresh install: a tab of the extension's own whose one button opens the panel there, since a side panel
+    // can only be opened from a click and a new extension's toolbar icon is hidden under the puzzle piece.
+    if (details.reason === 'install') void chrome.tabs.create({ url: chrome.runtime.getURL('/welcome.html') }).catch(() => undefined);
+  });
   void connect();
 });
 

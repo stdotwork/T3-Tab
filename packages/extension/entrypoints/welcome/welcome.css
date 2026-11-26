@@ -1,0 +1,11 @@
+/* The welcome tab: the panel's theme and type, as one centred column. */
+body { overflow: auto; }
+#app { display: grid; place-items: center; min-height: 100%; height: auto; padding: 48px 16px; }
+.welcome { display: flex; flex-direction: column; align-items: stretch; gap: 12px; width: 100%; max-width: 440px; color: var(--muted-fg); }
+.welcome-icon { width: 48px; height: 48px; border-radius: var(--radius-lg); }
+.welcome h1 { color: var(--fg); font-size: var(--text-2xl); font-weight: 400; letter-spacing: -0.025em; line-height: 1.333; }
+.welcome-lead { margin-top: -8px; }
+.welcome .command-line { margin: 0; }
+.welcome .primary-btn { align-self: flex-start; }
+.welcome-status { color: var(--fg); }
+.welcome-foot { margin-top: 12px; font-size: var(--text-xs); }

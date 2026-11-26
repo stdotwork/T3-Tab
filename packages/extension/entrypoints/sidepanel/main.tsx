@@ -3,18 +3,15 @@ import './styles.css';
 
 import { createRoot } from 'react-dom/client';
 
-import type { PermissionPrompt, StoredSitePermission } from '../../src/permissions';
-import type { PanelTab } from '../../src/panel';
 import { App } from './App';
 import { guardPanelDrops } from './Composer';
-import { applyHeadlessState, headlessRender, type AutoAllowed } from './lib/store';
+import { applyHeadlessState, headlessRender } from './lib/store';
 import { t3 } from './lib/t3-client';
 import { loadAppearance } from './lib/theme';
 
-// The end-to-end run draws prompts and the site list from state it supplies.
+// The end-to-end run draws prompts, the site list and the helper's state from state it supplies.
 if (headlessRender) {
-  (globalThis as typeof globalThis & { __t3tabRenderPanelState?: (state: { currentTab?: PanelTab; pending: PermissionPrompt[]; sites: StoredSitePermission[]; autoAllowed?: AutoAllowed[] }) => void }).__t3tabRenderPanelState =
-    applyHeadlessState;
+  (globalThis as typeof globalThis & { __t3tabRenderPanelState?: typeof applyHeadlessState }).__t3tabRenderPanelState = applyHeadlessState;
 }
 
 // The harness that carries the panel's requests, or draws the panel from state it supplies, can also hand the panel's

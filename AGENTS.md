@@ -45,14 +45,19 @@ the developer path; users get the helper from `t3-tab setup` (see "Installing th
 `pnpm e2e` first installs the helper the way a user does (`e2e/checks-product-install.mjs`): `npm pack` of
 `packages/helper`, then `npx --package <tarball> t3-tab setup` run from a temporary folder outside the repository
 with a temporary HOME, into a headless Chromium that is already running with the extension and no helper. It checks
-that the panel's helper state goes from missing to connected with no reload and the background program started by
-the browser, that Add for Claude Code writes an entry naming the installed launcher and that entry's `mcp` server
+that the extension opened its welcome tab on install and that the tab's one button copies the command it shows and
+opens the real side panel on that tab (read over the DevTools protocol, since Playwright does not list side panels):
+the new-thread screen with the setup card and no setup screen or Start, where a task typed before the helper exists
+waits with Send off; that the panel's helper state goes from missing to connected with no reload and the background
+program started by the browser, and that the side panel's setup card then goes by itself with the typed task kept, and
+Send turns on when the helper found Claude Code or Codex (with neither, the screen says no agent was found and Send
+stays off); that Add for Claude Code writes an entry naming the installed launcher and that entry's `mcp` server
 sees the browser, that running `setup` again over a daemon of another version stops it and the browser reconnects
 to a new one, that `uninstall` removes the helper folder, manifest, state and agent entry and stops the daemon,
 that `scripts/install-test-build.sh` (through a `file://` address) installs the same helper, and that a browser
 started with its own `--user-data-dir` finds it once `setup` names that folder. Then `e2e/checks-real-use.mjs` runs in a headless Chromium only the extension debugs, because Playwright answers
 dialogs itself and makes hidden tabs act focused: dialogs, background input, another extension's frame
-(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs and same-origin frames. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that its reply carries the page (drawn by script too) and is the baseline of the next `read`, that `read` and `goto` with a url open a tab in an empty session behind the same prompt and take `find`, that a load's reply leaves out a page a redirect took to an unapproved origin and names a dialog the page opened, that every tool works on that hidden tab, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
+(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs, same-origin frames, and password inputs under other ARIA roles and text fields masked by `-webkit-text-security` staying redacted in `read`, `find`, a diff and an `act` reply, with the names built from them (a button, link, heading, label, `aria-labelledby` and a script's `ariaLabelledByElements`, open and closed shadow roots, 205 referrers), a 260-character value, show-password toggles by `autocomplete`, a short value that must not scrub other names, secrets in hidden, `aria-hidden`, `display:none`, `visibility:hidden` and closed-dialog content, fields under the roles link, checkbox and switch, a secret passed on through a label and a button, one echoed in the page's text, split over one element per character, upper-cased or taken from a hidden field no name was built from, a password a GET form puts in the address (the reply header and `tabs list` leave it out), and a page of 3,000 masked fields with 200 buttons named from them read in bounded time. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that its reply carries the page (drawn by script too) and is the baseline of the next `read`, that `read` and `goto` with a url open a tab in an empty session behind the same prompt and take `find`, that a load's reply leaves out a page a redirect took to an unapproved origin and names a dialog the page opened, that every tool works on that hidden tab, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
 two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
 links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
 `screenshot`, `act` and `run_js`. It also checks session tab groups, socket-bound session ids, tab sharing,
@@ -78,23 +83,25 @@ between turns with the conversation's Remove button; a missing, world-readable o
 the conversation and in the agent's first tool reply. The thread list, given T3 threads as one shell snapshot, shows T3's
 sidebar sections in T3's order (pinned, active, then the Working, Snoozed and Settled shelves), leaves archived threads
 out, ends each row in its provider's logo (none when T3 lists no such provider) and names no machine, and the threads button carries a dot only while a thread waits on the owner's answer or approval. The composer
-keeps the paperclip, model, mic and send in that order at 320, 360 and 400 px with no access row under it; the mic says why it cannot record without T3; a PDF for a direct run is named and holds the message; a pasted image is attached; a PNG
+keeps the paperclip, model, mic and send in that order at 320, 360 and 400 px with no access row under it; without T3 there is no mic and the model chip names the agent, never "Default"; a PDF for a direct run is named and holds the message; a pasted image is attached; a PNG
 dragged over the heading shows the whole-panel drop overlay, is attached when dropped there and
 reaches the fake Claude Code as an image block, while a file dropped on Settings is refused; Settings has a 28 px
 color scheme row, T3 Code's built-in theme with T3's shared theme ignored, and a theme menu with swatches, Create
 theme and Add theme, and each theme's actions beside it; and with T3's config handed to the panel, the access level is chosen in
 the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e/ink.mjs`) walks the new-thread
-screen (direct and T3, with and without a project), the model and project pickers, the thread list, a thread, a T3
-thread waiting on an approval (at its work-log row and above the composer), three browser prompts on the new-thread
-screen (one a `goto` on another tab), Settings and a theme sheet at 320, 360 and 400 px in light and dark (and the sheet opened from each scheme, which must open on that scheme's tab with every panel role unchanged and its fields painted with the panel's surface and border), and measures visible ink (SVG strokes and fills, text glyphs
+screen (direct, with no mic, and T3, with the mic, with and without a project), the model and project pickers, the thread list, a thread, a T3
+thread waiting on an approval (at its work-log row and above the composer), a running thread (its composer's Stop at the size of the icons beside it), three browser prompts on the new-thread
+screen (one a `goto` on another tab), the new-thread screen's setup card (helper missing) and Connect row (T3 Code
+running, not connected) drawn on the headless panel, Settings and a theme sheet at 320, 360 and 400 px in light and dark (and the sheet opened from each scheme, which must open on that scheme's tab with every panel role unchanged and its fields painted with the panel's surface and border), and measures visible ink (SVG strokes and fills, text glyphs
 on their baseline, painted boxes), never padding boxes. It fails when a bar's or the composer row's first and last
 controls sit at ink distances from its edges more than 1 px apart, when the composer's send circle is not as far from
 the frame's foot as from its side, when the composer's controls are not one size or their ink (and the model chip's
 logo and words) is off one centre line, when its text does not start on the paperclip's ink, when the hero's project
 line is off the heading's ink centre, when one bar's icons, or the composer row's glyphs, are drawn at different
 sizes or stroke weights, when an approval card's ink is over 160 px tall or its three answers are not on one row of
-one-line 28 px buttons inside it, or when browser prompts on the new-thread screen move its heading or composer or
-cover the composer. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
+one-line 28 px buttons inside it, when the setup card or the Connect row is not in the composer's column between the
+heading and the composer, cuts off any of its content, or is over 260 px tall (the Connect row: over 42 px or more than
+one line), or when browser prompts on the new-thread screen move its heading or composer or cover the composer. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
 each width and scheme the bars of all those screens must agree within 1 px (0.25 px for strokes): height, first and last
 ink insets, icon size and stroke, the thread toggle's ink, and the breadcrumb's start and baseline.
 `e2e/checks-approval-keys.mjs` then, on the headless panel with the panel's answers recorded,
@@ -113,7 +120,7 @@ variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is 
 finished threads against a real throwaway T3 and again with T3 absent, and saves each screen at 400 px in light and
 dark to the folder named by `T3_TAB_FLOW_SHOTS`.
 
-`pnpm captures` (after `pnpm build`, with `T3_TAB_CAPTURES_DIR` naming an output folder; not part of `pnpm e2e`) renders every panel view at 400 x 800 in light and dark from one fixed shopping scenario with the e2e fakes and the product's `npx t3-tab@latest setup` command, and writes it three ways: `panel/` as drawn, `framed/` on one browser-window frame with the product's and T3 Code's names masked (for blind rating beside other products), `framed-named/` on the same frame unmasked (`e2e/captures.mjs`).
+`pnpm captures` (after `pnpm build`, with `T3_TAB_CAPTURES_DIR` naming an output folder; not part of `pnpm e2e`) renders every panel view at 400 x 800 in light and dark from one fixed shopping scenario with the e2e fakes and the product's `npx t3-tab@latest setup` command, and writes it three ways: `panel/` as drawn, `framed/` on one browser-window frame with the product's and T3 Code's names masked (for blind rating beside other products), `framed-named/` on the same frame unmasked, and the welcome tab as a 1280 x 800 browser tab in `welcome/` (`e2e/captures.mjs`).
 
 `pnpm bench` (after `pnpm build`) measures what an agent is sent, in characters and estimated tokens: the
 `tools/list` payload (total and per tool) and each tool reply on four fixed tasks over three local pages
@@ -145,9 +152,19 @@ because this machine registers Claude in Chrome system-wide and a browser with a
 
 ## Installing the helper
 
-Users add the extension from the browser's store and run one command from any folder: `npx t3-tab@latest setup`
-(the panel shows it with a copy button; `packages/extension/src/helper-command.ts` holds it, with the test command
-the prototype build shows until the package is published, behind one constant, `HELPER_CHANNEL`). It needs Node.js
+Users add the extension from the browser's store and run one command from any folder: `npx t3-tab@latest setup`.
+On a fresh install (`runtime.onInstalled` with reason `install`) the extension opens a tab of its own, `welcome.html`,
+whose one button, "Copy the command and open T3-Tab", copies the command and opens the side panel on that tab, so the
+owner does not have to find the toolbar icon, which the browser keeps under the puzzle piece until it is pinned. The
+browser opens a side panel only from a user gesture: called from the service worker with none, `sidePanel.open` fails
+with "may only be called in response to a user gesture", so `onInstalled` cannot open the panel itself; from a click on
+the extension's own page it opens, also after an `await` of 200 ms (checked in headless Chromium; a `--load-extension`
+browser counts every launch as an install, so every test browser gets the tab). The panel opens on
+the new-thread screen; while the helper is not connected, one setup card above the composer says why, shows the command
+with a copy button and the live state, and the composer stays usable: a task typed meanwhile is kept, Send waits, and the
+card goes by itself once the helper connects (`SetupCard` in `Setup.tsx`; there is no setup screen and no Start). The
+command is held in `packages/extension/src/helper-command.ts`, with the test command the prototype build shows until the
+package is published, behind one constant, `HELPER_CHANNEL`. It needs Node.js
 20 or newer; without it the shell reports `npx` or `node` not found and the panel keeps showing the command.
 `setup` runs from the bundled file (an unbundled build refuses; `__T3_TAB_VERSION__` is set only by the bundler):
 
@@ -195,7 +212,8 @@ daemon link's 20-second ping keeps it alive), so after a rebuild a new panel can
 The write comes first and a reload already tried for the same panel build in the last five minutes is not repeated, so
 it cannot loop: the panel then says the extension is still an old build and to reload it on the extensions page. A
 failed request (the worker restarting) is asked again later and reloads nothing. Whatever the helper connection last
-hit is shown in the helper row (`helperNote` in `Setup.tsx`, from `HelperState` in `daemon-link.ts`): a native
+hit is shown in the setup card and in the helper row of Settings → Connections (`helperNote` in `Setup.tsx`, from
+`HelperState` in `daemon-link.ts`): a native
 messaging error, a `native.error` from the host, or a WebSocket that never opened or was closed, with its code and
 reason (`noteSocketClosed`), each with its one action; "Run this in a terminal" appears only when the browser reports
 no helper registered, and "Connecting" while no attempt has failed yet. `e2e/checks-stale-worker.mjs` swaps the files
@@ -388,9 +406,94 @@ after a reattach only when the main document's loader id is unchanged and `chrom
 commit in between. Input that was in flight when the debugger dropped is not sent again.
 
 `find` matches case-insensitive literal text by default. Passing `regex: true` opts into a regular
-expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. Every text box
-is inspected in bounded batches; password values are removed before the accessibility tree leaves the
-extension and render as `value=<redacted>`.
+expression of at most 200 characters; it runs in a worker that is terminated after 500 ms.
+
+**Redacted fields** (`packages/extension/src/password.ts`, called from `readPage` on the raw tree, before `slimAxNodes` trims
+it). Every node that holds a value, and every field the reader prints a value for (textbox, searchbox, combobox, spinbutton,
+slider), is checked, whatever its ARIA role: one `DOM.resolveNode` each into T3-Tab's own isolated world, so a page cannot change
+what `type`, `autocomplete` or `getComputedStyle` answer, then one `Runtime.callFunctionOn` per batch of 25, which also reads
+the value the field really holds. The value is removed and the line renders as `value=<redacted>`, with no length, when the field is:
+- a password input (the check is the element's `type`, not its role);
+- masked by `-webkit-text-security` (a PIN or card number in `type=text`, set on the field or inherited);
+- or marked by its `autocomplete` as a secret: `current-password`, `new-password`, `one-time-code`, `cc-number` or `cc-csc`
+  (any token of the attribute). This also catches a password field a show-password toggle turned into `type=text`, and costs
+  the agent the value of such a field when it is plain text on purpose (decided: safety over convenience). **A show-password
+  toggle on a password field that has no `autocomplete` attribute is not covered**: once it is `type=text` nothing marks it.
+
+A run of password bullets as a value is redacted under any role without asking (a `button`, for one), and a redacted node loses
+its children, because the bullets the browser draws for a password are a text child that would show the length. A field that
+cannot be checked (the browser could not resolve it, or the batch failed) is redacted too, and its value is looked for like a
+secret's; a dialog that opens during the read stops the read instead. When the private world was destroyed by a navigation, it
+is made again and the batch asked once more. `slimAxNodes` keeps a node's value only for the roles the reader prints one for, so
+no other role's value leaves the extension. A standalone script making the calls of the first version of this check in
+headless Chromium (median of 5 alternating runs, Chromium 159, Node 26.12) took 12 ms instead of 9 ms for 30 fields, 80 ms
+instead of 58 ms for 260, and 0.76 s instead of 0.57 s for 3,000, against the old `DOM.describeNode` per field, next to 0.5 s,
+0.9 s and 4.6 s to fetch the accessibility trees of those pages (the shipped code was not timed on its own). `find`, diffs and
+the `act` reply are built from the same lines, so they show nothing a read does not.
+
+**Names and text that took a hidden value in.** The browser puts a field's value into other elements' names, and a page can echo
+it in its text, so each secret is followed wherever it can have gone, with the value taken whole from the raw tree before any
+cut. The analysis (`redactPasswordValues`) does each step once for the whole page, so what it costs follows the size of the tree
+and of the values, not their product:
+- *Which values.* The fields the checks above found, the values of the hidden fields inside what names were built from, and the
+  page's own list: before the tree is read, one `Runtime.evaluate` in T3-Tab's world (`COLLECT_SECRETS` in `page.ts`) lists the
+  value of every input and textarea that is a password input, marked by `autocomplete` or masked, in the document, open shadow
+  roots and same-origin frames, **hidden fields included whether or not a name was built from them** (up to 3,000 values, at
+  most 5,000 fields asked about their style, 200,000 elements). A failed call leaves that list empty and the read goes on.
+  The values seen in a tab are also remembered for it (`rememberSecrets` in `secret-text.ts`, memory of the extension's worker:
+  400 values a tab, 30 minutes, dropped when the tab closes or the worker restarts), so a later read of the same tab, whose
+  form is gone, still hides them.
+- *Where a name came from.* Each source of a name that the browser did not set aside carries the nodes it was built from
+  (`relatedNodes` with `backendDOMNodeId`, under `attributeValue` for `aria-labelledby` and a script's `ariaLabelledByElements`
+  and under `nativeSourceValue` for `<label for>`). A name built from a hidden field, or from a node that is an ancestor of one
+  in the tree (a `LabelText`, a shadow host, an ignored wrapper), is cleaned of the values, and becomes `<redacted>` whole when
+  none is found in it or a node it was built from is not in the tree. A field's own label around it is not part of its name;
+  a field that names itself is. A name built from content (a button, link, heading, cell or tab around the field, a
+  `fieldset`'s legend) is treated the same way, for every ancestor of the field that holds it.
+- *Hidden content.* The tree marks hidden, `aria-hidden`, `display:none`, `visibility:hidden` and closed-dialog content as
+  ignored and gives its nodes no role or value, yet a name built from it still holds what is in it. So the ignored nodes inside
+  any element some name was built from (up to 1,000 a read, in one walk of the tree) are checked as well. If there are more, or
+  the check fails, the names built from them are hidden whole, when the page holds a secret or the check failed.
+- *It travels.* A name that took a secret in passes it on the same two ways, to the names above it built from content and to the
+  names whose sources list it or an element around it. Each node is expanded once (not once per value), so a form of thousands of
+  fields named by hundreds of buttons costs one pass. A name that had to be hidden whole, because no value could be found in it,
+  is passed on as unknown: the names above it that are built from content are hidden whole.
+- *The net.* Every value of four characters or more, including the value the field really holds and not only the bullets the
+  tree shows, is replaced in every name, value, link address and line of text on the page, tied to a field or not, so a path not
+  modelled cannot print a secret the extension knows. The matcher (`matcher` in `secret-text.ts`) is an Aho-Corasick automaton:
+  one pass over a text whatever the number of values or how alike they start, case-insensitive (a page that upper-cases its text
+  is caught), overlapping matches joined into one marker, never inside a marker; a value over 256 characters is found by its
+  first 256 and then hidden as far as the text follows it. **Text is matched as a stream**: the lines of text of the page in
+  document order are joined with nothing between, as the reader joins sibling text, so a value a page wrote one element per
+  character, or with its first letters in a `<b>`, is found, and every line it covers loses its part (the first keeps the
+  marker, the rest go empty). This also joins text across blocks, so two separate lines that together spell a value are hidden
+  too (a rare false positive, on purpose). A link address is also matched in the forms an address holds a value:
+  as it is, `encodeURIComponent`, `encodeURI` and with `+` for a space. A value of fewer than four characters is replaced only
+  as a whole word and never in plain text, only in names tied to a hidden field (the names that took a value in, and those
+  around the field that holds it; in a tied name every short value of the page is looked for, not only its own field's).
+- *Title and address.* The tab's title and address come from the browser, not the tree, and a form that sends a password in
+  its address (a GET login) puts it in both, in the header of every later reply and in `tabs list`. `scrubReported` takes the
+  tab's remembered values out of the title and address (in their address forms) in `readPage`, `tabInfo` (`tabs list`,
+  `open`, `switch`) and the dialog branch of `act`. Before a `click` or a `press` step, `act` collects the page's secret values
+  again (`rememberPageSecrets`), so a form the owner filled after the last read and that a click sends is covered.
+- *The budget.* The steps after the checks run under a time budget of 1.5 s (`budgetMs`). Past it, the analysis stops and
+  every name, value, link address and line of text that holds a value the extension knows (or a run of two or more password
+  bullets) is hidden whole, and past a second budget every name built from content or from other nodes is hidden whole. The
+  fallback never reads a text more than once.
+Measured: a stub inspector and synthetic trees in the unit tests (Node 26.12, vitest, one run each, tree building included):
+3,000 masked fields in a form with 200 buttons named from it, 0.59 s; groups 500 deep with 20 fields each, 0.15 s; 30 deep with
+300 each, 0.10 s. The version before took 29 to 31 s on shapes like those (as a review measured them, with its own stub). In headless Chromium (`e2e/checks-real-use.mjs`, one
+run, wall time of the `read` call) the real 3,000-field, 200-button page read in 3.4 s, 12,083 characters, and `tabs list`
+answered straight after; the version before did not answer within 25 s.
+Not covered: a show-password toggle on a field with no `autocomplete` attribute (above); `aria-describedby` (a description is not
+part of the tree the reader gets, so it never leaves the extension); a name or text that holds the value in another form than
+the field showed it (the match is the value with its whitespace collapsed, in any case, with the encoded forms in addresses
+only); a secret that is in none of the ways above a field's value, such as one a script types into plain text or builds from
+other values; a field masked another way (a text input drawn as dots by a script or a font), and the bullets a masked field
+outside the value roles draws as text (its length); a secret field inside a closed shadow root that no name was built from
+(the page's list cannot reach it; the checks above reach it only through the tree) and fields past the caps above; secrets of
+a tab after the extension's worker restarted or 30 minutes passed (the memory is gone; the tab's address from before then
+shows as the browser reports it); `run_js`, which is the agent's own code; and a screenshot, which shows what the page draws.
 
 ## Sessions and permissions
 
@@ -449,7 +552,8 @@ steps is refused until its new origin is approved. Site setting writes are seria
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
 `view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel lives in
-`packages/extension/entrypoints/sidepanel` (React: first-run setup, a new-thread screen, the thread view, and the
+`packages/extension/entrypoints/sidepanel` (React: a new-thread screen, which carries the setup card until the helper
+connects, the thread view, and the
 thread list and settings behind icons, coloured only from T3's theme roles);
 every screen has the same top bar in T3's anatomy (`Bar` in `Frame.tsx`): T3's sidebar toggle, which opens and closes
 the thread list, then a breadcrumb, then the screen's icons (New thread and Settings), or, on Settings and its sheets,
@@ -559,7 +663,10 @@ The side panel starts and continues agents with the owner's tabs; T3-Tab never r
 connected the panel is a T3 client and T3 starts and runs every thread. When it is not, the picked provider runs
 directly through the daemon and feeds the same thread view.
 
-- **The panel's T3 session.** Connect signs a DPoP proof and calls the daemon's `t3.pair`. The daemon checks that the
+- **The panel's T3 session.** While T3 runs on this machine and the panel holds no session, the new-thread screen shows
+  one row, "T3 Code is running", with Connect (Settings → Connections has the same button). Every Connect goes through
+  `connectT3` in `lib/t3-connect.ts`; `CONNECT_T3_BY_ITSELF` there, off until the owner decides it, would make the panel
+  connect once per panel page with no click. Connect signs a DPoP proof and calls the daemon's `t3.pair`. The daemon checks that the
   recorded T3 process owns the listener, mints a five-minute pairing credential with `t3 auth pairing create`, and spends
   it at T3's `/oauth/token` itself, so the credential never reaches the extension. The result is a DPoP-bound session with
   T3's default client scopes, the same access T3's own apps get. The signing key is non-extractable and stays in the
@@ -573,8 +680,11 @@ directly through the daemon and feeds the same thread view.
   on the socket. The same holds for the two other connections the browser opens to T3: an attachment upload and the
   voice socket (below). Disconnect drops the session and revokes it through `t3.unpair`. The `t3 thread` polling below remains in
   the daemon, but the panel no longer uses it.
-- **The composer.** The bottom row is T3's: the paperclip at the left end, then the model, the mic and send, every
-  control 32 px and the row 8 px from the box's edges. The access level (runtime mode) is in the model picker's footer, as
+- **The composer.** The bottom row is T3's: the paperclip at the left end, then the model, the mic and send (Stop in its
+  place while a turn runs, drawn at the same 16 px as the other icons), every control 32 px and the row 8 px from the
+  box's edges. A direct run whose model is the agent's own default names the agent on the chip ("Claude Code"), not
+  "Default", since T3-Tab never learns which model that is. A running turn's header reads "Working…" until its first full
+  second, then "Working for 7s" in whole seconds, as T3's timer counts; it never shows "0.0s". The access level (runtime mode) is in the model picker's footer, as
   in T3; a running T3 thread's model chip opens the same footer, and a change there is sent at once with
   `thread.runtime-mode.set`.
 - **Attachments.** Paperclip, paste and drop add files. Files dragged anywhere over a screen with a composer (the
@@ -589,8 +699,10 @@ directly through the daemon and feeds the same thread view.
 - **Dictation.** The mic records 16 kHz mono PCM in an audio worklet (`public/pcm-capture.js`) and streams it to T3's
   `/ws/voice`, where T3 transcribes it on this machine with the model chosen in its Settings → Voice, the same route T3's
   composer takes. The media ticket and `GET /api/voice/status` go through the daemon's `t3.session` like the RPC ticket.
-  Without T3 connected, without T3's `voiceTranscription` capability or without a downloaded voice model, the button says
-  so instead of recording. A side panel cannot show the browser's microphone prompt, so the first press opens
+  As in T3's composer, the mic is not drawn where it cannot work: T3 not connected, no `voiceTranscription` capability, a
+  voice status that says unsupported (asked once when T3 connects, so a refused one never appears), or a page that cannot
+  record. A downloaded voice model that is missing keeps the button, as T3 opens its setup there: pressing it says where
+  to download one. A blocked microphone keeps it too, and says how to allow it. A side panel cannot show the browser's microphone prompt, so the first press opens
   `microphone.html` in a tab, where the browser asks once for the extension; after that the panel records without asking.
   Nothing uses the browser's Web Speech service.
 - **Themes.** Settings shows the color scheme as one segmented row and the theme as one menu (every theme with its
@@ -605,7 +717,7 @@ directly through the daemon and feeds the same thread view.
   edited, and any theme can be duplicated with all its colours and both of its modes. A name already in use gets a number
   instead of replacing that theme. A change reaches panels open on other tabs through `chrome.storage.onChanged`. Custom
   CSS goes through T3's own filter, which removes rules that load remote files.
-- **Adding the tools to the owner's agents.** Add in setup registers `t3-tab mcp` for the owner's own Claude Code and Codex
+- **Adding the tools to the owner's agents.** Add in Settings → Connections registers `t3-tab mcp` for the owner's own Claude Code and Codex
   sessions; threads started in the panel do not need it. The panel has no Remove button, so it never edits agent configuration
   itself. Connections shows the command that removes the entry: `claude mcp remove -s user t3-tab` or
   `codex mcp remove t3-tab` (or `t3-tab uninstall --claude` / `--codex`).

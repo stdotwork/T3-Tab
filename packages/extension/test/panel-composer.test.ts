@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import { acceptFor, attachmentProblems, draftAttachment, fileBase64, t3Kind, type DraftAttachment } from '../entrypoints/sidepanel/lib/attachments';
 import { DEFAULT_SPEECH, speechOptions } from '../entrypoints/sidepanel/lib/t3-client';
-import { formatElapsed, insertDictation, micPermissionNote, voiceBlock, VoiceStream, type SocketLike } from '../entrypoints/sidepanel/lib/voice';
+import { choiceLabel, directProviders } from '../entrypoints/sidepanel/lib/catalog';
+import { formatElapsed, insertDictation, micPermissionNote, micShown, voiceBlock, VoiceStream, type SocketLike } from '../entrypoints/sidepanel/lib/voice';
+import { workingTime } from '../entrypoints/sidepanel/ui';
 
 const MB = 1024 * 1024;
 const item = (key: string, mimeType: string, size: number, name = `${key}.bin`): DraftAttachment => ({ key, file: new File([], name), name, mimeType, size });
@@ -62,6 +64,20 @@ describe('dictation', () => {
     expect(voiceBlock({ ...ready, canRecord: false })).toBe('This browser page cannot record audio.');
     expect(voiceBlock({ ...ready, status: { supported: true, state: 'ready' } })).toBeUndefined();
     expect(voiceBlock(ready)).toBeUndefined();
+  });
+
+  it('draws the mic only where pressing it can lead to a recording or to something the owner can do', () => {
+    const ready = { t3: 'ready', capability: true, canRecord: true } as const;
+    expect(micShown(ready)).toBe(true);
+    expect(micShown({ ...ready, status: { supported: true, state: 'ready' } })).toBe(true);
+    // A missing model stays: pressing it says where T3 downloads one, as T3's own button opens its setup.
+    expect(micShown({ ...ready, status: { supported: true, state: 'missing-model' } })).toBe(true);
+    expect(micShown({ ...ready, t3: 'off' })).toBe(false);
+    expect(micShown({ ...ready, t3: 'connecting' })).toBe(false);
+    expect(micShown({ ...ready, t3: 'lost' })).toBe(false);
+    expect(micShown({ ...ready, capability: false })).toBe(false);
+    expect(micShown({ ...ready, status: { supported: false, reason: 'no' } })).toBe(false);
+    expect(micShown({ ...ready, canRecord: false })).toBe(false);
   });
 
   it('explains the microphone permission the side panel cannot ask for itself', () => {
@@ -173,5 +189,26 @@ describe("T3's voice socket", () => {
     expect(socket.binary).toHaveLength(0);
     expect(socket.closed).toBe(true);
     await expect(stream.finish()).rejects.toThrow('cancelled');
+  });
+});
+
+describe('the composer chip and the running header', () => {
+  const direct = directProviders([{ id: 'claude', found: true, registered: false }, { id: 'codex', found: true, registered: false }]);
+  it('names the agent when a direct run uses the agent\'s own default model, and the model when it is known', () => {
+    expect(choiceLabel(direct, { provider: 'claude', model: '', options: {} }).name).toBe('Claude Code');
+    expect(choiceLabel(direct, { provider: 'codex', model: '', options: {} }).name).toBe('Codex');
+    expect(choiceLabel(direct, { provider: 'claude', model: 'claude-opus-5-5', options: {} }).name).toBe('Opus 5.5');
+    expect(choiceLabel(direct, { provider: 'codex', model: 'gpt-5.2-codex', options: {} }).name).toBe('gpt-5.2-codex');
+    const t3Default = [{ id: 'claudeAgent', name: 'Claude', driver: 'claudeAgent', models: [{ slug: 'claude-opus-5-5', name: 'Claude Opus 5.5', shortName: 'Opus 5.5', options: [], isDefault: true }] }];
+    expect(choiceLabel(t3Default, { provider: 'claudeAgent', model: 'claude-opus-5-5', options: {} }).name).toBe('Opus 5.5');
+  });
+
+  it('shows no time for the first second of a turn and whole seconds after, as T3 Code\'s timer counts', () => {
+    expect(workingTime(0)).toBeUndefined();
+    expect(workingTime(999)).toBeUndefined();
+    expect(workingTime(1000)).toBe('1s');
+    expect(workingTime(7400)).toBe('7s');
+    expect(workingTime(59_900)).toBe('59s');
+    expect(workingTime(61_000)).toBe('1m 1s');
   });
 });

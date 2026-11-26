@@ -201,7 +201,12 @@ export function useCatalog(live: LiveState, state: T3State): Catalog {
       if (providers.length > 0) return { source: 't3', providers };
     }
     const providers = directProviders(live.setup?.agents ?? []);
-    if (state.status !== 'ready') return { source: 'direct', providers };
+    if (state.status !== 'ready') {
+      // What the setup screen's disabled Start used to stand for: the helper is there and found nothing to run a thread.
+      if (live.setup === undefined || providers.length > 0) return { source: 'direct', providers };
+      const note = live.setup.t3.state === 'running' ? 'Connect T3 Code, or install Claude Code or Codex, to start a thread.' : 'No agent found on this machine. Install Claude Code or Codex, or start T3 Code.';
+      return { source: 'direct', providers, note };
+    }
     const names = providers.map((provider) => provider.name).join(' or ');
     return { source: 'direct', providers, note: names === '' ? 'T3 Code has no usable provider, and no agent was found on this machine.' : `T3 Code has no usable provider, so threads run with ${names} directly.` };
   }, [state, live.setup]);

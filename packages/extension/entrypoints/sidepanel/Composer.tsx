@@ -1,5 +1,5 @@
 import type { AgentImage } from '@t3-tab/protocol';
-import { Check, ChevronUp, FileText, Globe, Lock, Paperclip, PenLine, Search, ShieldCheck, ShieldOff, Square, X } from 'lucide-react';
+import { Check, ChevronUp, FileText, Globe, Lock, Paperclip, PenLine, Search, ShieldCheck, ShieldOff, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -20,6 +20,15 @@ function SendArrow(): ReactNode {
   return (
     <svg width={ICON.md} height={ICON.md} viewBox="0 0 14 14" fill="none" aria-hidden="true">
       <path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" strokeWidth={1.3125} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** T3 Code's stop square, drawn at the row's 16 px like the send arrow and the other icons beside it. */
+function StopSquare(): ReactNode {
+  return (
+    <svg width={ICON.md} height={ICON.md} viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
+      <rect x="3" y="3" width="8" height="8" rx="1.75" />
     </svg>
   );
 }
@@ -556,7 +565,7 @@ export function Composer({
           {dictation === undefined ? null : <MicButton dictation={dictation} />}
           {running && onStop !== undefined ? (
             <button type="button" className="send-btn stop" data-ink="box" aria-label="Stop" title="Stop" onClick={onStop}>
-              <Square size={ICON.xs} fill="currentColor" aria-hidden="true" />
+              <StopSquare />
             </button>
           ) : null}
           {!running || onStop === undefined || (canQueue === true && value.trim() !== '') ? (

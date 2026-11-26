@@ -331,18 +331,11 @@ code.approval-subject { font: 400 var(--text-xs)/20px ui-monospace, 'SF Mono', M
 .error-line { color: var(--app-theme-error-foreground); font-size: var(--text-xs); overflow-wrap: anywhere; }
 
 /* Setup */
-.setup { display: flex; flex-direction: column; height: 100%; padding: 24px var(--gutter) var(--gutter); overflow-y: auto; }
-.setup header { padding-bottom: 16px; border-bottom: 1px solid var(--line); }
-.setup h1 { font-size: var(--text-2xl); font-weight: 400; letter-spacing: -0.025em; line-height: 1.333; }
-.setup header p { color: var(--muted-fg); margin-top: 2px; }
-.setup section { padding: 12px 0 10px; border-bottom: 1px solid var(--line); }
-.setup h2, .settings-page h3 { color: var(--muted-fg); font-size: var(--text-sm); font-weight: 400; margin-bottom: 6px; }
-.setup footer { display: flex; justify-content: flex-end; padding-top: 16px; margin-top: auto; }
+.settings-page h3 { color: var(--muted-fg); font-size: var(--text-sm); font-weight: 400; margin-bottom: 6px; }
 .setup-row { display: flex; align-items: center; gap: 12px; min-height: 42px; padding: 4px 0; }
 .setup-icon { display: grid; place-items: center; width: 20px; height: 20px; flex: none; color: var(--icon); }
 .t3-mark rect { fill: var(--fg); }
 .t3-mark path { fill: var(--bg); }
-.setup-hint { margin: -2px 0 2px; color: var(--muted-fg); font-size: var(--text-xs); }
 .setup-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .setup-text strong { font-weight: 500; }
 .setup-text small { color: var(--muted-fg); line-height: 1.35; }
@@ -356,11 +349,25 @@ code.approval-subject { font: 400 var(--text-xs)/20px ui-monospace, 'SF Mono', M
 .primary-btn:disabled { opacity: 0.45; }
 .command-line { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px; padding: 6px 6px 6px 10px; border-radius: var(--radius); background: var(--app-theme-code-background); color: var(--app-theme-code-foreground); }
 .setup-text small.helper-detail { margin-top: 2px; font-size: var(--text-xs); opacity: 0.8; overflow-wrap: anywhere; }
+.setup-card-text.helper-detail { opacity: 0.8; }
 .helper-row { align-items: flex-start; }
 .helper-row .setup-icon, .helper-row > .spin, .helper-row > .state-ready { margin-top: 4px; }
 .command-line code { flex: 1; min-width: 0; font: var(--text-xs) ui-monospace, 'SF Mono', Menlo, Consolas, monospace; overflow-wrap: anywhere; line-height: 1.5; }
 .command-line button { display: grid; place-items: center; width: var(--control); height: var(--control); flex: none; border-radius: var(--radius-sm); color: var(--icon); }
 .command-line button:hover { background: var(--hover); color: var(--fg); }
+/* The new-thread screen's setup card and T3 Connect row, in the approval card's anatomy: an icon column, then the lines. */
+.setup-card { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 10px; align-items: start; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--raised); box-shadow: 0 2px 10px rgb(0 0 0 / 8%); font-size: var(--text-sm); }
+.setup-card.connect-row { grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; padding: 4px 4px 4px 10px; }
+.setup-card-icon { display: grid; place-items: center; width: 14px; height: 20px; color: var(--icon); }
+.setup-card-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.setup-card-head { display: flex; align-items: center; gap: 6px; line-height: 20px; }
+.setup-card strong { font-weight: 500; line-height: 20px; }
+.setup-card-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setup-card-text { color: var(--muted-fg); font-size: var(--text-xs); line-height: 18px; overflow-wrap: anywhere; }
+.setup-card-text.problem { color: var(--app-theme-error-foreground); }
+.setup-card .command-line { margin: 4px 0 2px; }
+.setup-card-wait { display: flex; align-items: center; gap: 6px; color: var(--muted-fg); font-size: var(--text-xs); line-height: 18px; }
+.setup-card-wait .spin { flex: none; }
 
 /* Thread list: T3's sidebar. The list's 4 px and a row's 8 px put every row's ink on the bars' --gutter line. */
 .list-search-row { display: flex; flex: none; padding: 0 var(--gap) var(--gap); }

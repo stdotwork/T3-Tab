@@ -395,11 +395,10 @@ async function checkThreadSections(livePanel, screenshotPath) {
 
 /**
  * A second panel page for the owner's view of a conversation. Pages in a tab are refused by the worker's sender
- * check, so the harness carries the page's requests to the same handler (as e2e/panel-flow.mjs does); `setup.done`
- * is set first so the page skips the setup screen, and it runs its normal poll.
+ * check, so the harness carries the page's requests to the same handler (as e2e/panel-flow.mjs does), and it runs its
+ * normal poll.
  */
 async function openLivePanel(browserContext, serviceWorker, tabId) {
-  await serviceWorker.evaluate(() => chrome.storage.local.set({ 'setup.done': true }));
   const page = await browserContext.newPage();
   await page.setViewportSize({ width: 360, height: 800 });
   await page.exposeFunction('__t3tabPanelBridge', async (request) => {
@@ -642,7 +641,7 @@ async function checkAppearance({ livePanel, screenshotPath }) {
  * The composer as T3 Code lays it out: the paperclip at the left end, then the model, the mic and send; no access row
  * under the box. A
  * file a direct run cannot take is named and holds the message; an image goes to the agent with the message; the mic
- * says why it cannot record when T3 is not connected. With T3 connected, the access level is in the model picker.
+ * is left out when T3 is not connected. With T3 connected, the access level is in the model picker.
  */
 async function checkComposer({ livePanel, fakes, screenshotPath }) {
   await livePanel.keyboard.press('Escape');
@@ -654,8 +653,9 @@ async function checkComposer({ livePanel, fakes, screenshotPath }) {
   for (const width of [320, 360, 400]) {
     await livePanel.setViewportSize({ width, height: 760 });
     await sleep(100);
+    // No mic here: T3 is not connected, and T3's own composer leaves the mic out when it cannot record.
     const order = await livePanel.evaluate(() =>
-      ['[aria-label="Attach files"]', '.model-chip', '.mic-btn', '.send-btn'].map((selector) => document.querySelector(`.composer-row ${selector}`)?.getBoundingClientRect().left ?? null),
+      ['[aria-label="Attach files"]', '.model-chip', '.send-btn'].map((selector) => document.querySelector(`.composer-row ${selector}`)?.getBoundingClientRect().left ?? null),
     );
     assert(order.every((left, index) => left !== null && (index === 0 || left > order[index - 1])), `Composer controls at ${width}px: ${JSON.stringify(order)}`);
     assert(!(await livePanel.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `The panel scrolls sideways at ${width}px`);
@@ -663,12 +663,11 @@ async function checkComposer({ livePanel, fakes, screenshotPath }) {
   await livePanel.setViewportSize({ width: 360, height: 800 });
   assert((await livePanel.locator('.under-composer, .runtime-btn').count()) === 0, 'The access row is still under the composer');
 
-  // The mic, with T3 not connected: it says why rather than doing nothing.
-  const mic = livePanel.locator('.composer-row .mic-btn');
-  assert(((await mic.getAttribute('title')) ?? '').includes('Connect T3 Code'), `The mic's title: ${await mic.getAttribute('title')}`);
-  await mic.click();
-  await livePanel.locator('.composer-notice').filter({ hasText: 'Connect T3 Code' }).waitFor();
-  console.log(`Composer mic without T3: ${await livePanel.locator('.composer-notice').innerText()}`);
+  // The mic, with T3 not connected: it is not drawn at all (no crossed-out glyph), and the model chip names the agent, not "Default".
+  assert((await livePanel.locator('.composer-row .mic-btn').count()) === 0, 'The mic is drawn although T3 is not connected');
+  const chipText = await livePanel.locator('.composer-row .model-chip').innerText();
+  assert(!/default/i.test(chipText), `The model chip reads "${chipText}"`);
+  console.log(`Composer without T3: no mic; the model chip reads "${chipText}"`);
 
   // A PDF cannot go to a direct run: it is named, and the message waits until it is removed.
   const chooser = livePanel.locator('.composer input[type="file"]');

@@ -37,6 +37,15 @@ export function voiceBlock(input: VoiceBlockInput): string | undefined {
   return undefined;
 }
 
+/**
+ * Whether the composer draws the mic at all. As in T3 Code's composer, it is left out where recording cannot work and
+ * nothing the owner presses would change that here: no recording API, T3 not connected, T3 unable to transcribe on this
+ * machine. A missing voice model stays, because pressing it says where to download one, as T3's own button opens its setup.
+ */
+export function micShown(input: VoiceBlockInput): boolean {
+  return input.canRecord && input.t3 === 'ready' && input.capability && input.status?.supported !== false;
+}
+
 /** What the mic button says about the microphone itself, once T3 can transcribe. */
 export function micPermissionNote(permission: MicPermission): string | undefined {
   if (permission === 'denied') return "The microphone is blocked for T3-Tab. Allow it in the browser's settings for this extension, then try again.";
