@@ -134,7 +134,9 @@ export async function checkProductInstall() {
     console.log('Product install: running setup again over an older daemon stopped it, and the browser reconnected to a new one by itself');
 
     // 6. One command removes everything.
-    const removed = await run(join(root, 't3-tab'), ['uninstall']);
+    // The test pause holds the gap after each stage open for 4 s, long enough for the browser to reconnect and start a new
+    // daemon if the browser link were still registered when the daemon was stopped.
+    const removed = await run(join(root, 't3-tab'), ['uninstall'], { T3_TAB_TEST_UNINSTALL_PAUSE_MS: '4000' });
     assert(removed.includes('Removed the helper'), `uninstall output:\n${removed}`);
     for (const path of [root, manifest, home.stateDir]) assert(!(await exists(path)), `Uninstall left ${path}`);
     const afterUninstall = JSON.parse(await readFile(claudeConfig, 'utf8').catch(() => '{}'));

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { EXTENSION_ID, NATIVE_HOST_NAME, PROTOCOL_VERSION } from '@t3-tab/protocol';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { currentHost, helperLayout, launcherScript, mcpCommand } from '../src/helper-layout.js';
 import { NOT_BUNDLED, setupHelper, uninstallHelper } from '../src/helper-setup.js';
@@ -20,6 +20,15 @@ import {
   type FindBrowsersDeps,
   type ProcessDeps,
 } from '../src/install-native-host.js';
+
+const daemonStops = vi.hoisted(() => ({ calls: [] as string[], onStop: undefined as undefined | (() => Promise<boolean>) }));
+vi.mock('../src/client.js', async (importActual) => ({
+  ...(await importActual<typeof import('../src/client.js')>()),
+  stopDaemon: async (directory: string) => {
+    daemonStops.calls.push(directory);
+    return (await daemonStops.onStop?.()) ?? false;
+  },
+}));
 
 const none: FindBrowsersDeps = { exists: async () => false, onPath: async () => false };
 const noProcesses: ProcessDeps = { readCommandLines: async () => [], psOutput: async () => '' };
@@ -261,6 +270,38 @@ describe('setup and uninstall on Linux (run in a temporary home)', () => {
     await expect(stat(join(home, 'elsewhere/NativeMessagingHosts'))).rejects.toThrow();
     await expect(stat(stateDir)).rejects.toThrow();
     expect(await readFile(neighbour, 'utf8')).toContain('com.other.host');
+  });
+
+  it('uninstall takes the browser link away before it stops the daemon, and stops one started in between', async () => {
+    await setupHelper(options());
+    const host = currentHost({ HOME: home }, 'linux');
+    const layout = helperLayout(host);
+    const stateDir = join(home, '.local', 'state', 't3-tab');
+    await mkdir(stateDir, { recursive: true });
+    const manifests = [join(home, '.config/chromium/NativeMessagingHosts/com.t3tab.native.json'), join(home, 'elsewhere/NativeMessagingHosts/com.t3tab.native.json')];
+    const present = async (path: string): Promise<boolean> => stat(path).then(() => true, () => false);
+    const events: string[] = [];
+    let stops = 0;
+    daemonStops.calls.length = 0;
+    daemonStops.onStop = async () => {
+      stops += 1;
+      events.push(`stop ${stops}: manifests ${(await Promise.all(manifests.map(present))).some(Boolean) ? 'present' : 'gone'}, host launcher ${(await present(layout.hostLauncher)) ? 'present' : 'gone'}, program ${(await present(layout.cli)) ? 'present' : 'gone'}, state ${(await present(stateDir)) ? 'present' : 'gone'}`);
+      // The first stop finds the daemon; the browser had already started another by the second, which is the last.
+      return stops <= 2;
+    };
+    try {
+      await uninstallHelper({ host, stateDir, agents: [], say: () => undefined, processDeps: noProcesses, removeAgent: async () => '', pause: async (stage) => void events.push(`pause ${stage}`) });
+    } finally {
+      daemonStops.onStop = undefined;
+    }
+    expect(events).toEqual([
+      'pause browser link',
+      'stop 1: manifests gone, host launcher gone, program present, state present',
+      'pause daemon',
+      'stop 2: manifests gone, host launcher gone, program gone, state present',
+      'stop 3: manifests gone, host launcher gone, program gone, state present',
+    ]);
+    await expect(stat(stateDir)).rejects.toThrow();
   });
 
   it('uninstall with agents named removes only their entries and keeps the helper, state, browser links and daemon', async () => {
