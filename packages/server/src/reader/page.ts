@@ -42,6 +42,11 @@ export interface ReadOptions {
 
 /** Longest whole page a load's reply carries, in characters; a longer one is left to `read` or `find`. */
 export const LOAD_REPLY_MAX = 4_000;
+/**
+ * How long after a load's reply a `full` read that finds nothing changed is answered with that: a read the agent sent
+ * in the same turn as the load comes within a second or two. A later one may be meant to see the page again.
+ */
+export const LOAD_REPEAT_MS = 5_000;
 
 /** What the background program holds for one tab: its refs and, per calling session, the last text read. */
 export class TabState {
@@ -113,8 +118,8 @@ export class TabState {
 export interface Baseline {
   text: string;
   kept: ReadonlyMap<string, Keep>;
-  /** Set when a load's reply showed this whole view; the next read replaces the baseline and drops it. */
-  loaded?: true;
+  /** When a load's reply showed this whole view (`Date.now()`); the next read replaces the baseline and drops it. */
+  loadedAt?: number;
 }
 
 /**
@@ -206,11 +211,11 @@ export async function formatRead(
       state.restoreBaseline(session, key, last);
       return `${header}\n(The page is ${(reply.length - header.length - 1).toLocaleString('en-US')} characters, too long for this reply: read shows it, find searches it.)`;
     }
-    state.setBaseline(session, key, { text, kept, loaded: true });
+    state.setBaseline(session, key, { text, kept, loadedAt: Date.now() });
     return reply;
   };
   // The agent asked for the whole page and has it, unchanged, from the load it sent this read with.
-  if (options.full === true && last?.loaded === true && previous === text) {
+  if (options.full === true && last?.loadedAt !== undefined && Date.now() - last.loadedAt < LOAD_REPEAT_MS && previous === text) {
     return `${header}\nNo changes since the load's reply, which showed the whole page.`;
   }
   // What the batch itself set is no news to the agent: the earlier read is settled to show it already.

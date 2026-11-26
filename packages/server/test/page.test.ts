@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { formatRead, LOAD_REPLY_MAX, MAX_OUTPUT_CHARS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
+import { formatRead, LOAD_REPEAT_MS, LOAD_REPLY_MAX, MAX_OUTPUT_CHARS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
 import { ax, buttonPage, docsPage, feed, longArticle, page, signInPage } from './ax-fixtures.js';
 
 describe('reading a page', () => {
@@ -158,6 +158,18 @@ describe('a load reply', () => {
     );
     // Only right after the load: a second full read is the whole page again.
     expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
+  });
+
+  it('sends a full read whole when it comes later than a read sent with the load would', async () => {
+    const state = new TabState();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      await formatRead(state, 's', page(signInPage()), { load: true });
+      now.mockReturnValue(1_000_000 + LOAD_REPEAT_MS);
+      expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('sends a full read whole when the page changed since the load', async () => {

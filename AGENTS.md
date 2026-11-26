@@ -293,8 +293,8 @@ tab <id>: <title> — <url>`), and that reply is the tab's diff baseline for the
 `find` it replies with the matching lines instead. A page whose view is over `LOAD_REPLY_MAX` (4,000 characters, `page.ts`)
 is left out of a load's reply, which says how long it is and sets no baseline: agents send a `read` (or a `find`) in the
 same turn as the load, before they see its reply, and that read then gets the page once. A `read` with `full` right after a
-load reply that showed the whole page, with nothing changed, says so instead of sending it again (once; the next one is
-whole). The extension reads the page in the same request (`describeLanding` in `requests.ts`), after the load and its first
+load reply that showed the whole page (within 5 seconds, `LOAD_REPEAT_MS`), with nothing changed, says so instead of
+sending it again (once; the next one is whole). The extension reads the page in the same request (`describeLanding` in `requests.ts`), after the load and its first
 frames: the read starts at once, beside the settle wait (at most one more second, `LOAD_SETTLE_MS`), and is kept when the
 settle's last snapshot (document, layout and network activity, `settleSnapshot`) matches the one taken before it; otherwise
 the page is read again. It reads only where a `read` would pass without a prompt: the origin the load was approved for, or one the session already holds on
