@@ -259,7 +259,9 @@ last saw that same title and address for the tab, it starts with `tab <id>` alon
 
 Text is cut for display, never for search. The extension keeps each name up to 8,000 characters (2 MB a page, then 300
 each) and drops the line-wrap boxes the reader never prints; the reader prints a line of text up to 1,000 and a name up to 160, and `find` searches all of it
-and prints a window around the match. Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
+and prints a window around the match. A run of text longer than a line is split into lines of up to 1,000 between its pieces
+(text nodes, links, text-level elements); only one piece longer than a line is cut. `find` prints a matching line up to
+320 characters whole (a longer one around its match) and a context line up to 120 (a longer one keeps its start). Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
 site) when another link of the same name goes elsewhere, when it has no name, when it is the element a `ref` read asks
 for, and in `find`. With `depth`, an element with more inside ends in `…`.
 
@@ -295,7 +297,15 @@ A child frame of another origin, or one the browser cannot name (a sandboxed fra
 not filtered for iframes.
 
 The default view shows the page's text as well as its elements and headings (`format.ts`): paragraphs, list items, and
-a table row of text cells as one line with its cells apart by `|`. The text of a block is run together while it fits on
+a table row of text cells as one line with its cells apart by `|`. A link inside running text (its parent holds text of
+its own) is written into that line as `[name](e12)`, with the ref its own line would carry (and its address, `[name](e12 →
+/path)`, only where its name is ambiguous, in `find` too), when the line is prose: it does not start with a link, and the letters and digits outside its links are at least as many
+as those in its links. Otherwise (a story line on a news site, a menu with `|` between its links, a product's link and
+the line about it) the links print on lines of their own as before, between the text around them. Text lines and headings
+escape `[`, `]` and `\` with a backslash (a link's name inside its mark too), so a page that writes `[Cancel](e3)` or names
+a link `Continue](e3)` cannot pass for a mark; a printed text line is a JSON string, so the escape shows doubled
+(`\\[Cancel\\](e3)`), and `LINK_MARK` in `format.ts` finds the real marks. In `find`, a matching line also carries
+the address of every link written into it, so a search for an address finds a link in text; the lines beside it do not. The text of a block is run together while it fits on
 one 1,000-character line: with no space added where it flows as one line (the parent holds text of its own, or both
 pieces are text-level elements such as `<em>` or `<sub>`), because Chromium keeps the real spaces of inline text in the
 text (`$<span>1,284</span>.50` is `"$1,284.50"`); with a space between boxes side by side, such as flex items or block
@@ -308,11 +318,26 @@ username or password."`, and an empty one prints nothing. Text is held to `TEXT_
 and gets only the room the 12,000-character cap leaves after every element and heading, so text never pushes an element
 past the cut. Within it, the text of live regions and dialogs comes first (a `log` from its newest entry back, others from
 their start), then the page's `main` or `article`, then the rest. What is left out is said in one last line, `(N text
-lines left out, M characters: find searches them, read a ref for one part, all for the whole page)`, which stays even
-when the reply is cut; the whole reply, notes included, stays within the cap. A `ref` read and `all` have no text budget,
+lines left out, M characters, K links in them: find searches them, read a ref for one part, all for the whole page)`
+(the links part only when there are some), which stays even when the reply is cut; the whole reply, notes included, stays within the cap. A `ref` read and `all` have no text budget,
 only the cap. The diff baseline holds every line, text left out included; a diff's text lines are held to the same
 budget and to the room its other lines leave, live-region and dialog lines (judged on both sides of the diff) first, with
 the same kind of note. With `all`, images are also listed with a ref, named or not, so they can be hovered or clicked.
+
+Long lists of links or buttons give way to the page's text (`renderView` and `collapseGroups` in `format.ts`). A group is
+the outermost node below the page whose lines hold at least 8 links, buttons, menu items, tabs, options, tree items or
+disclosure triangles, no heading, field, live region or dialog, and no more characters of text than of elements: a
+sidebar, a menu bar, a footer, a table of files, a browser-compatibility table. When the default view's elements and
+`TEXT_BUDGET` characters of its text (or all of it, if less) would not fit under the cap with the notes' room, groups fold
+to one line each until they do: first those around the content (in a `navigation`, `banner`, `contentinfo` or
+`complementary` landmark, or outside `main` and `article` on a page that has one), then the rest, largest first. A group
+in the content folds only when at least 1,000 characters of text lie outside it, so a page that is mostly its links (a
+news site's stories, search results) keeps them, and a cut at the cap still shows the first. The folded line is the
+group's own line, or a ref for its node, then the count and the first names: `e14 navigation "Docs sidebar" (66 links, 5
+buttons; read e14): "Getting Started", "Installation", …`, and the last name too when it moves on (`Next`, `More`, `Older`,
+`»`). The text a folded list held counts in the note on what was left out. Reading that ref lists them with the refs they already had, and
+`find` searches them. Only the default view of a whole page folds; a `ref` read, `depth`, `all`, `find` and diffs do not,
+and the diff baseline holds every line.
 An `act` reply leaves out what the batch itself set: a changed line whose only change is the value a `fill`, a `type` with a
 ref or a `select` gave it (`packages/server/src/reader/echo.ts`) is settled against the earlier read, so it is not a change, and
 the reply names those refs on one line (`Set e7, e8, e10.`). A line the page changed in any other way, or to another value

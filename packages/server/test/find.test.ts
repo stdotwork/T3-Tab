@@ -25,7 +25,8 @@ describe('find', () => {
     const [context] = text.split('\n');
     expect(context?.startsWith('e1 link "ccc')).toBe(true);
     expect(context?.endsWith('…')).toBe(true);
-    expect(context?.length).toBeLessThanOrEqual(321);
+    // A paragraph beside the match keeps less than a matching line would.
+    expect(context?.length).toBeLessThanOrEqual(121);
   });
 
   it('matches literal text by default, including regex punctuation', async () => {

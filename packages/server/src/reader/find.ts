@@ -6,14 +6,21 @@ export const MAX_QUERY_LENGTH = 200;
 const REGEX_TIMEOUT_MS = 500;
 /** Characters of a long line kept on each side of its match. */
 const MATCH_WINDOW = 120;
-/** Longest line printed whole; a context line beyond it keeps its start. */
+/** Longest matching line printed whole. */
 const MAX_LINE = 320;
+/** Longest context line printed whole; a longer one (a paragraph beside the match) keeps its start. */
+const MAX_CONTEXT = 120;
 
 export interface FindOptions {
   /** Opt in to a regular expression. The default is a literal, case-insensitive search. */
   regex?: boolean | undefined;
   /** Bound for one regular-expression search. */
   timeoutMs?: number | undefined;
+  /**
+   * The lines as printed beside a match, when `lines` (searched, and printed where they match) hold more: the
+   * addresses of the links written into text, which a read prints only where a name is ambiguous.
+   */
+  context?: string[] | undefined;
 }
 
 /** Where a line first matched. */
@@ -50,7 +57,10 @@ export async function findLines(lines: string[], query: string, options: FindOpt
     const start = Math.max(0, index - CONTEXT_LINES);
     const end = Math.min(lines.length - 1, index + CONTEXT_LINES);
     if (previousEnd >= 0 && start > previousEnd + 1) out.push('--');
-    for (let line = Math.max(start, previousEnd + 1); line <= end; line += 1) out.push(clipLine(lines[line] ?? '', matchAt.get(line)));
+    for (let line = Math.max(start, previousEnd + 1); line <= end; line += 1) {
+      const match = matchAt.get(line);
+      out.push(clipLine((match === undefined ? options.context?.[line] : undefined) ?? lines[line] ?? '', match));
+    }
     previousEnd = Math.max(previousEnd, end);
   }
   if (matching.length > shown.length) {
@@ -61,10 +71,10 @@ export async function findLines(lines: string[], query: string, options: FindOpt
 
 /** A line short enough to print: around its match, or from its start for a context line. Every cut is marked. */
 function clipLine(line: string, match: LineMatch | undefined): string {
-  if (line.length <= MAX_LINE) return line;
   const indent = line.length - line.trimStart().length;
+  if (line.length - indent <= (match === undefined ? MAX_CONTEXT : MAX_LINE)) return line;
   const from = match === undefined ? indent : Math.max(indent, match.start - MATCH_WINDOW);
-  const to = match === undefined ? indent + MAX_LINE : Math.min(line.length, match.start + match.length + MATCH_WINDOW);
+  const to = match === undefined ? indent + MAX_CONTEXT : Math.min(line.length, match.start + match.length + MATCH_WINDOW);
   return `${line.slice(0, indent)}${from > indent ? '…' : ''}${line.slice(from, to)}${to < line.length ? '…' : ''}`;
 }
 

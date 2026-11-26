@@ -47,7 +47,10 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   invalidated when the tab's document is replaced, headings, and the page's text. Text is held to a
   budget (4,000 characters, and never more than the cap leaves after the elements), the text of live
   regions and dialogs first, and a reply says what it left out and how to get it, so an agent sees an
-  error message, a list or a table row without a second read or a screenshot. Replies are capped at 12,000 characters. Password
+  error message, a list or a table row without a second read or a screenshot. Links in running prose are written into
+  its line (`[name](e12)`) instead of a line each, and when the elements would leave the text no room, long lists of
+  links or buttons (sidebars, menus, footers, file tables) fold to one line with a count and a ref that lists them,
+  those around the content first; a page that is mostly links keeps them. Replies are capped at 12,000 characters. Password
   field values are stripped before the tree leaves the extension and rendered as `value=<redacted>`
   so neither the value nor its length leaks.
 - **Literal search by default, bounded regex opt-in.** `find` does case-insensitive literal
