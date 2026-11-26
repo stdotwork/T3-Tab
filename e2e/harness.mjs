@@ -15,6 +15,15 @@ import { chromium } from 'playwright';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Chromium upgrades an `http://` address to `https://` before it sends anything, and when the https site does not answer
+ * within about 5 s or resets the connection the load fails as `net::ERR_BLOCKED_BY_CLIENT`. Playwright's own launches turn
+ * the upgrade off with these two features (`HttpsUpgrades` alone is not enough); a browser started directly does so by
+ * passing this flag. The benchmark browsers do, so a run on an http site does not depend on whether its https side answers.
+ * The end-to-end browsers do not: they are meant to behave as the owner's browser does.
+ */
+export const NO_HTTPS_UPGRADE_FLAG = '--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable';
+
 export const rootDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Paths and environment for one run, all under a new temporary HOME. */
@@ -99,8 +108,9 @@ export async function launchBrowser(home) {
  * Headless Chromium that nothing but the extension debugs. Playwright attaches to every page, answers dialogs
  * itself and makes hidden tabs act focused, which hides how a real browser treats dialogs and background tabs.
  * `panel` sends a request to the extension's side-panel handler over a connection to its service worker only.
+ * `httpsUpgrades: false` starts it without the browser's http-to-https upgrade (`NO_HTTPS_UPGRADE_FLAG`), for the benchmark.
  */
-export async function launchUndrivenBrowser(home, startUrl, extraExtensions = []) {
+export async function launchUndrivenBrowser(home, startUrl, extraExtensions = [], { httpsUpgrades = true } = {}) {
   const extensions = [home.extensionDir, ...extraExtensions].join(',');
   const browser = spawn(
     chromium.executablePath(),
@@ -115,6 +125,7 @@ export async function launchUndrivenBrowser(home, startUrl, extraExtensions = []
       '--silent-debugger-extension-api',
       `--disable-extensions-except=${extensions}`,
       `--load-extension=${extensions}`,
+      ...(httpsUpgrades ? [] : [NO_HTTPS_UPGRADE_FLAG]),
       startUrl,
     ],
     { env: await browserEnv(home), stdio: 'ignore' },

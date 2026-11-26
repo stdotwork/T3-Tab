@@ -86,6 +86,11 @@ const sameDocumentMoves = new Map<number, number>();
 const pendingMethods = new Map<number, Map<string, string>>();
 const documentMethods = new Map<number, string>();
 const MAX_PENDING_METHODS = 32;
+const BLOCKED_BY_CLIENT = 'net::ERR_BLOCKED_BY_CLIENT';
+/** Per tab: the error of the last document request that failed, until the next document request starts. */
+const lastDocumentErrors = new Map<number, string>();
+/** Per tab: how many times the top frame ended on the browser's error page after a request failed as blocked by the client, and the address it could not load. */
+const blockedLoads = new Map<number, { count: number; url: string }>();
 /** Per tab: T3-Tab's own JavaScript world for the current document, which the page's scripts cannot see. */
 const privateWorlds = new Map<number, { epoch: number; contextId: number }>();
 
@@ -130,6 +135,7 @@ export function initCdp(): void {
     if (method.startsWith('Network.')) {
       networkEvents.set(source.tabId, networkRevision(source.tabId) + 1);
       if (method === 'Network.requestWillBeSent') trackDocumentRequest(source.tabId, params);
+      if (method === 'Network.loadingFailed') trackDocumentFailure(source.tabId, params);
       return;
     }
     if (method === 'Page.loadEventFired') {
@@ -153,13 +159,14 @@ export function initCdp(): void {
       return;
     }
     if (method !== 'Page.frameNavigated') return;
-    const navigated = params as { type?: unknown; frame?: { id?: unknown; parentId?: unknown; url?: unknown; loaderId?: unknown } } | undefined;
+    const navigated = params as { type?: unknown; frame?: { id?: unknown; parentId?: unknown; url?: unknown; unreachableUrl?: unknown; loaderId?: unknown } } | undefined;
     const frame = navigated?.frame;
     // Only the top frame replaces the document the held refs point into.
     if (frame !== undefined && frame.parentId === undefined) {
       bumpEpoch(source.tabId);
       const url = typeof frame.url === 'string' ? frame.url : '';
       logNavigation(source.tabId, url);
+      trackErrorPage(source.tabId, url, frame.unreachableUrl);
       if (typeof frame.loaderId === 'string') {
         mainDocuments.set(source.tabId, { loaderId: frame.loaderId, url, ...(typeof frame.id === 'string' ? { frameId: frame.id } : {}) });
       } else {
@@ -183,6 +190,7 @@ export function initCdp(): void {
     // A document may commit while the debugger is off, so its method is no longer known.
     pendingMethods.delete(source.tabId);
     documentMethods.delete(source.tabId);
+    lastDocumentErrors.delete(source.tabId);
     wakeLoadWaiters(source.tabId);
     // The epoch moves on the next attach, and only if a different document is showing by then.
     markDetached(source.tabId);
@@ -206,6 +214,8 @@ export function initCdp(): void {
     sameDocumentMoves.delete(tabId);
     pendingMethods.delete(tabId);
     documentMethods.delete(tabId);
+    lastDocumentErrors.delete(tabId);
+    blockedLoads.delete(tabId);
     privateWorlds.delete(tabId);
     wakeLoadWaiters(tabId);
     notifyDialogWaiters(tabId);
@@ -215,6 +225,7 @@ export function initCdp(): void {
 function trackDocumentRequest(tabId: number, params: unknown): void {
   const sent = params as { type?: unknown; loaderId?: unknown; request?: { method?: unknown } } | undefined;
   if (sent?.type !== 'Document' || typeof sent.loaderId !== 'string' || typeof sent.request?.method !== 'string') return;
+  lastDocumentErrors.delete(tabId);
   const methods = pendingMethods.get(tabId) ?? new Map<string, string>();
   // A redirect sends the same loader again: the last method is the one that made the document.
   methods.delete(sent.loaderId);
@@ -224,6 +235,28 @@ function trackDocumentRequest(tabId: number, params: unknown): void {
     methods.delete(loader);
   }
   pendingMethods.set(tabId, methods);
+}
+
+function trackDocumentFailure(tabId: number, params: unknown): void {
+  const failed = params as { type?: unknown; errorText?: unknown } | undefined;
+  if (failed?.type === 'Document' && typeof failed.errorText === 'string') lastDocumentErrors.set(tabId, failed.errorText);
+}
+
+function trackErrorPage(tabId: number, url: string, unreachableUrl: unknown): void {
+  if (!url.startsWith('chrome-error:') || typeof unreachableUrl !== 'string') return;
+  if (lastDocumentErrors.get(tabId) !== BLOCKED_BY_CLIENT) return;
+  blockedLoads.set(tabId, { count: (blockedLoads.get(tabId)?.count ?? 0) + 1, url: unreachableUrl });
+}
+
+/** How many loads ended in the browser's error page for being blocked by the client; taken before a move, passed to `blockedLoadSince`. */
+export function blockedLoadCount(tabId: number): number {
+  return blockedLoads.get(tabId)?.count ?? 0;
+}
+
+/** The address the top frame could not load since that count, when the browser blocked it (see `loadFailure` in tabs.ts), else undefined. */
+export function blockedLoadSince(tabId: number, count: number): string | undefined {
+  const blocked = blockedLoads.get(tabId);
+  return blocked !== undefined && blocked.count > count ? blocked.url : undefined;
 }
 
 function commitDocumentMethod(tabId: number, loaderId: unknown): void {

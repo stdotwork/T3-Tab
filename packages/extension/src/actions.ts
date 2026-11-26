@@ -2,6 +2,8 @@ import { actStepRef, type ActAction, type ActFailure, type ActStep, type PageAct
 
 import {
   answerDialog,
+  blockedLoadCount,
+  blockedLoadSince,
   DialogOpenError,
   dialogNotice,
   documentEpoch,
@@ -18,7 +20,7 @@ import { originOf } from './permissions';
 import { scrollWithWheel } from './scroll';
 import { scrubReported } from './secret-text';
 import type { StoredSession } from './sessions';
-import { resolveSessionTab } from './tabs';
+import { isHttp, loadFailure, resolveSessionTab } from './tabs';
 import { settlePage, sleep } from './settle';
 
 const MAX_WAIT_MS = 10_000;
@@ -71,6 +73,7 @@ export async function actOnPage(
 
   async function runSteps(): Promise<PageActionResult> {
   let epoch = documentEpoch(tabId);
+  const blockedBefore = blockedLoadCount(tabId);
   let failure: ActFailure | undefined;
   let activeSession = session;
   /** Field steps run since the last settle, each with the document epoch it started on. */
@@ -79,6 +82,12 @@ export async function actOnPage(
   let replacedNote: string | undefined;
 
   const assertAccessAfter = async (stepNumber: number, action: ActAction): Promise<void> => {
+    // A step that followed a link the browser upgraded to https, whose site did not answer, left the tab on an error
+    // page: that is not an origin to approve.
+    const unreachable = blockedLoadSince(tabId, blockedBefore);
+    if (unreachable !== undefined && isHttp(unreachable)) {
+      throw new Error(`Step ${stepNumber} (${action}): ${loadFailure(unreachable, 'net::ERR_BLOCKED_BY_CLIENT')}`);
+    }
     try {
       activeSession = await reloadSession();
       await assertActAccess(activeSession, tabId, expectedOrigin);
