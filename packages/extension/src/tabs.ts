@@ -1,6 +1,8 @@
 import { NO_TAB_MESSAGE, type TabInfo } from '@t3-tab/protocol';
 
 import {
+  blockedLoadCount,
+  blockedLoadSince,
   DialogOpenError,
   documentEpoch,
   documentMethod,
@@ -13,6 +15,7 @@ import {
 } from './cdp';
 
 import { originOf, restrictedPageError, type SitePermission } from './permissions';
+import { scrubReported } from './secret-text';
 import { settlePage } from './settle';
 import {
   assertSessionTab,
@@ -164,11 +167,31 @@ export async function openSessionTab(
   }
 }
 
+export const HTTPS_UPGRADE_FAILED = 'the browser upgraded the address to https and the https site did not answer';
+
+/**
+ * Why a load failed. The browser upgrades an `http:` address to `https:` before sending anything and reports the failed
+ * upgrade (the https site did not answer, or reset the connection) as `net::ERR_BLOCKED_BY_CLIENT`, which reads as if
+ * something blocked the page. That error on an `http:` address is the upgrade. (An extension that blocks requests gives
+ * the same error, and is named the same way: the browser does not tell the two apart.)
+ */
+export function loadFailure(url: string, errorText: string): string {
+  return `Could not load ${url}: ${errorText === 'net::ERR_BLOCKED_BY_CLIENT' && isHttp(url) ? `${HTTPS_UPGRADE_FAILED}.` : errorText}`;
+}
+
+export function isHttp(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
 /** Loads an address in the tab and waits for it. A fragment change on the same document has nothing to wait for. */
 export async function loadAddress(tabId: number, url: string): Promise<Landing> {
   return await navigated(tabId, async () => {
     const result = await sendCommand<{ loaderId?: string; errorText?: string }>(tabId, 'Page.navigate', { url });
-    if (result.errorText !== undefined && result.errorText !== '') throw new Error(`Could not load ${url}: ${result.errorText}`);
+    if (result.errorText !== undefined && result.errorText !== '') throw new Error(loadFailure(url, result.errorText));
     return result.loaderId !== undefined;
   });
 }
@@ -181,6 +204,7 @@ export async function loadAddress(tabId: number, url: string): Promise<Landing> 
  */
 async function navigated(tabId: number, go: () => Promise<boolean>, throughHistory = false): Promise<Landing> {
   const since = documentEpoch(tabId);
+  const blocked = blockedLoadCount(tabId);
   // A history entry can belong to this same document (a fragment, `pushState`), which fires no load event.
   const moves = throughHistory ? sameDocumentMoveCount(tabId) : undefined;
   const release = await holdInputFocus(tabId);
@@ -188,6 +212,12 @@ async function navigated(tabId: number, go: () => Promise<boolean>, throughHisto
   try {
     if (!(await go())) return ARRIVED;
     await waitForDocumentLoad(tabId, since, OPEN_TIMEOUT_MS, moves);
+    // A reload or a step through history has no reply of its own that says the load failed.
+    const unreachable = blockedLoadSince(tabId, blocked);
+    // The address came from the page (a link, a form), so it can hold a value the page treats as secret.
+    if (unreachable !== undefined && isHttp(unreachable)) {
+      throw new Error(loadFailure(scrubReported(tabId, unreachable, true), 'net::ERR_BLOCKED_BY_CLIENT'));
+    }
     await firstFrames(tabId);
     settling = true;
     void settlePage(tabId)

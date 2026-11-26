@@ -34,6 +34,8 @@ export class FakeBrowser {
    * only stays in the document, as in the browser, and reports no loader.
    */
   redirect: ((url: string) => string) | undefined;
+  /** Addresses a `Page.navigate` fails to load, with the error the browser gives: the tab ends on its error page. */
+  loadErrors = new Map<string, string>();
   /** What the one window says about itself. */
   windowFocused = true;
   windowState = 'normal';
@@ -50,6 +52,7 @@ export class FakeBrowser {
     this.beforeCommand = undefined;
     this.evaluateHook = undefined;
     this.redirect = undefined;
+    this.loadErrors.clear();
     this.windowFocused = true;
     this.windowState = 'normal';
   }
@@ -82,6 +85,27 @@ export class FakeBrowser {
     tab.context = this.newContext();
     this.emit(tabId, 'Page.frameNavigated', { frame: { id: tab.frameId, url } });
     this.emitContext(tab);
+  }
+
+  /**
+   * A load of `address` that failed, as the browser reports it: the request fails, the top frame commits the browser's
+   * error page (a tab still lists the address it could not load), and the load event fires.
+   */
+  failLoad(tabId: number, address: string, errorText: string): void {
+    const tab = this.mustTab(tabId);
+    this.emit(tabId, 'Network.loadingFailed', { type: 'Document', errorText });
+    this.emit(tabId, 'Runtime.executionContextDestroyed', { executionContextId: tab.context.id, executionContextUniqueId: tab.context.uniqueId });
+    tab.url = address;
+    tab.context = this.newContext();
+    this.emit(tabId, 'Page.frameNavigated', { frame: { id: tab.frameId, url: 'chrome-error://chromewebdata/', unreachableUrl: address } });
+    this.emit(tabId, 'Page.loadEventFired', {});
+  }
+
+  /** A page that loads while a frame inside it has a document request that failed as blocked, the way an ad blocker's does. */
+  navigateWithBlockedFrame(tabId: number, url: string): void {
+    this.emit(tabId, 'Network.loadingFailed', { type: 'Document', errorText: 'net::ERR_BLOCKED_BY_CLIENT' });
+    this.navigate(tabId, url, '');
+    this.emit(tabId, 'Page.loadEventFired', {});
   }
 
   /** A network request the page started, as the debugger reports it. */
@@ -146,6 +170,12 @@ export class FakeBrowser {
         return { data: 'AAAA' };
       case 'Page.navigate': {
         const url = String(params?.url);
+        const loadError = this.loadErrors.get(url);
+        if (loadError !== undefined) {
+          this.failLoad(tabId, url, loadError);
+          this.loaderSeq += 1;
+          return { loaderId: `loader-${this.loaderSeq}`, errorText: loadError };
+        }
         const sameDocument = tab.url !== 'about:blank' && new URL(url).href.split('#')[0] === new URL(tab.url).href.split('#')[0];
         if (sameDocument) {
           tab.url = url;

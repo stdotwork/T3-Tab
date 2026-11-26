@@ -148,7 +148,11 @@ tool-attributable tokens (a run's tokens minus the input of the baseline's first
 per-task ratios against T3-Tab with a 90% bootstrap interval; `--repeats` defaults to 5. It needs a model route in the
 environment (`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN`) and spends real quota: run it
 with a small `--repeats`, `--tools` and `--tasks` while developing. The other tools' browsers start with `--disable-extensions`,
-because this machine registers Claude in Chrome system-wide and a browser with a new profile would install it.
+because this machine registers Claude in Chrome system-wide and a browser with a new profile would install it. Every browser
+the benchmarks start themselves (`bench/compare` and `bench/agent`, T3-Tab's included) also gets
+`--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable` (`NO_HTTPS_UPGRADE_FLAG` in `e2e/harness.mjs`), as Playwright's
+launches do, so a run on an http site does not depend on whether its https side answers. The end-to-end browsers keep the upgrade
+on, to behave as the owner's does; their sites are on loopback addresses, which the browser does not upgrade.
 
 ## Installing the helper
 
@@ -317,6 +321,16 @@ session may not read yet does not count, so which prompt comes up says nothing a
 go with a `url`. Moving a tab is left to `tabs goto`. A `goto` that names no tab, in a session with no tab, opens one
 (`opened` in the result), asking as `open` does, so `read {url}` and `tabs goto` work from an empty session; every other
 tool says in one line how to get a tab (`NO_TAB_MESSAGE` in the protocol package).
+
+Chromium upgrades an `http:` address to `https:` before it sends anything, and when the https site does not answer within
+about 5 s or resets the connection the load fails as `net::ERR_BLOCKED_BY_CLIENT` and the tab is left on its error page, which
+reads as if something blocked it. A load of an `http:` address that fails that way (`open`, `goto`, `back`, `forward`, `reload`,
+and an `act` step that followed a link) says so in one sentence: `Could not load <address>: the browser upgraded the address to
+https and the https site did not answer.` (`loadFailure` in `tabs.ts`). `goto` and `open` read it from `Page.navigate`'s reply;
+the others have no reply that carries it, so `cdp.ts` notes a top frame that ended on the browser's error page after a document
+request failed as blocked (`blockedLoadSince`). An extension that blocks requests gives the same error and gets the same
+sentence, because the browser does not tell them apart. Any other failure keeps the browser's own error text, and a failed
+`back`, `forward` or `reload` of another kind still reports nothing.
 
 A call that names no tab uses the session's current tab, marked `[current]`: the last it opened, switched to or was
 handed by the owner, else the tab in front, else its first. The owner moving between tabs does not change it, so an

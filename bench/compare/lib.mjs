@@ -10,7 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { chromium } from 'playwright';
 
-import { jpegSize, sleep } from '../../e2e/harness.mjs';
+import { jpegSize, NO_HTTPS_UPGRADE_FLAG, sleep } from '../../e2e/harness.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -61,6 +61,7 @@ export async function launchChromium({ profileDir, env }) {
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-extensions',
+      NO_HTTPS_UPGRADE_FLAG,
       `--user-data-dir=${profileDir}`,
       '--remote-debugging-port=0',
       // The same window the T3-Tab run uses, so every tool sees the same viewport.

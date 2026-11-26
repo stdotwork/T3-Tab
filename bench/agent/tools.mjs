@@ -91,7 +91,7 @@ export const TOOLS = [
       home.childEnv.T3TAB_AGENT_RUN = env.T3TAB_AGENT_RUN;
       await requireBuild(home);
       await installNativeHost(home);
-      const browser = await launchUndrivenBrowser(home, 'about:blank');
+      const browser = await launchUndrivenBrowser(home, 'about:blank', [], { httpsUpgrades: false });
       try {
         // Ready when the daemon reports a browser with a tab; this client only looks and is closed again.
         const watcher = await connectMcp(home, 't3-tab-agent-bench-watch');
