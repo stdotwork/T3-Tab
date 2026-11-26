@@ -51,6 +51,37 @@ const pages = (otherSite) => ({
      <button type="button" aria-labelledby="pwplain">Named by password</button>
      <iframe title="pin frame" srcdoc="<!doctype html><style>.disc{-webkit-text-security:disc}</style><label>Frame PIN <input type='text' class='disc'></label>"></iframe>`,
   ),
+  // Names built from a masked field through shadow roots, scripts, a crowd of referrers, a long value and over-redaction bait.
+  '/secrets-more': page(
+    'More secrets',
+    `<style>.disc{-webkit-text-security:disc}</style>
+     <label>Main PIN <input type="text" class="disc" id="mainpin"></label>
+     <button type="button" id="viaattr">Via attribute</button>
+     <button type="button" id="viaprop">Via property</button>
+     <div id="openhost"></div><div id="closedhost"></div>
+     <button type="button" id="openbtn" aria-labelledby="openhost">Open host label</button>
+     <button type="button" id="closedbtn" aria-labelledby="closedhost">Closed host label</button>
+     <button type="button" id="contentbtn">Inside </button>
+     <div id="crowd"></div>
+     <button type="button">Wide <input type="text" class="disc" aria-label="Long PIN"></button>
+     <input type="text" autocomplete="current-password" aria-label="Shown current">
+     <input type="text" autocomplete="new-password" aria-label="Shown new">
+     <input type="text" autocomplete="one-time-code" aria-label="Shown code">
+     <input type="text" autocomplete="cc-number" aria-label="Shown card">
+     <input type="text" autocomplete="section-a shipping cc-csc" aria-label="Shown csc">
+     <input type="text" autocomplete="username" aria-label="Shown username">
+     <button type="button">Pay <input type="text" class="disc" aria-label="Code"></button>
+     <a href="#x">Free energy</a><h3>Level of care and an elephant</h3><button type="button">Reduce</button>
+     <script>
+       const secretRoot = (host, mode, label) => { const root = host.attachShadow({ mode }); root.innerHTML = '<input type="text" class="disc" aria-label="' + label + '"><style>.disc{-webkit-text-security:disc}</style>'; return root; };
+       secretRoot(openhost, 'open', 'Open shadow PIN');
+       secretRoot(closedhost, 'closed', 'Closed shadow PIN');
+       const inside = document.createElement('span'); contentbtn.append(inside); secretRoot(inside, 'open', 'Content shadow PIN');
+       viaattr.setAttribute('aria-labelledby', 'mainpin');
+       viaprop.ariaLabelledByElements = [mainpin];
+       for (let i = 0; i < 205; i += 1) { const b = document.createElement('button'); b.type = 'button'; b.setAttribute('aria-labelledby', 'mainpin'); b.textContent = 'Referrer ' + i; crowd.append(b); }
+     </script>`,
+  ),
   '/keys': page('Keys', '<p id="k">0</p><script>addEventListener("keydown",(e)=>{if(e.key==="/")k.textContent=+k.textContent+1})</script>'),
   '/dialogs': page(
     'Dialogs',
@@ -343,6 +374,68 @@ export async function checkRealUse() {
       const again = await act(tab, { action: 'fill', ref: refFor(first.text, 'combobox "PW combo"'), text: 'NEW-SECRET-10' });
       assert(!again.error && !/SECRET|•/.test(again.text), `refilling a redacted field: ${again.text}`);
       assert(!/SECRET|PIN-\d|•/.test((await call('read', { tab, all: true, full: true })).text), 'a later read shows a value');
+    });
+
+    await check('shadow roots, script labels, 205 referrers, a 260-character value, show-password toggles and over-redaction', async () => {
+      const tab = await open('/secrets-more');
+      const first = await read(tab, { all: true });
+      const long = `LONG${'abcdefghij'.repeat(26)}`;
+      const secrets = {
+        'textbox "Main PIN"': 'MAIN-PIN-21',
+        'textbox "Open shadow PIN"': 'OPEN-SHADOW-PIN-22',
+        'textbox "Closed shadow PIN"': 'CLOSED-SHADOW-PIN-23',
+        'textbox "Content shadow PIN"': 'CONTENT-SHADOW-PIN-24',
+        'textbox "Long PIN"': long,
+        'textbox "Shown current"': 'CURRENT-SECRET-25',
+        'textbox "Shown new"': 'NEW-SECRET-26',
+        'textbox "Shown code"': 'CODE-SECRET-27',
+        'textbox "Shown card"': 'CARD-SECRET-28',
+        'textbox "Shown csc"': 'CSC-SECRET-29',
+        'textbox "Code"': 'e',
+      };
+      for (const label of Object.keys(secrets)) {
+        const line = first.text.split('\n').find((candidate) => candidate.includes(label));
+        assert(line !== undefined && line.trim().endsWith('value=<redacted>'), `${label} is not marked redacted when empty:\n${first.text}`);
+      }
+      assert(first.text.includes('textbox "Shown username"') && !/Shown username.*redacted/.test(first.text), `a username field was redacted:\n${first.text}`);
+      const filled = await act(
+        tab,
+        ...Object.entries(secrets).map(([label, secret]) => ({ action: 'fill', ref: refFor(first.text, label), text: secret })),
+        { action: 'fill', ref: refFor(first.text, 'textbox "Shown username"'), text: 'ada-visible' },
+      );
+      assert(!filled.error, `fill: ${filled.text}`);
+      const leak = /SECRET|PIN-\d|abcdefghij|•|■/;
+      assert(!leak.test(filled.text), `the fill reply shows a value or its length:\n${filled.text}`);
+      const all = await read(tab, { all: true, full: true });
+      const views = {
+        'all read': all,
+        'full read': await read(tab),
+        'find by pin': await call('read', { tab, find: 'PIN' }),
+        'find by tail': await call('read', { tab, find: 'abcdefghij' }),
+        'find by regex': await call('read', { tab, find: '(SECRET|PIN)-\\d', regex: true }),
+        'find by referrer': await call('read', { tab, find: 'Referrer' }),
+        'diff read': await call('read', { tab }),
+      };
+      for (const [name, view] of Object.entries(views)) {
+        assert(!view.error, `${name}: ${view.text}`);
+        assert(!leak.test(view.text.replace(/No matches for ".*"\./, '')), `${name} shows a value or its length:\n${view.text}`);
+      }
+      const text = all.text;
+      for (const expected of [
+        'textbox "Shown username" value="ada-visible"',
+        'button "<redacted>"',
+        'textbox "Code" value=<redacted>',
+        'button "Pay <redacted>"',
+        'link "Free energy"',
+        '## Level of care and an elephant',
+        'button "Reduce"',
+        'button "Wide <redacted>"',
+        'button "Inside <redacted>"',
+      ]) {
+        assert(text.includes(expected), `${expected} is missing from the read:\n${text}`);
+      }
+      const redactedButtons = text.split('\n').filter((line) => /button "<redacted>"/.test(line)).length;
+      assert(redactedButtons >= 208, `only ${redactedButtons} of the 209 buttons named from the PIN are redacted:\n${text.slice(0, 3000)}`);
     });
 
     await check('a modifier key can be pressed on its own', async () => {

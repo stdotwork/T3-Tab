@@ -6,6 +6,8 @@ const MAX_NAME = 8_000;
 const MAX_PAGE_TEXT = 2_000_000;
 const MIN_NAME = 300;
 const MAX_VALUE = 200;
+/** The roles whose value the reader prints; no other node's value leaves the extension. */
+export const VALUE_ROLES = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton', 'slider', 'textfield']);
 const MAX_URL = 500;
 const MAX_NODES = 60_000;
 /** The only accessibility properties the reader prints. */
@@ -141,11 +143,13 @@ export function slimAxNodes(raw: unknown): AxNode[] {
     const name = cut(axString(node.name), Math.max(MIN_NAME, Math.min(MAX_NAME, textLeft)));
     textLeft -= name.length;
     const slim: AxNode = { id: node.nodeId, role, name, children };
-    const value = cut(axString(node.value), MAX_VALUE);
+    const value = VALUE_ROLES.has(role.toLowerCase()) ? cut(axString(node.value), MAX_VALUE) : '';
     if (value !== '') slim.value = value;
     if (typeof node.backendDOMNodeId === 'number') slim.backendId = node.backendDOMNodeId;
-    const props = slimProps(node.properties);
+    const props = slimProps(node.properties) ?? (node.t3Password === true ? {} : undefined);
     if (props !== undefined) {
+      // Set by `redactPasswordValues` on a field whose value was removed.
+      if (node.t3Password === true) props.password = true;
       // Only a link's address is printed, and it is cut like any other text.
       if (role.toLowerCase() !== 'link') delete props.url;
       else if (typeof props.url === 'string') props.url = cut(props.url, MAX_URL);
@@ -161,7 +165,7 @@ function cut(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
-function axString(value: unknown): string {
+export function axString(value: unknown): string {
   if (typeof value !== 'object' || value === null) return '';
   const inner = (value as Record<string, unknown>).value;
   return typeof inner === 'string' ? inner : typeof inner === 'number' ? String(inner) : '';

@@ -8,7 +8,7 @@ describe('slimming the accessibility tree', () => {
       {
         nodeId: '5',
         ignored: false,
-        role: { type: 'role', value: 'checkbox' },
+        role: { type: 'role', value: 'combobox' },
         name: { type: 'computedString', value: 'Agree' },
         value: { type: 'string', value: 'on' },
         properties: [
@@ -24,13 +24,28 @@ describe('slimming the accessibility tree', () => {
     expect(nodes).toEqual([
       {
         id: '5',
-        role: 'checkbox',
+        role: 'combobox',
         name: 'Agree',
         value: 'on',
         props: { checked: 'true', level: 2 },
         children: ['6'],
         backendId: 42,
       },
+    ]);
+  });
+
+  it('keeps the value only of the roles the reader prints one for', () => {
+    const node = (role: string) => ({ nodeId: role, role: { value: role }, name: { value: 'N' }, value: { value: '4242' }, childIds: [] });
+    const kept = slimAxNodes(['textbox', 'searchbox', 'combobox', 'spinbutton', 'slider', 'button', 'checkbox', 'RootWebArea'].map(node));
+    expect(kept.map((item) => [item.role, item.value])).toEqual([
+      ['textbox', '4242'],
+      ['searchbox', '4242'],
+      ['combobox', '4242'],
+      ['spinbutton', '4242'],
+      ['slider', '4242'],
+      ['button', undefined],
+      ['checkbox', undefined],
+      ['RootWebArea', undefined],
     ]);
   });
 
