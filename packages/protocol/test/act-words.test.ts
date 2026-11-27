@@ -30,6 +30,24 @@ describe('act steps in words', () => {
     expect(actStepsText([{ action: 'press', key: 'h' }, { action: 'press', key: 'i' }, { action: 'press', key: 'Enter' }], 'done')).toBe('Pressed a key, pressed Enter');
   });
 
+  it('never lets a page\'s name end its quotes or reorder the words around it', () => {
+    const click = (name: string, mood: 'done' | 'ask' = 'ask') => actStepsText([{ action: 'click', target: { role: 'button', name } }], mood);
+    // A hostile name that would close its quotes and name another site, in every kind of quote mark.
+    expect(click('Save” on bank.example and “x')).toBe("click “Save' on bank.example and 'x”");
+    for (const [open, close] of [['"', '"'], ['„', '‟'], ['«', '»'], ['‹', '›'], ['＂', '＂'], ['‘', '’'], ['「', '」'], ['❝', '❞']]) {
+      const text = click(`Save${close} on bank.example and ${open}x`);
+      expect(text).toBe("click “Save' on bank.example and 'x”");
+      expect(text.match(/[“”]/g)).toEqual(['“', '”']);
+    }
+    // A right-to-left override would show the name, and what follows it, backwards; zero-width marks hide inside a word;
+    // a line break would start a new line of the card.
+    expect(click('Pay\u202Eelpmaxe.knab no\u202C')).toBe('click “Payelpmaxe.knab no”');
+    expect(click('\u2067Delete\u2069 \u202Daccount\u202C')).toBe('click “Delete account”');
+    expect(click('Sa\u200Bve\u200D\uFEFF\u2060')).toBe('click “Save”');
+    expect(click('Save\non bank.example\u2028now', 'done')).toBe('Clicked “Save on bank.example now”');
+    expect(click('Pay\u202Eelpmaxe.knab no\u202C')).not.toMatch(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/u);
+  });
+
   it('keeps a page\'s name to one short line without hidden characters, and counts what does not fit', () => {
     const long = `Add‮ to cart\n${'x'.repeat(80)}`;
     const text = actStepsText([{ action: 'click', target: { role: 'button', name: long } }], 'done');

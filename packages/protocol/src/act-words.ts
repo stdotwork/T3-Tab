@@ -63,12 +63,24 @@ export function summaryForSteps(value: unknown, steps: readonly ActStep[]): ActS
   return matches ? summary : undefined;
 }
 
-/** Characters that can hide or reorder text on screen: controls, and the bidirectional and zero-width formatting marks. */
-const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+/** Controls and line breaks (a newline, a tab, U+2028 and U+2029), which become a space. */
+const BREAKS = /[\p{Cc}\p{Zl}\p{Zp}]/gu;
+/**
+ * Format characters, which are dropped: the bidirectional marks, embeddings, overrides and isolates (U+200E, U+200F,
+ * U+202A to U+202E, U+2066 to U+2069), which can reorder the words around them, the site's name included, and the
+ * zero-width ones (U+200B to U+200D, U+2060, U+FEFF), which hide in a word.
+ */
+const FORMAT = /\p{Cf}/gu;
+/**
+ * Quote marks of every kind: the initial and final quotes (“ ” ‘ ’ « » ‹ › ‟ ‛), the low and straight ones („ ‚ " ＂ ＇)
+ * and the CJK and ornamental ones. A name is shown inside “ ”, so one of its own could end the quotes and pass the rest
+ * of the name off as the card's words (`Save” on bank.example and “x`); each becomes '.
+ */
+const QUOTES = /[\p{Pi}\p{Pf}"＂＇„‚〝〞〟❛❜❝❞❮❯「」『』﹁﹂﹃﹄]/gu;
 
-/** A page's own words, safe to show: one line, no hidden characters, at most `NAME_MAX` characters. */
+/** A page's own words, safe to show: one line, no hidden characters, no quote marks of its own, at most `NAME_MAX` characters. */
 function plainName(name: string, max = NAME_MAX): string {
-  const text = name.replace(INVISIBLE, ' ').replace(/\s+/g, ' ').trim();
+  const text = name.replace(FORMAT, '').replace(BREAKS, ' ').replace(QUOTES, "'").replace(/\s+/g, ' ').trim();
   return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
