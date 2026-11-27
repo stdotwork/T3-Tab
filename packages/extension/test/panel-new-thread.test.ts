@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { compactModelName } from '../entrypoints/sidepanel/lib/model-short-name';
-import { LAST_PROJECT, NO_PROJECT, pickableProjects, resolveProject } from '../entrypoints/sidepanel/lib/new-thread';
+import { LAST_PROJECT, NO_PROJECT, pickableProjects, projectName, resolveProject } from '../entrypoints/sidepanel/lib/new-thread';
 import type { Project } from '../entrypoints/sidepanel/lib/t3-client';
 
 const alpha: Project = { id: 'alpha', title: 'Alpha', workspaceRoot: '/work/alpha' };
@@ -59,5 +59,14 @@ describe('compact model names', () => {
 
   it('drops a vendor prefix', () => {
     expect(compactModelName({ name: 'Anthropic: Claude Sonnet 5.5' }, 'opencode')).toBe('Sonnet 5.5');
+  });
+});
+
+describe('what a project is called', () => {
+  it('calls T3\'s Scratch project "No project", as the pickers and the thread list do, and any other by its title', () => {
+    const scratch = { id: 's', title: 'Scratch', workspaceRoot: '/home/dev/scratch' };
+    expect(projectName(scratch, '/home/dev/scratch')).toBe('No project');
+    expect(projectName(scratch, undefined)).toBe('Scratch');
+    expect(projectName({ id: 'b', title: 'budget-tracker', workspaceRoot: '/home/dev/budget-tracker' }, '/home/dev/scratch')).toBe('budget-tracker');
   });
 });

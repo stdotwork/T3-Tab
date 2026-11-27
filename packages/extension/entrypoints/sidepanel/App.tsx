@@ -12,6 +12,7 @@ import { NewThread } from './NewThread';
 import { promptCardId, PromptCards } from './PromptCards';
 import { ThreadList } from './ThreadList';
 import { errorText, panel } from './lib/api';
+import { projectName } from './lib/new-thread';
 import { choiceLabel } from './lib/catalog';
 import { headlessRender, refreshRunsNow, startPolling, useLive, useShareTargets, useTabStored, type LiveState } from './lib/store';
 import { t3, type T3State } from './lib/t3-client';
@@ -168,7 +169,7 @@ function ThreadScreen({ screen, live, state, onNav }: { screen: Extract<Screen, 
     >
     <div className="screen" data-thread-id={screen.id}>
       <TopBar
-        crumbs={project === undefined ? [view?.title ?? 'Thread'] : [project.title, view?.title ?? 'Thread']}
+        crumbs={project === undefined ? [view?.title ?? 'Thread'] : [projectName(project, state.scratchRoot), view?.title ?? 'Thread']}
         onThreads={() => onNav({ name: 'threads' })}
         onNew={() => onNav({ name: 'home' })}
         onSettings={() => onNav({ name: 'settings', tab: 'general' })}
