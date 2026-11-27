@@ -5,9 +5,9 @@ import { t3ThreadView, type PendingApproval } from '../entrypoints/sidepanel/lib
 import type { PermissionPrompt } from '../src/permissions';
 
 const session = { id: 's', name: 'claude-code · 1234' };
-const prompt = (tool: PermissionPrompt['tool'], extra: { tab?: PermissionPrompt['tab'] | null; url?: string } = {}): PermissionPrompt => {
+const prompt = (tool: PermissionPrompt['tool'], extra: { tab?: PermissionPrompt['tab'] | null; url?: string; steps?: NonNullable<PermissionPrompt['steps']> } = {}): PermissionPrompt => {
   const tab = extra.tab === undefined ? { id: 7, title: 'Cable Shop – USB-C cables' } : extra.tab;
-  return { id: `p-${tool}`, origin: 'http://127.0.0.1:41889', tool, session, ...(tab === null ? {} : { tab }), ...(extra.url === undefined ? {} : { url: extra.url }) };
+  return { id: `p-${tool}`, origin: 'http://127.0.0.1:41889', tool, session, ...(tab === null ? {} : { tab }), ...(extra.url === undefined ? {} : { url: extra.url }), ...(extra.steps === undefined ? {} : { steps: extra.steps }) };
 };
 /** The answers in the order a card draws them: Decline, the primary one, then each under More. */
 const answers = (model: ApprovalModel): string[] => [model.decline?.decision, model.primary?.decision, ...model.more.map((action) => action.decision)].filter((decision): decision is string => decision !== undefined);
@@ -41,6 +41,21 @@ describe('one approval card for both kinds of ask', () => {
     expect(model.detail).toBeUndefined();
   });
 
+  it('names what an act will do, from the steps the server described, and keeps it to the card', () => {
+    const steps = [{ action: 'click' as const, target: { role: 'button', name: 'Add to cart' } }];
+    expect(promptApproval(prompt('act', { steps }), 'Claude Code').ask).toEqual({ who: 'Claude Code', verb: 'wants to click “Add to cart” on', subject: '127.0.0.1:41889', mono: true });
+    // A long batch keeps its first part and says there is more; one with nothing known says "act on".
+    const long = [
+      { action: 'fill' as const, target: { role: 'textbox', name: 'Shipping address line one' } },
+      { action: 'fill' as const, target: { role: 'textbox', name: 'Shipping address line two' } },
+      { action: 'click' as const, target: { role: 'button', name: 'Continue to payment' } },
+    ];
+    expect(promptApproval(prompt('act', { steps: long }), 'Codex').ask.verb).toBe('wants to fill “Shipping address line o…” and more on');
+    expect(promptApproval(prompt('act', { steps: long.slice(2) }), 'Codex').ask.verb).toBe('wants to click “Continue to payment” on');
+    expect(promptApproval(prompt('act', { steps: [{ action: 'click' as const }] }), 'Codex').ask.verb).toBe('wants to click an element on');
+    expect(promptApproval(prompt('act'), 'Codex').ask.verb).toBe('wants to act on');
+  });
+
   it('names the address for a page not opened yet', () => {
     const model = promptApproval(prompt('open', { tab: null, url: 'http://127.0.0.1:41889/cart?id=1' }), 'Codex');
     expect(model.detail).toEqual({ text: 'http://127.0.0.1:41889/cart?id=1', mono: true });
@@ -56,10 +71,10 @@ describe('one approval card for both kinds of ask', () => {
 
   it('keeps each answer saying what it grants, the lasting one under More', () => {
     const read = promptApproval(prompt('read'), 'Claude Code');
-    expect(read.primary?.label).toBe('Allow reading once');
+    expect(read.primary?.label).toBe('Allow once');
     expect(read.more).toEqual([{ decision: 'always-allow-read', label: 'Always allow reading on this site', detail: 'Opening, acting and JavaScript still ask' }]);
     const act = promptApproval(prompt('act'), 'Claude Code');
-    expect(act.primary?.label).toBe('Allow acting once');
+    expect(act.primary?.label).toBe('Allow once');
     expect(act.more).toEqual([{ decision: 'always-allow', label: 'Always allow everything on this site', detail: 'Reading, opening, acting and JavaScript' }]);
     expect(act.decline?.label).toBe('Decline');
   });

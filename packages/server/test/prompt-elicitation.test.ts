@@ -156,6 +156,15 @@ describe('a client that declares a bare elicitation capability', () => {
 describe('what the thread is asked', () => {
   it('says plainly what the agent wants and names the tab by title, like the side panel', () => {
     expect(elicitationMessage(prompt('x', { tool: 'act' }))).toBe('Allow T3-Tab to act on https://example.com in tab "Example"? Allow covers this one request only.');
+    // An act names its steps as the server described them; a typed value or a character key never reaches the summary.
+    const steps = [
+      { action: 'fill', target: { role: 'textbox', name: 'Email' } },
+      { action: 'press', key: 'a' },
+      { action: 'click', target: { role: 'button', name: 'Sign in' } },
+    ];
+    expect(elicitationMessage(prompt('x', { tool: 'act', steps: steps as NonNullable<PromptNotice['steps']> }))).toBe(
+      'Allow T3-Tab to fill “Email”, press a key, click “Sign in” on https://example.com in tab "Example"? Allow covers this one request only.',
+    );
     expect(elicitationMessage(prompt('x', { tool: 'run_js' }))).toContain('run JavaScript on https://example.com');
     expect(elicitationMessage(prompt('x', { tool: 'open' }))).toContain('open https://example.com');
     // A page being opened has no tab yet: the question names the address.

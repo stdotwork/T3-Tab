@@ -324,7 +324,7 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
   const linkMark = (node: AxNode): string | undefined => {
     const name = normalize(node.name);
     if (name === '' || node.backendId === undefined || flagList(node.props).length > 0) return undefined;
-    const ref = refs.refFor(node.backendId);
+    const ref = refs.refFor(node.backendId, { role: 'link', name });
     const address = markAddress(node);
     const full = showAddress(node);
     if (address === undefined && full !== undefined) searchAddress.set(ref, full);
@@ -598,8 +598,8 @@ function findGroups(items: Item[], kept: Item[], spans: Span[], refs: RefTable):
 /** One line for a group: its own line when it has one, else a ref for it, then how many links or buttons it holds. */
 function groupSummary(node: AxNode, first: Item, actions: Item[], refs: RefTable): RenderedLine {
   const own = first.source === node;
-  const ref = refs.refFor(node.backendId ?? 0);
   const role = node.role.toLowerCase();
+  const ref = refs.refFor(node.backendId ?? 0, { role: WRAPPERS.has(role) ? 'group' : role, name: normalize(node.name) });
   const head = own ? first.line : `${ref} ${WRAPPERS.has(role) ? 'group' : role}`;
   const counts = new Map<string, number>();
   for (const item of actions) counts.set(item.role, (counts.get(item.role) ?? 0) + 1);
@@ -917,7 +917,7 @@ function elementLine(
   }
   const parts: string[] = [];
   if ((kind === 'interactive' || kind === 'container' || role === 'image') && node.backendId !== undefined) {
-    parts.push(refs.refFor(node.backendId));
+    parts.push(refs.refFor(node.backendId, { role: role === 'image' ? 'img' : role, name }));
   }
   parts.push(role === 'image' ? 'img' : role);
   if (name !== '') parts.push(JSON.stringify(limit(name, MAX_NAME)));

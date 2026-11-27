@@ -4,6 +4,8 @@
  * (`ComposerPendingApprovalActions` in T3's web app): Decline and the primary answer on the row, every other answer
  * under More. A browser prompt's lasting choice is one of those others, so it is kept but never the dominant button.
  */
+import { actStepsText, type ActStepSummary } from '@t3-tab/protocol';
+
 import type { PermissionDecision, PermissionPrompt } from '../../src/permissions';
 import type { PendingApproval } from './lib/thread-model';
 import { promptChoices, rowsShifted } from './prompt-choices';
@@ -46,6 +48,24 @@ const VERB: Record<PermissionPrompt['tool'], string> = {
   run_js: 'wants to run JavaScript on',
 };
 
+/** Most characters of what an act prompt says it will do, so the ask line, site and all, stays within the card's three lines. */
+const ACT_ASK_MAX = 48;
+
+/**
+ * What an act prompt asks to do, from the steps the MCP server described (`click “Add to cart”`): all of it when it is
+ * short, else its first part and "and more", else its first step alone with a shorter name and "and more".
+ */
+function actVerb(steps: readonly ActStepSummary[] | undefined): string {
+  if (steps === undefined || steps.length === 0) return VERB.act;
+  for (const limits of [{}, { phrases: 1 }]) {
+    const words = actStepsText(steps, 'ask', limits);
+    if (words.length <= ACT_ASK_MAX) return `wants to ${words} on`;
+  }
+  const [first] = steps;
+  const words = first === undefined ? 'act' : actStepsText([first], 'ask', { name: 24 });
+  return `wants to ${words}${steps.length > 1 ? ' and more' : ''} on`;
+}
+
 const hostOf = (origin: string): string => {
   try {
     return new URL(origin).host;
@@ -69,7 +89,7 @@ export function promptApproval(prompt: PermissionPrompt, asker: string): Approva
   const quoted = prompt.tab === undefined ? undefined : `"${plain(prompt.tab.title) || '(untitled)'}"`;
   const tab = quoted === undefined ? undefined : address === undefined ? quoted : `in ${quoted}`;
   return {
-    ask: { who: plain(asker), verb: VERB[prompt.tool], subject: hostOf(prompt.origin), mono: true },
+    ask: { who: plain(asker), verb: prompt.tool === 'act' ? actVerb(prompt.steps) : VERB[prompt.tool], subject: hostOf(prompt.origin), mono: true },
     ...(address === undefined ? {} : { detail: { text: address, mono: true } }),
     ...(tab === undefined ? {} : { tab }),
     decline: pick((decision) => decision === 'decline'),

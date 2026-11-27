@@ -24,13 +24,36 @@ const NAME_MAX = 40;
 /** Most phrases a description lists before "and N more". */
 const PHRASES_MAX = 3;
 
+/** Most steps a summary carries, and most characters of a role or name in one; more is not shown anyway. */
+const SUMMARY_STEPS_MAX = 100;
+const SUMMARY_TEXT_MAX = 200;
+const ACTIONS = new Set<string>(['click', 'type', 'fill', 'press', 'select', 'scroll', 'hover', 'wait']);
+
+/**
+ * A summary as it arrives over a link, checked: known actions only, a role and name as short strings, a key only when
+ * `namedKey` shows it. Anything else in it is dropped; a summary that is not a list is none.
+ */
+export function cleanActSummary(value: unknown): ActStepSummary[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.slice(0, SUMMARY_STEPS_MAX).flatMap((step): ActStepSummary[] => {
+    if (typeof step !== 'object' || step === null) return [];
+    const { action, target, key } = step as Record<string, unknown>;
+    if (typeof action !== 'string' || !ACTIONS.has(action)) return [];
+    const role = (target as { role?: unknown } | undefined)?.role;
+    const name = (target as { name?: unknown } | undefined)?.name;
+    const cleanTarget = typeof role === 'string' && typeof name === 'string' ? { role: role.slice(0, SUMMARY_TEXT_MAX), name: name.slice(0, SUMMARY_TEXT_MAX) } : undefined;
+    const cleanKey = action === 'press' && typeof key === 'string' ? namedKey(key.slice(0, SUMMARY_TEXT_MAX)) : undefined;
+    return [{ action: action as ActAction, ...(cleanTarget === undefined ? {} : { target: cleanTarget }), ...(cleanKey === undefined ? {} : { key: cleanKey }) }];
+  });
+}
+
 /** Characters that can hide or reorder text on screen: controls, and the bidirectional and zero-width formatting marks. */
 const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
 /** A page's own words, safe to show: one line, no hidden characters, at most `NAME_MAX` characters. */
-function plainName(name: string): string {
+function plainName(name: string, max = NAME_MAX): string {
   const text = name.replace(INVISIBLE, ' ').replace(/\s+/g, ' ').trim();
-  return text.length <= NAME_MAX ? text : `${text.slice(0, NAME_MAX - 1).trimEnd()}…`;
+  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
 const NAMED_KEYS = new Set([
@@ -99,8 +122,8 @@ const WITHOUT_TARGET: Record<ActAction, { done: string; ask: string }> = {
 const ARTICLE = /^[aeiou]/i;
 
 /** An element in words: its name in quotes, or its role when it has none (`a button`). */
-function targetWords(target: ActTarget): string {
-  const name = plainName(target.name);
+function targetWords(target: ActTarget, nameMax: number): string {
+  const name = plainName(target.name, nameMax);
   if (name !== '') return `“${name}”`;
   const role = plainName(target.role) || 'element';
   return `${ARTICLE.test(role) ? 'an' : 'a'} ${role}`;
@@ -113,7 +136,9 @@ const joinAnd = (items: readonly string[]): string => (items.length < 2 ? (items
  * `ask` is for a prompt, after "wants to" (`fill “Name” and “Email”, click “Create account”`). Steps in a row with the same
  * verb share it; past three phrases the rest are "and more".
  */
-export function actStepsText(steps: readonly ActStepSummary[], mood: Mood): string {
+export function actStepsText(steps: readonly ActStepSummary[], mood: Mood, limits: { phrases?: number; name?: number } = {}): string {
+  const phrasesMax = limits.phrases ?? PHRASES_MAX;
+  const nameMax = limits.name ?? NAME_MAX;
   const phrases: string[] = [];
   // Targets are told apart by their whole role and name, so two fields whose shortened names match are both listed.
   let last: { action: ActAction; targets: string[]; seen: Set<string> } | undefined;
@@ -138,7 +163,7 @@ export function actStepsText(steps: readonly ActStepSummary[], mood: Mood): stri
       if (phrases.at(-1) !== words) phrases.push(words);
       continue;
     }
-    const words = targetWords(step.target);
+    const words = targetWords(step.target, nameMax);
     const id = `${step.target.role}\n${step.target.name}`;
     if (last?.action === step.action) {
       if (!last.seen.has(id)) {
@@ -152,6 +177,6 @@ export function actStepsText(steps: readonly ActStepSummary[], mood: Mood): stri
   }
   flush();
   if (phrases.length === 0) return mood === 'done' ? 'Acted' : 'act';
-  const text = phrases.length > PHRASES_MAX ? `${phrases.slice(0, PHRASES_MAX - 1).join(', ')} and more` : phrases.join(', ');
+  const text = phrases.length > phrasesMax ? `${phrases.slice(0, Math.max(1, phrasesMax - 1)).join(', ')} and more` : phrases.join(', ');
   return mood === 'done' ? `${text[0]?.toUpperCase() ?? ''}${text.slice(1)}` : text;
 }

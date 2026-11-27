@@ -1,4 +1,4 @@
-import type { ToolSession } from '@t3-tab/protocol';
+import type { ActStepSummary, ToolSession } from '@t3-tab/protocol';
 
 /**
  * What the owner has granted a site: `ask` prompts for everything, `read` lets sessions read it without a
@@ -30,6 +30,8 @@ export interface PermissionPrompt {
   tab?: PromptTab;
   /** The address being opened or gone to. */
   url?: string;
+  /** For `act`: what the batch does, as the MCP server described it from the steps (`cleanActSummary` checked it). */
+  steps?: ActStepSummary[];
 }
 
 export interface SitePermissionStore {
@@ -119,7 +121,7 @@ export class PermissionPrompts {
    * Lets a request through or throws. `full-access` holds for this one request: the caller must not record an origin
    * approval for it, so later requests on the origin follow T3's live mode.
    */
-  async authorize(origin: string, tool: PromptKind, session: ToolSession, tab: PromptTab | undefined, url?: string): Promise<AuthorizeResult> {
+  async authorize(origin: string, tool: PromptKind, session: ToolSession, tab: PromptTab | undefined, url?: string, steps?: ActStepSummary[]): Promise<AuthorizeResult> {
     const setting = await this.store.get(origin);
     if (settingCovers(setting, tool)) return 'approved';
     if (await this.hasFullAccess(session.id)) {
@@ -139,7 +141,7 @@ export class PermissionPrompts {
         this.settle(id);
         reject(new Error(`Permission for ${origin} timed out and was declined.`));
       }, timeoutMs);
-      const target = { ...(tab === undefined ? {} : { tab }), ...(url === undefined ? {} : { url }) };
+      const target = { ...(tab === undefined ? {} : { tab }), ...(url === undefined ? {} : { url }), ...(steps === undefined || steps.length === 0 ? {} : { steps }) };
       this.pending.set(id, { id, origin, tool, session, ...target, resolve, reject, timer });
       this.emit();
       this.notify(() => this.options.onOpen?.({ id, origin, tool, session, ...target }));
@@ -182,12 +184,13 @@ export class PermissionPrompts {
 
   list(): PermissionPrompt[] {
     return [...this.pending.values()]
-      .map(({ id, origin, tool, session, tab, url }) => ({
+      .map(({ id, origin, tool, session, tab, url, steps }) => ({
         id,
         origin,
         tool,
         session,
         ...(tab === undefined ? {} : { tab }),
+        ...(steps === undefined ? {} : { steps }),
         ...(url === undefined ? {} : { url }),
       }));
   }

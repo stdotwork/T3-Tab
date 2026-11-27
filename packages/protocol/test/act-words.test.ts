@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { actStepsText, namedKey } from '../src/index.js';
+import { actStepsText, cleanActSummary, namedKey } from '../src/index.js';
 
 describe('act steps in words', () => {
   it('names each step and its element, sharing a verb between steps in a row', () => {
@@ -40,5 +40,26 @@ describe('act steps in words', () => {
     const line = (n: string) => ({ action: 'fill' as const, target: { role: 'textbox', name: `Shipping address, the line that holds the ${n}` } });
     expect(actStepsText([line('street'), line('suburb')], 'done')).toBe('Filled “Shipping address, the line that holds t…” and “Shipping address, the line that holds t…”');
     expect(actStepsText([line('street'), line('street')], 'done')).toBe('Filled “Shipping address, the line that holds t…”');
+  });
+
+  it('checks a summary that came over a link: known actions, short strings, named keys only', () => {
+    expect(cleanActSummary('click “Pay now”')).toBeUndefined();
+    expect(
+      cleanActSummary([
+        { action: 'click', target: { role: 'button', name: 'Pay' } },
+        { action: 'erase', target: { role: 'button', name: 'x' } },
+        { action: 'press', key: 'q' },
+        { action: 'press', key: 'Escape' },
+        { action: 'fill', target: { role: 'textbox', name: 7 }, text: 'hunter2' },
+        null,
+        { action: 'hover', target: { role: 'link', name: 'y'.repeat(500) } },
+      ]),
+    ).toEqual([
+      { action: 'click', target: { role: 'button', name: 'Pay' } },
+      { action: 'press' },
+      { action: 'press', key: 'Escape' },
+      { action: 'fill' },
+      { action: 'hover', target: { role: 'link', name: 'y'.repeat(200) } },
+    ]);
   });
 });

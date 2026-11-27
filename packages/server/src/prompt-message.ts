@@ -1,4 +1,4 @@
-import type { PromptNotice } from '@t3-tab/protocol';
+import { actStepsText, cleanActSummary, type PromptNotice } from '@t3-tab/protocol';
 
 const MAX_TITLE_CHARS = 80;
 
@@ -25,7 +25,10 @@ const ACTIONS: Record<PromptNotice['tool'], string> = {
 export function elicitationMessage(prompt: PromptNotice): string {
   const target = plainText(prompt.url ?? prompt.origin);
   const where = prompt.tab === undefined ? '' : ` in tab "${plainText(prompt.tab.title) || '(untitled)'}"`;
-  return `Allow T3-Tab to ${ACTIONS[prompt.tool]} ${target}${where}? Allow covers this one request only.`;
+  // An act names what it does (`click “Add to cart” on`), from the steps the server described, never the agent's text.
+  const steps = prompt.tool === 'act' ? cleanActSummary(prompt.steps) : undefined;
+  const action = steps === undefined || steps.length === 0 ? ACTIONS[prompt.tool] : `${actStepsText(steps, 'ask')} on`;
+  return `Allow T3-Tab to ${action} ${target}${where}? Allow covers this one request only.`;
 }
 
 /**
