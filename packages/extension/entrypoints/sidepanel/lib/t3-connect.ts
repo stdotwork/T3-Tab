@@ -7,10 +7,10 @@ import { t3, type T3State } from './t3-client';
 
 /**
  * Whether the panel connects to T3 Code by itself once the helper finds T3 running on this machine, with no Connect
- * click. Off until the owner decides it; while off, the new-thread screen shows one Connect row instead. Turning it on
- * makes a panel connect once per panel page, so a Disconnect holds until the panel is opened again.
+ * click. The owner decided it is on. A panel connects once per panel page, so a failed pairing leaves the Connect row
+ * with its note and a Disconnect holds until the panel is opened again.
  */
-export const CONNECT_T3_BY_ITSELF = false;
+export const CONNECT_T3_BY_ITSELF = true;
 
 /** Pairs this panel with the T3 Code the helper found. Every Connect, by click or by itself, goes through here. */
 export const connectT3 = async (): Promise<void> => await t3.pair();

@@ -101,8 +101,8 @@ logo and words) is off one centre line, when its text does not start on the pape
 line is off the heading's ink centre, when one bar's icons, or the composer row's glyphs, are drawn at different
 sizes or stroke weights, when an approval card's ink is over 160 px tall or its three answers are not on one row of
 one-line 28 px buttons inside it, when the setup card or the Connect row is not in the composer's column between the
-heading and the composer, cuts off any of its content, or is over 260 px tall (the Connect row: over 42 px or more than
-one line), or when browser prompts on the new-thread screen move its heading or composer or cover the composer. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
+heading and the composer, cuts off any of its content, or is over 260 px tall (the Connect row: over 42 px, or 90 px with the note of its failed automatic attempt, or more than
+one line of text beside Connect), or when browser prompts on the new-thread screen move its heading or composer or cover the composer. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
 each width and scheme the bars of all those screens must agree within 1 px (0.25 px for strokes): height, first and last
 ink insets, icon size and stroke, the thread toggle's ink, and the breadcrumb's start and baseline.
 `e2e/checks-approval-keys.mjs` then, on the headless panel with the panel's answers recorded,
@@ -755,8 +755,12 @@ directly through the daemon and feeds the same thread view.
 
 - **The panel's T3 session.** While T3 runs on this machine and the panel holds no session, the new-thread screen shows
   one row, "T3 Code is running", with Connect (Settings → Connections has the same button). Every Connect goes through
-  `connectT3` in `lib/t3-connect.ts`; `CONNECT_T3_BY_ITSELF` there, off until the owner decides it, would make the panel
-  connect once per panel page with no click. Connect signs a DPoP proof and calls the daemon's `t3.pair`. The daemon checks that the
+  `connectT3` in `lib/t3-connect.ts`. The panel also connects by itself, with no click (`CONNECT_T3_BY_ITSELF`, on, owner's
+  decision): once per panel page, when the helper reports T3 running and the panel holds no session and is not connecting.
+  A failed pairing is not tried again in that page: the row stays with Connect and the failure's note, no banner, no loop;
+  a Disconnect holds until the panel is opened again. It is the same `t3.pair` as the click, so the daemon's process check
+  applies to it unchanged, and with T3 stopped, missing or not checked it does nothing. Where Connect is unavailable
+  (anything but Linux) the one attempt fails and the row shows its note. Connect signs a DPoP proof and calls the daemon's `t3.pair`. The daemon checks that the
   recorded T3 process owns the listener, mints a five-minute pairing credential with `t3 auth pairing create`, and spends
   it at T3's `/oauth/token` itself, so the credential never reaches the extension. The result is a DPoP-bound session with
   T3's default client scopes, the same access T3's own apps get. The signing key is non-extractable and stays in the
