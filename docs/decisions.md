@@ -63,10 +63,12 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   fields, everything inside a form (its errors too), the buttons beside a field, live regions and dialogs, the first 40
   links and the first 1,500 characters of the main text, with one line saying what it left out and that `find`, a ref
   read or `read` with `full` gets the rest. Measured on saved pages it is a fifth to a half of the view (a Hacker News
-  item 6,515 → 1,272 tokens), and it is sent only when it is at most three quarters of it. The threshold is 7,000 and
-  not lower because near it an outline saves little and an answer in the text it drops costs a whole extra request (a
-  docs page at 6,270 characters did, at 6,000). Loads keep their own rule; `full`, a ref read, `depth`, `all`, `find` and
-  diffs are never outlined, and the diff baseline still holds the whole page. Replies are capped at 12,000 characters. Password
+  item 6,515 → 1,272 tokens), and it is sent only when it is at most three quarters of it. Since a form is kept whole, a
+  page wrapped in one form (ASP.NET WebForms) or with a large form is never outlined: it loses nothing, only the saving.
+  The threshold is 7,000 and not lower because near it an outline saves little and an answer in the text it drops costs
+  a whole extra request (a docs page at 6,270 characters did, at 6,000). Loads keep their own rule; `full`, a ref read,
+  `depth`, `all`, `find` and diffs are never outlined, and the diff baseline still holds the whole page. Replies are
+  capped at 12,000 characters. Password
   field values are stripped before the tree leaves the extension and rendered as `value=<redacted>`
   so neither the value nor its length leaks.
 - **Literal search by default, bounded regex opt-in.** `find` does case-insensitive literal

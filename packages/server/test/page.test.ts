@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { OUTLINE_AT } from '../src/reader/outline.js';
+import { OUTLINE_AT, OUTLINE_MAX_SHARE } from '../src/reader/outline.js';
 import { formatRead, LOAD_REPEAT_MS, MAX_OUTPUT_CHARS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
 import { ax, buttonPage, docsPage, feed, fieldPage, longArticle, longPage, page, signInPage } from './ax-fixtures.js';
 
@@ -568,6 +568,44 @@ describe('an outline of a long page', () => {
     expect(reply).toContain('number 40"');
     expect(reply).not.toContain('"41."');
     expect(reply).not.toContain('"47 points"');
+  });
+
+  it('keeps the start of an article that comes after the menus of a page with no main', async () => {
+    // An old table layout: 150 menu links, then the headline and the article's paragraphs, with no landmark at all.
+    const menu = Array.from({ length: 150 }, (_, index) => 100 + index);
+    const paragraphs = Array.from({ length: 25 }, (_, index) => 300 + index * 2);
+    const prose = (index: number): string =>
+      `Paragraph ${index + 1} of the article. `.padEnd(380, 'The story goes on with more about the event and its causes. ').slice(0, 380);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [...menu, 2, ...paragraphs]),
+      ...menu.map((id, index) => ax(id, 'link', `Section ${index + 1}`)),
+      ax(2, 'heading', 'The article headline', [], { props: { level: 1 } }),
+      ...paragraphs.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', prose(index))]),
+    ];
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toMatch(/\(Outline of a long page: 110 links and 22 text lines left out, /);
+    expect(reply).toContain('link "Section 40"');
+    expect(reply).not.toContain('Section 41"');
+    expect(reply).toContain('\n# The article headline\n');
+    for (const index of [0, 1, 2]) expect(reply).toContain(`\n"${prose(index).trim()}"\n`);
+    expect(reply).not.toContain('Paragraph 4 of the article.');
+  });
+
+  it('leaves a long page whole when its outline would be over three quarters of it', async () => {
+    // Every field stays in an outline and 80 of the 120 links go: the outline would be between 0.75 and 1.0 of the view.
+    const fields = Array.from({ length: 250 }, (_, index) => 1_000 + index);
+    const links = Array.from({ length: 120 }, (_, index) => 2_000 + index);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [...fields, ...links]),
+      ...fields.map((id, index) => ax(id, 'textbox', `Field ${index + 1}`)),
+      ...links.map((id, index) => ax(id, 'link', `Link ${index + 1}`)),
+    ];
+    const whole = await formatRead(new TabState(), 's1', page(nodes), { full: true });
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(whole.length).toBeGreaterThan(OUTLINE_AT);
+    const outlined = whole.split('\n').filter((line) => Number(/ link "Link (\d+)"$/.exec(line)?.[1] ?? 0) <= 40).join('\n');
+    expect(outlined.length).toBeGreaterThan(OUTLINE_MAX_SHARE * whole.length);
+    expect(reply).toBe(whole);
   });
 
   it('decides on the view a read would send, whatever room a reply with opened tabs leaves it', async () => {

@@ -433,10 +433,11 @@ its outline instead: every heading, landmark and other named container; every fi
 landmark, its text too (labels, hints, an error under a field); a button among the three elements after a field (a submit
 outside a form); live regions and dialogs whole; the first `OUTLINE_LINKS` (40) links, other buttons and other elements of
 the kinds a folded list holds, in page order (one left out takes the lines inside it, such as a story's heading inside its
-link, with it); the first `OUTLINE_TEXT` (1,500) characters of the text of `main` or `article`, in order until a line does
-not fit, or, on a page with neither, of the page's text up to the last link kept (so the numbers, points and bylines of
-rows whose links went are left out too); and the long lists around the content folded to one line each, as above, while
-the lists in the content keep their first links. It ends in one line, `(Outline of a long page: 141 links and 8 text lines
+link, with it); the first `OUTLINE_TEXT` (1,500) characters of the text of `main` or `article` (list items' text
+included), in order until a line does not fit, or, on a page with neither, of the page's text, where past the last link
+kept only lines of 80 characters or more count (so the numbers, points and bylines of rows whose links went are left out
+too, and an article after the menus of an old page without landmarks keeps its start); and the long lists around the
+content folded to one line each, as above, while the lists in the content keep their first links. It ends in one line, `(Outline of a long page: 141 links and 8 text lines
 left out, 2433 characters, 1 link in them. find searches them, read a ref for one part, full for the whole view)`, and is
 sent only when it is at most `OUTLINE_MAX_SHARE` (three quarters) of the view. A load's reply keeps its own rule (a page
 over `LOAD_REPLY_MAX` is left out), and `read` with `full`, a `ref` read, `depth`, `all`, `find` and diffs are never

@@ -15,10 +15,12 @@ const BUTTONS = new Set(['button', 'popupbutton']);
 const NEAR_FIELD = 3;
 /** Characters of the page's main text an outline keeps, from its start. */
 export const OUTLINE_TEXT = 1_500;
+/** Without a main, a text line shorter than this past the last kept link is a row's (a number, points, a byline). */
+const SHORT_LINE = 80;
 
 export interface Outline {
   lines: RenderedLine[];
-  /** What it left out, for its note: links, and the buttons and list items counted with them. */
+  /** What it left out, for its note: links, and the other elements counted with them. */
   links: number;
   others: number;
   /** The text lines it left out. */
@@ -28,8 +30,9 @@ export interface Outline {
 /**
  * A long page's outline: its headings, landmarks and other containers, every field, everything inside a form (its text
  * too: labels, hints, errors), the buttons just after a field, live regions and dialogs whole, the first `OUTLINE_LINKS`
- * links and other buttons and list items, and the first `OUTLINE_TEXT` characters of the main content's text (of the
- * page's, when it has no `main` or `article`, and then only while links are still being kept). Long lists of links or
+ * links, other buttons and other elements of the kinds a folded list holds, and the first `OUTLINE_TEXT` characters of the
+ * main content's text (list items' text included). On a page with no `main` or `article` it is the page's text, and past
+ * the last kept link only its long lines (prose), not the short ones of rows whose links went. Long lists of links or
  * buttons around the content fold to one line each, as `collapseGroups` folds them; the lists in the content keep their
  * first links.
  */
@@ -69,9 +72,10 @@ export function outlineView(view: View): Outline {
     }
     if (line.text) {
       // The first text of the content, in order: once a line does not fit, the rest is left out. Without a main, the
-      // text past the last kept link belongs to rows whose links went (a list's numbers, points and bylines).
+      // short text past the last kept link belongs to rows whose links went (a list's numbers, points and bylines); a
+      // long line is prose, such as an article after a page's menus, and still gets the room.
       const size = line.line.length + 1;
-      const past = !hasMain && links >= OUTLINE_LINKS;
+      const past = !hasMain && links >= OUTLINE_LINKS && line.line.trim().length < SHORT_LINE;
       if ((hasMain && !line.main) || past || size > textRoom) {
         if (!past && (!hasMain || line.main)) textRoom = 0;
         text.push(line.line);
