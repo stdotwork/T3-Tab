@@ -155,6 +155,8 @@ const BLOCKS = new Set([
 ]);
 /** Text inside these is the page's main content, shown first when not all of the page's text fits. */
 const MAIN_ROLES = new Set(['main', 'article']);
+/** Landmarks whose fields and buttons belong together: an outline keeps all of them. */
+const FORM_ROLES = new Set(['form', 'search']);
 /** Landmarks around a page's content: their long lists of links give way first. */
 const CHROME_ROLES = new Set(['navigation', 'banner', 'contentinfo', 'complementary']);
 /** Fewest links or buttons a list must hold to be folded to one line. */
@@ -209,6 +211,8 @@ interface Item {
   main: boolean;
   /** The role of the element on this line; empty for text. */
   role: string;
+  /** Inside a form or search landmark. */
+  form: boolean;
   /** The node whose own line this is. */
   source?: AxNode | undefined;
 }
@@ -224,6 +228,10 @@ export interface RenderedLine {
   main: boolean;
   /** In a search, the line with the address of every link written into it, which `find` searches. */
   search?: string | undefined;
+  /** The role of the element on this line: empty for text, `group` for a folded list's line. */
+  role: string;
+  /** Inside a form or search landmark. */
+  form: boolean;
 }
 
 /** Where a node sits: what its lines inherit from the nodes above it. */
@@ -237,6 +245,8 @@ interface Context {
   main: boolean;
   /** Inside a navigation, banner, footer or sidebar landmark. */
   chrome: boolean;
+  /** Inside a form or search landmark. */
+  form: boolean;
 }
 
 /**
@@ -408,6 +418,7 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
       keep: at.keep,
       main: at.main,
       role: '',
+      form: at.form,
     });
   };
 
@@ -442,6 +453,7 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
       ...outer,
       main: outer.main || MAIN_ROLES.has(role),
       chrome: outer.chrome || CHROME_ROLES.has(role),
+      form: outer.form || FORM_ROLES.has(role),
     };
     visitNode(node, at, force);
     if (node.ignored !== true && node.backendId !== undefined && items.length - start >= MIN_GROUP) {
@@ -493,6 +505,7 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
           keep: at.keep,
           main: at.main,
           role,
+          form: at.form,
           source: node,
         };
         items.push(item);
@@ -505,7 +518,7 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
     }
   };
 
-  visit(root, { level: 0, ancestorName: '', value: '', axDepth: 0, keep: false, main: false, chrome: false }, options.target !== undefined);
+  visit(root, { level: 0, ancestorName: '', value: '', axDepth: 0, keep: false, main: false, chrome: false, form: false }, options.target !== undefined);
   const kept = dropLabelEchoes(items);
   const lines = kept.map(renderedLine);
   if (searchAddress.size > 0) {
@@ -522,7 +535,7 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
 }
 
 function renderedLine(item: Item): RenderedLine {
-  return { line: `${'  '.repeat(item.indent)}${item.line}`, text: item.isText, keep: item.keep, main: item.main };
+  return { line: `${'  '.repeat(item.indent)}${item.line}`, text: item.isText, keep: item.keep, main: item.main, role: item.role, form: item.form };
 }
 
 /** The lines one node printed, `items[start]` up to `items[end]`. */
@@ -608,7 +621,7 @@ function groupSummary(node: AxNode, first: Item, actions: Item[], refs: RefTable
   const onward = last !== undefined && last.name !== '' && names.length < actions.length && ONWARD.test(last.name);
   const more = names.length < actions.length ? `, …${onward && last !== undefined ? `, ${JSON.stringify(truncate(last.name, 40))}` : ''}` : '';
   const line = `${head} (${count}; read ${ref})${names.length > 0 ? `: ${names.join(', ')}${more}` : ''}`;
-  return { line: `${'  '.repeat(first.indent)}${line}`, text: false, keep: false, main: first.main };
+  return { line: `${'  '.repeat(first.indent)}${line}`, text: false, keep: false, main: first.main, role: 'group', form: first.form };
 }
 
 /**

@@ -26,80 +26,92 @@
       "tokens": 67
     },
     "form.open": {
-      "chars": 705,
-      "tokens": 226
+      "chars": 714,
+      "tokens": 227
     },
     "form.act-fill-submit": {
-      "chars": 154,
-      "tokens": 51
+      "chars": 153,
+      "tokens": 50
     },
     "form.screenshot": {
-      "chars": 49,
-      "tokens": 23,
+      "chars": 48,
+      "tokens": 22,
       "imageBytes": 39198,
       "imageTokens": 1311
     },
     "hidden.open": {
-      "chars": 705,
-      "tokens": 226
+      "chars": 714,
+      "tokens": 227
     },
     "hidden.act-click": {
-      "chars": 204,
-      "tokens": 62
+      "chars": 203,
+      "tokens": 61
     },
     "hidden.run_js": {
       "chars": 7,
       "tokens": 4
     },
     "hidden.read-diff": {
-      "chars": 204,
-      "tokens": 61
+      "chars": 203,
+      "tokens": 60
     },
     "hidden.read-unchanged": {
-      "chars": 51,
-      "tokens": 17
+      "chars": 50,
+      "tokens": 16
     },
     "navigate.open": {
-      "chars": 639,
-      "tokens": 195
+      "chars": 648,
+      "tokens": 196
     },
     "navigate.act-click-link": {
-      "chars": 328,
-      "tokens": 115
+      "chars": 327,
+      "tokens": 114
     },
     "navigate.tabs-list": {
-      "chars": 174,
-      "tokens": 73
+      "chars": 170,
+      "tokens": 70
     },
     "long.read-url-find": {
-      "chars": 636,
-      "tokens": 152
+      "chars": 635,
+      "tokens": 151
     },
     "long.open": {
-      "chars": 162,
+      "chars": 167,
       "tokens": 53
     },
     "long.read-first": {
-      "chars": 6552,
-      "tokens": 1774
+      "chars": 6594,
+      "tokens": 1791
     },
     "long.find": {
-      "chars": 575,
-      "tokens": 131
+      "chars": 574,
+      "tokens": 130
     },
     "long.read-subtree": {
-      "chars": 497,
-      "tokens": 132
+      "chars": 496,
+      "tokens": 131
     },
     "long.read-all": {
-      "chars": 12562,
-      "tokens": 3114
+      "chars": 12560,
+      "tokens": 3113
     },
     "long.screenshot": {
-      "chars": 49,
-      "tokens": 23,
+      "chars": 48,
+      "tokens": 22,
       "imageBytes": 138189,
       "imageTokens": 1311
+    },
+    "outline.read-url": {
+      "chars": 3505,
+      "tokens": 1049
+    },
+    "outline.act-order": {
+      "chars": 3604,
+      "tokens": 1078
+    },
+    "outline.find": {
+      "chars": 118,
+      "tokens": 43
     }
   }
 }

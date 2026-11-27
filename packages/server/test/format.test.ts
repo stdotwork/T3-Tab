@@ -171,10 +171,10 @@ describe('tree to text', () => {
     ];
     const lines = renderLines(nodes, new RefTable(), { all: false });
     expect(lines).toEqual([
-      { line: '"Header blurb"', text: true, keep: false, main: false },
-      { line: '"The article"', text: true, keep: false, main: true },
-      { line: 'e1 dialog "Cookies"', text: false, keep: 'start', main: false },
-      { line: '  "We use cookies."', text: true, keep: 'start', main: false },
+      { line: '"Header blurb"', text: true, keep: false, main: false, role: '', form: false },
+      { line: '"The article"', text: true, keep: false, main: true, role: '', form: false },
+      { line: 'e1 dialog "Cookies"', text: false, keep: 'start', main: false, role: 'dialog', form: false },
+      { line: '  "We use cookies."', text: true, keep: 'start', main: false, role: '', form: false },
     ]);
   });
 

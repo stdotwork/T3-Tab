@@ -49,6 +49,55 @@ export function buttonPage(count: number, prefix = 'Button'): AxNode[] {
   ];
 }
 
+/** A form of `count` text fields: an outline keeps every field, so it stays as long as the page. */
+export function fieldPage(count: number): AxNode[] {
+  const ids = Array.from({ length: count }, (_, index) => 100 + index);
+  return [
+    ax(1, 'RootWebArea', 'Fields', [2, ...ids]),
+    ax(2, 'heading', 'Fields', [], { props: { level: 1 } }),
+    ...ids.map((id, index) => ax(id, 'textbox', `Field ${index + 1}`)),
+  ];
+}
+
+/**
+ * A long page: a navigation of 20 links (`Nav N`), then a main with a heading, 12 paragraphs of 300 characters
+ * (`Paragraph N …`, the last with a link in it), a search form with a field marked invalid and its error, a list of 150
+ * links (`Item N`), a link past them holding a heading, and an alert; then a footer of 10 links and a dialog with a button.
+ */
+export function longPage(): AxNode[] {
+  const nav = Array.from({ length: 20 }, (_, index) => 100 + index);
+  const paragraphs = Array.from({ length: 12 }, (_, index) => 300 + index * 2);
+  const items = Array.from({ length: 150 }, (_, index) => 500 + index);
+  const footer = Array.from({ length: 10 }, (_, index) => 700 + index);
+  const paragraph = (index: number): string => `Paragraph ${index + 1} ${'of the report, which goes on. '.repeat(10)}`.slice(0, 300);
+  return [
+    ax(1, 'RootWebArea', 'Report', [2, 3, 50, 60]),
+    ax(2, 'navigation', 'Site', nav),
+    ...nav.map((id, index) => ax(id, 'link', `Nav ${index + 1}`)),
+    ax(3, 'main', '', [4, ...paragraphs, 30, 33, 35, 40]),
+    ax(4, 'heading', 'Report', [], { props: { level: 1 } }),
+    ...paragraphs.flatMap((id, index) => [ax(id, 'paragraph', '', index === 11 ? [id + 1, 26, 27] : [id + 1]), ax(id + 1, 'StaticText', paragraph(index))]),
+    ax(26, 'link', 'the appendix', [], { props: { url: 'http://localhost/appendix' } }),
+    ax(27, 'StaticText', ' has the rest.'),
+    ax(30, 'form', 'Search', [31, 37, 38, 32]),
+    ax(31, 'textbox', 'Query'),
+    ax(37, 'textbox', 'Code', [], { props: { invalid: 'true' } }),
+    ax(38, 'StaticText', 'A code has three letters.'),
+    ax(32, 'button', 'Go'),
+    ax(33, 'list', 'Items', items),
+    ...items.map((id, index) => ax(id, 'link', `Item ${index + 1}`)),
+    ax(35, 'link', 'Story', [36]),
+    ax(36, 'heading', 'Story heading', [], { props: { level: 2 } }),
+    ax(40, 'alert', '', [41]),
+    ax(41, 'StaticText', 'Report saved.'),
+    ax(50, 'contentinfo', 'Footer', footer),
+    ...footer.map((id, index) => ax(id, 'link', `Foot ${index + 1}`)),
+    ax(60, 'dialog', 'Cookies', [61, 62]),
+    ax(61, 'StaticText', 'We use cookies.'),
+    ax(62, 'button', 'Accept'),
+  ];
+}
+
 /**
  * A page with a link, an article region of `sentences` paragraphs, a button, a footer with text and an alert: e1 the
  * link, e2 the button, e3 the article.

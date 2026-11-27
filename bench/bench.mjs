@@ -170,6 +170,19 @@ async function measure() {
     await run('long', 'read-all', 'read', { all: true });
     await run('long', 'screenshot', 'screenshot', {});
 
+    // 5. A page too long to send whole: a read gets its outline, an order sent with a bad address comes back as a new page
+    // with the error inside the form, and find reaches an item the outline left out.
+    const outline = await run('outline', 'read-url', 'read', { url: `${siteUrl}/catalogue` });
+    assert(outline.includes('(Outline of a long page'), `outline/read-url: not an outline:\n${outline}`);
+    const ordered = await run('outline', 'act-order', 'act', {
+      steps: [
+        { action: 'fill', ref: need(outline, 'textbox "Email"'), text: 'ada.example.com' },
+        { action: 'click', ref: need(outline, 'button "Place order"') },
+      ],
+    });
+    assert(ordered.includes('(Outline of a long page') && /textbox "Email"[^\n]*\[invalid\]/.test(ordered) && ordered.includes('Enter an email address with an @ in it.'), `outline/act-order: the error is not in the outline:\n${ordered}`);
+    await run('outline', 'find', 'read', { find: 'Item 61:' });
+
     const version = browserContext.browser()?.version() ?? (await serviceWorker.evaluate(() => navigator.userAgent));
     return {
       version: 1,
