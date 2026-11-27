@@ -125,11 +125,13 @@ dark to the folder named by `T3_TAB_FLOW_SHOTS`.
 `pnpm captures` (after `pnpm build`, with `T3_TAB_CAPTURES_DIR` naming an output folder; not part of `pnpm e2e`) renders every panel view at 400 x 800 in light and dark from one fixed shopping scenario with the e2e fakes and the product's `npx t3-tab@latest setup` command, and writes it three ways: `panel/` as drawn, `framed/` on one browser-window frame with the product's and T3 Code's names masked (for blind rating beside other products), `framed-named/` on the same frame unmasked, and the welcome tab as a 1280 x 800 browser tab in `welcome/` (`e2e/captures.mjs`).
 
 `pnpm bench` (after `pnpm build`) measures what an agent is sent, in characters and estimated tokens: the
-`tools/list` payload (total and per tool) and each tool reply on five fixed tasks over four local pages
+`tools/list` payload (total and per tool) and each tool reply on six fixed tasks over five local pages
 (`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link, search a longer page
 with `read` given its address and `find`, then with `find`, a ref subtree, `all` and a screenshot (text part, JPEG bytes and size, estimated image tokens),
 and a catalogue too long to send whole: its outline from `read` with its address, an order sent with a bad address whose
-`act` reply is the next page's outline with the error inside the form, and a `find` for an item the outline left out.
+`act` reply is the next page's outline with the error inside the form, and a `find` for an item the outline left out;
+and a delivery form whose State combobox opens its list of 20 states on a click and closes it when one is picked, the
+`act` reply then counting the options that went in one line.
 It drives the real tools through `e2e/harness.mjs` the way the end-to-end run does, with the bench site
 set to `allow` so no prompt waits. It prints a markdown table and writes `bench/results/latest.json` (not
 committed) and the replies it measured to `bench/results/latest.replies.txt`. Text tokens are an estimate:
@@ -409,7 +411,14 @@ lines left out, M characters, K links in them: find searches them, read a ref fo
 (the links part only when there are some), which stays even when the reply is cut; the whole reply, notes included, stays within the cap. A `ref` read and `all` have no text budget,
 only the cap. The diff baseline holds every line, text left out included; a diff's text lines are held to the same
 budget and to the room its other lines leave, live-region and dialog lines (judged on both sides of the diff) first, with
-the same kind of note. With `all`, images are also listed with a ref, named or not, so they can be hovered or clicked.
+the same kind of note. A run of removed lines in a diff (`packages/server/src/reader/removed-runs.ts`), such as the options of
+a combobox that closed or the rows a filter took away, prints in full only while it holds fewer than `REMOVED_RUN` (8)
+lines that may be counted; otherwise those lines become one line at the place and indent of the first, `-  (56 lines
+removed: "Alabama", … "Wyoming")`, naming the first and last by their name or text (40 characters at most). Within a run,
+the old line of a changed element (its ref is on an added line of the same hunk), a field (`FIELDS` in `outline.ts`) and
+every line of a live region or a dialog (`vitalLines`, kept with the baseline) always print, so an error that went or a
+field that went shows. Added lines always print whole, and every diff counts its runs, `all` and ref reads included.
+With `all`, images are also listed with a ref, named or not, so they can be hovered or clicked.
 
 Long lists of links or buttons give way to the page's text (`renderView` and `collapseGroups` in `format.ts`). A group is
 the outermost node below the page whose lines hold at least 8 links, buttons, menu items, tabs, options, tree items or

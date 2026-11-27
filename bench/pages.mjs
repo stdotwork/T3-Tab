@@ -157,6 +157,50 @@ const catalogue = (ordered) =>
 <footer>${['About', 'Careers', 'Press', 'Stores', 'Help', 'Shipping', 'Returns', 'Warranty', 'Privacy', 'Terms'].map((name) => `<a href="/${name.toLowerCase()}">${name}</a>`).join(' ')}</footer>`,
   );
 
+const STATES = ['Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado', 'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho', 'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana', 'Maine', 'Maryland'];
+
+/**
+ * A delivery form whose State field is a combobox with a button that opens its list of 20 states, as the ARIA pattern
+ * builds one. Picking a state fills the field and closes the list, so the list's lines go from the page.
+ */
+const DELIVERY = shell(
+  'Delivery',
+  `<header><a href="/">Outfitters</a>
+<nav aria-label="Main"><a href="/">Home</a> <a href="/products">Products</a> <a href="/docs">Docs</a> <a href="/contact">Contact</a></nav>
+<nav aria-label="Departments">${DEPARTMENTS.map((name, index) => `<a href="/catalogue/d${index + 1}">${name}</a>`).join(' ')}</nav></header>
+<main>
+  <h1>Delivery</h1>
+  <p>${SENTENCES.slice(0, 2).join(' ')}</p>
+  <form aria-label="Delivery address">
+    <label>Name <input name="name" type="text"></label>
+    <label>Street <input name="street" type="text"></label>
+    <label>City <input name="city" type="text"></label>
+    <label for="state">State</label>
+    <input id="state" name="state" type="text" role="combobox" aria-expanded="false" aria-controls="states" aria-autocomplete="list">
+    <button type="button" id="states-button" aria-label="States" aria-expanded="false">▾</button>
+    <ul id="states" role="listbox" aria-label="States" hidden>${STATES.map((name) => `<li role="option">${name}</li>`).join('')}</ul>
+    <label>Postcode <input name="postcode" type="text"></label>
+    <button type="submit">Save address</button>
+  </form>
+</main>
+<footer>${['About', 'Careers', 'Press', 'Stores', 'Help', 'Shipping', 'Returns', 'Warranty', 'Privacy', 'Terms'].map((name) => `<a href="/${name.toLowerCase()}">${name}</a>`).join(' ')}</footer>
+<script>
+  const field = document.getElementById('state');
+  const button = document.getElementById('states-button');
+  const list = document.getElementById('states');
+  const show = (open) => {
+    list.hidden = !open;
+    field.setAttribute('aria-expanded', String(open));
+    button.setAttribute('aria-expanded', String(open));
+  };
+  button.addEventListener('click', () => show(list.hidden));
+  list.addEventListener('click', (event) => {
+    field.value = event.target.textContent;
+    show(false);
+  });
+</script>`,
+);
+
 const NOT_FOUND = shell('Not found', '<h1>Not found</h1>');
 
 /** The page for a request path, and its status. */
@@ -166,6 +210,7 @@ export function benchPage(path) {
   if (path === '/docs') return { status: 200, body: DOCS };
   if (path === '/catalogue') return { status: 200, body: catalogue(false) };
   if (path === '/catalogue/order') return { status: 200, body: catalogue(true) };
+  if (path === '/delivery') return { status: 200, body: DELIVERY };
   const product = /^\/products\/([1-6])$/.exec(path);
   if (product !== null) return { status: 200, body: productPage(Number(product[1])) };
   return { status: 404, body: NOT_FOUND };

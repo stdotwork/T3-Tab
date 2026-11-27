@@ -183,6 +183,13 @@ async function measure() {
     assert(ordered.includes('(Outline of a long page') && /textbox "Email"[^\n]*\[invalid\]/.test(ordered) && ordered.includes('Enter an email address with an @ in it.'), `outline/act-order: the error is not in the outline:\n${ordered}`);
     await run('outline', 'find', 'read', { find: 'Item 61:' });
 
+    // 6. A combobox's list opens and closes: the act that opens it shows every option, the one that picks a state counts
+    // the options that went in one line.
+    const delivery = await run('combobox', 'open', 'tabs', { action: 'open', url: `${siteUrl}/delivery` });
+    const opened = await run('combobox', 'act-open', 'act', { steps: [{ action: 'click', ref: need(delivery, 'button "States"') }] });
+    const picked = await run('combobox', 'act-pick', 'act', { steps: [{ action: 'click', ref: need(opened, 'option "Kansas"') }] });
+    assert(/\(\d+ lines removed: "Alabama", … "Maryland"\)/.test(picked) && picked.includes('value="Kansas"'), `combobox/act-pick: the options that went are not counted:\n${picked}`);
+
     const version = browserContext.browser()?.version() ?? (await serviceWorker.evaluate(() => navigator.userAgent));
     return {
       version: 1,
