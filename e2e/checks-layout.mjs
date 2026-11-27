@@ -346,6 +346,50 @@ async function setupCardProblems(page, where, kinds) {
   return out;
 }
 
+/**
+ * An open popover or menu must be opaque and above everything it covers: its background has alpha 1, and the element
+ * at a grid of points inside its painted box (kept off the rounded corners) is the popover or one of its own children.
+ * Returns the problems and how many popovers it checked. (The hero's lines are moved with `translate`, which makes each a
+ * stacking context: this is what catches one of them painting over an open list.)
+ */
+async function popoverProblems(page, where) {
+  const found = await page.evaluate(() => {
+    const surfaces = '.popover, [role="menu"], [role="listbox"], [role="dialog"]:not(.sheet)';
+    const out = [];
+    for (const popover of document.querySelectorAll(surfaces)) {
+      // A list inside a popover (the project list) is part of it; only the outermost surface is checked.
+      if (popover.parentElement?.closest(surfaces) != null) continue;
+      const box = popover.getBoundingClientRect();
+      const style = getComputedStyle(popover);
+      if (box.width === 0 || box.height === 0 || style.visibility === 'hidden' || style.display === 'none') continue;
+      const name = popover.getAttribute('aria-label') ?? popover.className ?? popover.getAttribute('role');
+      // Colours come back as rgb(...) / rgba(...) or color(srgb ...): alpha is the part after the slash or the fourth value.
+      const alpha = /\/\s*([\d.]+%?)\s*\)/.exec(style.backgroundColor) ?? /rgba\([^)]*,\s*([\d.]+)\s*\)/.exec(style.backgroundColor);
+      const value = alpha === null ? 1 : alpha[1].endsWith('%') ? Number.parseFloat(alpha[1]) / 100 : Number.parseFloat(alpha[1]);
+      const covered = [];
+      const inset = 14;
+      const steps = 5;
+      for (let row = 0; row < steps; row += 1) {
+        for (let column = 0; column < steps; column += 1) {
+          const x = box.left + inset + ((box.width - 2 * inset) * column) / (steps - 1);
+          const y = box.top + inset + ((box.height - 2 * inset) * row) / (steps - 1);
+          if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) continue;
+          const top = document.elementFromPoint(x, y);
+          if (top !== null && !popover.contains(top)) covered.push(`${top.tagName.toLowerCase()}.${String(top.className).trim().split(/\s+/)[0]}`);
+        }
+      }
+      out.push({ name: String(name), alpha: value, covered: [...new Set(covered)] });
+    }
+    return out;
+  });
+  const out = [];
+  for (const popover of found) {
+    if (popover.alpha < 1) out.push(`${where}: the popover "${popover.name}" has a translucent background (alpha ${popover.alpha})`);
+    if (popover.covered.length > 0) out.push(`${where}: the popover "${popover.name}" is painted over by ${popover.covered.join(', ')}`);
+  }
+  return { out, count: found.length };
+}
+
 /** Measures one screen at every width and scheme; returns its problems, how many things it measured and its bars. */
 async function checkScreen(page, screen, shotsDir, bars, expect) {
   const failures = [];
@@ -367,6 +411,10 @@ async function checkScreen(page, screen, shotsDir, bars, expect) {
       // Which composer controls the screen draws: Stop in a running composer, the mic only where T3 can transcribe.
       for (const label of expect?.controls ?? []) if (!found.composer?.controls.includes(label)) failures.push(`${screen} @${width} ${scheme}: the composer has no "${label}" (it has ${found.composer?.controls.join(', ') ?? 'nothing'})`);
       for (const label of expect?.without ?? []) if (found.composer?.controls.some((control) => control.startsWith(label))) failures.push(`${screen} @${width} ${scheme}: the composer draws "${label}", which cannot work here`);
+      const popovers = await popoverProblems(page, `${screen} @${width} ${scheme}`);
+      failures.push(...popovers.out);
+      measured += popovers.count;
+      if (expect?.popover === true && popovers.count === 0) failures.push(`${screen} @${width} ${scheme}: no open popover was found to check`);
       if (expect?.setupCards !== undefined) {
         failures.push(...(await setupCardProblems(page, `${screen} @${width} ${scheme}`, expect.setupCards)));
         measured += expect.setupCards.length;
@@ -471,7 +519,7 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
   await run('home-direct', { controls: ['Attach files', 'Send'], without: ['Start voice input', 'Voice input'] });
   await page.locator('.model-chip').first().click();
   await page.locator('.model-popover').waitFor();
-  await run('model-picker');
+  await run('model-picker', { popover: true });
   await page.keyboard.press('Escape');
 
   // T3's hero: "No project" under the heading, then a project with the way back to no project.
@@ -497,7 +545,8 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
   await page.locator('.hero-picker > button').filter({ hasText: 'virtus-umbrella' }).waitFor();
   await run('home-t3-project');
   await page.locator('.hero-picker > button').click();
-  await run('project-picker');
+  // With a project chosen the hero also draws "or start without a project" right under the picker: it must not paint through the list.
+  await run('project-picker', { popover: true });
   await page.keyboard.press('Escape');
 
   // A T3 thread waiting on an approval: drawn at its row in the running work log, as T3 does, and above the composer when
