@@ -696,7 +696,14 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
       failures.push(...found);
     };
     await runOn('home-setup-card', { setupCards: ['helper'], heading: WORK_ON });
+    // No agent is known yet, so the composer names none, and its greyed Send points to the card's line saying it waits.
+    assert((await panelPage.locator('.composer-row .model-chip').count()) === 0, 'While the helper is missing, the composer shows a model chip');
     await panelPage.locator('.composer-input').fill(DRAFT);
+    const send = panelPage.locator('.composer-row .send-btn');
+    assert(await send.isDisabled(), 'While the helper is missing, Send is enabled');
+    const waitsFor = await send.getAttribute('aria-describedby');
+    assert(waitsFor !== null && /Waiting for the helper/.test(await panelPage.locator(`[id="${waitsFor}"]`).innerText()), `Send does not point to what it waits for (aria-describedby ${waitsFor})`);
+    assert(/helper connects/.test((await send.getAttribute('title')) ?? ''), 'Send has no title saying what it waits for');
     await runOn('home-setup-card-draft', { setupCards: ['helper'], heading: WORK_ON });
     await panelPage.locator('.composer-input').fill('');
     await render({ helper: { connected: true }, setup: { agents: [{ id: 'claude', found: true, registered: false }], t3: { state: 'running' } } });
@@ -708,6 +715,9 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
     assert(await connectButton.isEnabled(), 'The Connect row is still busy after the automatic attempt');
     assert((await panelPage.locator('.setup-card.connect-row .problem').count()) === 0, 'A failed automatic attempt put an error on the Connect row');
     await runOn('home-connect-t3', { setupCards: ['connect'], heading: WORK_ON });
+    // The helper found Claude Code: the chip names it.
+    await panelPage.locator('.composer-row .model-chip').filter({ hasText: 'Claude Code' }).waitFor();
+    assert((await panelPage.locator('.composer-row .send-btn').getAttribute('aria-describedby')) === null, 'With the helper connected, Send still points to the setup card');
     // A click is the owner's own: its failure shows the error.
     await connectButton.click();
     await panelPage.locator('.setup-card.connect-row .problem').waitFor();
