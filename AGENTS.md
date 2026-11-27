@@ -374,7 +374,11 @@ scroll, a hover, a wait and the last step by waiting for network, DOM and layout
 `select` between other steps does not settle on its own: the batch settles once before the next step of the kinds above. The
 settle ends after 150 ms of quiet, so a check the page runs within about 150 ms of the field change (a short debounce) is in
 before the click, and a longer one may not be: the agent adds a `wait` step, which the `act` description says. A field step settles at once when a document was
-replaced or a request began while it ran, and the stale-ref error then names that step. A navigation invalidates refs held from before
+replaced or a request began while it ran, and the stale-ref error then names that step. A `wait` for a time is itself a
+settle that lasts at least that long (`settlePage` with `minMs`): it watches the page all the while and ends once the time
+has passed and the page has been quiet for the last 150 ms, quiet that began during the wait included, so a change in the
+wait's last 150 ms keeps it going. The step just before such a wait does not settle on its own, and the checks it would have
+run after its settle (another origin, a replaced page) run after the wait instead. A `wait` for text keeps the settle before it. A navigation invalidates refs held from before
 it. `run_js` evaluates an expression or async function body in the page for cases the structured tools do
 not cover. The extension sends a WebSocket ping every 20 seconds while the daemon is connected so Chrome
 does not stop its service worker.
@@ -681,7 +685,7 @@ context's origin as the approved one, pinned by `uniqueContextId` (`mainWorldCon
 agent's text is never part of a check. A screenshot records the document epoch and address before the
 capture and discards the image if either changed. An `act` batch stops if a document from another origin
 replaced the page during a step other than `wait`, checked after the step's input and again after it
-settles, so a page that came and went is caught too; a new document on the approved origin, such as the
+settles (for the step before a `wait` for a time, after that wait), so a page that came and went is caught too; a new document on the approved origin, such as the
 page a `press Enter` submits to, is fine. CDP input cannot be aimed at one document, so input that reached
 such a page is reported, not prevented. A tab that moves while approval is pending or between
 steps is refused until its new origin is approved. Site setting writes are serialised.

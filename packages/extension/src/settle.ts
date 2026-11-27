@@ -59,23 +59,33 @@ export class SettleTracker {
   }
 }
 
-/** Waits for network quiet and no DOM or layout changes for a short window, capped in duration. */
-export async function settlePage(tabId: number): Promise<SettleResult> {
+/**
+ * Waits for network quiet and no DOM or layout changes for a short window, capped in duration. With `minMs` (an `act`
+ * wait for a time) it lasts at least that long and watches the page all the while: it ends once `minMs` have passed and
+ * the page has been quiet for the last 150 ms, quiet that may have begun during the wait. The cap moves out by `minMs`.
+ */
+export async function settlePage(tabId: number, minMs = 0): Promise<SettleResult> {
   const startedAt = Date.now();
-  const tracker = new SettleTracker(startedAt);
+  const maxMs = MAX_SETTLE_MS + minMs;
+  const tracker = new SettleTracker(startedAt, QUIET_MS, maxMs);
   while (true) {
-    // A dialog pauses the page, so there is nothing to wait for until it is answered.
-    if (openDialog(tabId) !== undefined) return { settled: true, timedOut: false, elapsedMs: Date.now() - startedAt };
+    // A dialog pauses the page, so there is nothing to wait for until it is answered; a wait still lasts as long as asked.
+    if (openDialog(tabId) !== undefined) {
+      const left = minMs - (Date.now() - startedAt);
+      if (left > 0) await sleep(left);
+      return { settled: true, timedOut: false, elapsedMs: Date.now() - startedAt };
+    }
     // The tab closed: its epoch is forgotten, and there is nothing left to wait for.
     if (documentEpoch(tabId) === 0) return { settled: false, timedOut: false, elapsedMs: Date.now() - startedAt };
     const snapshot = await settleSnapshot(tabId);
     const now = Date.now();
     const state = tracker.observe(snapshot, now);
-    if (state === 'settled') {
-      return { settled: now - startedAt < MAX_SETTLE_MS, timedOut: tracker.timedOut(now), elapsedMs: now - startedAt };
+    const left = minMs - (now - startedAt);
+    if (state === 'settled' && left <= 0) {
+      return { settled: now - startedAt < maxMs, timedOut: tracker.timedOut(now), elapsedMs: now - startedAt };
     }
     if (tracker.timedOut(now)) return { settled: false, timedOut: true, elapsedMs: now - startedAt };
-    await sleep(POLL_MS);
+    await sleep(left > 0 ? Math.min(POLL_MS, left) : POLL_MS);
   }
 }
 

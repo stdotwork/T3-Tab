@@ -36,7 +36,7 @@ export class FakeBrowser {
   /** The id the next new group gets. */
   nextGroupId = 1000;
   /** Runs when a command reaches the browser, before it is handled: the place for a navigation to land. */
-  beforeCommand: ((tabId: number, method: string) => Promise<void> | void) | undefined;
+  beforeCommand: ((tabId: number, method: string, params?: Record<string, unknown>) => Promise<void> | void) | undefined;
   /** Answers an expression before the page would run it: the place to say what a script in the real page would find. */
   evaluateHook: ((params: Record<string, unknown>) => unknown) | undefined;
   /**
@@ -184,7 +184,7 @@ export class FakeBrowser {
 
   private async command(tabId: number, method: string, params?: Record<string, unknown>): Promise<unknown> {
     this.commands.push({ tabId, method, params });
-    await this.beforeCommand?.(tabId, method);
+    await this.beforeCommand?.(tabId, method, params);
     const tab = this.mustTab(tabId);
     switch (method) {
       case 'Runtime.enable':
@@ -200,6 +200,9 @@ export class FakeBrowser {
         return { cssVisualViewport: { clientWidth: 800, clientHeight: 600 } };
       case 'Page.captureScreenshot':
         return { data: 'AAAA' };
+      case 'DOM.getBoxModel':
+        // A 20 by 10 element at the page's corner: its centre is (10, 5).
+        return { model: { border: [0, 0, 20, 0, 20, 10, 0, 10] } };
       case 'Page.navigate': {
         const url = String(params?.url);
         const loadError = this.loadErrors.get(url);
