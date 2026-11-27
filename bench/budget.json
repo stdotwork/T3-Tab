@@ -2,32 +2,28 @@
   "comment": "Limits for `pnpm bench`: each is the measured number plus 5% (40% for JPEG bytes, which vary with fonts). Raise one only on purpose, with the reason in the PR.",
   "limits": {
     "definitions.total": {
-      "chars": 3397,
-      "tokens": 823
-    },
-    "definitions.status": {
-      "chars": 136,
-      "tokens": 31
+      "chars": 2636,
+      "tokens": 634
     },
     "definitions.tabs": {
-      "chars": 580,
-      "tokens": 141
+      "chars": 469,
+      "tokens": 115
     },
     "definitions.read": {
-      "chars": 920,
-      "tokens": 214
+      "chars": 722,
+      "tokens": 164
     },
     "definitions.screenshot": {
-      "chars": 363,
-      "tokens": 92
+      "chars": 239,
+      "tokens": 59
     },
     "definitions.act": {
-      "chars": 1059,
-      "tokens": 263
+      "chars": 910,
+      "tokens": 237
     },
     "definitions.run_js": {
-      "chars": 410,
-      "tokens": 94
+      "chars": 301,
+      "tokens": 67
     },
     "form.open": {
       "chars": 705,
