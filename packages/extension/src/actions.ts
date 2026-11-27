@@ -384,11 +384,27 @@ async function scrollElementIntoView(tabId: number, backendId: number, ref: stri
   }
 }
 
+/**
+ * Moves to the point, presses and releases. A page dispatches a mouse move with its next frame, and a tab the owner
+ * cannot see draws none, so the browser can take up to a second to answer the move. The press is a discrete event: the
+ * page dispatches the queued move before it, in order. So the press is sent without waiting for the move's answer, and
+ * the click still fails with the move's error when the move failed. A move that opens a dialog no longer stops the
+ * press: it is already sent, and the page gets it once the dialog is answered.
+ */
 async function clickAt(tabId: number, point: PixelPoint): Promise<void> {
   const common = { x: point.x, y: point.y, button: 'left', clickCount: 1 };
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...common });
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...common });
+  const moved = sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+  // Awaited below on every path; this only keeps a failure from counting as unhandled before then.
+  moved.catch(() => undefined);
+  try {
+    await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...common });
+    await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...common });
+  } catch (error) {
+    // The move came first, so its failure is the one to report.
+    await moved;
+    throw error;
+  }
+  await moved;
 }
 
 async function focusElement(tabId: number, backendId: number, ref: string): Promise<void> {

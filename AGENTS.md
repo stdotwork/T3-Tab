@@ -487,6 +487,12 @@ already had open, the tool says to ask the owner to answer it.
 an `act` batch on a hidden tab turns on `Emulation.setFocusEmulationEnabled` while its steps run and off afterwards.
 So do a screenshot and a load through `tabs`, because a hidden page gets no animation frames and would stay blank if it
 renders from script. A load holds the tab visible from before it starts until the page settles (at most 4 seconds), which goes on after its reply. The page sees itself as visible and focused for that long.
+Focus emulation does not make a hidden page draw, and a page dispatches a mouse move only with a frame, so the browser can
+take up to a second to answer a move there. A click therefore sends its press without waiting for the move's answer: the
+press is a discrete event, and the page dispatches the queued move before it (`clickAt` in `actions.ts`). The click still
+fails with the move's error when the move failed. A `hover`, which is a move alone, still waits. A click whose move opens a
+dialog (a `mouseover` handler's `alert`) has already sent its press, which the page gets once the dialog is answered; its
+release is not sent.
 A tab the owner cannot see (not the active tab of its window, or in a window that is minimised, `visibility.ts`;
 a window that is merely not in focus is still on screen) that has been in the background for a few seconds can ignore the mouse wheel and draw no frame. There a
 wheel scroll reads the scroll position of the page and of the elements under the pointer (`scroll.ts`, in T3-Tab's own
