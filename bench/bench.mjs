@@ -188,6 +188,13 @@ async function measure() {
     const whole = await run('outline', 'read-full', 'read', { full: true });
     assert(!whole.includes('Outline of a long page') && !whole.includes('No changes since') && whole.includes('textbox "Email"'), `outline/read-full: not the whole view:\n${whole.slice(0, 400)}`);
 
+    // 6. A combobox's list opens and closes: the act that opens it shows every option, the one that picks a state counts
+    // the options that went in one line.
+    const delivery = await run('combobox', 'open', 'tabs', { action: 'open', url: `${siteUrl}/delivery` });
+    const opened = await run('combobox', 'act-open', 'act', { steps: [{ action: 'click', ref: need(delivery, 'button "States"') }] });
+    const picked = await run('combobox', 'act-pick', 'act', { steps: [{ action: 'click', ref: need(opened.replace(/^[+-]/gm, ' '), 'option "Kansas"') }] });
+    assert(/\(\d+ lines removed: "Alabama", … "Maryland"\)/.test(picked) && picked.includes('value="Kansas"'), `combobox/act-pick: the options that went are not counted:\n${picked}`);
+
     const version = browserContext.browser()?.version() ?? (await serviceWorker.evaluate(() => navigator.userAgent));
     return {
       version: 1,

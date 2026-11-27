@@ -80,6 +80,10 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   short. Each MCP server process keeps its own diff baseline so two agents reading the same tab do
   not consume each other's diffs. Repeat replies whose title and URL have not changed print only
   `tab <id>` instead of repeating both.
+  A long run of removed lines (8 or more, such as a closed combobox's options) is counted in one line naming its first
+  and last, since an agent needs to know the list went, not what was on it; changed elements, fields, and live-region
+  and dialog lines in such a run still print, and added lines always print whole. In the agent runs measured, removed
+  runs were 1 or 2 lines, or a whole option list (59 lines), so the threshold was set at the size of a folded list.
 - **Flat batched `act` steps with settle waits.** `act` runs a batch of steps (`click`, `type`,
   `fill`, `press`, `select`, `scroll`, `hover`, `wait`) on one tab, waits for network, DOM and
   layout activity to settle after each step, and returns the resulting page diff. Steps use one flat

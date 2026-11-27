@@ -26,100 +26,112 @@
       "tokens": 67
     },
     "form.open": {
-      "chars": 714,
-      "tokens": 227
+      "chars": 715,
+      "tokens": 228
     },
     "form.act-fill-submit": {
-      "chars": 153,
-      "tokens": 50
+      "chars": 154,
+      "tokens": 51
     },
     "form.screenshot": {
-      "chars": 48,
-      "tokens": 22,
+      "chars": 49,
+      "tokens": 23,
       "imageBytes": 39198,
       "imageTokens": 1311
     },
     "hidden.open": {
-      "chars": 714,
-      "tokens": 227
+      "chars": 715,
+      "tokens": 228
     },
     "hidden.act-click": {
-      "chars": 203,
-      "tokens": 61
+      "chars": 204,
+      "tokens": 62
     },
     "hidden.run_js": {
       "chars": 7,
       "tokens": 4
     },
     "hidden.read-diff": {
-      "chars": 203,
-      "tokens": 60
+      "chars": 204,
+      "tokens": 61
     },
     "hidden.read-unchanged": {
-      "chars": 50,
-      "tokens": 16
+      "chars": 51,
+      "tokens": 17
     },
     "navigate.open": {
-      "chars": 648,
-      "tokens": 196
+      "chars": 649,
+      "tokens": 197
     },
     "navigate.act-click-link": {
-      "chars": 327,
-      "tokens": 114
+      "chars": 328,
+      "tokens": 115
     },
     "navigate.read-full": {
-      "chars": 81,
-      "tokens": 23
+      "chars": 83,
+      "tokens": 25
     },
     "navigate.tabs-list": {
-      "chars": 170,
-      "tokens": 70
+      "chars": 174,
+      "tokens": 73
     },
     "long.read-url-find": {
-      "chars": 635,
-      "tokens": 151
+      "chars": 636,
+      "tokens": 152
     },
     "long.open": {
-      "chars": 167,
-      "tokens": 53
+      "chars": 168,
+      "tokens": 54
     },
     "long.read-first": {
-      "chars": 6594,
-      "tokens": 1791
+      "chars": 6595,
+      "tokens": 1792
     },
     "long.find": {
-      "chars": 574,
-      "tokens": 130
-    },
-    "long.read-subtree": {
-      "chars": 496,
+      "chars": 575,
       "tokens": 131
     },
+    "long.read-subtree": {
+      "chars": 497,
+      "tokens": 132
+    },
     "long.read-all": {
-      "chars": 12560,
-      "tokens": 3113
+      "chars": 12562,
+      "tokens": 3114
     },
     "long.screenshot": {
-      "chars": 48,
-      "tokens": 22,
+      "chars": 49,
+      "tokens": 23,
       "imageBytes": 138189,
       "imageTokens": 1311
     },
     "outline.read-url": {
-      "chars": 3505,
-      "tokens": 1049
+      "chars": 3506,
+      "tokens": 1050
     },
     "outline.act-order": {
-      "chars": 3604,
-      "tokens": 1078
+      "chars": 3605,
+      "tokens": 1079
     },
     "outline.find": {
-      "chars": 118,
-      "tokens": 43
+      "chars": 119,
+      "tokens": 44
     },
     "outline.read-full": {
-      "chars": 7713,
-      "tokens": 2353
+      "chars": 7715,
+      "tokens": 2354
+    },
+    "combobox.open": {
+      "chars": 1100,
+      "tokens": 352
+    },
+    "combobox.act-open": {
+      "chars": 825,
+      "tokens": 272
+    },
+    "combobox.act-pick": {
+      "chars": 341,
+      "tokens": 113
     }
   }
 }

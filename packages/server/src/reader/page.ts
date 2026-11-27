@@ -5,6 +5,7 @@ import { findLines } from './find.js';
 import { collapseGroups, type Keep, LINK_MARK, MORE_INSIDE, RefGoneError, type RenderedLine, renderView, truncate, type View } from './format.js';
 import { OUTLINE_AT, OUTLINE_MAX_SHARE, outlineNote, outlineView } from './outline.js';
 import { RefTable } from './refs.js';
+import { countRemovedRuns, vitalLines } from './removed-runs.js';
 import { createSmartDiff } from './smart-diff.js';
 
 /** Longest reply a read returns, in characters (about 3,000 tokens). */
@@ -124,6 +125,8 @@ export class TabState {
 export interface Baseline {
   text: string;
   kept: ReadonlyMap<string, Keep>;
+  /** The lines a later diff prints even in a long run of removed lines (`vitalLines`). */
+  vital: ReadonlySet<string>;
   /**
    * The reply a load or an act sent that showed this view whole (not outlined), without its header, and when
    * (`Date.now()`); the next read replaces the baseline and drops it.
@@ -209,9 +212,10 @@ export async function formatRead(
   const text = lines.join('\n') + depthNote;
   const key = `${all ? 'all' : 'page'}|${options.ref ?? ''}|${options.depth ?? ''}`;
   const kept = keptLines(rendered);
+  const vital = vitalLines(rendered);
   const last = state.baseline(session, key);
   const previous = last?.text;
-  state.setBaseline(session, key, { text, kept });
+  state.setBaseline(session, key, { text, kept, vital });
 
   if (lines.length === 0) {
     return `${header}\n${all ? '(empty page)' : '(empty page; all also lists images)'}`;
@@ -248,7 +252,7 @@ export async function formatRead(
     const reply = whole();
     if (all || options.ref !== undefined) return reply;
     if (options.act === true) {
-      state.setBaseline(session, key, { text, kept, shown: { by: 'act', at: Date.now(), body: reply.slice(header.length) } });
+      state.setBaseline(session, key, { text, kept, vital, shown: { by: 'act', at: Date.now(), body: reply.slice(header.length) } });
       return reply;
     }
     if (options.load !== true) return reply;
@@ -256,7 +260,7 @@ export async function formatRead(
       state.restoreBaseline(session, key, last);
       return `${header}\n(The page is ${(reply.length - header.length - 1).toLocaleString('en-US')} characters, too long for this reply: read shows it, find searches it.)`;
     }
-    state.setBaseline(session, key, { text, kept, shown: { by: 'load', at: Date.now(), body: reply.slice(header.length) } });
+    state.setBaseline(session, key, { text, kept, vital, shown: { by: 'load', at: Date.now(), body: reply.slice(header.length) } });
     return reply;
   };
   // The agent asked for the whole page and has it, unchanged, from the load or act it sent this read with. Only when the
@@ -280,7 +284,9 @@ export async function formatRead(
   }
   if (diff.type === 'diff') {
     const room = max - NOTE_ROOM - header.length;
-    const changed = all ? { text: diff.content, note: undefined } : diffWithinBudget(diff.content, [kept, last?.kept ?? new Map()], budget, room);
+    // A long run of removed lines is counted, not printed: a list that went says nothing line by line.
+    const content = countRemovedRuns(diff.content, last?.vital ?? new Set());
+    const changed = all ? { text: content, note: undefined } : diffWithinBudget(content, [kept, last?.kept ?? new Map()], budget, room);
     return limit(`${header}${set === undefined ? '' : `\n${set}`}\nChanged since the last read:\n${changed.text}`, changed.note);
   }
   return wholeReply();

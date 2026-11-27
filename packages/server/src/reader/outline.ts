@@ -9,7 +9,7 @@ export const OUTLINE_LINKS = 40;
 /** What counts toward `OUTLINE_LINKS`: what a page's long lists hold. */
 const CAPPED = new Set(['link', 'button', 'popupbutton', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'option', 'treeitem', 'disclosuretriangle']);
 /** Fields: a button among the few elements after one is the field's (a submit, a search), and is always kept. */
-const FIELDS = new Set(['textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'switch', 'slider', 'spinbutton', 'listbox', 'textfield', 'colorwell', 'date', 'datetime', 'inputtime', 'time']);
+export const FIELDS = new Set(['textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'switch', 'slider', 'spinbutton', 'listbox', 'textfield', 'colorwell', 'date', 'datetime', 'inputtime', 'time']);
 const BUTTONS = new Set(['button', 'popupbutton']);
 /** How many element lines after a field its buttons may come. */
 const NEAR_FIELD = 3;
