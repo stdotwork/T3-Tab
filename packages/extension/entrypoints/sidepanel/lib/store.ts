@@ -211,8 +211,18 @@ function runDuePolls(): void {
   const now = Date.now();
   for (const task of Object.values(polls)) {
     if (task.due > now) continue;
+    // A provisional time, so a slow answer is not asked for twice; the answer then sets the real one, because the
+    // pace depends on what it says (a run that was just seen running is followed at the fast pace).
     task.due = now + pollInterval(task);
-    void task.run();
+    void (async () => {
+      try {
+        await task.run();
+      } catch {
+        // Each task shows its own failure.
+      }
+      task.due = Date.now() + pollInterval(task);
+      schedulePolls();
+    })();
   }
   schedulePolls();
 }
