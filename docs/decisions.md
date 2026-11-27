@@ -74,6 +74,10 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **Literal search by default, bounded regex opt-in.** `find` does case-insensitive literal
   matching in-process. Passing `regex: true` (at most 200 characters) runs in a worker terminated
   after 500 ms so a slow pattern cannot stall the shared daemon.
+- **`find` shows the matches, not the lines around them.** A search prints only the lines that match. A short match (a
+  price, a label, a button) also keeps the one line before it, which says whose it is, and a link on a printed line keeps
+  its address: without the address an agent ran a script to get a title that only the address held whole. On saved pages a
+  `find` reply is 0.61x the size it was (geometric mean of 11 searches).
 - **Line diffs and short repeat headers.** After the first read of a tab, `read` and `act` return a
   line diff, falling back to full text when at least half of the lines changed or the diff is no
   shorter. Semantic ref-keyed diffs were rejected for v1 unless measurements show line diffs fall
@@ -86,11 +90,36 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   runs were 1 or 2 lines, or a whole option list (59 lines), so the threshold was set at the size of a folded list.
 - **Flat batched `act` steps with settle waits.** `act` runs a batch of steps (`click`, `type`,
   `fill`, `press`, `select`, `scroll`, `hover`, `wait`) on one tab, waits for network, DOM and
-  layout activity to settle after each step, and returns the resulting page diff. Steps use one flat
+  layout activity to settle after each step that can change the page (field steps settle with the next such step), and
+  returns the resulting page diff. Steps use one flat
   object schema (`{ action, ref, text, ... }`) rather than a tagged union of per-action schemas:
   flattening cut the `act` tool definition by more than half while one server-side validator still
   rejects missing, extra or out-of-range fields and converts to the protocol's nested step format.
   `run_js` is the escape hatch for page checks and actions the structured tools do not cover.
+- **Less waiting in `act`, and the page still comes back.** Replaying agents' own calls with no model showed that on local
+  pages most of an `act`'s time went to waits the model asked for (40%), mouse input (32%) and settles (22%). Two changes
+  cut tool time per task to 0.65x in that replay, with the same replies:
+  - A click sends its press without waiting for the browser to answer the mouse move. In a background tab the move waits
+    for a frame, up to a second, and the press is delivered after the move anyway. Tradeoff: when the move itself opens a
+    dialog (a `mouseover` handler's `alert`), the page now gets the press once the dialog is answered.
+  - A `wait` for a time watches the page while it waits and ends once the time has passed and the last 150 ms were quiet,
+    and the step before it no longer settles on its own. Tradeoff: the quiet used to be watched after the wait, so a change
+    that shows no sign until just after the wait ends could now be missed.
+  The 150 ms quiet window was kept: 100 ms would save about 50 ms a settle, and a page that fills a table from a timer
+  already shows a settle can end too soon. The settle itself is the price of returning the page after an action, which
+  saves the model request a tool without it needs to see the result.
+- **Tried and left out.**
+  - `read` with an address as the only way to open a page (no `tabs open`): real-site model requests fell to 0.88x, but
+    agents then tried to navigate inside `act` and to read before any tab was open, new errors, and local runs got worse.
+  - A page JavaScript step in `act`: a script stays a `run_js` call (see "An action says what it did").
+  - Replying to a load at DOMContentLoaded instead of the `load` event: estimated at up to a quarter of real-site tool
+    time, not built. Content a script adds after DOMContentLoaded could be missed, and dialogs and redirects later in the
+    load need care. Loads wait on the network for every tool, and a competitor that waits for `load` takes as long.
+  - Rewording the `act` description so agents wait for text instead of a fixed time: a replay with no waits took 0.30x the
+    time, but one task, whose data comes from a timer, then acted before the data was there. Fewer waits may also mean more
+    reads and model requests, so it waits for a measurement with a real model.
+  - Agent tabs that draw (in front, or in a window of their own), which would make hover and background screenshots fast:
+    see the tab group entry under "Permissions and trust model".
 - **Downscaled JPEG screenshots and iframe boundaries.** `screenshot` captures JPEG downscaled to a
   1280 px long edge by default to limit image token cost. `read` returns the main frame and
   same-origin child frames only, replacing cross-origin frames with `frame omitted: <origin>`.
@@ -249,6 +278,14 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **Prompt UI safeguards.** Prompts name the tab id and title, keep arrival order, cap waiting
   prompts at three per session, accept messages only from the real side-panel sender, and lock
   buttons for 500 ms when a prompt appears or rows shift above it.
+- **A secret follows the tabs a tab opens.** A form can send a password into the address of another tab: a new one (a
+  GET form with `target=_blank`), one it names, or its opener. So the extension keeps a tree of each tab's openers, from
+  the browser's navigation events (the tab strip's `openerTabId` is reassigned and cleared, so it is not used), and a
+  secret seen in any tab of a tree is taken out of the title and address of every tab in it, wherever a reply shows them.
+  A page a form was sent into can echo what was sent, so after a form submit the tree's secrets are hidden in that page
+  too. `act` collects the page's secrets before every step, since any step can submit a form. A tree is forgotten when its
+  last tab closes. A lookup along the opener chain at reply time was rejected: an opener's secrets are dropped when it
+  closes, and a form can be sent sideways or upward in the tree, not only down.
 - **Agents that reach for the tools by themselves get a collapsed tab group, not a window of their own.** A session not
   started from the side panel (an MCP client of the owner's own, a T3 thread not started from the panel) has its tabs
   in its tab group in the owner's window, created collapsed; panel-started sessions keep an expanded group. A separate
@@ -264,6 +301,8 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   was. A panel-launched agent that opens a tab before it claims its tabs is taken for self-started until the claim
   arrives, and its group then expands once. Worth revisiting only if Chromium lets a hidden page draw without being the
   front tab of a window, or stops focusing a window on injected mouse presses.
+- **No overlay in the page while an agent works.** Anything drawn into the page is visible to the site's scripts, so the
+  agent's tabs sit in a tab group named for its session, and the side panel lists the sessions using the browser.
 
 ## Side-panel sessions
 
@@ -271,6 +310,10 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   runs its threads; without T3, the picked provider runs directly and feeds the same thread view. This replaces the
   older read-only sign-in, which is removed, and the `t3 thread` polling below, which stays in the daemon unused by
   the panel. The panel does not load T3's web app: it is its own small client that reuses T3's theme code.
+- **The panel connects to T3 by itself.** While T3 runs and the panel holds no session, it pairs once per panel page with
+  no click. That takes the first run with T3 from six actions to five. It is the same pairing as the Connect button,
+  through the same process check. A failed attempt is not tried again in that page and shows no error, so it cannot loop
+  or nag; Disconnect holds until the panel is opened again.
 - **T3's Full access counts as yes for browser requests, while T3 confirms it.** A Full access thread can already run
   any command as the owner, so asking again adds nothing. The extension asks T3 for the thread's mode with
   `t3 thread show --json --messages 0 <threadId>` when a request needs a prompt, rather than trusting a flag the panel set,
@@ -385,6 +428,32 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   browser that is already running, with no reload), plus fake `t3`, `claude` and `codex` CLIs for side-panel
   sessions. Unit tests (`pnpm test`, Vitest) cover page reading, diffs, refs, permissions, agent
   config installation, Codex provider parsing and T3 connection checks underneath.
+- **Efficiency is measured with a real model, net of what every tool pays.** `pnpm bench:agent` runs the same local and
+  public-site tasks through headless Claude Code with one browser tool at a time, and checks success from the page or a
+  known answer. Claude Code sends about 3,400 tokens of its own context on every request whatever the tool, which hides
+  the differences, so a tool is judged on tool-attributable tokens (a run's tokens minus the first-request input of a
+  no-tool run of the same task), on model requests (each one re-reads the whole context), and on cost per finished task
+  (a failed run's spend counts against its tool). Ratios are geometric means of per-task ratios, with 90% bootstrap
+  intervals, over 5 repeats. Time is compared as tool-busy time per run (calls running together counted once): the
+  median single call is not like for like, because one tool's `act` includes the settle and the read that another tool
+  leaves to further calls and model requests.
+- **The target, and how it was split.** The goal was half the tokens and time of the best competitor at the same or better
+  success. The best competitor was `chrome-devtools-mcp --slim`: three tools, most work done with a script tool. A study
+  found it cannot be halved overall (the floor was about 0.6x locally and 0.7x on real sites, since on lookups it already
+  makes the fewest requests), so the target was split by task type: interactive tasks (forms, dialogs, multi-step flows)
+  at 0.5x of the best competitor's tool-attributable tokens, lookups at parity or better with fewer requests, and success
+  never lower.
+- **Where it ended (Haiku 5.5, 5 repeats).** Before the latency changes, T3-Tab finished every task (50 of 50 local, 40 of
+  40 on public sites); `--slim` finished 45 and 38, stopped by JavaScript dialogs. Against `--slim`, T3-Tab used 0.89x
+  the tool-attributable tokens and 0.83x the requests locally (interactive tasks 0.76x, lookups 1.28x), and 1.20x the tokens and 0.97x the requests
+  on public sites. Per finished task it used 0.70x `--slim`'s tokens locally and 0.99x on public sites. So the split target
+  was met on success and missed on tokens against `--slim`. Against Chrome DevTools MCP's default, Playwright MCP,
+  agent-browser and Playwriter, T3-Tab used 0.22x to 0.57x of their tool-attributable tokens locally. It still loses where
+  one short script answers the task (load more items until one appears, search a long page, page through a catalogue):
+  there a script's output is smaller than any view of the page. The latency changes then cut T3-Tab's tool-busy time per
+  local run to 0.65x (30 of 30 runs, 3 repeats). For people, the first run takes five actions (it took eight; the best
+  competitor measured took six), and a blind rating of screenshots by three models put the panel first of four products,
+  at 8 out of 10, before the last polish.
 - **Temporary HOME for config and agent tests.** Every test that touches `~/.claude`, `~/.codex`,
   T3 settings or launched agents uses a temporary `HOME` and XDG directories, never live user
   configuration.
@@ -400,6 +469,6 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - Loading T3 Code's web UI inside the side panel.
 - Persisting side-panel conversation history across daemon restarts.
 - Per-model tool profiles or on-demand tool packs.
-- Cross-product token benchmarks against Claude in Chrome or the Codex Chrome plugin (v1 benchmarks
-  T3-Tab against its own budget).
+- Benchmarks against Claude in Chrome or the Codex Chrome plugin (the agent bench compares T3-Tab with open-source browser
+  MCP servers; Claude in Chrome needs a signed-in claude.ai account, and was not run).
 - Publishing to browser web stores or npm (the install is built and packed for it, and waits for the owner).
