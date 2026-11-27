@@ -760,8 +760,15 @@ an option unless the owner is typing, and Enter in the answer box moves on or su
 the element it was on (`Clicked “Add to cart”`, `Filled “Email” and “Password”`; `actStepsText` in `packages/protocol`),
 taken from what the thread's earlier T3-Tab replies printed for that ref on that tab (`RefNames` in `lib/thread-model.ts`),
 or the site when the element is not known, with one icon per tool; never the text typed into a field, an option chosen or a
-key that is a character. T3 leaves a tool's reply out of the thread it streams, so the panel fetches each finished T3-Tab
-step's reply once with `orchestration.getTurnItem`, as T3's own client fetches a step's detail. The running step is T3's
+key that is a character. A reply's part about each tab starts at its `tab <id>` or `Opened tab <id>` line (a failed step's
+error before it names no element), and a tab's names start again with a load, a document the session sees for the first
+time (its head names title and address) or a whole read, so a ref of an earlier page is not named after the page changed.
+Each step's reply is taken apart once, not again on every event that redraws the thread. T3 leaves a tool's reply out of the
+thread it streams, so the panel fetches each finished T3-Tab step's reply with `orchestration.getTurnItem`, as T3's own
+client fetches a step's detail: at most four at a time, each given up after ten seconds, and one that failed or timed out
+keeps the words it has and is not asked again while the panel is open (`lib/turn-replies.ts`). The replies stay on the
+panel's T3 client, by thread and step, for the 50 threads shown last, so a thread opened again fetches only its new
+steps. The running step is T3's
 live row: its icon in the text colour and a light sweeping over its words, resting on its first words, so a still frame
 shows it too (with reduced motion, its words in the text colour).
 

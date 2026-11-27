@@ -147,6 +147,59 @@ describe('what a thread shows', () => {
     );
   });
 
+  it('learns each tab part of a reply under its own tab, and nothing from a failed step\'s error', () => {
+    const refs = new RefNames();
+    const reply = [
+      'Step 2 (click) failed: e7 is no longer on the page; read again (document epoch 7 -> 8)',
+      'tab 5: Account — https://site.example/account',
+      'e14 button "Save"',
+      'Opened tab 9: Help — https://help.example/',
+      'e14 link "Contact us"',
+      '1 more tab opened that this session does not hold.',
+    ].join('\n');
+    const act = { steps: [{ action: 'click', ref: 'e3' }, { action: 'click', ref: 'e7' }] };
+    // The error comes first, yet the step is on tab 5's site.
+    expect(browserStepLabel('act', act, reply, refs)).toBe('Clicked an element on site.example');
+    refs.learn(reply, act);
+    expect(refs.find('e14', '5')).toEqual({ role: 'button', name: 'Save' });
+    expect(refs.find('e14', '9')).toEqual({ role: 'link', name: 'Contact us' });
+    expect(refs.find('e7', '5')).toBeUndefined();
+    expect(refs.currentTab).toBe('5');
+    // A load's reply (`Loaded tab`, `Back in tab`, …) is a part about that tab too.
+    refs.learn('Back in tab 9 [current]: FAQ — https://help.example/faq\ne2 link "Returns"');
+    expect(refs.find('e2', '9')).toEqual({ role: 'link', name: 'Returns' });
+  });
+
+  it('forgets a tab\'s names when its page changes or is read whole, and keeps them for a part or a change list', () => {
+    const refs = new RefNames();
+    refs.learn('tab 5: Settings — https://site.example/settings\ne2 button "Save"\ne14 button "Delete account"');
+    const clickE14 = { steps: [{ action: 'click', ref: 'e14' }] };
+    expect(browserStepLabel('act', clickE14, undefined, refs)).toBe('Clicked “Delete account”');
+    // A part of the page, a search and a change list add to what the tab's page showed.
+    refs.learn('tab 5\ne30 button "Inner"', { ref: 'e29' });
+    refs.learn('tab 5\ne31 link "Help"', { find: 'help' });
+    refs.learn('tab 5\nChanged since the last read:\n@@\n+  e32 alert "Saved"');
+    expect([refs.find('e14', '5')?.name, refs.find('e30', '5')?.name, refs.find('e31', '5')?.name, refs.find('e32', '5')?.name]).toEqual(['Delete account', 'Inner', 'Help', 'Saved']);
+    // The click on e2 took the tab to a new page: its act reply shows it whole, with a head naming it, and e14 is not that
+    // button any more.
+    refs.learn('tab 5: Signed out — https://site.example/bye\ne1 link "Home"', { steps: [{ action: 'click', ref: 'e2' }] });
+    expect(browserStepLabel('act', clickE14, undefined, refs)).toBe('Clicked an element on the page');
+    // A whole read replaces too, even with a head of the tab id alone; so does a load.
+    refs.learn('tab 5: Settings — https://site.example/settings\ne14 button "Delete account"');
+    refs.learn('tab 5\ne3 button "Next"');
+    expect(refs.find('e14', '5')).toBeUndefined();
+    refs.learn('tab 5\ne14 button "Delete account"', { find: 'Delete' });
+    refs.learn('Loaded tab 5: Home — https://site.example/\ne1 link "Settings"');
+    expect(refs.find('e14', '5')).toBeUndefined();
+  });
+
+  it('takes a step\'s reply in again when the reply under its key changed', () => {
+    const refs = new RefNames();
+    refs.learn('tab 5: A — https://a.example/\ne1 button "First"', {}, 'thread:item');
+    refs.learn('tab 5: A — https://a.example/\ne1 button "Second"', {}, 'thread:item');
+    expect(refs.find('e1', '5')?.name).toBe('Second');
+  });
+
   it('marks each kind of browser step with its own icon and names targets in a T3 thread', () => {
     const view = t3ThreadView({
       thread: { id: 't', title: 'T' },
