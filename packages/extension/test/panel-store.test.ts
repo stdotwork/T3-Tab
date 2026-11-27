@@ -139,3 +139,74 @@ describe('refreshing the setup state', () => {
     expect(api.panel).toHaveBeenCalled();
   });
 });
+
+describe('the pace of the timed poll of direct runs', () => {
+  const agentCalls = (): number => api.panel.mock.calls.filter(([request]) => (request as { type: string }).type === 'panel.agents').length;
+  /** Direct-run lists asked for while the panel starts (before the first timed poll). */
+  let startup = 0;
+
+  /** `statusOf(k)` is what the k-th timed poll (1-based) of the list answers. */
+  async function start(statusOf: (k: number) => 'running' | 'completed' | undefined): Promise<Store> {
+    vi.useFakeTimers();
+    vi.stubGlobal('document', { hidden: false, addEventListener: () => undefined });
+    vi.stubGlobal('chrome', { runtime: { id: 'x', onMessage: { addListener: () => undefined } }, storage: { onChanged: { addListener: () => undefined } }, tabs: {} });
+    api.readStored.mockResolvedValue(undefined);
+    api.writeStored.mockResolvedValue(undefined);
+    api.panel.mockImplementation(async (request: { type: string }) => {
+      if (request.type === 'panel.helper') return { connected: true };
+      if (request.type === 'panel.setup') return setupOf('a');
+      if (request.type === 'panel.build') return { buildId: 'x' };
+      if (request.type === 'panel.agents') {
+        const status = statusOf(agentCalls() - startup);
+        return { conversations: status === undefined ? [] : [{ id: 'c', status }] };
+      }
+      return { pending: [], sites: [] };
+    });
+    const store = await load();
+    startup = 1_000;
+    store.startPolling();
+    await vi.advanceTimersByTimeAsync(0);
+    startup = agentCalls();
+    return store;
+  }
+  const since = (): number => agentCalls() - startup;
+
+  it('asks again after 1.5 s when the poll has just seen a run running', async () => {
+    const store = await start((k) => (k >= 1 ? 'running' : undefined));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(since()).toBe(1);
+    expect(store.useLive().conversations).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1_499);
+    expect(since()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(since()).toBe(2);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(since()).toBe(3);
+    vi.useRealTimers();
+  });
+
+  it('shows a run as finished 1.5 s after the poll that saw it running, then slows to 15 s', async () => {
+    const store = await start((k) => (k <= 1 ? 'running' : 'completed'));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(store.useLive().conversations[0]?.status).toBe('running');
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(store.useLive().conversations[0]?.status).toBe('completed');
+    expect(since()).toBe(2);
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(since()).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(since()).toBe(3);
+    vi.useRealTimers();
+  });
+
+  it('asks again after 15 s when the poll sees no run', async () => {
+    await start(() => undefined);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(since()).toBe(1);
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(since()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(since()).toBe(2);
+    vi.useRealTimers();
+  });
+});
