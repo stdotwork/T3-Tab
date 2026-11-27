@@ -1,15 +1,25 @@
-import type { BrowserMethods, BrowserRequestMessage, LoadOptions, PageReadResult, TabLoadResult, ToolSession } from '@t3-tab/protocol';
+import type {
+  ActFollowThrough,
+  BrowserMethods,
+  BrowserRequestMessage,
+  LoadOptions,
+  PageReadResult,
+  TabInfo,
+  TabLoadResult,
+  ToolSession,
+} from '@t3-tab/protocol';
 
 import { actOnPage } from './actions';
 import { claimTabs } from './claims';
-import { setRecoveryOrigin } from './cdp';
+import { ensureAttached, setRecoveryOrigin } from './cdp';
 import { evaluatePage } from './evaluate';
+import { openedMark, openedSince, type OpenedTab } from './opened-tabs';
 import { readPage } from './page';
 import { originOf, promptAddress, restrictedPageError, type AuthorizeResult, type PromptTab } from './permissions';
 import { claimStore, permissionPrompts, sessionStore, siteStore } from './runtime';
 import { captureViewport } from './screenshot';
-import { pageTextLength, settleSnapshot, type SettleSnapshot } from './settle';
-import type { StoredSession } from './sessions';
+import { pageTextLength, settleSnapshot, sleep, type SettleSnapshot } from './settle';
+import { canSessionUseTab, type StoredSession } from './sessions';
 import {
   closeSessionTab,
   describeSessionTab,
@@ -120,15 +130,19 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
       const currentSession = await registeredSession(session);
       tab = await resolveSessionTab(currentSession, tab.id);
       assertSameOrigin(tab, origin);
-      return await actOnPage(
+      const tabId = tab.id ?? -1;
+      const mark = openedMark();
+      const page = await actOnPage(
         currentSession,
-        tab.id ?? -1,
+        tabId,
         request.params.steps,
         request.params.backendIds,
         request.params.epoch,
         origin,
         async () => await registeredSession(session),
       );
+      const opened = await describeOpenedTabs(session, origin, openedSince(tabId, mark), loadOptions(request.params));
+      return { ...page, ...opened } satisfies BrowserMethods['page.act']['result'];
     }
     case 'page.eval': {
       let tab = await resolveSessionTab(session, request.params.tab);
@@ -146,6 +160,163 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
     }
     default:
       throw new Error(`Unknown request: ${String((request as { method?: unknown }).method)}`);
+  }
+}
+
+/** Most tabs one batch's reply describes; the page goes with the first one the session may read. */
+const MAX_OPENED = 5;
+/** How long a batch's reply waits, in all, for the tabs it opened to be adopted, to commit and to load. */
+const OPENED_WAIT_MS = 5_000;
+/** How long a tab still on the blank page it was created with is given to start loading something else. */
+const OPENED_BLANK_MS = 1_000;
+const OPENED_POLL_MS = 50;
+const OPENED_STILL_LOADING = 'It is still loading.';
+const OPENED_ACCESS_ENDED = 'Its page is left out: reading it now needs the owner. read it to ask.';
+
+/**
+ * What the session may see of a tab a batch opened without asking: the owner's site setting, or T3's Full access, which
+ * counts only on the origin the batch itself was let through for, as it does for a load. A tab opened onto another origin
+ * needs that origin's site setting.
+ */
+const openedAccess = (session: ToolSession, actOrigin: string): SiteSetting => async (origin) => {
+  const setting = await siteStore.get(origin);
+  if (setting === 'read' || setting === 'allow') return setting;
+  return origin === actOrigin && (await permissionPrompts.hasFullAccess(session.id)) ? 'read' : setting;
+};
+
+/**
+ * The tabs a batch opened, as a load describes a tab: a tab that joined the session shows its origin only until the
+ * session may read it, and the first one it may read comes with its page, under the rules of a load's reply. A tab the
+ * session does not hold (opened from a tab the owner shared, or not adopted in time) is only counted.
+ */
+async function describeOpenedTabs(
+  session: ToolSession,
+  actOrigin: string,
+  opened: OpenedTab[],
+  options: LoadOptions,
+): Promise<ActFollowThrough> {
+  if (opened.length === 0) return {};
+  const deadline = Date.now() + OPENED_WAIT_MS;
+  const described: TabLoadResult[] = [];
+  let elsewhere = 0;
+  for (const entry of opened.slice(0, MAX_OPENED)) {
+    await adoptedBy(entry.adopted, deadline);
+    const withPage = !described.some((result) => result.page !== undefined || result.textLength !== undefined);
+    // A tab that closed or moved out of reach while it was described is left out.
+    const result = await describeOpened(session, actOrigin, entry.tabId, deadline, withPage, options).catch(() => undefined);
+    if (result === 'elsewhere') elsewhere += 1;
+    else if (result !== undefined) described.push(result);
+  }
+  return { ...(described.length === 0 ? {} : { opened: described }), ...(elsewhere === 0 ? {} : { openedElsewhere: elsewhere }) };
+}
+
+/** Waits for a tab's adoption into its opener's group, or the deadline, whichever is first. */
+async function adoptedBy(adopted: Promise<void>, deadline: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([adopted, new Promise<void>((done) => (timer = setTimeout(done, Math.max(0, deadline - Date.now()))))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** One tab a batch opened, once it committed, or undefined when it closed already. */
+async function describeOpened(
+  session: ToolSession,
+  actOrigin: string,
+  tabId: number,
+  deadline: number,
+  withPage: boolean,
+  options: LoadOptions,
+): Promise<TabLoadResult | 'elsewhere' | undefined> {
+  const first = await chrome.tabs.get(tabId).catch(() => undefined);
+  if (first === undefined) return undefined;
+  if (!canSessionUseTab(await registeredSession(session), first)) return 'elsewhere';
+  // A new tab reports the address it is loading as pending until the page commits, and may sit on the blank page it was
+  // created with for a moment first; its origin counts only once it committed something else.
+  let blankSince: number | undefined;
+  const committed = await waitForTab(tabId, deadline, (tab) => {
+    if (tab.pendingUrl !== undefined || (tab.url ?? '') === '') return false;
+    if (tab.url !== 'about:blank') return true;
+    blankSince ??= Date.now();
+    return Date.now() - blankSince >= OPENED_BLANK_MS;
+  });
+  if (committed === undefined) return undefined;
+  const url = committed.url ?? '';
+  const origin = originOf(url);
+  // Shown as an unapproved tab is: by its origin, or, for a page the tools cannot use, by its scheme.
+  if (committed.pendingUrl !== undefined || url === '' || url === 'about:blank') {
+    const loading = originOf(committed.pendingUrl ?? '') ?? 'about:blank';
+    return { tab: { id: tabId, title: '', url: loading, active: false, needsApproval: true }, unread: OPENED_STILL_LOADING };
+  }
+  if (origin === undefined) {
+    const scheme = /^[a-z][a-z0-9+.-]*:/i.exec(url)?.[0] ?? '';
+    return { tab: { id: tabId, title: '', url: scheme, active: false, needsApproval: true }, unread: restrictedPageError(url) ?? '' };
+  }
+  await sessionStore.observeTabOrigin(tabId, origin);
+  const access = openedAccess(session, actOrigin);
+  const describe = async (): Promise<TabInfo> => ({
+    ...(await describeSessionTab(await registeredSession(session), tabId, access)),
+    active: false,
+  });
+  const tab = await describe();
+  // Only where a `read` of the tab would pass without a prompt; the tab itself carries no approval.
+  if (tab.needsApproval === true) return { tab };
+  // What Full access let through is listed with the requests it allowed, as a prompt it answered would be.
+  let noted = false;
+  const noteFullAccess = async (): Promise<void> => {
+    if (noted) return;
+    noted = true;
+    const setting = await siteStore.get(origin);
+    const held = await sessionStore.hasApprovedOrigin(session.id, tabId, origin);
+    if (setting !== 'read' && setting !== 'allow' && !held) permissionPrompts.noteAutoAllowed('read', origin, promptTabOf(tabId, tab.title));
+  };
+  if (!withPage) {
+    await noteFullAccess();
+    return { tab };
+  }
+  const loaded = await waitForTab(tabId, deadline, (latest) => latest.status === 'complete');
+  if (loaded?.status !== 'complete') {
+    await noteFullAccess();
+    return { tab, unread: OPENED_STILL_LOADING };
+  }
+  const stillReadable = async (): Promise<TabLoadResult | undefined> => {
+    const now = await describe();
+    return now.needsApproval === true || originOf(now.url) !== origin ? { tab: now, unread: OPENED_ACCESS_ENDED } : undefined;
+  };
+  try {
+    await ensureAttached(tabId);
+    if (options.skipReadOver !== undefined) {
+      const textLength = await pageTextLength(tabId);
+      if (textLength > options.skipReadOver) {
+        const ended = await stillReadable();
+        if (ended !== undefined) return ended;
+        await noteFullAccess();
+        return { tab, textLength };
+      }
+    }
+    const page = await readLanded(await registeredSession(session), await registeredSession(session), tabId, origin, { newDocument: true });
+    const ended = await stillReadable();
+    if (ended !== undefined) return ended;
+    await noteFullAccess();
+    return { tab: await describe(), page };
+  } catch (error) {
+    // The reply still shows the tab's title and address, which Full access may be what let through.
+    await noteFullAccess().catch(() => undefined);
+    return { tab, unread: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** The tab once `ready` holds for it or the deadline passed, or undefined when it closed. */
+async function waitForTab(
+  tabId: number,
+  deadline: number,
+  ready: (tab: chrome.tabs.Tab) => boolean,
+): Promise<chrome.tabs.Tab | undefined> {
+  for (;;) {
+    const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+    if (tab === undefined || ready(tab) || Date.now() >= deadline) return tab;
+    await sleep(OPENED_POLL_MS);
   }
 }
 

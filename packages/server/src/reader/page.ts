@@ -38,6 +38,8 @@ export interface ReadOptions {
    * is the baseline, and a `full` read right after it that finds nothing changed says so instead of sending it again.
    */
   load?: boolean | undefined;
+  /** A cap below `MAX_OUTPUT_CHARS`, for a reply that carries more than this read (an `act` that opened tabs). */
+  cap?: number | undefined;
 }
 
 /** Longest whole page a load's reply carries, in characters; a longer one is left to `read` or `find`. */
@@ -148,6 +150,8 @@ export async function formatRead(
     }
   }
 
+  const max = Math.min(MAX_OUTPUT_CHARS, options.cap ?? MAX_OUTPUT_CHARS);
+  const limit = (text: string, note?: string | undefined): string => limitTo(max, text, note);
   const find = options.find === '' ? undefined : options.find;
   // A search covers every node unless the caller narrowed it to the default view.
   const all = options.all ?? find !== undefined;
@@ -198,9 +202,9 @@ export async function formatRead(
   const whole = (): string => {
     if (all) return limit(`${header}\n${text}`);
     // Long lists of links or buttons give way to one line each where the page's text would otherwise get no room.
-    const room = MAX_OUTPUT_CHARS - NOTE_ROOM - header.length;
+    const room = max - NOTE_ROOM - header.length;
     const shown = options.ref === undefined && options.depth === undefined ? collapseGroups(view, room, budget) : { lines: rendered, folded: [] };
-    const within = withinBudget(shown.lines, budget, header.length, shown.folded);
+    const within = withinBudget(shown.lines, budget, header.length, shown.folded, max);
     return limit(`${header}\n${within.text}${depthNote}`, within.note);
   };
   // A load's reply carries the page only when it is short; otherwise the agent's read gets it.
@@ -232,7 +236,7 @@ export async function formatRead(
     return `${header}\n${set === undefined ? 'No changes since the last read.' : `${set} Nothing else changed.`}`;
   }
   if (diff.type === 'diff') {
-    const room = MAX_OUTPUT_CHARS - NOTE_ROOM - header.length;
+    const room = max - NOTE_ROOM - header.length;
     const changed = all ? { text: diff.content, note: undefined } : diffWithinBudget(diff.content, [kept, last?.kept ?? new Map()], budget, room);
     return limit(`${header}${set === undefined ? '' : `\n${set}`}\nChanged since the last read:\n${changed.text}`, changed.note);
   }
@@ -283,9 +287,10 @@ function withinBudget(
   budget: number,
   headerLength: number,
   folded: string[] = [],
+  max = MAX_OUTPUT_CHARS,
 ): { text: string; note: string | undefined } {
   const fixed = rendered.reduce((sum, item) => sum + (item.text ? 0 : item.line.length + 1), 0);
-  const room = Math.min(budget, Math.max(0, MAX_OUTPUT_CHARS - NOTE_ROOM - headerLength - fixed));
+  const room = Math.min(budget, Math.max(0, max - NOTE_ROOM - headerLength - fixed));
   const candidates = rendered.flatMap((item, index) => (item.text ? [{ index, size: item.line.length + 1, keep: item.keep, main: item.main }] : []));
   const shown = chooseText(candidates, room);
   const text = rendered
@@ -348,14 +353,15 @@ function leftOutNote(lines: string[], kind = ''): string {
   return `(${lines.length} ${kind}text lines left out, ${chars} characters${withLinks}: find searches them, read a ref for one part, all for the whole page)`;
 }
 
-const TRUNCATED = `\n… truncated at ${MAX_OUTPUT_CHARS} characters. Use find, a ref subtree or depth to read the rest.`;
+const truncated = (max: number): string => `\n… truncated at ${max} characters. Use find, a ref subtree or depth to read the rest.`;
 
-/** Cuts a reply at a line boundary so that all of it, notes included, fits the cap, and says how to get at the rest. */
-function limit(text: string, note?: string | undefined): string {
+/** Cuts a reply at a line boundary so that all of it, notes included, fits `max`, and says how to get at the rest. */
+function limitTo(max: number, text: string, note?: string | undefined): string {
   const tail = note === undefined ? '' : `\n${note}`;
-  if (text.length + tail.length <= MAX_OUTPUT_CHARS) return `${text}${tail}`;
-  const room = Math.max(0, MAX_OUTPUT_CHARS - tail.length - TRUNCATED.length);
+  if (text.length + tail.length <= max) return `${text}${tail}`;
+  const cutNote = truncated(max);
+  const room = Math.max(0, max - tail.length - cutNote.length);
   const cut = text.lastIndexOf('\n', room);
   const kept = text.slice(0, cut > 0 ? cut : room);
-  return `${kept}${TRUNCATED}${tail}`;
+  return `${kept}${cutNote}${tail}`;
 }

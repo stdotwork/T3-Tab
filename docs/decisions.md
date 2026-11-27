@@ -180,6 +180,15 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   showed the page says it is unchanged instead of resending it.
   The `tabs` description says a load replies with "the page", not "a short page": with "short", Haiku asked for `full`
   with the load and after every action, and paid for each page twice.
+- **An action says what it did, so no read follows it.** A click that opened a tab used to reply "No changes", and the
+  agent then listed tabs and read the new one. Now an `act` reply names every tab its steps opened that joined the
+  session, as a load's reply shows a tab: by origin and `[needs approval]` until the session may read it, and the first
+  one it may read with its page, under a load's rules (size, the Full access re-check, redaction). Full access counts
+  there only on the origin the batch was let through for, as it covers only the origin a load asked for; another origin
+  needs its site setting. The tab stays unapproved, and the session's current tab stays the one it acted on. `act` also
+  takes `find`, so the reply is the matching lines, as `read` with `find`. It does not take page JavaScript: a script
+  stays a `run_js` call, so an agent client's rule that asks before `run_js`, and a thread's approval label for `act`,
+  keep their meaning.
 - **`read` with an address never moves a tab.** It reads a tab of the session already at that address, or opens a new
   one, asking as `open` does. Going to the address in the current tab would load the owner's shared tab elsewhere, or
   load a page again and lose what was typed into it, from a call that reads like a read. Moving a tab stays with `tabs

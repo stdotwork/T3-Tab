@@ -15,6 +15,10 @@ export interface FakeTab {
   context: { id: number; uniqueId: string };
   /** Whether the tab is the active one of its window. Left out, the tab does not say. */
   active?: boolean;
+  /** What the browser says of its loading: `complete` unless set. */
+  status?: 'loading' | 'complete';
+  /** The address a tab that has not committed yet is loading. */
+  pendingUrl?: string;
 }
 
 type EventListener = (source: { tabId?: number }, method: string, params?: unknown) => void;
@@ -106,6 +110,17 @@ export class FakeBrowser {
     this.emit(tabId, 'Network.loadingFailed', { type: 'Document', errorText: 'net::ERR_BLOCKED_BY_CLIENT' });
     this.navigate(tabId, url, '');
     this.emit(tabId, 'Page.loadEventFired', {});
+  }
+
+  /** The top frame reports its document with a loader, as a real page does, so the worker knows the tab's main document. */
+  reportMainDocument(tabId: number, loaderId: string): void {
+    const tab = this.mustTab(tabId);
+    this.emit(tabId, 'Page.frameNavigated', { frame: { id: tab.frameId, url: tab.url, loaderId } });
+  }
+
+  /** The page opens a JavaScript alert, as the debugger reports it. */
+  openDialog(tabId: number, message: string): void {
+    this.emit(tabId, 'Page.javascriptDialogOpening', { type: 'alert', message, url: this.mustTab(tabId).url, defaultPrompt: '' });
   }
 
   /** A network request the page started, as the debugger reports it. */
@@ -239,6 +254,8 @@ export class FakeBrowser {
       groupId: tab.groupId,
       url: tab.url,
       title: tab.title,
+      status: tab.status ?? 'complete',
+      ...(tab.pendingUrl === undefined ? {} : { pendingUrl: tab.pendingUrl }),
       ...(tab.active === undefined ? {} : { active: tab.active, windowId: 1 }),
     } as chrome.tabs.Tab;
   }

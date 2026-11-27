@@ -1,9 +1,9 @@
 import type { PageReadResult } from '@t3-tab/protocol';
 
 import { restrictToOriginFrames, slimAxNodes, type FrameInfo, type FramePolicy } from './ax';
-import { DialogOpenError, documentEpoch, ensureAttached, forgetPrivateWorld, privateWorld, sendCommand, setRecoveryOrigin } from './cdp';
+import { CommandTimeoutError, DialogOpenError, documentEpoch, ensureAttached, forgetPrivateWorld, privateWorld, sendCommand, setRecoveryOrigin } from './cdp';
 import { redactPasswordValues, type FieldAnswer } from './password';
-import { knownSecrets, rememberSecrets, scrubReported } from './secret-text';
+import { knownSecrets, promoteAddressSecrets, rememberSecrets, scrubReported } from './secret-text';
 import { originOf } from './permissions';
 import type { StoredSession } from './sessions';
 import { resolveSessionTab } from './tabs';
@@ -37,6 +37,8 @@ export async function readPage(
       ownerOrigin: async (backendId) => await ownerFrameOrigin(tabId, backendId, frames.byId, expectedOrigin),
     } satisfies FramePolicy);
   const pageSecrets = await collectSecrets(tabId);
+  // A value of the tab's tree of openers that its address carries is one its page can echo.
+  promoteAddressSecrets(tabId, after.url ?? after.pendingUrl ?? '');
   // Before the tree is trimmed, so a value is taken whole and every node's relations are still there.
   const nodes = slimAxNodes(
     await redactPasswordValues(restricted, (backendIds) => inspectFields(tabId, backendIds), {
@@ -250,30 +252,51 @@ const COLLECT_SECRETS = `function () {
   return [...found];
 }`;
 
-/** The values of the page's secret fields, found without a node; empty when the browser cannot be asked. */
-async function collectSecrets(tabId: number): Promise<string[]> {
+/**
+ * The values of the page's secret fields, found without a node; empty when the browser cannot be asked. With `timeoutMs`
+ * each command (making T3-Tab's world on a new document included) is given up after that long, and the page's script is
+ * stopped after it.
+ */
+async function collectSecrets(tabId: number, timeoutMs?: number): Promise<string[]> {
   try {
-    const context = await privateWorld(tabId);
-    const answer = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.evaluate', {
-      expression: `(${COLLECT_SECRETS})()`,
-      contextId: context,
-      returnByValue: true,
-    });
+    const context = await (timeoutMs === undefined ? privateWorld(tabId) : privateWorld(tabId, timeoutMs));
+    const answer = await sendCommand<{ result?: { value?: unknown } }>(
+      tabId,
+      'Runtime.evaluate',
+      { expression: `(${COLLECT_SECRETS})()`, contextId: context, returnByValue: true, ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }) },
+      ...(timeoutMs === undefined ? [] : [timeoutMs + COLLECT_REPLY_MS]),
+    );
     const value = answer.result?.value;
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
   } catch (error) {
     if (error instanceof DialogOpenError) throw error;
-    forgetPrivateWorld(tabId);
+    // A slow page is not a lost world.
+    if (!(error instanceof CommandTimeoutError)) forgetPrivateWorld(tabId);
     return [];
   }
 }
 
-/** Remembers the values of the page's secret fields for the tab, as they are now. Never fails the call it is part of. */
+/** How long an `act` step waits for the page's secret values before it goes on without them. */
+const STEP_COLLECT_MS = 1_500;
+/** Room for the browser's answer once it stopped the script. */
+const COLLECT_REPLY_MS = 500;
+
+/**
+ * Remembers the values of the page's secret fields for the tab, as they are now, waiting at most `STEP_COLLECT_MS` (and
+ * the browser's answer) for them in all, whatever the commands it takes. Never fails the call it is part of.
+ */
 export async function rememberPageSecrets(tabId: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), STEP_COLLECT_MS + COLLECT_REPLY_MS);
+  });
   try {
-    rememberSecrets(tabId, await collectSecrets(tabId));
+    const values = await Promise.race([collectSecrets(tabId, STEP_COLLECT_MS), late]);
+    if (values !== undefined) rememberSecrets(tabId, values);
   } catch {
     // The read that follows asks again.
+  } finally {
+    clearTimeout(timer);
   }
 }
 

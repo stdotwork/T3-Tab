@@ -332,6 +332,134 @@ describe('act tool', () => {
   });
 });
 
+describe('act follow-through', () => {
+  const report: TabInfo = { id: 12, title: 'Annual report', url: 'http://localhost/report', active: false };
+  const reportPage = (): PageReadResult => page(signInPage(), { tab: 12, title: 'Annual report', url: 'http://localhost/report' });
+  const click = { tab: 7, steps: [{ action: 'click', ref: 'e3' }] };
+
+  async function afterRead(handlers: Handlers): Promise<ReturnType<typeof fakeBrowser>> {
+    const link = fakeBrowser({ 'page.read': () => page(signInPage()), ...handlers });
+    await runTool(link, SESSION, 'read', {});
+    return link;
+  }
+
+  it('names a tab a step opened on an origin the session may not read by its origin only, as tabs list does', async () => {
+    const hidden: TabInfo = { id: 12, title: '', url: 'http://other.test', active: false, needsApproval: true };
+    const link = await afterRead({ 'page.act': () => ({ ...page(signInPage()), opened: [{ tab: hidden }] }) });
+    expect(text(await runTool(link, SESSION, 'act', click))).toBe(
+      'tab 7\nNo changes since the last read.\nOpened tab 12 [needs approval] http://other.test',
+    );
+  });
+
+  it('gives a readable tab a step opened with its page, which is the baseline of the next read of that tab', async () => {
+    const link = await afterRead({
+      'page.act': () => ({ ...page(signInPage()), opened: [{ tab: report, page: reportPage() }] }),
+      'page.read': (params) => (params.tab === 12 ? reportPage() : page(signInPage())),
+    });
+    const reply = text(await runTool(link, SESSION, 'act', click));
+    expect(reply.split('\n').slice(0, 4)).toEqual([
+      'tab 7',
+      'No changes since the last read.',
+      'Opened tab 12: Annual report — http://localhost/report',
+      '# Sign in',
+    ]);
+    expect(reply).toContain('"Hello there"');
+    expect(reply).not.toContain('[current]');
+    expect(text(await runTool(link, SESSION, 'read', { tab: 12 }))).toBe('tab 12\nNo changes since the last read.');
+    // The browser is told not to read a page the reply could not carry whole, as for a load.
+    expect(link.calls.find((call) => call.startsWith('page.act'))).toContain('"skipReadOver":4000');
+  });
+
+  it('keeps the whole reply, the opened tab and its page included, within the cap', async () => {
+    const big = page(buttonPage(900), { tab: 7 });
+    const longReport = page(buttonPage(140), { tab: 12, title: 'Annual report', url: 'http://localhost/report' });
+    const link = fakeBrowser({
+      'page.read': (params) => (params.tab === 12 ? reportPage() : page(buttonPage(1))),
+      'page.act': () => ({ ...big, opened: [{ tab: report, page: longReport }, { tab: { ...report, id: 13 }, unread: 'x'.repeat(5_000) }], openedElsewhere: 3 }),
+    });
+    await runTool(link, SESSION, 'read', { tab: 7 });
+    const reply = text(await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'press', key: 'Enter' }] }));
+    expect(reply.length).toBeLessThanOrEqual(12_000);
+    expect(reply).toMatch(/… truncated at \d+ characters/);
+    expect(reply).toContain('Opened tab 12: Annual report — http://localhost/report\n# Buttons');
+    expect(reply).toContain('button "Button 140"');
+    expect(reply).toContain('Opened tab 13 Annual report');
+    expect(reply.endsWith('3 more tabs opened that this session does not hold.')).toBe(true);
+  });
+
+  it('keeps a failed batch within the cap too, its failure line included', async () => {
+    const big = page(buttonPage(900), { tab: 7 });
+    const longReport = page(buttonPage(140), { tab: 12, title: 'Annual report', url: 'http://localhost/report' });
+    const link = fakeBrowser({
+      'page.read': () => page(buttonPage(1)),
+      'page.act': () => ({
+        ...big,
+        failure: { step: 1, action: 'press', error: `navigation failed: ${'x'.repeat(5_000)}` },
+        opened: [{ tab: report, page: longReport }],
+      }),
+    });
+    await runTool(link, SESSION, 'read', { tab: 7 });
+    const error = await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'press', key: 'Enter' }] }).catch((caught: unknown) => caught);
+    const message = error instanceof Error ? error.message : '';
+    expect(message.startsWith('Step 1 (press) failed: navigation failed: xxx')).toBe(true);
+    expect(message.length).toBeLessThanOrEqual(12_000);
+    expect(message).toMatch(/… truncated at \d+ characters/);
+    expect(message).toContain('Opened tab 12: Annual report — http://localhost/report\n# Buttons');
+  });
+
+  it('says how to see a tab it could not read yet, and counts tabs opened outside the session', async () => {
+    const link = await afterRead({
+      'page.act': () => ({ ...page(signInPage()), opened: [{ tab: report }, { tab: { ...report, id: 13 }, unread: 'It is still loading.' }], openedElsewhere: 2 }),
+    });
+    expect(text(await runTool(link, SESSION, 'act', click)).split('\n').slice(2)).toEqual([
+      'Opened tab 12 Annual report — http://localhost/report',
+      'read it for the page.',
+      'Opened tab 13 Annual report — http://localhost/report',
+      'It is still loading.',
+      '2 more tabs opened that this session does not hold.',
+    ]);
+  });
+
+  it('names the tabs a failed batch opened too', async () => {
+    const link = await afterRead({
+      'page.act': () => ({ ...page(signInPage()), failure: { step: 1, action: 'click', error: 'boom' }, openedElsewhere: 1 }),
+    });
+    await expect(runTool(link, SESSION, 'act', click)).rejects.toThrow(/Step 1 \(click\) failed: boom[\s\S]*\n1 more tab opened that this session does not hold\.$/);
+  });
+
+  it('replies with only the lines find matches, leaving the diff baseline where it was', async () => {
+    const after = signInPage().map((node) => (node.id === '10' ? { ...node, name: 'Order placed: #58' } : node));
+    const link = await afterRead({ 'page.act': () => page(after) });
+    const found = text(await runTool(link, SESSION, 'act', { ...click, find: '#58' }));
+    expect(found).toContain('Order placed: #58');
+    expect(found).not.toContain('Changed since the last read');
+    expect(found).not.toContain('Sign in');
+    expect(link.calls.at(-1)).not.toContain('find');
+  });
+
+  it('answers a failed batch with its diff even when find was asked for', async () => {
+    const link = await afterRead({
+      'page.act': () => ({ ...page(signInPage()), failure: { step: 1, action: 'click', error: 'boom' } }),
+    });
+    await expect(runTool(link, SESSION, 'act', { ...click, find: 'nothing like this' })).rejects.toThrow(
+      'Step 1 (click) failed: boom\ntab 7\nNo changes since the last read.',
+    );
+  });
+
+  it('treats an empty find as none, so the reply is the diff with what the batch set left out', async () => {
+    const after = signInPage().map((node) => (node.id === '5' ? { ...node, value: 'grace@example.com' } : node));
+    const link = await afterRead({ 'page.act': () => page(after) });
+    const reply = text(await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'fill', ref: 'e2', text: 'grace@example.com' }], find: '' }));
+    expect(reply).toBe('tab 7\nSet e2. Nothing else changed.');
+  });
+
+  it('refuses an overlong find before asking the browser', async () => {
+    const link = await afterRead({});
+    await expect(runTool(link, SESSION, 'act', { ...click, find: 'x'.repeat(201) })).rejects.toThrow('Invalid arguments: find: at most 200 characters');
+    expect(link.calls.filter((call) => call.startsWith('page.act'))).toEqual([]);
+  });
+});
+
 describe('run_js tool', () => {
   it('returns a JSON result from the requested tab', async () => {
     const link = fakeBrowser({ 'page.eval': () => ({ value: { title: 'Test page', count: 2 } }) });

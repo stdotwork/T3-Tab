@@ -79,6 +79,17 @@ export async function checkAgentTools() {
         response.end();
         return;
       }
+      if (pathname === '/opener') {
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        response.end(
+          page(
+            'Opener',
+            `<a href="/landing" target="_blank">Same site report</a><button onclick="window.open('${urls.ask}/private')">Other site</button>` +
+              '<a href="/to-other" target="_blank">Redirected report</a><button onclick="window.open(\'\')">Blank</button><p id="state">ready</p>',
+          ),
+        );
+        return;
+      }
       if (pathname === '/same-site') {
         response.writeHead(302, { location: '/landing' });
         response.end();
@@ -572,6 +583,56 @@ export async function checkAgentTools() {
       assert(!acted.error, `act: ${acted.text}`);
       for (let attempt = 0; attempt < 40 && hits.allowed.filter((hit) => hit === '/submitted').length === before; attempt += 1) await sleep(50);
       assert(hits.allowed.filter((hit) => hit === '/submitted').length === before + 1, 'the click ran before the page enabled Send, so nothing was sent');
+      await closeTab(tab);
+    });
+
+    await check('an act reply names the tabs its steps opened, with the page only where a read would not ask', async () => {
+      const { tab, text: loaded } = await openAllowedPage('/opener');
+      const before = await tabCount();
+      const same = await call('act', { tab, steps: [{ action: 'click', ref: refFor(loaded, 'link "Same site report"') }] });
+      assert(!same.error, `act: ${same.text}`);
+      const sameId = Number(/^Opened tab (\d+): Landing — /m.exec(same.text)?.[1]);
+      assert(Number.isInteger(sameId) && same.text.includes('"landed"'), `the reply does not carry the opened tab and its page: ${same.text}`);
+      assert((await tabCount()) === before + 1, 'the click did not open one tab');
+      assert((await tabInfo(sameId)).groupId === (await tabInfo(tab)).groupId, 'the opened tab is not in the session group');
+      const again = await call('read', { tab: sameId });
+      assert(again.text === `tab ${sameId}\nNo changes since the last read.`, `the opened tab's page is not the read baseline: ${again.text}`);
+      const list = await call('tabs', {});
+      assert(new RegExp(`^${tab} \\[current\\]`, 'm').test(list.text), `the opener stopped being the current tab: ${list.text}`);
+
+      const hitsBefore = hits.ask.length;
+      const other = await call('act', { tab, steps: [{ action: 'click', ref: refFor(loaded, 'button "Other site"') }] });
+      assert(!other.error, `act: ${other.text}`);
+      const otherLine = other.text.split('\n').find((line) => line.startsWith('Opened tab'));
+      assert(otherLine !== undefined && /^Opened tab \d+ \[needs approval\] /.test(otherLine) && otherLine.endsWith(`] ${urls.ask}`), `an unapproved opened tab: ${other.text}`);
+      assert(!other.text.includes('private page') && !other.text.includes('/private'), `the reply shows more than the origin: ${other.text}`);
+      assert((await pending()).length === 0, 'naming the opened tab asked the owner');
+      const otherId = Number(/^Opened tab (\d+)/.exec(otherLine ?? '')?.[1]);
+      for (let attempt = 0; attempt < 40 && hits.ask.length === hitsBefore; attempt += 1) await sleep(50);
+      assert(hits.ask.includes('/private'), 'the window.open page never loaded');
+
+      // A tab that opens on this site and is redirected to another one shows only where it ended up.
+      const redirected = await call('act', { tab, steps: [{ action: 'click', ref: refFor(loaded, 'link "Redirected report"') }] });
+      const redirectedLine = redirected.text.split('\n').find((line) => line.startsWith('Opened tab'));
+      assert(redirectedLine?.endsWith(`[needs approval] ${urls.other}`), `a tab redirected to another origin: ${redirected.text}`);
+      assert(!redirected.text.includes('landed'), `the redirected tab's page is in the reply: ${redirected.text}`);
+      // A tab left on the blank page it was created with is said to be loading, not refused.
+      const blank = await call('act', { tab, steps: [{ action: 'click', ref: refFor(loaded, 'button "Blank"') }] });
+      assert(/^Opened tab \d+ \[needs approval\] about:blank\nIt is still loading\.$/m.test(blank.text), `a blank tab: ${blank.text}`);
+      assert((await pending()).length === 0, 'naming the opened tabs asked the owner');
+      const ids = [redirected.text, blank.text].map((reply) => Number(/^Opened tab (\d+)/m.exec(reply)?.[1]));
+      for (const id of [otherId, sameId, ...ids]) if (Number.isInteger(id)) await closeTab(id);
+      await closeTab(tab);
+    });
+
+    await check('an act with find replies with the matching lines only', async () => {
+      const { tab, text: loaded } = await openAllowedPage('/red');
+      const found = await call('act', { tab, steps: [{ action: 'click', ref: refFor(loaded, 'button "Press"') }], find: 'pressed' });
+      assert(!found.error && found.text.includes('pressed'), `act find: ${found.text}`);
+      assert(!found.text.includes('Changed since the last read'), `act find sent the diff too: ${found.text}`);
+      // The search set no baseline: the next read still shows the change.
+      const read = await call('read', { tab });
+      assert(read.text.includes('pressed'), `the read after an act find: ${read.text}`);
       await closeTab(tab);
     });
 

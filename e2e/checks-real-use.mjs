@@ -28,6 +28,21 @@ const LOGIN = '<form action="/secure" method="get"><label>Username <input name="
 const pages = (otherSite) => ({
   '/plain': page('Plain', '<button onclick="r.textContent=\'You clicked: Ok\'">Go</button><p id="r">before</p>'),
   '/login': page('Login', LOGIN),
+  // The same form sent into a new tab, with a field marked as the account's password.
+  '/login-new-tab': page(
+    'Login in a new tab',
+    '<form action="/secure" method="get" target="_blank"><label>Username <input name="username" type="text"></label><label>Password <input name="password" type="text" autocomplete="current-password"></label><button type="submit">Log in</button></form>',
+  ),
+  // A form sent by name into a tab a link opened earlier, so no new tab is reported when the form is sent.
+  '/login-named': page(
+    'Login into a named tab',
+    '<a href="/secure" target="results">Open results</a><form action="/secure" method="get" target="results"><label>Username <input name="username" type="text"></label><label>Password <input name="password" type="password"></label><button type="submit">Log in</button></form>',
+  ),
+  // A form a select's change sends into a new tab, with no click or key press.
+  '/select-new-tab': page(
+    'Plan in a new tab',
+    '<form action="/secure" method="get" target="_blank"><label>PIN <input name="pin" type="password"></label><label>Plan <select name="plan" onchange="this.form.submit()"><option>Free</option><option>Pro</option></select></label></form>',
+  ),
   '/secure': page('Secure', '<p>Signed in</p>'),
   // Every way a field hides what it holds: a password input under another ARIA role, and text fields a style masks.
   '/secrets': page(
@@ -566,6 +581,69 @@ export async function checkRealUse() {
       assert(!listed.error && !/GETLOGIN-SECRET-61/i.test(listed.text) && listed.text.includes('password=<redacted>'), `tabs list:\n${listed.text}`);
       const again = await read(tab, { all: true });
       assert(!/GETLOGIN-SECRET-61/i.test(again.text), `a later read shows the address:\n${again.text}`);
+    });
+
+    await check('a password a form sends into a new tab stays out of that tab\'s title and address in the act reply and tabs list', async () => {
+      const tab = await open('/login-new-tab');
+      const first = await read(tab);
+      const clicked = await act(
+        tab,
+        { action: 'fill', ref: refFor(first.text, 'textbox "Username"'), text: 'ada' },
+        { action: 'fill', ref: refFor(first.text, 'textbox "Password"'), text: 'NEWTAB!(SECRET)-73' },
+        { action: 'click', ref: refFor(first.text, 'button "Log in"') },
+      );
+      assert(!clicked.error, `click: ${clicked.text}`);
+      const opened = Number(/^Opened tab (\d+)/m.exec(clicked.text)?.[1]);
+      assert(Number.isInteger(opened), `the reply does not name the new tab:\n${clicked.text}`);
+      // A form encodes ! ( ) as %21 %28 %29, which encodeURIComponent leaves as they are.
+      assert((await js(opened, 'location.search')).includes('NEWTAB%21%28SECRET%29-73'), 'the form did not send the value in the new tab\'s address');
+      assert(!/NEWTAB/i.test(clicked.text) && clicked.text.includes('password=<redacted>'), `the act reply shows the address:\n${clicked.text}`);
+      const listed = await call('tabs', { action: 'list' });
+      assert(!listed.error && !/NEWTAB/i.test(listed.text) && listed.text.includes('password=<redacted>'), `tabs list:\n${listed.text}`);
+      await call('tabs', { action: 'close', tab: opened });
+    });
+
+    await check('a password a form sends by name into a tab opened earlier stays out of that tab\'s address in tabs list and a read', async () => {
+      const tab = await open('/login-named');
+      const first = await read(tab);
+      const linked = await act(tab, { action: 'click', ref: refFor(first.text, 'link "Open results"') });
+      const results = Number(/^Opened tab (\d+)/m.exec(linked.text)?.[1]);
+      assert(!linked.error && Number.isInteger(results), `the link did not open a tab:\n${linked.text}`);
+      const sent = await act(
+        tab,
+        { action: 'fill', ref: refFor(first.text, 'textbox "Password"'), text: 'NAMED-SECRET-91' },
+        { action: 'click', ref: refFor(first.text, 'button "Log in"') },
+      );
+      assert(!sent.error && !/^Opened tab/m.test(sent.text), `the form opened a tab instead of using "results":\n${sent.text}`);
+      let reached = false;
+      for (let tries = 0; tries < 50 && !reached; tries += 1) {
+        reached = (await js(results, 'location.search')).includes('NAMED-SECRET-91');
+        if (!reached) await sleep(100);
+      }
+      assert(reached, 'the form did not reach the named tab');
+      const listed = await call('tabs', { action: 'list' });
+      assert(!listed.error && !/NAMED-SECRET-91/i.test(listed.text) && listed.text.includes('password=<redacted>'), `tabs list:\n${listed.text}`);
+      const shown = await read(results);
+      assert(!shown.error && !/NAMED-SECRET-91/i.test(shown.text), `the read shows the address:\n${shown.text}`);
+      await call('tabs', { action: 'close', tab: results });
+    });
+
+    await check('a password a select\'s change sends into a new tab stays out of the act reply and tabs list', async () => {
+      const tab = await open('/select-new-tab');
+      const first = await read(tab);
+      const chosen = await act(
+        tab,
+        { action: 'fill', ref: refFor(first.text, 'textbox "PIN"'), text: 'SELECT-SECRET-44' },
+        { action: 'select', ref: refFor(first.text, 'combobox "Plan"'), text: 'Pro' },
+      );
+      assert(!chosen.error, `select: ${chosen.text}`);
+      const opened = Number(/^Opened tab (\d+)/m.exec(chosen.text)?.[1]);
+      assert(Number.isInteger(opened), `the reply does not name the new tab:\n${chosen.text}`);
+      assert((await js(opened, 'location.search')).includes('SELECT-SECRET-44'), 'the form did not send the value in the new tab\'s address');
+      assert(!/SELECT-SECRET-44/i.test(chosen.text) && chosen.text.includes('pin=<redacted>'), `the act reply shows the address:\n${chosen.text}`);
+      const listed = await call('tabs', { action: 'list' });
+      assert(!listed.error && !/SELECT-SECRET-44/i.test(listed.text) && listed.text.includes('pin=<redacted>'), `tabs list:\n${listed.text}`);
+      await call('tabs', { action: 'close', tab: opened });
     });
 
     await check('a page of 3,000 masked fields and 200 buttons named from them is read in bounded time with no value in it', async () => {

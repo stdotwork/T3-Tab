@@ -330,15 +330,20 @@ export async function waitForDocumentLoad(tabId: number, since: number, timeoutM
  * An isolated JavaScript world in the tab's main frame, for T3-Tab's own probes: it shares the DOM with the page, but
  * nothing kept there (a MutationObserver, a counter) is visible to the page's scripts.
  */
-export async function privateWorld(tabId: number): Promise<number> {
+export async function privateWorld(tabId: number, timeoutMs = COMMAND_TIMEOUT_MS): Promise<number> {
   await ensureAttached(tabId);
   const epoch = documentEpoch(tabId);
   const known = privateWorlds.get(tabId);
   if (known?.epoch === epoch) return known.contextId;
-  const tree = await sendCommand<{ frameTree?: { frame?: { id?: unknown } } }>(tabId, 'Page.getFrameTree');
+  const tree = await sendCommand<{ frameTree?: { frame?: { id?: unknown } } }>(tabId, 'Page.getFrameTree', undefined, timeoutMs);
   const frameId = tree.frameTree?.frame?.id;
   if (typeof frameId !== 'string') throw new Error('The browser did not report the page frame');
-  const world = await sendCommand<{ executionContextId?: unknown }>(tabId, 'Page.createIsolatedWorld', { frameId, worldName: 'probe' });
+  const world = await sendCommand<{ executionContextId?: unknown }>(
+    tabId,
+    'Page.createIsolatedWorld',
+    { frameId, worldName: 'probe' },
+    timeoutMs,
+  );
   if (typeof world.executionContextId !== 'number') throw new Error('The browser did not create a world');
   privateWorlds.set(tabId, { epoch, contextId: world.executionContextId });
   return world.executionContextId;

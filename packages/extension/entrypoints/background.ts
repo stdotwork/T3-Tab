@@ -14,13 +14,14 @@ import { defineBackground } from 'wxt/utils/define-background';
 
 import { initCdp } from '../src/cdp';
 import { handleDaemonReply, noteDaemonClose, noteDaemonProblem, noteSocketClosed, setDaemonConnector, setDaemonSocket } from '../src/daemon-link';
+import { forgetClosedTab, loadOpenerTrees, noteOpenedTab, replaceTreeTab } from '../src/opened-tabs';
 import { handlePanelRequest } from '../src/panel';
 import { isSidePanelSender } from '../src/panel-security';
 import { forgetPanelTab, keepPanelOnItsTab, openPanelOn } from '../src/panel-tab';
 import { originOf } from '../src/permissions';
 import { handleRequest } from '../src/requests';
 import { sessionStore } from '../src/runtime';
-import { forgetSecrets } from '../src/secret-text';
+import { forgetSecrets, noteCommitted, replaceSecretsTab } from '../src/secret-text';
 import { adoptPopupTab } from '../src/tabs';
 
 const browserId = crypto.randomUUID();
@@ -161,8 +162,9 @@ export default defineBackground(() => {
   });
   chrome.tabs.onCreated.addListener(() => reportTabCount());
   // The browser names the tab a new tab was opened from; only that tab's session may adopt it.
+  // An `act` batch on the opener says which tabs its steps opened, once they are adopted.
   chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
-    void adoptPopupTab(details.tabId, details.sourceTabId, sessionStore);
+    noteOpenedTab(details.sourceTabId, details.tabId, adoptPopupTab(details.tabId, details.sourceTabId, sessionStore));
   });
   chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
     if (change.url === undefined) return;
@@ -172,8 +174,17 @@ export default defineBackground(() => {
   chrome.tabs.onRemoved.addListener(reportTabClosed);
   chrome.tabs.onRemoved.addListener((tabId) => void sessionStore.forgetTab(tabId));
   chrome.tabs.onRemoved.addListener((tabId) => forgetSecrets(tabId));
+  chrome.tabs.onRemoved.addListener((tabId) => forgetClosedTab(tabId));
+  // After the listener above, so a tab that closes while the stored trees load is not added.
+  void loadOpenerTrees();
   chrome.tabs.onRemoved.addListener((tabId) => void forgetPanelTab(tabId).catch(() => undefined));
   chrome.tabs.onReplaced.addListener(reportTabCount);
+  chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+    replaceTreeTab(addedTabId, removedTabId);
+    replaceSecretsTab(addedTabId, removedTabId);
+  });
+  // A form sent into a tab of a tree of openers can have put any of the tree's secret values in the page it loaded.
+  chrome.webNavigation.onCommitted.addListener((details) => noteCommitted(details));
   chrome.tabs.onAttached.addListener(reportTabCount);
   chrome.tabs.onDetached.addListener(reportTabCount);
   chrome.runtime.onStartup.addListener(() => void connect());

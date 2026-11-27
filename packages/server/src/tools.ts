@@ -1,4 +1,5 @@
 import {
+  type ActFollowThrough,
   type ActStep,
   actStepRef,
   DEFAULT_SCREENSHOT_MAX_EDGE,
@@ -16,7 +17,7 @@ import type { BrowserLink } from './browser-link.js';
 import type { SetValue } from './reader/echo.js';
 import { truncate } from './reader/format.js';
 import { formatRead, LOAD_REPLY_MAX, MAX_OUTPUT_CHARS, type ReadOptions } from './reader/page.js';
-import { actParams, convertStep, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
+import { actParams, convertStep, MAX_FIND, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
 
 const MAX_TAB_TITLE = 80;
 const MAX_TAB_URL = 150;
@@ -163,6 +164,9 @@ async function runAct(
   session: ToolSession,
   params: z.infer<typeof actParams>,
 ): Promise<string> {
+  // Checked here, not in the schema the agent reads on every turn. An empty find is no find, as for `read`.
+  if ((params.find?.length ?? 0) > MAX_FIND) throw new Error(`Invalid arguments: find: at most ${MAX_FIND} characters`);
+  const find = params.find === '' ? undefined : params.find;
   const tabId = params.tab ?? (await currentTabId(link, session));
   const state = link.tabState(tabId);
   const steps = params.steps.map((flat) => {
@@ -182,16 +186,56 @@ async function runAct(
     steps,
     backendIds,
     epoch: state.currentEpoch,
+    skipReadOver: LOAD_REPLY_MAX,
   });
-  // A page paused on a dialog has nothing to read, and its refs and diff baselines stay as they were.
+  // A failed step is told first and the tabs the batch opened after its own reply, so that reply leaves both their room
+  // under the cap.
+  const failed =
+    page.failure === undefined ? '' : `Step ${page.failure.step} (${page.failure.action}) failed: ${truncate(page.failure.error, MAX_FAILURE)}\n`;
+  const cap = MAX_OUTPUT_CHARS - failed.length - openedRoom(page);
+  // A page paused on a dialog has nothing to read, and its refs and diff baselines stay as they were. A search, as `read`
+  // with `find` gives it, answers only a batch that went through.
   const reply =
-    page.dialog === undefined
-      ? await formatRead(state, session.id, page, { echoed: setValues(steps.slice(0, page.failure === undefined ? undefined : page.failure.step - 1)) })
-      : `tab ${page.tab}\n${page.dialog}`;
-  if (page.failure !== undefined) {
-    throw new Error(`Step ${page.failure.step} (${page.failure.action}) failed: ${page.failure.error}\n${reply}`);
+    page.dialog !== undefined
+      ? `tab ${page.tab}\n${page.dialog}`
+      : page.failure === undefined && find !== undefined
+        ? await formatRead(state, session.id, page, { find, cap })
+        : await formatRead(state, session.id, page, {
+            echoed: setValues(steps.slice(0, page.failure === undefined ? undefined : page.failure.step - 1)),
+            cap,
+          });
+  const whole = `${reply}${await openedLines(link, session, page)}`;
+  if (failed !== '') throw new Error(`${failed}${whole}`);
+  return whole;
+}
+
+/** Most characters of a failed step's error an `act` reply carries. */
+const MAX_FAILURE = 1_000;
+/** Most characters one opened tab's line takes when it comes without its page: the tab, and why it was not read. */
+const OPENED_LINE_MAX = 500;
+const OPENED_ELSEWHERE_MAX = 100;
+const MAX_UNREAD = 240;
+
+/** What the lines about a batch's opened tabs can take of the cap: each tab's line, and one page. */
+function openedRoom(page: ActFollowThrough): number {
+  const opened = page.opened ?? [];
+  const withPage = opened.some((tab) => tab.page !== undefined || tab.textLength !== undefined);
+  return opened.length * OPENED_LINE_MAX + (withPage ? LOAD_REPLY_MAX : 0) + ((page.openedElsewhere ?? 0) > 0 ? OPENED_ELSEWHERE_MAX : 0);
+}
+
+/**
+ * The tabs a batch opened, each as a load's reply shows it: by origin, with `[needs approval]`, until the session may
+ * read it, and the first readable one with its page, within the room `openedRoom` kept for them.
+ */
+async function openedLines(link: BrowserLink, session: ToolSession, page: ActFollowThrough): Promise<string> {
+  let lines = '';
+  for (const opened of page.opened ?? []) {
+    const shown = opened.unread === undefined ? opened : { ...opened, unread: truncate(opened.unread, MAX_UNREAD) };
+    lines += `\n${await loadReply(link, session, 'Opened', shown, { load: true })}`;
   }
-  return reply;
+  const elsewhere = page.openedElsewhere ?? 0;
+  if (elsewhere > 0) lines += `\n${elsewhere === 1 ? '1 more tab' : `${elsewhere} more tabs`} opened that this session does not hold.`;
+  return lines;
 }
 
 /** The values a batch's steps set on elements, for the reply to leave out what the page shows back. */

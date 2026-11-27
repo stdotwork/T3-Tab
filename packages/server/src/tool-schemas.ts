@@ -7,7 +7,9 @@ import { z } from 'zod';
 
 const tab = z.number().optional();
 const currentTab = 'Default: current tab.';
-const find = z.string().max(200).optional();
+/** Longest `find` text. */
+export const MAX_FIND = 200;
+const find = z.string().max(MAX_FIND).optional();
 
 export const tabsShape = {
   action: z.enum(['list', 'open', 'goto', 'back', 'forward', 'reload', 'switch', 'close']).optional().describe('Default list.'),
@@ -140,6 +142,8 @@ export const actShape = {
         'fill, select: ref, text. press: key (Enter, F5, Control+A). scroll: ref, or dx and dy. ' +
         `wait: ms (0-${MAX_WAIT_MS}) or text to wait for. A field check slower than 150 ms needs a wait step.`,
     ),
+  // Its length is checked when the call runs: the schema stays smaller.
+  find: z.string().optional().describe('Only matching lines.'),
 };
 
 export const runJsShape = {
