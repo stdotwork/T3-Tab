@@ -4,32 +4,31 @@ export interface PromptChoice {
   decision: PermissionDecision;
   /** Says exactly what the button grants. */
   label: string;
+  /** The rest of what a lasting choice means, under its label. */
+  detail?: string;
   danger?: true;
 }
 
-const ONCE: Record<PromptKind, string> = {
-  read: 'Allow reading once',
-  open: 'Allow opening once',
-  act: 'Allow acting once',
-  run_js: 'Allow JavaScript once',
-};
-
-const EVERYTHING = 'Always allow everything on this site (reading, opening, acting, JavaScript)';
-
-/** The buttons of a permission prompt. A read prompt's lasting choice grants reading only. */
+/**
+ * The buttons of a permission prompt. The ask line says what is asked, so the primary answer is plain "Allow once": it
+ * allows that one request. A read prompt's lasting choice grants reading only.
+ */
 export function promptChoices(tool: PromptKind): PromptChoice[] {
   return [
-    { decision: 'allow-once', label: ONCE[tool] },
+    { decision: 'allow-once', label: 'Allow once' },
     tool === 'read'
-      ? { decision: 'always-allow-read', label: 'Always allow reading on this site' }
-      : { decision: 'always-allow', label: EVERYTHING },
+      ? { decision: 'always-allow-read', label: 'Always allow reading on this site', detail: 'Opening, acting and JavaScript still ask' }
+      : { decision: 'always-allow', label: 'Always allow everything on this site', detail: 'Reading, opening, acting and JavaScript' },
     { decision: 'decline', label: 'Decline', danger: true },
   ];
 }
 
 export interface SiteChoice {
   setting: SitePermission;
+  /** Says exactly what the setting grants; read out and shown on hover. */
   label: string;
+  /** The word on the control. The row's status line spells out the setting in force. */
+  short: string;
 }
 
 /** What a site's setting lets sessions do, in words. */
@@ -39,15 +38,12 @@ export function siteStatus(setting: SitePermission): string {
   return 'Asks before reading, opening, acting and JavaScript';
 }
 
-/** The other settings a site can be switched to, each labelled with what it grants. */
-export function siteChoices(setting: SitePermission): SiteChoice[] {
-  const all: SiteChoice[] = [
-    { setting: 'ask', label: 'Ask every time' },
-    { setting: 'read', label: 'Always allow reading' },
-    { setting: 'allow', label: 'Always allow everything' },
-  ];
-  return all.filter((choice) => choice.setting !== setting);
-}
+/** The settings a site can have, each labelled with what it grants. */
+export const SITE_CHOICES: readonly SiteChoice[] = [
+  { setting: 'ask', label: 'Ask every time', short: 'Ask' },
+  { setting: 'read', label: 'Always allow reading', short: 'Reading' },
+  { setting: 'allow', label: 'Always allow everything', short: 'Everything' },
+];
 
 /**
  * True when showing `next` instead of `previous` moves a row that stays: a row went away above another, or

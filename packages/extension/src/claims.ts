@@ -39,12 +39,23 @@ interface StoredGrant {
   createdAt: number;
   /** A `launch` grant is a direct run's, whose later turns get new codes. A T3 thread's session keeps its tabs. */
   route: ClaimRoute;
+  /** The code the grant was first issued with, so the panel can bind a thread to it after the code was redeemed. */
+  code?: string;
+}
+
+/** A tab a session holds only through a grant that was withdrawn. */
+export interface RevokedShare {
+  sessionId: string;
+  tabId: number;
 }
 
 interface ClaimState {
   claims: Record<string, StoredClaim>;
   grants: Record<string, StoredGrant>;
 }
+
+/** A panel-launched T3 thread's conversation key is this prefix and the thread id. */
+export const T3_CONVERSATION_PREFIX = 't3:';
 
 const CLAIMS_KEY = 'claims';
 const GRANTS_KEY = 'claimGrants';
@@ -98,7 +109,7 @@ export class ClaimStore {
     const grant = crypto.randomUUID();
     await this.mutate((state) => {
       const now = Date.now();
-      state.grants[grant] = { tabs, sessionIds: [], createdAt: now, route };
+      state.grants[grant] = { tabs, sessionIds: [], createdAt: now, route, code };
       const ttl = route === 'launch' ? LAUNCH_CLAIM_TTL_MS : MESSAGE_CLAIM_TTL_MS;
       state.claims[code] = { tabs, createdAt: now, expiresAt: now + ttl, route, grant };
       newest(state.claims);
@@ -113,6 +124,49 @@ export class ClaimStore {
       const record = state.grants[grant];
       if (record !== undefined) record.conversationId = conversationId;
     });
+  }
+
+  /** Binds the grant a code was issued for to a conversation, also after the code was redeemed. False when no grant has the code. */
+  async bindByCode(code: string, conversationId: string): Promise<boolean> {
+    return await this.mutate((state) => {
+      const record = Object.values(state.grants).find((grant) => grant.code === code);
+      if (record === undefined) return false;
+      record.conversationId = conversationId;
+      return true;
+    });
+  }
+
+  /**
+   * True when the session was started from the side panel: a grant lists it (a direct run redeems its code before its
+   * first tool call), or `t3ThreadId`, the T3 thread the daemon proved it runs for, is one the panel launched. Everything
+   * else reached for the tools by itself. A panel-launched T3 agent that opens a tab before it redeems its code, or whose
+   * thread could not be proven, is taken for self-started until its claim arrives.
+   */
+  async startedFromPanel(sessionId: string, t3ThreadId?: string): Promise<boolean> {
+    await mutation;
+    const { grants } = await this.read();
+    const thread = t3ThreadId === undefined || t3ThreadId === '' ? undefined : `${T3_CONVERSATION_PREFIX}${t3ThreadId}`;
+    return Object.values(grants).some(
+      (grant) => grant.sessionIds.includes(sessionId) || (thread !== undefined && grant.conversationId === thread),
+    );
+  }
+
+  /**
+   * The T3 threads whose Full access this session needs: `proven`, the thread the daemon showed its process runs for,
+   * and every thread its grants are bound to. Undefined when it has neither, and for any grant of a direct run. A code
+   * the panel has not bound yet names no thread, so it counts against a session only when nothing proves its thread.
+   */
+  async t3ThreadsOf(sessionId: string, proven?: string): Promise<string[] | undefined> {
+    await mutation;
+    const { grants } = await this.read();
+    const held = Object.values(grants).filter((grant) => grant.sessionIds.includes(sessionId));
+    const threads = new Set<string>(proven === undefined ? [] : [proven]);
+    for (const { conversationId } of held) {
+      if (conversationId === undefined && proven !== undefined) continue;
+      if (conversationId?.startsWith(T3_CONVERSATION_PREFIX) !== true) return undefined;
+      threads.add(conversationId.slice(T3_CONVERSATION_PREFIX.length));
+    }
+    return threads.size === 0 ? undefined : [...threads];
   }
 
   /**
@@ -130,9 +184,25 @@ export class ClaimStore {
     });
   }
 
-  async revoke(code: string): Promise<void> {
-    await this.mutate((state) => {
+  /**
+   * Withdraws a code. A grant no thread was ever bound to goes with it, even if an agent already redeemed the code,
+   * and the shares that only it gave are returned for the caller to take back.
+   */
+  async revoke(code: string): Promise<RevokedShare[]> {
+    return await this.mutate((state) => {
+      const grantId = state.claims[code]?.grant ?? Object.entries(state.grants).find(([, grant]) => grant.code === code)?.[0];
       delete state.claims[code];
+      if (grantId === undefined) return [];
+      const grant = state.grants[grantId];
+      if (grant === undefined || grant.conversationId !== undefined) return [];
+      delete state.grants[grantId];
+      for (const [other, claim] of Object.entries(state.claims)) if (claim.grant === grantId) delete state.claims[other];
+      const others = Object.values(state.grants);
+      return grant.sessionIds.flatMap((sessionId) =>
+        grant.tabs
+          .filter(({ tabId }) => !others.some((entry) => entry.sessionIds.includes(sessionId) && entry.tabs.some((tab) => tab.tabId === tabId)))
+          .map(({ tabId }) => ({ sessionId, tabId })),
+      );
     });
   }
 
@@ -196,7 +266,10 @@ export class ClaimStore {
     const { grants } = await this.read();
     const tabs: Record<string, ClaimTab[]> = {};
     for (const grant of Object.values(grants)) {
-      if (grant.conversationId !== undefined && !Object.hasOwn(tabs, grant.conversationId)) tabs[grant.conversationId] = grant.tabs;
+      if (grant.conversationId === undefined) continue;
+      // A T3 thread can hold several grants, one for each message that shared a tab.
+      const held = tabs[grant.conversationId] ?? [];
+      tabs[grant.conversationId] = [...held, ...grant.tabs.filter((tab) => !held.some((entry) => entry.tabId === tab.tabId))];
     }
     return tabs;
   }
@@ -265,6 +338,7 @@ export class ClaimStore {
         sessionIds: sessionIds.filter((value): value is string => typeof value === 'string'),
         createdAt,
         route: route === 'message' ? 'message' : 'launch',
+        ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
         ...(typeof conversationId === 'string' ? { conversationId } : {}),
       };
     }

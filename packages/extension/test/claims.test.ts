@@ -63,6 +63,41 @@ describe('ClaimStore', () => {
   });
 });
 
+describe('the T3 threads a session needs Full access from', () => {
+  const held = async (conversationId?: string): Promise<ClaimStore> => {
+    browser.addTab({ id: 1, url: 'https://a.test/page' });
+    const sessions = new SessionStore();
+    await sessions.register({ id: 'sess', name: 'Sess' });
+    const claims = new ClaimStore();
+    const grant = await claims.issue('code', [{ tabId: 1, origin: 'https://a.test' }]);
+    if (conversationId !== undefined) await claims.bindConversation(grant, conversationId);
+    await claimTabs(claims, sessions, 'sess', 'code');
+    return claims;
+  };
+
+  it('is the proven thread for a session with no grants, and nothing without one', async () => {
+    const claims = new ClaimStore();
+    expect(await claims.t3ThreadsOf('sess', 'th-a')).toEqual(['th-a']);
+    expect(await claims.t3ThreadsOf('sess')).toBeUndefined();
+  });
+
+  it('needs the proven thread and every thread a grant is bound to', async () => {
+    const claims = await held('t3:th-b');
+    expect((await claims.t3ThreadsOf('sess', 'th-a'))?.sort()).toEqual(['th-a', 'th-b']);
+  });
+
+  it('lets a proven thread hold a code not bound yet, which alone never counts', async () => {
+    const claims = await held();
+    expect(await claims.t3ThreadsOf('sess', 'th-a')).toEqual(['th-a']);
+    expect(await claims.t3ThreadsOf('sess')).toBeUndefined();
+  });
+
+  it("never counts a session holding a direct run's grant", async () => {
+    const claims = await held('direct-1');
+    expect(await claims.t3ThreadsOf('sess', 'th-a')).toBeUndefined();
+  });
+});
+
 describe('claimTabs', () => {
   async function setup(): Promise<{ claims: ClaimStore; sessions: SessionStore }> {
     const sessions = new SessionStore();
@@ -327,7 +362,7 @@ describe("a conversation's shared tabs", () => {
   it('takes a tab back between turns, after the last turn has disconnected', async () => {
     const { claims, sessions } = await setup();
     await claimTabs(claims, sessions, 'turn-1', 'first', 'launch');
-    // The turn ended: its MCP session is gone, so the session list has no control for it any more.
+    // The turn ended: its MCP session is gone, so the panel has no control for it any more.
     await sessions.unregister('turn-1');
     await removeConversationTab(claims, sessions, 'conversation', 1);
     expect(await claims.conversationTabs()).toEqual({ conversation: [{ tabId: 2, origin: 'https://b.test' }] });

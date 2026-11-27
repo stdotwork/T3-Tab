@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 
-import { EXTENSION_ORIGIN } from '@t3-tab/protocol';
+import { EXTENSION_ORIGINS } from '@t3-tab/protocol';
 
 export type ConnectionRole = 'extension' | 'control';
 
@@ -15,7 +15,7 @@ export function tokensMatch(expected: string, provided: string | undefined): boo
 }
 
 export function isExtensionOrigin(origin: string | undefined): boolean {
-  return origin === EXTENSION_ORIGIN;
+  return origin !== undefined && EXTENSION_ORIGINS.includes(origin);
 }
 
 /**

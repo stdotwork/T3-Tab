@@ -3,18 +3,19 @@ import { describe, expect, it } from 'vitest';
 import { restrictToOriginFrames, slimAxNodes, type FramePolicy } from '../src/ax.js';
 
 describe('slimming the accessibility tree', () => {
-  it('keeps role, name, value, backend id, children and the flags the reader prints', () => {
+  it('keeps role, name, value, backend id, children and the properties the reader uses', () => {
     const nodes = slimAxNodes([
       {
         nodeId: '5',
         ignored: false,
-        role: { type: 'role', value: 'checkbox' },
+        role: { type: 'role', value: 'combobox' },
         name: { type: 'computedString', value: 'Agree' },
         value: { type: 'string', value: 'on' },
         properties: [
           { name: 'checked', value: { type: 'tristate', value: 'true' } },
           { name: 'focusable', value: { type: 'booleanOrUndefined', value: true } },
           { name: 'level', value: { type: 'integer', value: 2 } },
+          { name: 'live', value: { type: 'token', value: 'polite' } },
         ],
         childIds: ['6', 7],
         backendDOMNodeId: 42,
@@ -24,13 +25,28 @@ describe('slimming the accessibility tree', () => {
     expect(nodes).toEqual([
       {
         id: '5',
-        role: 'checkbox',
+        role: 'combobox',
         name: 'Agree',
         value: 'on',
-        props: { checked: 'true', level: 2 },
+        props: { checked: 'true', level: 2, live: 'polite' },
         children: ['6'],
         backendId: 42,
       },
+    ]);
+  });
+
+  it('keeps the value only of the roles the reader prints one for', () => {
+    const node = (role: string) => ({ nodeId: role, role: { value: role }, name: { value: 'N' }, value: { value: '4242' }, childIds: [] });
+    const kept = slimAxNodes(['textbox', 'searchbox', 'combobox', 'spinbutton', 'slider', 'button', 'checkbox', 'RootWebArea'].map(node));
+    expect(kept.map((item) => [item.role, item.value])).toEqual([
+      ['textbox', '4242'],
+      ['searchbox', '4242'],
+      ['combobox', '4242'],
+      ['spinbutton', '4242'],
+      ['slider', '4242'],
+      ['button', undefined],
+      ['checkbox', undefined],
+      ['RootWebArea', undefined],
     ]);
   });
 
@@ -46,9 +62,32 @@ describe('slimming the accessibility tree', () => {
       { role: { value: 'button' } },
       { nodeId: '1', role: { value: 'textbox' }, name: { value: 'n'.repeat(1_000) }, value: { value: 'v'.repeat(1_000) } },
     ]);
-    expect(node?.name).toHaveLength(300);
+    // A name this long is kept whole, so `find` can reach all of it.
+    expect(node?.name).toHaveLength(1_000);
     expect(node?.value).toHaveLength(200);
+    expect(node?.value?.endsWith('…')).toBe(true);
     expect(slimAxNodes('not a list')).toEqual([]);
+  });
+
+  it('marks a name it cuts, and stops keeping long names once a page has sent a lot of text', () => {
+    const long = { value: 'n'.repeat(9_000) };
+    const nodes = slimAxNodes(Array.from({ length: 260 }, (_, index) => ({ nodeId: String(index), role: { value: 'StaticText' }, name: long })));
+    expect(nodes[0]?.name).toHaveLength(8_000);
+    expect(nodes[0]?.name.endsWith('…')).toBe(true);
+    expect(nodes.at(-1)?.name).toHaveLength(300);
+    expect(nodes.at(-1)?.name.endsWith('…')).toBe(true);
+  });
+
+  it('keeps the address of a link only, and drops the line-wrap boxes the reader never prints', () => {
+    const url = { name: 'url', value: { type: 'url', value: 'https://a.test/x' } };
+    const nodes = slimAxNodes([
+      { nodeId: '1', role: { value: 'link' }, name: { value: 'Go' }, properties: [url] },
+      { nodeId: '2', role: { value: 'image' }, name: { value: 'Pic' }, properties: [url] },
+      { nodeId: '3', role: { value: 'InlineTextBox' }, name: { value: 'Go' } },
+    ]);
+    expect(nodes.map((node) => node.id)).toEqual(['1', '2']);
+    expect(nodes[0]?.props?.url).toBe('https://a.test/x');
+    expect(nodes[1]?.props).toBeUndefined();
   });
 });
 

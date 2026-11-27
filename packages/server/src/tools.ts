@@ -1,20 +1,32 @@
 import {
+  type ActAction,
+  type ActFollowThrough,
+  type ActStep,
+  type ActStepSummary,
   actStepRef,
   DEFAULT_SCREENSHOT_MAX_EDGE,
+  NO_TAB_MESSAGE,
+  type PageReadResult,
   type TabInfo,
+  type TabLoadResult,
+  type TabNavigation,
   type ToolContent,
   type ToolMethod,
   type ToolSession,
+  namedKey,
 } from '@t3-tab/protocol';
 import type { z } from 'zod';
 
 import type { BrowserLink } from './browser-link.js';
-import { truncate } from './reader/format.js';
-import { formatRead, MAX_OUTPUT_CHARS } from './reader/page.js';
-import { actParams, convertStep, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
+import type { SetValue } from './reader/echo.js';
+import { type RenderedLine, truncate } from './reader/format.js';
+import type { RefTable } from './reader/refs.js';
+import { formatRead, LOAD_REPLY_MAX, MAX_OUTPUT_CHARS, type ReadOptions, searchView } from './reader/page.js';
+import { actParams, convertStep, MAX_FIND, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
 
 const MAX_TAB_TITLE = 80;
 const MAX_TAB_URL = 150;
+const NAVIGATED: Record<TabNavigation, string> = { goto: 'Loaded', back: 'Back in', forward: 'Forward in', reload: 'Reloaded' };
 
 /** Runs one browser tool call and returns what the agent sees. Throws a readable message on a bad call or a failure. */
 export async function runTool(
@@ -44,15 +56,29 @@ async function runTabs(
 ): Promise<string> {
   // The owner's tabs for a thread started from the side panel; its first message carries the code.
   if (params.claim !== undefined) await link.request(session, 'session.claim', { code: params.claim, route: 'message' });
-  switch (params.action ?? 'list') {
+  const action = params.action ?? 'list';
+  switch (action) {
     case 'list': {
       const { tabs } = await link.request(session, 'tabs.list', {});
-      return tabs.length === 0 ? 'No tabs.' : tabs.map(tabLine).join('\n');
+      return tabs.length === 0 ? NO_TAB_MESSAGE : tabs.map(tabLine).join('\n');
     }
     case 'open': {
       if (params.url === undefined) throw new Error('open needs a url');
-      const { tab } = await link.request(session, 'tabs.open', { url: params.url });
-      return `Opened tab ${tabLine(tab)}`;
+      const opened = await link.request(session, 'tabs.open', { url: params.url, ...skipLongPage(params.find) });
+      return await loadReply(link, session, 'Opened', opened, { find: params.find, load: true });
+    }
+    case 'goto':
+    case 'back':
+    case 'forward':
+    case 'reload': {
+      if (action === 'goto' && params.url === undefined) throw new Error('goto needs a url');
+      const moved = await link.request(session, 'tabs.navigate', {
+        action,
+        ...(params.tab === undefined ? {} : { tab: params.tab }),
+        ...(action !== 'goto' || params.url === undefined ? {} : { url: params.url }),
+        ...skipLongPage(params.find),
+      });
+      return await loadReply(link, session, moved.opened === true ? 'Opened' : NAVIGATED[action], moved, { find: params.find, load: true });
     }
     case 'switch': {
       if (params.tab === undefined) throw new Error('switch needs a tab id');
@@ -69,8 +95,56 @@ async function runTabs(
 }
 
 async function runRead(link: BrowserLink, session: ToolSession, params: z.infer<typeof readParams>): Promise<string> {
+  const { url, ...options } = params;
+  if (url !== undefined) {
+    // Refs belong to the document they came from, and a new tab is a new document.
+    if (options.ref !== undefined) throw new Error('Invalid arguments: ref does not go with url');
+    // A tab of the session already at the address is read as it is; no tab is ever moved or loaded again.
+    const found = await link.request(session, 'tabs.open', { url, reuse: true, ...(params.tab === undefined ? {} : { tab: params.tab }) });
+    if (found.reused === true && found.page !== undefined) return await formatRead(link.tabState(found.page.tab), session.id, found.page, options);
+    return await loadReply(link, session, 'Opened', found, options);
+  }
   const page = await link.request(session, 'page.read', params.tab === undefined ? {} : { tab: params.tab });
-  return await formatRead(link.tabState(page.tab), session.id, page, params);
+  return await formatRead(link.tabState(page.tab), session.id, page, options);
+}
+
+/**
+ * The reply to a page loaded by `tabs` (and to `read` with a url, which is a read): the page as a `read` with the same
+ * options would show it, which is also the baseline the next read is diffed against. For a `tabs` load, a page over
+ * `LOAD_REPLY_MAX` characters is left to the `read` an agent sends with it. A tab a redirect took to an origin nobody
+ * approved shows only its origin, and how to ask.
+ */
+async function loadReply(
+  link: BrowserLink,
+  session: ToolSession,
+  verb: string,
+  loaded: TabLoadResult,
+  options: ReadOptions,
+): Promise<string> {
+  if (loaded.page === undefined) {
+    if (loaded.textLength !== undefined) {
+      const size = loaded.textLength.toLocaleString('en-US');
+      return `${verb} tab ${tabLine(loaded.tab)}${redirectNote(loaded)}\n(${size} characters of text, too long for this reply: read shows it, find searches it.)`;
+    }
+    const why = loaded.unread === undefined ? '' : `\n${loaded.unread}`;
+    const note = redirectNote(loaded) || (loaded.tab.needsApproval === true || why !== '' ? '' : '\nread it for the page.');
+    return `${verb} tab ${tabLine(loaded.tab)}${note}${why}`;
+  }
+  const read = await formatRead(link.tabState(loaded.page.tab), session.id, loaded.page, options);
+  // The read's header is `tab <id>` and its title and address; the reply marks the current tab as `tabs list` does.
+  const header = `tab ${loaded.page.tab}`;
+  const marked = loaded.tab.active && read.startsWith(header) ? `${header} [current]${read.slice(header.length)}` : read;
+  const lineEnd = marked.indexOf('\n');
+  const [first, rest] = lineEnd === -1 ? [marked, ''] : [marked.slice(0, lineEnd), marked.slice(lineEnd)];
+  return `${verb} ${first}${redirectNote(loaded)}${rest}`;
+}
+
+/**
+ * A load without `find` replies with the whole page only up to `LOAD_REPLY_MAX`, so the browser need not read a page whose
+ * text alone is longer: the agent reads it anyway.
+ */
+function skipLongPage(find: string | undefined): { skipReadOver?: number } {
+  return find === undefined ? { skipReadOver: LOAD_REPLY_MAX } : {};
 }
 
 async function runScreenshot(
@@ -95,6 +169,9 @@ async function runAct(
   session: ToolSession,
   params: z.infer<typeof actParams>,
 ): Promise<string> {
+  // Checked here, not in the schema the agent reads on every turn. An empty find is no find, as for `read`.
+  if ((params.find?.length ?? 0) > MAX_FIND) throw new Error(`Invalid arguments: find: at most ${MAX_FIND} characters`);
+  const find = params.find === '' ? undefined : params.find;
   const tabId = params.tab ?? (await currentTabId(link, session));
   const state = link.tabState(tabId);
   const steps = params.steps.map((flat) => {
@@ -102,24 +179,187 @@ async function runAct(
     if (typeof step === 'string') throw new Error(`Invalid arguments: ${step}`);
     return step;
   });
+  const unknown = steps.map(actStepRef).filter((ref): ref is string => ref !== undefined && state.refTable.backendIdOf(ref) === undefined);
+  if (unknown.length > 0) throw new Error(await unknownRefError(link, session, tabId, unknown));
   const backendIds = steps.map((step) => {
     const ref = actStepRef(step);
-    if (ref === undefined) return null;
-    const backendId = state.refTable.backendIdOf(ref);
-    if (backendId === undefined) throw new Error(`Unknown ref ${ref}: read the page again`);
-    return backendId;
+    return ref === undefined ? null : (state.refTable.backendIdOf(ref) ?? null);
   });
   const page = await link.request(session, 'page.act', {
     tab: tabId,
     steps,
     backendIds,
     epoch: state.currentEpoch,
+    skipReadOver: LOAD_REPLY_MAX,
+    summary: actSummary(params.steps, state.refTable),
   });
-  const reply = await formatRead(state, session.id, page, {});
-  if (page.failure !== undefined) {
-    throw new Error(`Step ${page.failure.step} (${page.failure.action}) failed: ${page.failure.error}\n${reply}`);
+  // A failed step is told first and the tabs the batch opened after its own reply, so that reply leaves both their room
+  // under the cap.
+  const failed =
+    page.failure === undefined ? '' : `Step ${page.failure.step} (${page.failure.action}) failed: ${truncate(page.failure.error, MAX_FAILURE)}\n`;
+  const cap = MAX_OUTPUT_CHARS - failed.length - openedRoom(page);
+  // A page paused on a dialog has nothing to read, and its refs and diff baselines stay as they were. A search, as `read`
+  // with `find` gives it, answers only a batch that went through.
+  const reply =
+    page.dialog !== undefined
+      ? `tab ${page.tab}\n${page.dialog}`
+      : page.failure === undefined && find !== undefined
+        ? await formatRead(state, session.id, page, { find, cap })
+        : await formatRead(state, session.id, page, {
+            echoed: setValues(steps.slice(0, page.failure === undefined ? undefined : page.failure.step - 1)),
+            act: true,
+            cap,
+          });
+  const whole = `${reply}${await openedLines(link, session, page)}`;
+  if (failed !== '') throw new Error(`${failed}${whole}`);
+  return whole;
+}
+
+/**
+ * What an `act` batch does, for the owner's prompt: each step's action, the role and name the session's reads printed for
+ * its ref, and a key only when it names one. Nothing the agent wrote: not the text a step types, the option it picks, or a
+ * key that is a character.
+ */
+export function actSummary(steps: ReadonlyArray<{ action: ActAction; ref?: string | undefined; key?: string | undefined }>, refs: RefTable): ActStepSummary[] {
+  return steps.map((step) => {
+    const target = step.ref === undefined ? undefined : refs.targetOf(step.ref);
+    const key = step.action === 'press' && step.key !== undefined ? namedKey(step.key) : undefined;
+    return { action: step.action, ...(target === undefined ? {} : { target }), ...(key === undefined ? {} : { key }) };
+  });
+}
+
+/** What a ref an agent made up looks like: anything but the `e12` a read prints. */
+const REF_SHAPE = /^e\d+$/;
+/** Most element lines listed for one made-up ref, and most made-up refs looked up in one batch. */
+const GUESS_LINES = 5;
+const GUESSES = 3;
+/** Most characters of the elements listed for made-up refs. */
+const GUESS_MAX = 2_000;
+/** Most characters of a made-up ref the error repeats. */
+const GUESS_NAME = 100;
+/** An element's line: its ref, what comes before the first quoted string, and that string (its name, unless a value). */
+const ELEMENT_LINE = /^(e\d+) ([^"]*)("(?:[^"\\]|\\.)*")?/;
+/**
+ * A link written into a line of text once the line's JSON is read: `[name](e12 → /path)`, its name with `[`, `]` and `\`
+ * escaped by a backslash, and an opening bracket of its own (after an even run of backslashes).
+ */
+const TEXT_LINK = /(?<!\\)(?:\\\\)*\[((?:[^\\[\]]|\\.)*)\]\((e\d+)(?: → ([^)]*))?\)/g;
+
+interface RefCandidate {
+  ref: string;
+  name: string;
+  line: string;
+}
+
+/** Every element of a search view with its ref and name, links written into text included, once each, in page order. */
+function refCandidates(lines: RenderedLine[]): RefCandidate[] {
+  const found = new Map<string, RefCandidate>();
+  for (const item of lines) {
+    const line = item.line.trim();
+    if (item.text) {
+      const text = jsonText(line);
+      for (const [, quoted = '', ref = '', address] of text.matchAll(TEXT_LINK)) {
+        const name = quoted.replace(/\\([\\[\]])/g, '$1');
+        if (!found.has(ref)) found.set(ref, { ref, name, line: `${ref} link ${JSON.stringify(name)}${address === undefined ? '' : ` → ${address}`}` });
+      }
+      continue;
+    }
+    const element = ELEMENT_LINE.exec(line);
+    if (element === null) continue;
+    const [, ref = '', before = '', quoted] = element;
+    const name = quoted !== undefined && !before.endsWith('=') ? jsonText(quoted) : '';
+    if (!found.has(ref)) found.set(ref, { ref, name, line });
   }
-  return reply;
+  return [...found.values()];
+}
+
+/** A quoted string of a printed line as its text, or nothing when it is not one. */
+function jsonText(quoted: string): string {
+  try {
+    const value: unknown = JSON.parse(quoted);
+    return typeof value === 'string' ? value : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Why a batch with a ref the session does not hold ran nothing. A ref that is not shaped like one (`ref: "State"`, a name)
+ * is looked up on the tab as it is now, by the elements' names (unescaped) and their lines, and the elements that match
+ * are listed with their refs, those named exactly so first, so the agent can send the batch again without a separate
+ * read. That read never asks the owner: when the page needs a prompt to be read, or cannot be read, the error says only
+ * what refs are. A page replaced since the session's refs were made lists nothing, because the new refs would start
+ * again from e1 and an old ref sent again would name another element.
+ */
+async function unknownRefError(link: BrowserLink, session: ToolSession, tabId: number, refs: string[]): Promise<string> {
+  const guesses = [...new Set(refs.filter((ref) => !REF_SHAPE.test(ref)))].slice(0, GUESSES);
+  if (guesses.length === 0) return `Unknown ref ${refs[0]}: read the page again`;
+  const head = `Unknown ref ${guesses.map(quoteGuess).join(', ')}: refs look like e12 and come from a read. Nothing was run.`;
+  let page: PageReadResult;
+  try {
+    page = await link.request(session, 'page.read', { tab: tabId, ifReadable: true });
+  } catch {
+    return `${head} Read the page for its refs.`;
+  }
+  const state = link.tabState(page.tab);
+  if (state.refTable.size > 0 && page.epoch !== state.currentEpoch) {
+    return `${head} The page was replaced since the last read, so the refs from before are gone: read it again.`;
+  }
+  const { header, lines } = searchView(state, session.id, page);
+  const candidates = refCandidates(lines);
+  const parts = guesses.map((guess) => {
+    const needle = guess.toLowerCase();
+    const matching = candidates.filter((item) => item.name.toLowerCase().includes(needle) || item.line.toLowerCase().includes(needle));
+    if (matching.length === 0) return `No element matches ${quoteGuess(guess)}.`;
+    const exact = matching.filter((item) => item.name.toLowerCase() === needle);
+    const listed = [...exact, ...matching.filter((item) => !exact.includes(item))].slice(0, GUESS_LINES);
+    const more = matching.length - listed.length;
+    return [`Elements that match ${quoteGuess(guess)}:`, ...listed.map((item) => item.line), ...(more > 0 ? [`(${more} more: read with find lists them.)`] : [])].join('\n');
+  });
+  return truncate(`${head}\n${header}\n${parts.join('\n')}`, GUESS_MAX);
+}
+
+/** A made-up ref as the error names it, held to a line. */
+const quoteGuess = (guess: string): string => JSON.stringify(truncate(guess, GUESS_NAME));
+
+/** Most characters of a failed step's error an `act` reply carries. */
+const MAX_FAILURE = 1_000;
+/** Most characters one opened tab's line takes when it comes without its page: the tab, and why it was not read. */
+const OPENED_LINE_MAX = 500;
+const OPENED_ELSEWHERE_MAX = 100;
+const MAX_UNREAD = 240;
+
+/** What the lines about a batch's opened tabs can take of the cap: each tab's line, and one page. */
+function openedRoom(page: ActFollowThrough): number {
+  const opened = page.opened ?? [];
+  const withPage = opened.some((tab) => tab.page !== undefined || tab.textLength !== undefined);
+  return opened.length * OPENED_LINE_MAX + (withPage ? LOAD_REPLY_MAX : 0) + ((page.openedElsewhere ?? 0) > 0 ? OPENED_ELSEWHERE_MAX : 0);
+}
+
+/**
+ * The tabs a batch opened, each as a load's reply shows it: by origin, with `[needs approval]`, until the session may
+ * read it, and the first readable one with its page, within the room `openedRoom` kept for them.
+ */
+async function openedLines(link: BrowserLink, session: ToolSession, page: ActFollowThrough): Promise<string> {
+  let lines = '';
+  for (const opened of page.opened ?? []) {
+    const shown = opened.unread === undefined ? opened : { ...opened, unread: truncate(opened.unread, MAX_UNREAD) };
+    lines += `\n${await loadReply(link, session, 'Opened', shown, { load: true })}`;
+  }
+  const elsewhere = page.openedElsewhere ?? 0;
+  if (elsewhere > 0) lines += `\n${elsewhere === 1 ? '1 more tab' : `${elsewhere} more tabs`} opened that this session does not hold.`;
+  return lines;
+}
+
+/** The values a batch's steps set on elements, for the reply to leave out what the page shows back. */
+function setValues(steps: ActStep[]): SetValue[] {
+  const sets: SetValue[] = [];
+  for (const step of steps) {
+    if ('fill' in step) sets.push({ ref: step.fill.ref, kind: 'value', text: step.fill.value });
+    else if ('type' in step && step.type.ref !== undefined) sets.push({ ref: step.type.ref, kind: 'value', text: step.type.text, appends: true });
+    else if ('select' in step) sets.push({ ref: step.select.ref, kind: 'select', text: step.select.value });
+  }
+  return sets;
 }
 
 async function runJs(link: BrowserLink, session: ToolSession, params: z.infer<typeof runJsParams>): Promise<string> {
@@ -134,7 +374,7 @@ async function runJs(link: BrowserLink, session: ToolSession, params: z.infer<ty
 async function currentTabId(link: BrowserLink, session: ToolSession): Promise<number> {
   const { tabs } = await link.request(session, 'tabs.list', {});
   const front = tabs.find((tab) => tab.active) ?? tabs[0];
-  if (front === undefined) throw new Error('No tab is open');
+  if (front === undefined) throw new Error(NO_TAB_MESSAGE);
   return front.id;
 }
 
@@ -144,9 +384,16 @@ function limitJson(text: string): string {
 }
 
 function tabLine(tab: TabInfo): string {
-  const front = tab.active ? ' [front]' : '';
-  if (tab.needsApproval === true) return `${tab.id}${front} [needs approval] ${truncate(tab.url, MAX_TAB_URL)}`;
-  return `${tab.id}${front} ${truncate(tab.title, MAX_TAB_TITLE)} — ${truncate(tab.url, MAX_TAB_URL)}`;
+  const current = tab.active ? ' [current]' : '';
+  if (tab.needsApproval === true) return `${tab.id}${current} [needs approval] ${truncate(tab.url, MAX_TAB_URL)}`;
+  return `${tab.id}${current} ${truncate(tab.title, MAX_TAB_TITLE)} — ${truncate(tab.url, MAX_TAB_URL)}`;
+}
+
+/** Where a load was redirected from, and, for an origin nobody approved yet, how to ask for it. */
+function redirectNote(moved: { tab: TabInfo; redirectedFrom?: string }): string {
+  if (moved.redirectedFrom === undefined) return '';
+  if (moved.tab.needsApproval !== true) return `\nRedirected from ${moved.redirectedFrom}.`;
+  return `\nRedirected from ${moved.redirectedFrom}. read this tab to ask the owner for access.`;
 }
 
 function parse<S extends z.ZodType>(schema: S, params: Record<string, unknown>): z.infer<S> {

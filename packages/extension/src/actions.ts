@@ -1,10 +1,26 @@
 import { actStepRef, type ActAction, type ActFailure, type ActStep, type PageActionResult } from '@t3-tab/protocol';
 
-import { documentEpoch, ensureAttached, navigationsSince, sendCommand } from './cdp';
-import { readPage } from './page';
+import {
+  answerDialog,
+  blockedLoadCount,
+  blockedLoadSince,
+  DialogOpenError,
+  dialogNotice,
+  documentEpoch,
+  ensureAttached,
+  holdInputFocus,
+  navigationsSince,
+  networkRevision,
+  openDialog,
+  sendCommand,
+  setRecoveryOrigin,
+} from './cdp';
+import { readPage, rememberPageSecrets } from './page';
 import { originOf } from './permissions';
+import { scrollWithWheel } from './scroll';
+import { scrubKnown, scrubReported } from './secret-text';
 import type { StoredSession } from './sessions';
-import { resolveSessionTab } from './tabs';
+import { isHttp, loadFailure, resolveSessionTab } from './tabs';
 import { settlePage, sleep } from './settle';
 
 const MAX_WAIT_MS = 10_000;
@@ -36,7 +52,7 @@ interface KeyStroke {
   text?: string;
 }
 
-/** Runs one ordered batch through CDP, settles after every step, and returns the resulting page read. */
+/** Runs one ordered batch through CDP, settles after each step that can start work and at the end, and returns the resulting page read. */
 export async function actOnPage(
   session: StoredSession,
   tabId: number,
@@ -46,26 +62,122 @@ export async function actOnPage(
   expectedOrigin: string,
   reloadSession: () => Promise<StoredSession>,
 ): Promise<PageActionResult> {
+  setRecoveryOrigin(tabId, expectedOrigin);
   await ensureAttached(tabId);
-  await sendCommand(tabId, 'DOM.enable');
+  let releaseFocus: (() => Promise<void>) | undefined;
+  try {
+    return await runSteps();
+  } finally {
+    await releaseFocus?.();
+  }
+
+  async function runSteps(): Promise<PageActionResult> {
   let epoch = documentEpoch(tabId);
+  const blockedBefore = blockedLoadCount(tabId);
   let failure: ActFailure | undefined;
   let activeSession = session;
+  /**
+   * Steps run since the last settle, each with the document epoch it started on: field steps, or the one step before a
+   * wait for a time, which leaves its settle to that wait.
+   */
+  let unsettled: Array<{ step: number; action: ActAction; epoch: number }> = [];
+  /** Which field step replaced the page, when one did, so a later step's stale ref can say so. */
+  let replacedNote: string | undefined;
 
+  const assertAccessAfter = async (stepNumber: number, action: ActAction): Promise<void> => {
+    // A step that followed a link the browser upgraded to https, whose site did not answer, left the tab on an error
+    // page: that is not an origin to approve.
+    const unreachable = blockedLoadSince(tabId, blockedBefore);
+    if (unreachable !== undefined && isHttp(unreachable)) {
+      throw new Error(`Step ${stepNumber} (${action}): ${loadFailure(scrubReported(tabId, unreachable, true), 'net::ERR_BLOCKED_BY_CLIENT')}`);
+    }
+    try {
+      activeSession = await reloadSession();
+      await assertActAccess(activeSession, tabId, expectedOrigin);
+    } catch (error) {
+      throw new Error(
+        `Step ${stepNumber} (${action}) left the page outside the approved session origin: ${messageOf(error)}`,
+      );
+    }
+  };
+
+  /** After the settle that covers `pending`: what the steps that skipped their own settle would have checked after it. */
+  const settledPending = async (pending: typeof unsettled): Promise<void> => {
+    const first = pending[0];
+    const last = pending[pending.length - 1];
+    if (first === undefined || last === undefined) return;
+    try {
+      assertSameOriginSince(tabId, epoch, expectedOrigin, last.action);
+    } catch (error) {
+      failure = { step: last.step, action: last.action, error: messageOf(error) };
+    }
+    // Only field steps are named for it: a step that starts work is expected to replace the page.
+    if (!startsWork(last.action) && documentEpoch(tabId) !== first.epoch) {
+      replacedNote =
+        pending.length === 1
+          ? `step ${first.step} (${first.action}) replaced the page`
+          : `the page was replaced after the field changes in steps ${first.step} to ${last.step}`;
+    }
+    epoch = documentEpoch(tabId);
+    unsettled = [];
+    await assertAccessAfter(last.step, last.action);
+  };
+
+  // The document the page's secret values were last noted on, and whether a step changed a field since.
+  let secretsEpoch: number | undefined;
+  let fieldsChanged = false;
   for (let index = 0; index < steps.length; index += 1) {
     const step = steps[index];
     if (step === undefined) continue;
     const action = actionOf(step);
+
+    // Field changes since the last settle may have started work the page answers a moment later: a debounced check
+    // that enables Submit, a navigation on a timer. Settle once before a step that acts on the page's answer, not
+    // after each field. A wait for a time settles while it waits, below, and checks them there.
+    const waitMs = waitStepMs(step);
+    const pending = unsettled;
+    if (pending.length > 0 && startsWork(action) && waitMs === undefined) {
+      await settlePage(tabId);
+      await settledPending(pending);
+      if (failure !== undefined) break;
+    }
+
+    const networkBefore = networkRevision(tabId);
+    const epochBefore = documentEpoch(tabId);
+    /** How long the settle after this step lasts at the least: a wait for a time, unless a dialog took the step. */
+    let settleMinMs = 0;
     try {
       activeSession = await reloadSession();
       await assertActAccess(activeSession, tabId, expectedOrigin);
       const ref = actStepRef(step);
-      if (ref !== undefined) {
-        if (epoch !== expectedEpoch) throw staleRef(ref, `document epoch ${expectedEpoch} -> ${epoch}`);
+      const dialog = openDialog(tabId);
+      // A step can send a form (a click, a key press, or page script it sets off: a `select` whose change submits, a timer
+      // that runs while it waits), and a form that sends a field's value in the address puts it in the title and address
+      // this reply shows: note the page's secret values first, as of this moment. A scroll, a hover or a wait changes no
+      // field, so before one they are noted only when a field changed or the document was replaced since they last were.
+      // The read after the batch notes them again.
+      if (dialog === undefined && (!changesNoField(action) || fieldsChanged || secretsEpoch !== documentEpoch(tabId))) {
+        await rememberPageSecrets(tabId);
+        secretsEpoch = documentEpoch(tabId);
+        fieldsChanged = false;
+      }
+      if (dialog !== undefined) {
+        await answerDialogStep(tabId, step, expectedOrigin);
+      } else if (ref !== undefined) {
+        releaseFocus ??= await holdInputFocus(tabId);
+        // Live, not the value kept after the last settle: a step that skipped its settle may have replaced the document.
+        const current = documentEpoch(tabId);
+        if (current !== expectedEpoch) {
+          throw staleRef(ref, `document epoch ${expectedEpoch} -> ${current}${replacedNote === undefined ? '' : `; ${replacedNote}`}`);
+        }
         const backendId = backendIds[index];
         if (backendId === undefined || backendId === null) throw staleRef(ref, 'the ref has no DOM node id');
         await runElementStep(tabId, step, backendId, ref);
+      } else if (waitMs !== undefined) {
+        // Waited out by the settle below, which watches the page meanwhile.
+        settleMinMs = waitMs;
       } else {
+        if (action !== 'wait') releaseFocus ??= await holdInputFocus(tabId);
         await runPageStep(tabId, step);
       }
       // CDP input goes to whatever document is current, with or without a ref. A new document on the
@@ -73,16 +185,42 @@ export async function actOnPage(
       // may have taken the input, so the batch stops.
       if (action !== 'wait') assertSameOriginSince(tabId, epoch, expectedOrigin, action);
     } catch (error) {
-      failure = {
-        step: index + 1,
-        action,
-        error: error instanceof Error ? error.message : String(error),
-      };
+      // The step ran and the page opened a dialog; the next step can answer it.
+      if (!(error instanceof DialogOpenError)) {
+        failure = {
+          step: index + 1,
+          action,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
     }
 
-    await settlePage(tabId);
+    // A key press can type into a field as well.
+    if (!changesNoField(action) && action !== 'click') fieldsChanged = true;
+    const readFollows = index === steps.length - 1 || failure !== undefined;
+    // A wait for a time comes next: it settles while it waits, so this step's settle would only add to the wait.
+    const next = steps[index + 1];
+    const leavesSettleToWait = !readFollows && action !== 'wait' && next !== undefined && waitStepMs(next) !== undefined;
+    if (!readFollows && !startsWork(action) && !leavesSettleToWait) {
+      // The debugger reports a request or a navigation the step began a moment after its own reply, so ask for
+      // one more answer from the page first; what it began is in by then.
+      await sendCommand(tabId, 'Page.getLayoutMetrics').catch(() => undefined);
+    }
+    const moved = documentEpoch(tabId) !== epochBefore || networkRevision(tabId) !== networkBefore;
+    const settles = !leavesSettleToWait && (readFollows || startsWork(action) || moved);
+    if (settles) {
+      await settlePage(tabId, settleMinMs);
+      // The step before a wait for a time is checked here, after the wait, as it would have been after its own settle.
+      if (pending.length > 0 && waitMs !== undefined) await settledPending(pending);
+      unsettled = [];
+    } else {
+      unsettled.push({ step: index + 1, action, epoch: epochBefore });
+    }
+    if (!startsWork(action) && documentEpoch(tabId) !== epochBefore) replacedNote = `step ${index + 1} (${action}) replaced the page`;
     // Again after settling: a document from another origin that came and went (its navigation reported
-    // after the input returned) ends on the approved origin, which the check below would not see.
+    // after the input returned) ends on the approved origin, which the check below would not see. A step
+    // that skipped its settle runs the check anyway; `epoch` stays where it was, so the next settle checks
+    // everything since the last one.
     if (failure === undefined && action !== 'wait') {
       try {
         assertSameOriginSince(tabId, epoch, expectedOrigin, action);
@@ -90,21 +228,74 @@ export async function actOnPage(
         failure = { step: index + 1, action, error: messageOf(error) };
       }
     }
-    epoch = documentEpoch(tabId);
-    try {
-      activeSession = await reloadSession();
-      await assertActAccess(activeSession, tabId, expectedOrigin);
-    } catch (error) {
-      throw new Error(
-        `Step ${index + 1} (${action}) left the page outside the approved session origin: ${messageOf(error)}`,
-      );
-    }
+    if (settles) epoch = documentEpoch(tabId);
+    await assertAccessAfter(index + 1, action);
     if (failure !== undefined) break;
   }
 
   activeSession = await reloadSession();
+  const waiting = openDialog(tabId);
+  if (waiting !== undefined) {
+    const tab = await resolveSessionTab(activeSession, tabId);
+    return {
+      tab: tabId,
+      title: scrubReported(tabId, tab.title ?? '', false),
+      url: scrubReported(tabId, tab.url ?? tab.pendingUrl ?? '', true),
+      epoch: documentEpoch(tabId),
+      nodes: [],
+      // The page wrote the message: it can repeat a value the tab's fields held.
+      dialog: scrubKnown(tabId, dialogNotice(tabId, waiting)),
+      ...(failure === undefined ? {} : { failure }),
+    };
+  }
   const page = await readPage(activeSession, tabId, expectedOrigin, reloadSession);
   return failure === undefined ? page : { ...page, failure };
+  }
+}
+
+/** How long a wait for a time waits, or undefined for any other step. */
+function waitStepMs(step: ActStep): number | undefined {
+  return 'wait' in step && 'ms' in step.wait ? clamp(step.wait.ms, 0, MAX_WAIT_MS) : undefined;
+}
+
+/**
+ * Whether a step acts on the page's answer or starts work of its own: a click, a key press, a scroll, a hover or a
+ * wait. The others (fill, type, select) only change a field. They settle at the end of the batch, before the next step
+ * of the kind above, and at once when the page showed that the step started something: a document replaced or a
+ * network request begun while it ran.
+ */
+function startsWork(action: ActAction): boolean {
+  return action !== 'fill' && action !== 'type' && action !== 'select';
+}
+
+/** A scroll, a hover or a wait: steps that change no field's value. */
+function changesNoField(action: ActAction): boolean {
+  return action === 'scroll' || action === 'hover' || action === 'wait';
+}
+
+/** While a dialog is open: Enter accepts it, Escape dismisses it, and `type` holds a prompt's text. */
+async function answerDialogStep(tabId: number, step: ActStep, expectedOrigin: string): Promise<void> {
+  const dialog = openDialog(tabId);
+  if (dialog === undefined) return;
+  const sameSite = originOf(dialog.url) === expectedOrigin && !dialogNotice(tabId, dialog).includes('another site');
+  if ('wait' in step && 'ms' in step.wait) {
+    await sleep(clamp(step.wait.ms, 0, MAX_WAIT_MS));
+    return;
+  }
+  if ('type' in step && step.type.ref === undefined && dialog.type === 'prompt' && sameSite) {
+    dialog.input = step.type.text;
+    return;
+  }
+  const answer = 'press' in step ? plainKeyName(step.press.key) : undefined;
+  if (answer === 'Escape') {
+    await answerDialog(tabId, false, undefined, dialog);
+    return;
+  }
+  if (answer === 'Enter' && sameSite) {
+    await answerDialog(tabId, true, dialog.type === 'prompt' ? (dialog.input ?? dialog.defaultPrompt) : undefined, dialog);
+    return;
+  }
+  throw new Error(dialogNotice(tabId, dialog));
 }
 
 function assertSameOriginSince(tabId: number, since: number, expectedOrigin: string, action: ActAction): void {
@@ -184,11 +375,8 @@ async function runPageStep(tabId: number, step: ActStep): Promise<void> {
       return;
     case 'wait':
       if (!('wait' in step)) return;
-      if ('ms' in step.wait) {
-        await sleep(clamp(step.wait.ms, 0, MAX_WAIT_MS));
-      } else {
-        await waitForText(tabId, step.wait.for);
-      }
+      // A wait for a time is the settle after it (`actOnPage`).
+      if ('for' in step.wait) await waitForText(tabId, step.wait.for);
       return;
     default:
       throw new Error(`The ${actionOf(step)} step needs a ref`);
@@ -217,11 +405,27 @@ async function scrollElementIntoView(tabId: number, backendId: number, ref: stri
   }
 }
 
+/**
+ * Moves to the point, presses and releases. A page dispatches a mouse move with its next frame, and a tab the owner
+ * cannot see draws none, so the browser can take up to a second to answer the move. The press is a discrete event: the
+ * page dispatches the queued move before it, in order. So the press is sent without waiting for the move's answer, and
+ * the click still fails with the move's error when the move failed. A move that opens a dialog no longer stops the
+ * press: it is already sent, and the page gets it once the dialog is answered.
+ */
 async function clickAt(tabId: number, point: PixelPoint): Promise<void> {
   const common = { x: point.x, y: point.y, button: 'left', clickCount: 1 };
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...common });
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...common });
+  const moved = sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+  // Awaited below on every path; this only keeps a failure from counting as unhandled before then.
+  moved.catch(() => undefined);
+  try {
+    await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...common });
+    await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...common });
+  } catch (error) {
+    // The move came first, so its failure is the one to report.
+    await moved;
+    throw error;
+  }
+  await moved;
 }
 
 async function focusElement(tabId: number, backendId: number, ref: string): Promise<void> {
@@ -288,19 +492,7 @@ async function selectOption(tabId: number, backendId: number, ref: string, value
 }
 
 async function scrollPage(tabId: number, dx: number, dy: number): Promise<void> {
-  const metrics = await sendCommand<{ cssLayoutViewport?: { clientWidth?: number; clientHeight?: number } }>(
-    tabId,
-    'Page.getLayoutMetrics',
-  );
-  const x = (metrics.cssLayoutViewport?.clientWidth ?? 800) / 2;
-  const y = (metrics.cssLayoutViewport?.clientHeight ?? 600) / 2;
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', {
-    type: 'mouseWheel',
-    x,
-    y,
-    deltaX: dx,
-    deltaY: dy,
-  });
+  await scrollWithWheel(tabId, dx, dy);
 }
 
 async function pressKey(tabId: number, value: string): Promise<void> {
@@ -324,39 +516,90 @@ async function pressKey(tabId: number, value: string): Promise<void> {
   await sendCommand(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...params, text: undefined, unmodifiedText: undefined });
 }
 
-export function parseKey(value: string): KeyStroke {
+const KEYS: Record<string, KeyStroke> = {
+  enter: { key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' },
+  tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
+  escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
+  backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
+  delete: { key: 'Delete', code: 'Delete', keyCode: 46 },
+  insert: { key: 'Insert', code: 'Insert', keyCode: 45 },
+  arrowup: { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
+  arrowdown: { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+  arrowleft: { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
+  arrowright: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+  home: { key: 'Home', code: 'Home', keyCode: 36 },
+  end: { key: 'End', code: 'End', keyCode: 35 },
+  pageup: { key: 'PageUp', code: 'PageUp', keyCode: 33 },
+  pagedown: { key: 'PageDown', code: 'PageDown', keyCode: 34 },
+  space: { key: ' ', code: 'Space', keyCode: 32, text: ' ' },
+  shift: { key: 'Shift', code: 'ShiftLeft', keyCode: 16 },
+  control: { key: 'Control', code: 'ControlLeft', keyCode: 17 },
+  alt: { key: 'Alt', code: 'AltLeft', keyCode: 18 },
+  meta: { key: 'Meta', code: 'MetaLeft', keyCode: 91 },
+};
+for (let number = 1; number <= 12; number += 1) {
+  KEYS[`f${number}`] = { key: `F${number}`, code: `F${number}`, keyCode: 111 + number };
+}
+const KEY_ALIASES: Record<string, string> = {
+  return: 'enter',
+  esc: 'escape',
+  del: 'delete',
+  ins: 'insert',
+  up: 'arrowup',
+  down: 'arrowdown',
+  left: 'arrowleft',
+  right: 'arrowright',
+  pgup: 'pageup',
+  pgdn: 'pagedown',
+  spacebar: 'space',
+  ctrl: 'control',
+  option: 'alt',
+  cmd: 'meta',
+  command: 'meta',
+  super: 'meta',
+  win: 'meta',
+};
+
+function keyPieces(value: string): string[] {
+  // The space character itself, which trimming would lose.
+  if (value !== '' && value.trim() === '') return [' '];
   const pieces = value.split('+').map((piece) => piece.trim()).filter((piece) => piece !== '');
-  const name = pieces.at(-1);
+  // "+" itself, alone or as the last key of a chord.
+  if (value.trim().endsWith('+')) pieces.push('+');
+  return pieces;
+}
+
+function namedKey(name: string): KeyStroke | undefined {
+  const lower = name.toLowerCase();
+  return KEYS[KEY_ALIASES[lower] ?? lower];
+}
+
+export function parseKey(value: string): KeyStroke {
+  const name = keyPieces(value).at(-1);
   if (name === undefined) throw new Error('press needs a key such as Enter or Control+A');
-  const aliases: Record<string, KeyStroke> = {
-    Enter: { key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' },
-    Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
-    Escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
-    Backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
-    Delete: { key: 'Delete', code: 'Delete', keyCode: 46 },
-    ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
-    ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
-    ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
-    ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
-    Home: { key: 'Home', code: 'Home', keyCode: 36 },
-    End: { key: 'End', code: 'End', keyCode: 35 },
-    PageUp: { key: 'PageUp', code: 'PageUp', keyCode: 33 },
-    PageDown: { key: 'PageDown', code: 'PageDown', keyCode: 34 },
-    Space: { key: ' ', code: 'Space', keyCode: 32, text: ' ' },
-  };
-  const named = aliases[name];
-  if (named !== undefined) return named;
-  if (name.length !== 1) throw new Error(`Unknown key: ${name}`);
-  const upper = name.toUpperCase();
-  return { key: name, code: /^[A-Z]$/.test(upper) ? `Key${upper}` : '', keyCode: upper.charCodeAt(0), text: name };
+  // One character is that character, in its case; only longer names are spellings of a named key.
+  if (name.length === 1 && name !== ' ') {
+    const upper = name.toUpperCase();
+    return { key: name, code: /^[A-Z]$/.test(upper) ? `Key${upper}` : '', keyCode: upper.charCodeAt(0), text: name };
+  }
+  const named = name === ' ' ? KEYS.space : namedKey(name);
+  if (named === undefined) throw new Error(`Unknown key: ${name}. Use a character or a name such as Enter, Escape, Tab, ArrowDown or F5.`);
+  return named;
+}
+
+/** The key's standard name when `value` is one key with no modifiers, as a dialog's answer must be. */
+function plainKeyName(value: string): string | undefined {
+  const pieces = keyPieces(value);
+  if (pieces[0] === ' ' && pieces.length === 1) return KEYS.space?.key;
+  return pieces.length === 1 && pieces[0] !== undefined ? namedKey(pieces[0])?.key : undefined;
 }
 
 function modifierMask(value: string): number {
-  const pieces = value.split('+').map((piece) => piece.trim().toLowerCase());
+  const pieces = keyPieces(value).map((piece) => KEY_ALIASES[piece.toLowerCase()] ?? piece.toLowerCase());
   let mask = 0;
   if (pieces.includes('alt')) mask |= 1;
-  if (pieces.includes('control') || pieces.includes('ctrl')) mask |= 2;
-  if (pieces.includes('meta') || pieces.includes('command') || pieces.includes('cmd')) mask |= 4;
+  if (pieces.includes('control')) mask |= 2;
+  if (pieces.includes('meta')) mask |= 4;
   if (pieces.includes('shift')) mask |= 8;
   return mask;
 }

@@ -9,6 +9,19 @@ describe('keyboard steps', () => {
     expect(parseKey('ArrowDown')).toEqual({ key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 });
   });
 
+  it('takes the usual spellings of a key, and keeps a single character as typed', () => {
+    const named = (value: string): string => parseKey(value).key;
+    expect(['enter', 'ENTER', 'return'].map(named)).toEqual(['Enter', 'Enter', 'Enter']);
+    expect(['esc', 'Escape', 'ESC'].map(named)).toEqual(['Escape', 'Escape', 'Escape']);
+    expect(['up', 'pgdn', 'del', 'space', 'ctrl+f5'].map(named)).toEqual(['ArrowUp', 'PageDown', 'Delete', ' ', 'F5']);
+    expect(parseKey('f12')).toEqual({ key: 'F12', code: 'F12', keyCode: 123 });
+    expect(parseKey('a').key).toBe('a');
+    expect(parseKey('A').key).toBe('A');
+    expect(parseKey('+').key).toBe('+');
+    expect(parseKey(' ')).toEqual({ key: ' ', code: 'Space', keyCode: 32, text: ' ' });
+    expect(parseKey('Control++').key).toBe('+');
+  });
+
   it('rejects an unknown key name', () => {
     expect(() => parseKey('F13')).toThrow('Unknown key: F13');
   });

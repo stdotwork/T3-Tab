@@ -13,6 +13,12 @@ export interface FakeTab {
   text: string;
   frameId: string;
   context: { id: number; uniqueId: string };
+  /** Whether the tab is the active one of its window. Left out, the tab does not say. */
+  active?: boolean;
+  /** What the browser says of its loading: `complete` unless set. */
+  status?: 'loading' | 'complete';
+  /** The address a tab that has not committed yet is loading. */
+  pendingUrl?: string;
 }
 
 type EventListener = (source: { tabId?: number }, method: string, params?: unknown) => void;
@@ -23,20 +29,48 @@ export class FakeBrowser {
   /** Every expression that actually ran, and the origin of the page it ran in. */
   readonly evaluated: Array<{ tabId: number; origin: string; expression: string }> = [];
   readonly groupCalls: Array<{ tabIds: number[]; groupId?: number }> = [];
+  /** Every `chrome.tabGroups.update`, in order. */
+  readonly groupUpdates: Array<{ groupId: number; details: Record<string, unknown> }> = [];
+  /** Group ids that no longer exist: grouping into one fails, as the browser's does. */
+  readonly goneGroups = new Set<number>();
+  /** The id the next new group gets. */
+  nextGroupId = 1000;
   /** Runs when a command reaches the browser, before it is handled: the place for a navigation to land. */
-  beforeCommand: ((tabId: number, method: string) => Promise<void> | void) | undefined;
+  beforeCommand: ((tabId: number, method: string, params?: Record<string, unknown>) => Promise<void> | void) | undefined;
+  /** Answers an expression before the page would run it: the place to say what a script in the real page would find. */
+  evaluateHook: ((params: Record<string, unknown>) => unknown) | undefined;
+  /**
+   * Where `Page.navigate` lands: the address it was given unless this names another (a redirect). A change of fragment
+   * only stays in the document, as in the browser, and reports no loader.
+   */
+  redirect: ((url: string) => string) | undefined;
+  /** Addresses a `Page.navigate` fails to load, with the error the browser gives: the tab ends on its error page. */
+  loadErrors = new Map<string, string>();
+  /** What the one window says about itself. */
+  windowFocused = true;
+  windowState = 'normal';
   private readonly listeners: EventListener[] = [];
   private contextSeq = 0;
+  private nextTabId = 500;
+  private loaderSeq = 0;
 
   reset(): void {
     this.tabs.clear();
     this.commands.length = 0;
     this.evaluated.length = 0;
     this.groupCalls.length = 0;
+    this.groupUpdates.length = 0;
+    this.goneGroups.clear();
+    this.nextGroupId = 1000;
     this.beforeCommand = undefined;
+    this.evaluateHook = undefined;
+    this.redirect = undefined;
+    this.loadErrors.clear();
+    this.windowFocused = true;
+    this.windowState = 'normal';
   }
 
-  addTab(fields: { id: number; url: string; text?: string; title?: string; groupId?: number }): FakeTab {
+  addTab(fields: { id: number; url: string; text?: string; title?: string; groupId?: number; active?: boolean }): FakeTab {
     const tab: FakeTab = {
       id: fields.id,
       groupId: fields.groupId ?? -1,
@@ -45,6 +79,7 @@ export class FakeBrowser {
       text: fields.text ?? '',
       frameId: `frame-${fields.id}`,
       context: this.newContext(),
+      ...(fields.active === undefined ? {} : { active: fields.active }),
     };
     this.tabs.set(tab.id, tab);
     return tab;
@@ -65,6 +100,43 @@ export class FakeBrowser {
     this.emitContext(tab);
   }
 
+  /**
+   * A load of `address` that failed, as the browser reports it: the request fails, the top frame commits the browser's
+   * error page (a tab still lists the address it could not load), and the load event fires.
+   */
+  failLoad(tabId: number, address: string, errorText: string): void {
+    const tab = this.mustTab(tabId);
+    this.emit(tabId, 'Network.loadingFailed', { type: 'Document', errorText });
+    this.emit(tabId, 'Runtime.executionContextDestroyed', { executionContextId: tab.context.id, executionContextUniqueId: tab.context.uniqueId });
+    tab.url = address;
+    tab.context = this.newContext();
+    this.emit(tabId, 'Page.frameNavigated', { frame: { id: tab.frameId, url: 'chrome-error://chromewebdata/', unreachableUrl: address } });
+    this.emit(tabId, 'Page.loadEventFired', {});
+  }
+
+  /** A page that loads while a frame inside it has a document request that failed as blocked, the way an ad blocker's does. */
+  navigateWithBlockedFrame(tabId: number, url: string): void {
+    this.emit(tabId, 'Network.loadingFailed', { type: 'Document', errorText: 'net::ERR_BLOCKED_BY_CLIENT' });
+    this.navigate(tabId, url, '');
+    this.emit(tabId, 'Page.loadEventFired', {});
+  }
+
+  /** The top frame reports its document with a loader, as a real page does, so the worker knows the tab's main document. */
+  reportMainDocument(tabId: number, loaderId: string): void {
+    const tab = this.mustTab(tabId);
+    this.emit(tabId, 'Page.frameNavigated', { frame: { id: tab.frameId, url: tab.url, loaderId } });
+  }
+
+  /** The page opens a JavaScript alert, as the debugger reports it. */
+  openDialog(tabId: number, message: string): void {
+    this.emit(tabId, 'Page.javascriptDialogOpening', { type: 'alert', message, url: this.mustTab(tabId).url, defaultPrompt: '' });
+  }
+
+  /** A network request the page started, as the debugger reports it. */
+  request(tabId: number): void {
+    this.emit(tabId, 'Network.requestWillBeSent', { type: 'XHR', loaderId: 'x', request: { method: 'GET' } });
+  }
+
   install(): void {
     const fake = {
       debugger: {
@@ -83,21 +155,36 @@ export class FakeBrowser {
           return this.snapshot(tab);
         },
         query: async () => [...this.tabs.values()].map((tab) => this.snapshot(tab)),
+        create: async (options: { url?: string }) => {
+          this.nextTabId += 1;
+          return this.snapshot(this.addTab({ id: this.nextTabId, url: options.url ?? 'about:blank' }));
+        },
+        remove: async (id: number) => void this.tabs.delete(id),
         group: async (options: { tabIds: number[]; groupId?: number }) => {
           this.groupCalls.push(options);
-          const groupId = options.groupId ?? 1000;
+          if (options.groupId !== undefined && this.goneGroups.has(options.groupId)) throw new Error(`No group with id: ${options.groupId}.`);
+          const groupId = options.groupId ?? this.nextGroupId++;
           for (const id of options.tabIds) this.mustTab(id).groupId = groupId;
           return groupId;
         },
       },
-      tabGroups: { TAB_GROUP_ID_NONE: -1 },
+      windows: { get: async () => ({ id: 1, focused: this.windowFocused, state: this.windowState }) },
+      tabGroups: {
+        TAB_GROUP_ID_NONE: -1,
+        update: async (groupId: number, details: Record<string, unknown>) => {
+          if (this.goneGroups.has(groupId)) throw new Error(`No group with id: ${groupId}.`);
+          this.groupUpdates.push({ groupId, details });
+          return undefined;
+        },
+      },
+      webNavigation: { onCommitted: { addListener: () => undefined } },
     };
     (globalThis as unknown as { chrome: unknown }).chrome = fake;
   }
 
   private async command(tabId: number, method: string, params?: Record<string, unknown>): Promise<unknown> {
     this.commands.push({ tabId, method, params });
-    await this.beforeCommand?.(tabId, method);
+    await this.beforeCommand?.(tabId, method, params);
     const tab = this.mustTab(tabId);
     switch (method) {
       case 'Runtime.enable':
@@ -107,16 +194,41 @@ export class FakeBrowser {
         return { frameTree: { frame: { id: tab.frameId, securityOrigin: new URL(tab.url).origin } } };
       case 'Runtime.evaluate':
         return await this.evaluate(tab, params ?? {});
+      case 'Page.createIsolatedWorld':
+        return { executionContextId: 900 + tab.id };
       case 'Page.getLayoutMetrics':
         return { cssVisualViewport: { clientWidth: 800, clientHeight: 600 } };
       case 'Page.captureScreenshot':
         return { data: 'AAAA' };
+      case 'DOM.getBoxModel':
+        // A 20 by 10 element at the page's corner: its centre is (10, 5).
+        return { model: { border: [0, 0, 20, 0, 20, 10, 0, 10] } };
+      case 'Page.navigate': {
+        const url = String(params?.url);
+        const loadError = this.loadErrors.get(url);
+        if (loadError !== undefined) {
+          this.failLoad(tabId, url, loadError);
+          this.loaderSeq += 1;
+          return { loaderId: `loader-${this.loaderSeq}`, errorText: loadError };
+        }
+        const sameDocument = tab.url !== 'about:blank' && new URL(url).href.split('#')[0] === new URL(tab.url).href.split('#')[0];
+        if (sameDocument) {
+          tab.url = url;
+          return {};
+        }
+        this.navigate(tabId, this.redirect?.(url) ?? url, '');
+        this.emit(tabId, 'Page.loadEventFired', {});
+        this.loaderSeq += 1;
+        return { loaderId: `loader-${this.loaderSeq}` };
+      }
       default:
         return {};
     }
   }
 
   private async evaluate(tab: FakeTab, params: Record<string, unknown>): Promise<unknown> {
+    const hooked = this.evaluateHook?.(params);
+    if (hooked !== undefined) return { result: { type: typeof hooked, value: hooked } };
     const wanted = params.uniqueContextId;
     // Without a context id the browser evaluates in whatever document the tab shows now.
     if (wanted !== undefined && wanted !== tab.context.uniqueId) {
@@ -157,7 +269,15 @@ export class FakeBrowser {
   }
 
   private snapshot(tab: FakeTab): chrome.tabs.Tab {
-    return { id: tab.id, groupId: tab.groupId, url: tab.url, title: tab.title } as chrome.tabs.Tab;
+    return {
+      id: tab.id,
+      groupId: tab.groupId,
+      url: tab.url,
+      title: tab.title,
+      status: tab.status ?? 'complete',
+      ...(tab.pendingUrl === undefined ? {} : { pendingUrl: tab.pendingUrl }),
+      ...(tab.active === undefined ? {} : { active: tab.active, windowId: 1 }),
+    } as chrome.tabs.Tab;
   }
 
   private mustTab(id: number): FakeTab {

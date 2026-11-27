@@ -94,7 +94,7 @@ async function measure() {
     browserContext = await launchBrowser(home);
     const { serviceWorker } = await extensionWorker(browserContext);
     mcp = (await connectMcp(home, 't3-tab-bench')).client;
-    await waitForBrowser(mcp);
+    await waitForBrowser(home);
     // Allow the bench site so no prompt waits on a person: the replies measured are the tools' own.
     await setSite(serviceWorker, siteUrl, 'allow');
 
@@ -130,9 +130,8 @@ async function measure() {
       tools: Object.fromEntries(tools.map((tool) => [tool.name, sizeOf(JSON.stringify(tool))])),
     };
 
-    // 1. Fill and submit a form.
-    await run('form', 'open', 'tabs', { action: 'open', url: `${siteUrl}/form` });
-    const formRead = await run('form', 'read-first', 'read', {});
+    // 1. Fill and submit a form. A load replies with the page, so its refs come from the open.
+    const formRead = await run('form', 'open', 'tabs', { action: 'open', url: `${siteUrl}/form` });
     const refs = {
       name: need(formRead, 'textbox "Name"'),
       email: need(formRead, 'textbox "Email"'),
@@ -151,26 +150,50 @@ async function measure() {
 
     // 2. Open a hidden section: the click through `act`, then a change made behind the agent's back so
     // the next `read` is a diff.
-    await run('hidden', 'open', 'tabs', { action: 'open', url: `${siteUrl}/form` });
-    const hiddenRead = await run('hidden', 'read-first', 'read', {});
+    const hiddenRead = await run('hidden', 'open', 'tabs', { action: 'open', url: `${siteUrl}/form` });
     await run('hidden', 'act-click', 'act', { steps: [{ action: 'click', ref: need(hiddenRead, 'button "Show details"') }] });
     await run('hidden', 'run_js', 'run_js', { expression: "document.getElementById('toggle').click()" });
     await run('hidden', 'read-diff', 'read', {});
     await run('hidden', 'read-unchanged', 'read', {});
 
-    // 3. Follow a link: the reply to the click is the new page.
-    await run('navigate', 'open', 'tabs', { action: 'open', url: `${siteUrl}/products` });
-    const productsRead = await run('navigate', 'read-first', 'read', {});
+    // 3. Follow a link: the reply to the click is the new page, so a full read sent with it is answered in one line.
+    const productsRead = await run('navigate', 'open', 'tabs', { action: 'open', url: `${siteUrl}/products` });
     await run('navigate', 'act-click-link', 'act', { steps: [{ action: 'click', ref: need(productsRead, 'link "Day pack"') }] });
+    const repeated = await run('navigate', 'read-full', 'read', { full: true });
+    assert(/^tab \d+\nNo changes since the act's reply, which showed the whole page\.$/.test(repeated), `navigate/read-full: not the one line:\n${repeated}`);
     await run('navigate', 'tabs-list', 'tabs', {});
 
-    // 4. Search a longer page.
+    // 4. Search a longer page: on the load itself, then in the page it holds. Its load reply leaves the page to the read.
+    await run('long', 'read-url-find', 'read', { url: `${siteUrl}/docs`, find: 'rate limit' });
     await run('long', 'open', 'tabs', { action: 'open', url: `${siteUrl}/docs` });
     const longRead = await run('long', 'read-first', 'read', {});
     await run('long', 'find', 'read', { find: 'rate limit' });
     await run('long', 'read-subtree', 'read', { ref: need(longRead, 'region "Topic 12: Tokens"') });
     await run('long', 'read-all', 'read', { all: true });
     await run('long', 'screenshot', 'screenshot', {});
+
+    // 5. A page too long to send whole: a read gets its outline, an order sent with a bad address comes back as a new page
+    // with the error inside the form, and find reaches an item the outline left out.
+    const outline = await run('outline', 'read-url', 'read', { url: `${siteUrl}/catalogue` });
+    assert(outline.includes('(Outline of a long page'), `outline/read-url: not an outline:\n${outline}`);
+    const ordered = await run('outline', 'act-order', 'act', {
+      steps: [
+        { action: 'fill', ref: need(outline, 'textbox "Email"'), text: 'ada.example.com' },
+        { action: 'click', ref: need(outline, 'button "Place order"') },
+      ],
+    });
+    assert(ordered.includes('(Outline of a long page') && /textbox "Email"[^\n]*\[invalid\]/.test(ordered) && ordered.includes('Enter an email address with an @ in it.'), `outline/act-order: the error is not in the outline:\n${ordered}`);
+    await run('outline', 'find', 'read', { find: 'Item 61:' });
+    // The act's reply was an outline, so a full read is the whole view.
+    const whole = await run('outline', 'read-full', 'read', { full: true });
+    assert(!whole.includes('Outline of a long page') && !whole.includes('No changes since') && whole.includes('textbox "Email"'), `outline/read-full: not the whole view:\n${whole.slice(0, 400)}`);
+
+    // 6. A combobox's list opens and closes: the act that opens it shows every option, the one that picks a state counts
+    // the options that went in one line.
+    const delivery = await run('combobox', 'open', 'tabs', { action: 'open', url: `${siteUrl}/delivery` });
+    const opened = await run('combobox', 'act-open', 'act', { steps: [{ action: 'click', ref: need(delivery, 'button "States"') }] });
+    const picked = await run('combobox', 'act-pick', 'act', { steps: [{ action: 'click', ref: need(opened.replace(/^[+-]/gm, ' '), 'option "Kansas"') }] });
+    assert(/\(\d+ lines removed: "Alabama", … "Maryland"\)/.test(picked) && picked.includes('value="Kansas"'), `combobox/act-pick: the options that went are not counted:\n${picked}`);
 
     const version = browserContext.browser()?.version() ?? (await serviceWorker.evaluate(() => navigator.userAgent));
     return {

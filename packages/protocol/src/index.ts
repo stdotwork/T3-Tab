@@ -1,9 +1,29 @@
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 6 as const;
 /** Shown when the extension and the background program speak different protocol versions. It is also a WebSocket close reason, so at most 123 bytes. */
-export const PROTOCOL_MISMATCH = 'T3-Tab extension and background program are different versions. Rebuild, run t3-tab install, reload.';
+export const PROTOCOL_MISMATCH = 'The T3-Tab extension and helper are different versions.';
+/** The close reason and error text that say which side is behind. Each fits a WebSocket close reason. */
+export const HELPER_OUTDATED = 'The T3-Tab helper is older than the extension.';
+export const EXTENSION_OUTDATED = 'The T3-Tab extension is older than the helper.';
+/** What a side that speaks `PROTOCOL_VERSION` says about a peer that spoke `theirs`. */
+export function mismatchReason(theirs: number): string {
+  return theirs > PROTOCOL_VERSION ? HELPER_OUTDATED : EXTENSION_OUTDATED;
+}
 export const DEFAULT_DAEMON_PORT = 8765;
 export const NATIVE_HOST_NAME = 'com.t3tab.native';
+/**
+ * The extension's ID. The manifest `key` (`EXTENSION_KEY` in the extension) fixes it, so an unpacked build gets the
+ * same ID on every machine.
+ */
 export const EXTENSION_ID = 'gggnknbjooockcnnocejdolfdpjifebm';
+/**
+ * STORE ID: the ID the browser store assigns once the extension is published. Fill it in then (the store's dashboard
+ * also shows the public key to put in `EXTENSION_KEY`, which makes unpacked builds use this ID too). Until then it is
+ * undefined and only `EXTENSION_ID` is allowed.
+ */
+export const STORE_EXTENSION_ID: string | undefined = undefined;
+/** Every ID the native host manifest and the daemon accept. */
+export const EXTENSION_IDS: readonly string[] = STORE_EXTENSION_ID === undefined ? [EXTENSION_ID] : [...new Set([EXTENSION_ID, STORE_EXTENSION_ID])];
+export const EXTENSION_ORIGINS: readonly string[] = EXTENSION_IDS.map((id) => `chrome-extension://${id}`);
 export const EXTENSION_ORIGIN = `chrome-extension://${EXTENSION_ID}`;
 
 /** Default long edge, in pixels, of a screenshot. */
@@ -39,6 +59,22 @@ export interface BrowserTabClosedMessage {
   tabId: number;
 }
 
+/** Sent when a permission prompt opens, so the daemon can show it in the thread of the session that asked. */
+export interface BrowserPromptOpenedMessage {
+  type: 'browser.promptOpened';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  /** The session the prompt belongs to; only that session's control connection is told. */
+  session: ToolSession;
+  prompt: PromptNotice;
+}
+
+/** Sent when a permission prompt is decided, times out or is cancelled, wherever it was answered. */
+export interface BrowserPromptClosedMessage {
+  type: 'browser.promptClosed';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  promptId: string;
+}
+
 export interface ToolSession {
   /** Issued by the daemon and bound to the control connection that registered it. */
   id: string;
@@ -50,7 +86,7 @@ export interface TabInfo {
   id: number;
   title: string;
   url: string;
-  /** True for the tab the browser has in front: the default target of `read` and `screenshot`. */
+  /** True for the session's current tab, the default target of the page tools: the last it opened or switched to. */
   active: boolean;
   /** Chromium's tab group id, when the tab is grouped. */
   groupId?: number;
@@ -69,7 +105,7 @@ export interface AxNode {
   name: string;
   value?: string;
   ignored?: true;
-  /** Flags the reader prints, such as `checked`, `disabled`, `expanded`, `level`. */
+  /** Properties the reader uses, such as `checked`, `disabled`, `expanded`, `level`, a link's `url` and `live`. */
   props?: Record<string, string | number | boolean>;
   children: string[];
   /** Stable for the life of one document; the key of a ref. */
@@ -152,6 +188,18 @@ export interface ActFailure {
 export interface PageActionResult extends PageReadResult {
   /** Set when the batch stopped before its last step. */
   failure?: ActFailure;
+  /** What the agent is told when the tab is waiting on a JavaScript dialog; `nodes` is empty then. */
+  dialog?: string;
+}
+
+/**
+ * What a batch did beyond its own tab. `opened` lists the tabs its steps opened that joined the session, each as a load
+ * describes it: only the origin and `needsApproval` until the session may read it, and its page when a read would need no
+ * prompt. `openedElsewhere` counts new tabs opened from the batch's tab that this session does not hold.
+ */
+export interface ActFollowThrough {
+  opened?: TabLoadResult[];
+  openedElsewhere?: number;
 }
 
 export interface ScreenshotResult {
@@ -170,9 +218,39 @@ export type ClaimRoute = 'launch' | 'message';
 /** Why an MCP server could not take the claim code from the private file a direct run named. */
 export type ClaimFileProblem = 'missing' | 'not-private' | 'wrong-owner' | 'not-a-file' | 'invalid' | 'unreadable';
 
+/** Moves an existing tab: to an address, through its history, or by loading its page again. */
+export type TabNavigation = 'goto' | 'back' | 'forward' | 'reload';
+
+/**
+ * Where a load ended. `redirectedFrom` is the origin asked for, set when the page ended up on another one. `page` is the
+ * page as `page.read` gives it, read once the load arrived, when the session may read the tab without a prompt;
+ * otherwise `unread` says why it was not read when that is not a redirect to an origin the session holds no approval for.
+ */
+export interface TabLoadResult {
+  tab: TabInfo;
+  redirectedFrom?: string;
+  page?: PageReadResult;
+  unread?: string;
+  /** Set instead of `page` when the load asked for `skipReadOver` and the page's text is longer: it was not read. */
+  textLength?: number;
+}
+
+/**
+ * What a load asks of its reply. With `skipReadOver`, a page whose text is longer than that many characters is not read:
+ * its reply could not carry it whole, and the agent reads it anyway.
+ */
+export interface LoadOptions {
+  skipReadOver?: number;
+}
+
+/** What a tool that needs a tab says when the session has none. */
+export const NO_TAB_MESSAGE =
+  'No tab in this session. read or tabs open with a url opens one, or ask the owner to share one from the T3-Tab panel.';
+
 /** Requests the background program sends to the extension, with their params and results. */
 export interface BrowserMethods {
-  'session.register': { params: Record<string, never>; result: { registered: true } };
+  /** `t3ThreadId` is set only when the daemon proved which T3 thread the session's process runs for. */
+  'session.register': { params: { t3ThreadId?: string }; result: { registered: true } };
   /**
    * Shares with the calling session the tabs the owner picked in the side panel when it started an agent. The
    * extension issued `code` and holds the tabs it names; the daemon only passes it on. `route` says how the code
@@ -181,16 +259,56 @@ export interface BrowserMethods {
   'session.claim': { params: { code: string; route: ClaimRoute }; result: { shared: number[] } };
   'session.unregister': { params: Record<string, never>; result: { unregistered: true } };
   'tabs.list': { params: Record<string, never>; result: { tabs: TabInfo[] } };
-  'tabs.open': { params: { url: string }; result: { tab: TabInfo } };
+  /**
+   * With `reuse`, a tab of the session already at that address (the fragment aside, and only `tab` when it is given) is
+   * read instead, as `page.read` reads it, and the result says `reused`; otherwise a new tab is opened as without it.
+   */
+  'tabs.open': { params: LoadOptions & { url: string; reuse?: true; tab?: number }; result: TabLoadResult & { reused?: true } };
+  /** A `goto` with no `tab` in a session that has no tab opens one, asking as `tabs.open` does, and says `opened`. */
+  'tabs.navigate': {
+    params: LoadOptions & { tab?: number; action: TabNavigation; url?: string };
+    result: TabLoadResult & { opened?: true };
+  };
   'tabs.switch': { params: { tab: number }; result: { tab: TabInfo } };
   'tabs.close': { params: { tab: number }; result: { closed: number } };
-  'page.read': { params: { tab?: number }; result: PageReadResult };
+  /**
+   * With `ifReadable`, the page is read only when the session may read it without a prompt (an origin it holds on the
+   * tab, or a site set to `read` or `allow`); otherwise the request fails and nobody is asked.
+   */
+  'page.read': { params: { tab?: number; ifReadable?: true }; result: PageReadResult };
   'page.screenshot': { params: { tab?: number; maxEdge: number }; result: ScreenshotResult };
+  /** `skipReadOver` is for the tabs the batch opened, as for a load. */
   'page.act': {
-    params: { tab?: number; steps: ActStep[]; backendIds: Array<number | null>; epoch: number };
-    result: PageActionResult;
+    /**
+     * `summary` is what the batch does in the owner's words, one entry per step: built by the MCP server from each step's
+     * action and the element the session's reads printed for its ref, never from text the agent wrote. A prompt shows it.
+     */
+    params: LoadOptions & { tab?: number; steps: ActStep[]; backendIds: Array<number | null>; epoch: number; summary?: ActStepSummary[] };
+    result: PageActionResult & ActFollowThrough;
   };
   'page.eval': { params: { tab?: number; expression: string }; result: { value: unknown } };
+  /**
+   * Answers one waiting permission prompt on behalf of the session that owns it, from that session's own thread
+   * (an MCP elicitation). Only these two answers are possible this way: never a lasting site setting.
+   */
+  'prompt.decide': { params: { promptId: string; decision: ElicitedDecision }; result: { decided: true } };
+}
+
+/** What an agent's own thread may answer a permission prompt with. */
+export type ElicitedDecision = 'allow-once' | 'decline';
+
+/** A permission prompt as the daemon and the owning session's MCP server see it. */
+export interface PromptNotice {
+  id: string;
+  /** What the agent asked to do: the same four kinds the side panel's prompt names. */
+  tool: 'read' | 'act' | 'run_js' | 'open';
+  origin: string;
+  /** The tab it concerns. A page being opened has none until the owner says yes. */
+  tab?: { id: number; title: string };
+  /** The address being opened or gone to, without credentials or fragment. */
+  url?: string;
+  /** For `act`: what the batch does, as `page.act`'s `summary` (checked by `cleanActSummary`). */
+  steps?: ActStepSummary[];
 }
 
 export type BrowserMethod = keyof BrowserMethods;
@@ -234,6 +352,28 @@ export interface AgentMessage {
   text: string;
 }
 
+/** One entry of a conversation's thread view: a message, the agent's reasoning, or a tool call with its result. */
+export type AgentItem =
+  | {
+      id: string;
+      kind: 'user' | 'assistant' | 'reasoning' | 'error';
+      text: string;
+      /** True while the agent is still writing this text. */
+      streaming?: boolean;
+      /** When the item was added, in milliseconds since the epoch. */
+      at?: number;
+    }
+  | {
+      id: string;
+      kind: 'tool';
+      /** The tool's name without its server prefix, such as `read`, `act` or `tabs`. */
+      name: string;
+      /** What was asked, in one short line. */
+      summary?: string;
+      output?: string;
+      status: 'running' | 'done' | 'failed';
+    };
+
 /** One conversation the side panel started. The daemon holds it in memory. */
 export interface AgentConversation {
   id: string;
@@ -247,6 +387,15 @@ export interface AgentConversation {
   provider?: string;
   model?: string;
   messages: AgentMessage[];
+  /**
+   * The thread view of a direct run, in order. A T3 thread shows no items: its thread is in T3 Code, which the panel
+   * reads itself.
+   */
+  items: AgentItem[];
+  /** When the current (or last) direct turn started, in milliseconds since the epoch. */
+  startedAt?: number;
+  /** When the last direct turn ended; absent while one is running. */
+  finishedAt?: number;
   error?: string;
   updatedAt: number;
 }
@@ -260,9 +409,86 @@ export interface AgentsStatus {
   codex?: string;
 }
 
+export type SetupAgent = 'claude' | 'codex';
+
+/** What the panel's setup steps show: which agents are installed and wired to T3-Tab, and whether T3 Code is around. */
+export interface SetupStatus {
+  agents: Array<{
+    id: SetupAgent;
+    /** The agent's command was found on this computer. */
+    found: boolean;
+    /** The `t3-tab` MCP entry is in that agent's user config. */
+    registered: boolean;
+  }>;
+  t3: {
+    state: T3State;
+    /** T3 Code's address, such as `http://127.0.0.1:3773`, when it is running and the address is one T3-Tab can use. */
+    origin?: string;
+  };
+}
+
+/** The panel's new T3 session. The pairing credential behind it stays in the background program. */
+export interface T3Pairing {
+  origin: string;
+  accessToken: string;
+  /** Seconds until T3 ends this access token. */
+  expiresIn: number;
+}
+
+/** What T3 answered to a session request the background program sent on a connection it checked. */
+export type T3SessionReply =
+  | { outcome: 'token'; accessToken: string; expiresIn: number }
+  | { outcome: 'ticket'; ticket: string }
+  /** T3's local voice transcription: whether it is available, and why not. */
+  | { outcome: 'voice'; voice: T3VoiceStatus }
+  /** T3 answered with this HTTP error. */
+  | { outcome: 'refused'; status: number }
+  /** T3 now runs at another address, so nothing was sent. */
+  | { outcome: 'moved' };
+
+/** What T3's `/api/voice/status` said, cut down to what the panel shows. */
+export type T3VoiceStatus = { supported: false; reason: string } | { supported: true; state: 'ready' | 'missing-model' | 'transcribing' | 'other' };
+
+export interface T3SessionParams {
+  /** `ticket` is for T3's RPC socket, `media-ticket` for its voice socket. */
+  kind: 'renew' | 'ticket' | 'media-ticket' | 'voice-status';
+  origin: string;
+  accessToken: string;
+  /** A DPoP proof the panel signed for this request's method and address. */
+  dpop: string;
+}
+
+/** The label T3-Tab's panel gives T3 for its pairing and for the session it opens, so a sign-out finds exactly those. */
+export const T3_PANEL_CLIENT_LABEL = 'T3-Tab panel';
+
+const CLAIM_NOTE_MARK = '\n\n[T3-Tab] ';
+
+/**
+ * The line added to a T3 thread's first message. A T3 thread's agent starts its MCP servers from its own
+ * config, so nothing but the message can tell its session which tabs the owner picked.
+ */
+export function claimNote(code: string): string {
+  return `${CLAIM_NOTE_MARK}The owner shared browser tabs with this thread. Before other browser tools, call the t3-tab \`tabs\` tool with {"claim": "${code}"}.`;
+}
+
+/** The message as the owner wrote it, without the claim note. */
+export function withoutClaimNote(text: string): string {
+  const index = text.indexOf(`${CLAIM_NOTE_MARK}The owner shared browser tabs`);
+  return index === -1 ? text : text.slice(0, index);
+}
+
+/** An image that goes with a direct run's message: PNG, JPEG, GIF or WebP, base64-encoded. */
+export interface AgentImage {
+  name: string;
+  mimeType: string;
+  data: string;
+}
+
 export interface AgentStartParams {
   via: AgentVia;
   message: string;
+  /** Direct runs only. */
+  images?: AgentImage[];
   project?: string;
   provider?: string;
   model?: string;
@@ -270,59 +496,28 @@ export interface AgentStartParams {
   claim: string;
 }
 
-/** A T3 project the panel can start a thread in, as T3's `t3_project_list` reports it. */
-export interface T3Project {
-  id: string;
-  title: string;
-  workspaceRoot: string;
-  /** The project's default provider instance and model, when it has one. */
-  defaultProvider?: string;
-  defaultModel?: string;
-}
-
-/** A T3 provider instance and the models `orchestrator_capabilities` lists for it. */
-export interface T3Provider {
-  instanceId: string;
-  name: string;
-  models: Array<{ id: string; label?: string }>;
-  /** Models T3 left out of its short list. */
-  omittedModels?: number;
-  /** Why T3 says the provider cannot run now, when it says so. */
-  unavailable?: string;
-}
-
-export interface T3Catalog {
-  projects: T3Project[];
-  providers: T3Provider[];
-  fetchedAt: number;
-}
-
-/**
- * T3-Tab's own read-only sign-in to T3 Code, used only to list projects, providers and models. The credential stays
- * in the background program; this view never carries it.
- */
-export interface T3Access {
-  state: 'signed-out' | 'signing-in' | 'signed-in';
-  /** The T3 environment address, such as `http://127.0.0.1:3773`. */
-  environment?: string;
-  /** When T3 ends the sign-in, in milliseconds since the epoch. */
-  expiresAt?: number;
-  /** One line: why the lists are unavailable, or what the last sign-in attempt did. */
-  detail?: string;
-  catalog?: T3Catalog;
-}
-
 /** Requests the extension sends to the background program for the side panel, with their params and results. */
 export interface DaemonMethods {
   'agents.status': { params: { refresh?: boolean }; result: AgentsStatus };
   'agents.list': { params: Record<string, never>; result: { conversations: AgentConversation[] } };
   'agents.start': { params: AgentStartParams; result: { conversation: AgentConversation } };
-  'agents.send': { params: { id: string; message: string; claim?: string }; result: { conversation: AgentConversation } };
-  /** The sign-in state and, when signed in, T3's lists; `refresh` fetches the lists again. */
-  't3.access': { params: { refresh?: boolean }; result: T3Access };
-  /** Starts a sign-in and returns the T3 page the owner approves it on. */
-  't3.signIn': { params: Record<string, never>; result: { url: string } };
-  't3.signOut': { params: Record<string, never>; result: T3Access };
+  'agents.send': { params: { id: string; message: string; claim?: string; images?: AgentImage[] }; result: { conversation: AgentConversation } };
+  /** Which agents are installed and wired to T3-Tab, and whether T3 Code is running. */
+  'setup.status': { params: { refresh?: boolean }; result: SetupStatus };
+  /** Registers T3-Tab's MCP server in one agent's user config, as `t3-tab install --claude|--codex` does. */
+  'setup.addAgent': { params: { agent: SetupAgent }; result: SetupStatus };
+  /** Mints a pairing credential and exchanges it with the panel's proof on a connection checked to be T3's. */
+  't3.pair': { params: { origin: string; dpop: string }; result: T3Pairing };
+  /** Renews the panel's session or gets its WebSocket ticket, on a connection checked to be T3's. */
+  't3.session': { params: T3SessionParams; result: T3SessionReply };
+  /** The thread's runtime mode, as T3 reports it now. */
+  't3.threadMode': { params: { threadId: string }; result: { runtimeMode: string } };
+  /** Ends every T3 session the panel opened (those labelled `T3_PANEL_CLIENT_LABEL`). */
+  't3.unpair': { params: Record<string, never>; result: { revoked: number } };
+  /** One conversation, with its thread view. */
+  'agents.get': { params: { id: string }; result: { conversation: AgentConversation } };
+  /** Stops a direct run's current turn; the conversation goes back to idle. */
+  'agents.stop': { params: { id: string }; result: { conversation: AgentConversation } };
 }
 
 export type DaemonMethod = keyof DaemonMethods;
@@ -348,6 +543,8 @@ export type BrowserMessage =
   | BrowserPongMessage
   | BrowserTabCountMessage
   | BrowserTabClosedMessage
+  | BrowserPromptOpenedMessage
+  | BrowserPromptClosedMessage
   | BrowserResponseMessage;
 
 export interface BrowserStatus {
@@ -366,6 +563,8 @@ export interface ControlSessionRegisterRequest {
   claim?: string;
   /** Set instead of `claim` when the MCP process was given a claim file and could not use it. */
   claimFileProblem?: { file: string; problem: ClaimFileProblem };
+  /** The MCP process's pid. The daemon believes it only if that process holds this connection's socket. */
+  pid?: number;
 }
 
 export interface ControlStatusRequest {
@@ -374,6 +573,21 @@ export interface ControlStatusRequest {
   requestId: string;
   method: 'status';
 }
+
+/** Answers a permission prompt of this connection's own session from its thread. */
+export interface ControlPromptAnswerRequest {
+  type: 'control.request';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  requestId: string;
+  method: 'prompt.answer';
+  promptId: string;
+  decision: ElicitedDecision;
+}
+
+/** Told to a session's MCP server, unasked, about its own permission prompts. */
+export type ControlEvent =
+  | { type: 'control.event'; protocolVersion: typeof PROTOCOL_VERSION; event: 'prompt.opened'; prompt: PromptNotice }
+  | { type: 'control.event'; protocolVersion: typeof PROTOCOL_VERSION; event: 'prompt.closed'; promptId: string };
 
 export type ToolMethod = 'tabs' | 'read' | 'screenshot' | 'act' | 'run_js';
 
@@ -429,8 +643,21 @@ export interface ControlSessionRegisterResponse {
   };
 }
 
-export type ControlRequest = ControlSessionRegisterRequest | ControlStatusRequest | ControlToolRequest;
+export type ControlRequest =
+  | ControlSessionRegisterRequest
+  | ControlStatusRequest
+  | ControlToolRequest
+  | ControlPromptAnswerRequest;
+export interface ControlPromptAnswerResponse {
+  type: 'control.response';
+  protocolVersion: typeof PROTOCOL_VERSION;
+  requestId: string;
+  ok: true;
+  result: { answered: true };
+}
+
 export type ControlResponse =
+  | ControlPromptAnswerResponse
   | ControlSessionRegisterResponse
   | ControlStatusResponse
   | ControlToolResponse
@@ -455,3 +682,6 @@ export interface NativeErrorResponse {
 }
 
 export type NativeResponse = NativeDaemonResponse | NativeErrorResponse;
+
+export { actStepsText, cleanActSummary, namedKey, summaryForSteps, type ActStepSummary, type ActTarget } from './act-words.js';
+import type { ActStepSummary } from './act-words.js';

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { EXTENSION_ORIGIN, PROTOCOL_VERSION, type ToolSession } from '@t3-tab/protocol';
+import { EXTENSION_ORIGIN, NO_TAB_MESSAGE, PROTOCOL_VERSION, type ToolSession } from '@t3-tab/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
@@ -108,7 +108,7 @@ describe('browser tools through the daemon', () => {
     });
     expect(await control(b.socket, b.session, { method: 'tabs', params: {} })).toMatchObject({
       ok: true,
-      result: { content: [{ type: 'text', text: 'No tabs.' }] },
+      result: { content: [{ type: 'text', text: NO_TAB_MESSAGE }] },
     });
 
     const unregistered = await open(handle);
@@ -170,7 +170,7 @@ describe('browser tools through the daemon', () => {
     const reply = await control(socket, session, { method: 'tabs', params: {} });
     expect(reply).toMatchObject({
       ok: true,
-      result: { content: [{ type: 'text', text: '3 [front] Home — http://localhost/' }] },
+      result: { content: [{ type: 'text', text: '3 [current] Home — http://localhost/' }] },
     });
     const toolCall = seen.find((message) => message.method === 'tabs.list');
     expect(toolCall).toMatchObject({ type: 'browser.request', method: 'tabs.list', session, params: {} });

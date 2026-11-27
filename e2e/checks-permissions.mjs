@@ -15,7 +15,7 @@ export async function checkPermissions({ mcpClient, mcpClientB, page, serviceWor
 
   const openA = rawCall(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/perm-a` });
   const openPromptA = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'open');
-  assertPromptTab(openPromptA, 'Permission A');
+  assertOpenPrompt(openPromptA, `${siteUrl}/perm-a`);
   await assertPromptMetadata(serviceWorker, openPromptA);
   await assertPromptUi(panelPage, serviceWorker, openPromptA);
   const badgeWhilePending = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
@@ -26,15 +26,14 @@ export async function checkPermissions({ mcpClient, mcpClientB, page, serviceWor
   assert(openedA.isError !== true, `Session A could not open its tab: ${text(openedA)}`);
   const tabA = Number(/^Opened tab (\d+)/.exec(text(openedA))?.[1]);
   assert(Number.isInteger(tabA), `Session A open reply has no tab id: ${text(openedA)}`);
-  assert(openPromptA.tab.id === tabA, `The open prompt named tab ${openPromptA.tab.id}, opened ${tabA}`);
   const badgeAfterDecision = await serviceWorker.evaluate(() => chrome.action.getBadgeText({}));
   assert(badgeAfterDecision === '', `The action badge was not cleared: ${badgeAfterDecision}`);
-  console.log(`Open approval named tab ${openPromptA.tab.id} "${openPromptA.tab.title}" at ${openPromptA.origin}`);
+  console.log(`Open approval named ${openPromptA.url}, before any tab existed; it opened tab ${tabA}`);
   await assertPromptRows(panelPage, serviceWorker);
 
   const openB = rawCall(mcpClientB, 'tabs', { action: 'open', url: `${otherSiteUrl}/perm-b` });
   const openPromptB = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionB.id && prompt.tool === 'open');
-  assertPromptTab(openPromptB, 'Permission B');
+  assertOpenPrompt(openPromptB, `${otherSiteUrl}/perm-b`);
   await decidePrompt(serviceWorker, openPromptB.id, 'allow-once');
   const openedB = await openB;
   assert(openedB.isError !== true, `Session B could not open its tab: ${text(openedB)}`);
@@ -97,28 +96,33 @@ export async function checkPermissions({ mcpClient, mcpClientB, page, serviceWor
   assert(unsharedRead.isError === true && /not available to this session/.test(text(unsharedRead)), `Session A can read the unshared owner tab: ${text(unsharedRead)}`);
   console.log(`Share covers the origin shown when shared: tab ${ownerTab.id} readable at ${siteUrl}, then refused after unshare`);
 
-  const pageA = await rawCall(mcpClient, 'read', { tab: tabA, full: true });
-  const actionRef = refFor(text(pageA), 'button "Action A"');
-  assert(actionRef, `Session A's action page has no button ref:\n${text(pageA)}`);
+  // The open's reply holds the page.
+  const actionRef = refFor(text(openedA), 'button "Action A"');
+  assert(actionRef, `Session A's action page has no button ref:\n${text(openedA)}`);
 
   const firstAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const actPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   assertPromptTab(actPrompt, 'Permission A');
-  await decidePrompt(serviceWorker, actPrompt.id, 'allow-once');
+  // The prompt names the step and the element the read printed for its ref, built by the server from the steps.
+  assert(
+    JSON.stringify(actPrompt.steps) === JSON.stringify([{ action: 'click', target: { role: 'button', name: 'Action A' } }]),
+    `The act prompt does not name its step: ${JSON.stringify(actPrompt.steps)}`,
+  );
+  await answerInPanel(panelPage, serviceWorker, actPrompt, 'Enter');
   const allowedAct = await firstAct;
   assert(allowedAct.isError !== true && text(allowedAct).includes('Action A completed'), `Allow once did not run the act: ${text(allowedAct)}`);
-  console.log(`Ask origin, Allow once: act succeeded on tab ${actPrompt.tab.id} "${actPrompt.tab.title}"`);
+  console.log(`Ask origin, Enter on the panel's card (Allow once): act succeeded on tab ${actPrompt.tab.id} "${actPrompt.tab.title}"`);
 
   const secondAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const declinePrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
-  await decidePrompt(serviceWorker, declinePrompt.id, 'decline');
+  await answerInPanel(panelPage, serviceWorker, declinePrompt, 'Escape');
   const declinedAct = await secondAct;
   assert(declinedAct.isError === true && /Permission declined/.test(text(declinedAct)), `Decline did not refuse the act: ${text(declinedAct)}`);
-  console.log('Ask origin, Decline: act refused');
+  console.log('Ask origin, Escape on the panel\'s card (Decline): act refused; Enter and Escape typed in the composer answered nothing');
 
   const alwaysAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const alwaysPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
-  await decidePrompt(serviceWorker, alwaysPrompt.id, 'always-allow');
+  await answerInPanel(panelPage, serviceWorker, alwaysPrompt, 'Always allow everything on this site');
   const alwaysResult = await alwaysAct;
   assert(alwaysResult.isError !== true, `Always allow did not run the first act: ${text(alwaysResult)}`);
   const noPromptAct = await withDeadline(
@@ -228,7 +232,7 @@ export async function checkPermissions({ mcpClient, mcpClientB, page, serviceWor
   const listWithPopup = text(await rawCall(mcpClient, 'tabs', {}));
   const popupLine = listWithPopup.split('\n').find((line) => line.startsWith(`${popupTab.id} `));
   assert(
-    new RegExp(`^${popupTab.id}( \\[front\\])? \\[needs approval\\] ${escapeRegExp(siteUrl)}$`).test(popupLine ?? ''),
+    new RegExp(`^${popupTab.id}( \\[current\\])? \\[needs approval\\] ${escapeRegExp(siteUrl)}$`).test(popupLine ?? ''),
     `An unapproved member tab shows more than its origin: ${popupLine}\n${listWithPopup}`,
   );
   const approvedLine = listWithPopup.split('\n').find((line) => line.startsWith(`${tabA} `));
@@ -449,13 +453,13 @@ async function waitForTabGroup(serviceWorker, tabId, groupId, label) {
 
 /** A page with a cross-origin iframe: read names the origin it left out and does not return its text. */
 export async function checkFrames({ mcpClient, siteUrl, otherSiteUrl }) {
-  const frontId = Number(/^(\d+) \[front\]/m.exec(text(await call(mcpClient, 'tabs', {})))?.[1]);
+  const frontId = Number(/^(\d+) \[current\]/m.exec(text(await call(mcpClient, 'tabs', {})))?.[1]);
   assert(Number.isInteger(frontId), 'The session has no front tab before the frames check');
   const opened = await call(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/frames` });
   const tabId = Number(/^Opened tab (\d+)/.exec(text(opened))?.[1]);
   assert(Number.isInteger(tabId), `tabs open: ${text(opened)}`);
-  await sleep(500);
-  const framed = await call(mcpClient, 'read', { tab: tabId, full: true });
+  // The open's reply is the page as read shows it, read once the frames settled.
+  const framed = opened;
   show('read (page with a cross-origin iframe)', framed);
   assert(framed.isError !== true && text(framed).includes('# Frames page'), `The frames page was not read: ${text(framed)}`);
   assert(!text(framed).includes('Session B private tab'), `The cross-origin iframe's text was returned:\n${text(framed)}`);
@@ -477,13 +481,21 @@ async function assertPromptRows(panelPage, serviceWorker) {
   const session = { id: 'synthetic', name: 'Synthetic session' };
   const prompt = (number, tool, title) => ({ id: `row-${number}`, origin: 'http://synthetic.test', tool, session, tab: { id: 900 + number, title } });
   const show = async (pending, sites = base.sites) => await renderPanelState(panelPage, { ...base, pending, sites });
-  const row = (title) => panelPage.locator('li').filter({ hasText: title });
+  const row = (title) => panelPage.locator('li.prompt-card').filter({ hasText: title });
   const disabledStates = async (title) => {
-    const states = await row(title).locator('button').evaluateAll((buttons) => buttons.map((button) => button.disabled));
+    const states = await row(title).locator('.answer-btn').evaluateAll((buttons) => buttons.map((button) => button.disabled));
     assert(states.length === 3, `Row "${title}" shows ${states.length} buttons, expected 3`);
     return states;
   };
-  const labels = async (title) => await row(title).locator('button').allTextContents();
+  // T3's order on the row: Decline, the primary answer, then More with the rest.
+  const labels = async (title) => {
+    const shown = await row(title).locator('.answer-btn').evaluateAll((buttons) => buttons.map((button) => button.querySelector('.answer-label')?.textContent ?? button.getAttribute('aria-label')));
+    await row(title).getByRole('button', { name: 'More approval options' }).click();
+    const more = await panelPage.locator('.approval-menu .menu-row').evaluateAll((items) => items.map((item) => item.textContent));
+    await panelPage.keyboard.press('Escape');
+    assert((await panelPage.locator('.approval-menu').count()) === 0, 'Escape did not close the More menu');
+    return [...shown, ...more];
+  };
   const allDisabled = async (title) => (await disabledStates(title)).every(Boolean);
   const allEnabled = async (title) => (await disabledStates(title)).every((disabled) => !disabled);
   const settle = async () => await sleep(650);
@@ -491,15 +503,21 @@ async function assertPromptRows(panelPage, serviceWorker) {
   const one = prompt(1, 'read', 'Row one');
   const two = prompt(2, 'act', 'Row two');
   await show([one, two]);
-  const readLabels = await labels('Row one');
-  const actLabels = await labels('Row two');
-  assert(JSON.stringify(readLabels) === JSON.stringify(['Allow reading once', 'Always allow reading on this site', 'Decline']), `Read prompt buttons: ${JSON.stringify(readLabels)}`);
-  assert(
-    JSON.stringify(actLabels) === JSON.stringify(['Allow acting once', 'Always allow everything on this site (reading, opening, acting, JavaScript)', 'Decline']),
-    `Act prompt buttons: ${JSON.stringify(actLabels)}`,
-  );
+  assert((await allDisabled('Row one')) && (await allDisabled('Row two')), 'New prompt buttons were enabled immediately');
   await settle();
   assert((await allEnabled('Row one')) && (await allEnabled('Row two')), 'Prompt buttons did not enable after the delay');
+  const readLabels = await labels('Row one');
+  const actLabels = await labels('Row two');
+  const manage = 'Manage sites';
+  assert(
+    JSON.stringify(readLabels) === JSON.stringify(['Decline', 'Allow once', 'More approval options', 'Always allow reading on this siteOpening, acting and JavaScript still ask', manage]),
+    `Read prompt answers: ${JSON.stringify(readLabels)}`,
+  );
+  assert(
+    JSON.stringify(actLabels) === JSON.stringify(['Decline', 'Allow once', 'More approval options', 'Always allow everything on this siteReading, opening, acting and JavaScript', manage]),
+    `Act prompt answers: ${JSON.stringify(actLabels)}`,
+  );
+  assert((await row('Row one').locator('.key-hint').count()) === 2 && (await row('Row two').locator('.key-hint').count()) === 0, 'Enter and Escape are not shown on the top card alone');
 
   await show([two]);
   assert(await allDisabled('Row two'), 'A row that moved up after the row above it went away kept live buttons');
@@ -519,7 +537,7 @@ async function assertPromptRows(panelPage, serviceWorker) {
   await settle();
   await show([zero, two]);
   assert(await allEnabled('Row two'), 'A row removed below locked the rows above it');
-  console.log('Prompt rows: buttons say what they grant; removing or inserting a row above another disabled all buttons for 500 ms; rows added or removed below did not');
+  console.log('Prompt rows: Decline, the once answer and More in that order, the lasting answer under More with what it grants; keys shown on the top card only; removing or inserting a row above another disabled all buttons for 500 ms; rows added or removed below did not');
 
   const sites = [
     { origin: 'http://ask.test', setting: 'ask' },
@@ -528,10 +546,14 @@ async function assertPromptRows(panelPage, serviceWorker) {
   ];
   await show([], sites);
   await panelPage.locator('#btn-settings').click();
+  await panelPage.locator('.settings-tabs').getByRole('button', { name: 'Sites', exact: true }).click();
   const readSite = panelPage.locator('#site-permissions li').filter({ hasText: 'http://read.test' });
   await readSite.getByText('Reading allowed; opening, acting and JavaScript ask').waitFor();
-  const readSiteButtons = await readSite.locator('button').allTextContents();
-  assert(JSON.stringify(readSiteButtons) === JSON.stringify(['Ask every time', 'Always allow everything']), `Read-only site buttons: ${JSON.stringify(readSiteButtons)}`);
+  const readSiteChoices = await readSite.getByRole('radio').evaluateAll((radios) => radios.map((radio) => [radio.getAttribute('aria-label'), radio.getAttribute('aria-checked')]));
+  assert(
+    JSON.stringify(readSiteChoices) === JSON.stringify([['Ask every time', 'false'], ['Always allow reading', 'true'], ['Always allow everything', 'false']]),
+    `Read-only site choices: ${JSON.stringify(readSiteChoices)}`,
+  );
   await panelPage.locator('#site-permissions li').filter({ hasText: 'http://all.test' }).getByText('Everything allowed: reading, opening, acting, JavaScript').waitFor();
   console.log('Site list: a read-only grant is shown as "Reading allowed; opening, acting and JavaScript ask"');
   await panelPage.locator('#btn-settings-back').click();
@@ -541,16 +563,16 @@ async function assertPromptRows(panelPage, serviceWorker) {
 async function assertPromptMetadata(serviceWorker, prompt) {
   const pending = await pendingPrompts(serviceWorker);
   assert(pending[0]?.id === prompt.id, 'The newest prompt is not first in arrival order');
-  assertPromptTab(prompt, 'Permission A');
 }
 
 async function assertPromptUi(panelPage, serviceWorker, prompt) {
   const state = await panelRequest(serviceWorker, { type: 'panel.state' });
   await renderPanelState(panelPage, state);
-  // The prompt names its tab by title in the sentence and by id in the meta line, both in the same card.
-  const card = panelPage.locator('.prompt-card').filter({ hasText: `"${prompt.tab.title}"` });
-  await card.getByText(`tab ${prompt.tab.id}`, { exact: true }).waitFor();
-  const allow = panelPage.getByRole('button', { name: 'Allow opening once' });
+  // A page being opened has no tab yet: the card names the address it would load and is tied to no tab.
+  const card = panelPage.locator('li.prompt-card').filter({ has: panelPage.locator('.approval-where.mono', { hasText: prompt.url }) });
+  await card.waitFor();
+  assert((await card.getAttribute('data-tab-id')) === null, 'A prompt for a page not opened yet is tied to a tab');
+  const allow = panelPage.getByRole('button', { name: 'Allow once' });
   await allow.waitFor();
   assert(await allow.isDisabled(), 'New prompt buttons were enabled immediately');
   const handle = await allow.elementHandle();
@@ -565,7 +587,64 @@ async function assertPromptUi(panelPage, serviceWorker, prompt) {
     await handle.evaluate((element) => element.isConnected && element.dataset.stabilityCheck === 'kept'),
     'A rendered prompt item was rebuilt instead of kept',
   );
-  console.log(`Prompt UI: tab ${prompt.tab.id} "${prompt.tab.title}", buttons delayed, item kept across rerender`);
+  console.log(`Prompt UI: ${prompt.url}, buttons delayed, item kept across rerender`);
+}
+
+/**
+ * Answers a real prompt from the panel's own card: with Enter or Escape while nothing in the panel has focus, or with an
+ * answer from the card's More menu. The panel's request goes to the worker's handler the way the live panel's does.
+ * Before a key answer, the same key typed in the composer must answer nothing.
+ */
+async function answerInPanel(panelPage, serviceWorker, prompt, answer) {
+  if ((await panelPage.evaluate(() => typeof window.__t3tabAnswerBridge)) !== 'function') {
+    await panelPage.exposeFunction('__t3tabAnswerBridge', async (request) => {
+      try {
+        return await serviceWorker.evaluate(async (message) => await globalThis.__t3tabHandlePanelRequest(message), request);
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    });
+  }
+  await panelPage.evaluate(() => {
+    window.__t3tabPanelBridge = (request) => window.__t3tabAnswerBridge(request);
+  });
+  try {
+    await renderPanelState(panelPage, await panelRequest(serviceWorker, { type: 'panel.state' }));
+    const card = panelPage.locator(`li.prompt-card[data-prompt-id="${prompt.id}"]`);
+    await card.waitFor();
+    assert((await card.locator('.answer-btn').first().isDisabled()) === true, 'A new card took answers at once');
+    // An act card says what it will do to which element, in the words the prompt carries.
+    const named = prompt.tool === 'act' ? prompt.steps?.find((step) => step.target !== undefined)?.target?.name : undefined;
+    if (named !== undefined) {
+      const ask = await card.locator('.approval-ask').innerText();
+      assert(ask.includes(`“${named}”`), `The act card does not name "${named}": ${ask}`);
+    }
+    // Keys go to the top card once the panel sees it whole, which locks it for another 500 ms. That sighting comes from
+    // an IntersectionObserver and, in this headless panel tab, sometimes about a second late: wait for it, then the lock.
+    await card.locator('[data-keyed="true"]').waitFor({ timeout: 5_000 });
+    await sleep(650);
+    const stillWaiting = async () => (await pendingPrompts(serviceWorker)).some((entry) => entry.id === prompt.id);
+    if (answer === 'Enter' || answer === 'Escape') {
+      assert((await card.locator('.key-hint').count()) === 2, 'The top card does not show its Enter and Escape hints');
+      const composer = panelPage.locator('.composer-input');
+      assert((await composer.count()) === 1, 'The panel shows no composer to type in next to the card');
+      await composer.focus();
+      await panelPage.keyboard.press(answer);
+      await sleep(300);
+      assert(await stillWaiting(), `${answer} typed in the composer answered the card`);
+      await panelPage.evaluate(() => document.activeElement?.blur());
+      await panelPage.keyboard.press(answer);
+    } else {
+      await card.getByRole('button', { name: 'More approval options' }).click();
+      await panelPage.getByRole('menuitem', { name: answer }).click();
+    }
+    for (let attempt = 0; attempt < 50 && (await stillWaiting()); attempt += 1) await sleep(100);
+    assert(!(await stillWaiting()), `The panel's ${answer} did not answer the card`);
+  } finally {
+    await panelPage.evaluate(() => {
+      delete window.__t3tabPanelBridge;
+    });
+  }
 }
 
 async function renderPanelState(panelPage, state) {
@@ -574,6 +653,11 @@ async function renderPanelState(panelPage, state) {
     if (typeof render !== 'function') throw new Error('Panel renderer is unavailable');
     render(next);
   }, state);
+}
+
+function assertOpenPrompt(prompt, expectedUrl) {
+  assert(prompt.tab === undefined, `An open prompt named a tab before one exists: ${JSON.stringify(prompt)}`);
+  assert(prompt.url === expectedUrl, `The open prompt shows ${prompt.url}, expected ${expectedUrl}`);
 }
 
 function assertPromptTab(prompt, expectedTitle) {

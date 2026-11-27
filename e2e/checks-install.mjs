@@ -74,6 +74,7 @@ show_tooltips = true
   assert(countMatches(codexInstalledText, /^\[mcp_servers\.t3-tab\]$/gm) === 1, `Codex install did not add exactly one server:\n${codexInstalledText}`);
   assert(codexInstalledText.includes(`command = ${JSON.stringify(process.execPath)}`), 'Codex server does not use the absolute node path');
   assert(codexInstalledText.includes(`args = [${JSON.stringify(cliPath)}, "mcp"]`), 'Codex server does not use the absolute CLI path');
+  assert(countMatches(codexInstalledText, /^tool_timeout_sec = 330$/gm) === 1, `Codex server has no 330-second tool timeout:\n${codexInstalledText}`);
   assert(await fileExists(nativeManifestPath), 'Install did not add the Chromium native host manifest');
   console.log(`Install file edit: Claude Code and Codex registered; native host at ${nativeManifestPath}`);
 
@@ -123,6 +124,8 @@ show_tooltips = true
   ]);
   assert(claudeList.stdout.includes('t3-tab'), `claude mcp list does not show t3-tab:\n${claudeList.stdout}`);
   assert(codexList.stdout.includes('t3-tab'), `codex mcp list does not show t3-tab:\n${codexList.stdout}`);
+  const codexViaCli = await readFile(codexConfigPath, 'utf8');
+  assert(countMatches(codexViaCli, /^tool_timeout_sec = 330$/gm) === 1, `codex mcp add left no single 330-second tool timeout:\n${codexViaCli}`);
   await execFileAsync(
     process.execPath,
     [cliPath, 'uninstall'],

@@ -1,33 +1,39 @@
 import { DEFAULT_SCREENSHOT_MAX_EDGE, type ActStep } from '@t3-tab/protocol';
 import { z } from 'zod';
 
-// These shapes are the tools' input schemas: the agent reads them on every turn, so they carry as
-// few constraints and as few words as they can. The daemon checks incoming calls against the same
-// shapes; a value the shapes let through but the browser cannot use comes back as the browser's error.
+// These shapes check every call, in the MCP server and again in the daemon; a value they let through but
+// the browser cannot use comes back as the browser's error. The agent reads them on every request as the
+// tools' input schemas, so `listedSchema` leaves out of what it reads the keywords these checks enforce
+// anyway and the parameters no agent was seen to use, and the shapes carry as few words as they can.
 
+// What `tab` defaults to is said once, in `read`'s description.
 const tab = z.number().optional();
-const frontTab = 'Default: front tab.';
+/** Longest `find` text. */
+export const MAX_FIND = 200;
+const find = z.string().max(MAX_FIND).optional();
 
 export const tabsShape = {
-  action: z.enum(['list', 'open', 'switch', 'close']).optional().describe('Default list.'),
-  url: z.string().optional().describe('URL to open.'),
-  tab: tab.describe('Tab id, for switch and close.'),
+  action: z.enum(['list', 'open', 'goto', 'back', 'forward', 'reload', 'switch', 'close']).optional().describe('Default list.'),
+  url: z.string().optional(),
+  tab,
+  find: find.describe('Only matching lines.'),
   // No description: only a thread started from the side panel uses it, and its message says what to pass.
   claim: z.string().optional(),
 };
 
 export const readShape = {
-  tab: tab.describe(frontTab),
-  all: z.boolean().optional().describe('Include all text, not only interactive elements.'),
-  find: z.string().max(200).optional().describe('Case-insensitive literal text; returns only matching lines.'),
+  tab,
+  url: z.string().optional().describe('Reuses its tab, else opens one.'),
+  all: z.boolean().optional().describe('All text, no budget; images too.'),
+  find: find.describe('Case-insensitive literal text; returns only matching lines.'),
   regex: z.boolean().optional().describe('find is a regular expression.'),
   ref: z.string().optional().describe("Read only this element's subtree."),
-  depth: z.number().min(0).optional().describe('Deepest nesting to show.'),
+  depth: z.number().min(0).optional().describe('Deepest nesting to show; … marks more inside.'),
   full: z.boolean().optional().describe('Whole page, not only what changed.'),
 };
 
 export const screenshotShape = {
-  tab: tab.describe(frontTab),
+  tab,
   maxEdge: z
     .number()
     .min(64)
@@ -35,6 +41,9 @@ export const screenshotShape = {
     .optional()
     .describe(`Long edge in pixels; default ${DEFAULT_SCREENSHOT_MAX_EDGE}.`),
 };
+
+/** Accepted by `read` but left out of its listed schema: no agent was seen to pass them, and no reply points to them. */
+export const READ_UNLISTED = ['regex', 'depth'] as const;
 
 export const tabsParams = z.object(tabsShape);
 export const readParams = z.object(readShape);
@@ -127,22 +136,63 @@ export function convertStep(step: FlatStep): ActStep | string {
 }
 
 export const actShape = {
-  tab: tab.describe(frontTab),
+  tab,
   steps: z
     .array(actStepSchema)
     .min(1)
     .max(50)
     .describe(
       'Run in order; stops at the first failure. Fields by action: click, hover: ref. type: text, optional ref. ' +
-        'fill, select: ref, text. press: key (Enter, Control+A). scroll: ref, or dx and dy. ' +
-        `wait: ms (0-${MAX_WAIT_MS}) or text to wait for.`,
+        'fill, select: ref, text. press: key (Enter, Escape, Control+A). scroll: ref, or dx and dy. ' +
+        `wait: ms (0-${MAX_WAIT_MS}) or text to wait for. A field check slower than 150 ms needs a wait step.`,
     ),
+  // Its length is checked when the call runs: the schema stays smaller.
+  find: z.string().optional().describe('Only matching lines.'),
 };
 
 export const runJsShape = {
-  tab: tab.describe(frontTab),
+  tab,
   expression: z.string().min(1).describe('Expression or async function body; JSON result.'),
 };
 
 export const actParams = z.object(actShape);
 export const runJsParams = z.object(runJsShape);
+
+/**
+ * Keywords the shapes above check on every call, so the agent does not need to read them: the JSON Schema
+ * dialect, lengths, ranges, item counts and the refusal of unknown step fields.
+ */
+const CHECKED_KEYWORDS = new Set(['$schema', 'minItems', 'maxItems', 'minLength', 'maxLength', 'minimum', 'maximum', 'additionalProperties']);
+
+type JsonSchema = { [key: string]: unknown };
+
+/**
+ * The input schema a tool lists, made the way the MCP SDK makes it from the same shape, without the keywords the
+ * call is checked against anyway and without the parameters named in `unlisted` (which the call still accepts).
+ */
+export function listedSchema(shape: z.ZodRawShape, unlisted: readonly string[] = []): JsonSchema {
+  const schema = withoutChecked(z.toJSONSchema(z.object(shape), { target: 'draft-7', io: 'input' }) as JsonSchema);
+  const properties = schema.properties as Record<string, unknown> | undefined;
+  for (const name of unlisted) delete properties?.[name];
+  if (Array.isArray(schema.required)) {
+    schema.required = schema.required.filter((name: unknown) => !unlisted.includes(String(name)));
+    if ((schema.required as unknown[]).length === 0) delete schema.required;
+  }
+  return schema;
+}
+
+function withoutChecked(schema: JsonSchema): JsonSchema {
+  const out: JsonSchema = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (CHECKED_KEYWORDS.has(key)) continue;
+    if (key === 'properties' && typeof value === 'object' && value !== null) {
+      // Property names are the tool's own words, never keywords: only their schemas are cleaned.
+      out[key] = Object.fromEntries(Object.entries(value as JsonSchema).map(([name, property]) => [name, withoutChecked(property as JsonSchema)]));
+    } else if (key === 'items' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      out[key] = withoutChecked(value as JsonSchema);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}

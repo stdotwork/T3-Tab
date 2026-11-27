@@ -1,8 +1,26 @@
-import type { TabInfo } from '@t3-tab/protocol';
+import { NO_TAB_MESSAGE, type TabInfo } from '@t3-tab/protocol';
 
+import {
+  blockedLoadCount,
+  blockedLoadSince,
+  DialogOpenError,
+  documentEpoch,
+  documentMethod,
+  ensureAttached,
+  holdInputFocus,
+  privateWorld,
+  sameDocumentMoveCount,
+  sendCommand,
+  waitForDocumentLoad,
+} from './cdp';
+
+import { joinTree } from './opened-tabs';
 import { originOf, restrictedPageError, type SitePermission } from './permissions';
+import { knownSecrets, rememberSecrets, scrubReported } from './secret-text';
+import { settlePage } from './settle';
 import {
   assertSessionTab,
+  currentSessionTab,
   groupTitle,
   hasApprovedOrigin,
   sessionColor,
@@ -17,6 +35,16 @@ const OPEN_TIMEOUT_MS = 15_000;
 const OPENABLE_PROTOCOLS = new Set(['http:', 'https:']);
 const grouping = new Map<string, Promise<unknown>>();
 
+/**
+ * A load that has arrived. `newDocument` is false when nothing new was loaded: a move within the same document (a
+ * fragment), or a dialog the page opened before it finished.
+ */
+export interface Landing {
+  newDocument: boolean;
+}
+
+const ARRIVED: Landing = { newDocument: false };
+
 /** What the browser tools may show for a tab: the site setting for an origin, from the owner's site list. */
 export type SiteSetting = (origin: string) => Promise<SitePermission | undefined>;
 
@@ -25,10 +53,9 @@ export async function listTabs(session: StoredSession, siteSetting: SiteSetting)
     chrome.tabs.query({}),
     chrome.tabs.query({ active: true, lastFocusedWindow: true }),
   ]);
-  const frontId = front[0]?.id;
-  return await Promise.all(
-    usableSessionTabs(session, tabs).map(async (tab) => await describeTab(session, tab, tab.id === frontId, siteSetting)),
-  );
+  const usable = usableSessionTabs(session, tabs);
+  const currentId = currentSessionTab(session, usable, front[0]?.id)?.id;
+  return await Promise.all(usable.map(async (tab) => await describeTab(session, tab, tab.id === currentId, siteSetting)));
 }
 
 /**
@@ -56,39 +83,212 @@ export async function resolveSessionTab(session: StoredSession, tab: number | un
     assertAllowedTab(found);
     return found;
   }
-  const [all, front] = await Promise.all([
-    chrome.tabs.query({}),
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }),
-  ]);
-  const usable = usableSessionTabs(session, all);
-  const frontId = front[0]?.id;
-  const selected = usable.find((candidate) => candidate.id === frontId) ?? usable[0];
-  if (selected === undefined) throw new Error('No tab is available in this session. Open a tab or ask the owner to share one.');
+  const selected = await sessionCurrentTab(session);
+  if (selected === undefined) throw new Error(NO_TAB_MESSAGE);
   assertAllowedTab(selected);
   return selected;
 }
 
+/**
+ * A tab of the session that already shows this address, the fragment aside, and whose page the session may read without
+ * a prompt: only `tab` when it is given, else the current tab first. A tab still loading something else does not count.
+ */
+export async function sessionTabAt(
+  session: StoredSession,
+  url: string,
+  tab: number | undefined,
+  siteSetting: SiteSetting,
+): Promise<chrome.tabs.Tab | undefined> {
+  const wanted = withoutFragment(url);
+  if (wanted === undefined) return undefined;
+  let candidates: chrome.tabs.Tab[];
+  if (tab !== undefined) {
+    candidates = [await resolveSessionTab(session, tab)];
+  } else {
+    const [all, front] = await Promise.all([
+      chrome.tabs.query({}),
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }),
+    ]);
+    const usable = usableSessionTabs(session, all);
+    const current = currentSessionTab(session, usable, front[0]?.id);
+    candidates = current === undefined ? usable : [current, ...usable.filter((other) => other.id !== current.id)];
+  }
+  for (const candidate of candidates) {
+    if (candidate.pendingUrl !== undefined || candidate.url === undefined || withoutFragment(candidate.url) !== wanted) continue;
+    if (restrictedPageError(candidate.url) !== undefined) continue;
+    // A tab the session may not read yet does not count, so which prompt comes up says nothing about where that tab is.
+    if (!(await describeTab(session, candidate, false, siteSetting)).needsApproval) return candidate;
+  }
+  return undefined;
+}
+
+function withoutFragment(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = '';
+    return parsed.href;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The tab a call that names none uses, or nothing when the session has no tab. */
+export async function sessionCurrentTab(session: StoredSession): Promise<chrome.tabs.Tab | undefined> {
+  const [all, front] = await Promise.all([
+    chrome.tabs.query({}),
+    chrome.tabs.query({ active: true, lastFocusedWindow: true }),
+  ]);
+  return currentSessionTab(session, usableSessionTabs(session, all), front[0]?.id);
+}
+
+/**
+ * Opens the page in a new tab of the session's group, behind the tab the owner is on, and makes it the session's
+ * current tab. Call it only after the owner's answer: this is what sends the request and runs the page.
+ */
 export async function openSessionTab(
   session: StoredSession,
   url: string,
   store: SessionStore,
-): Promise<{ tab: TabInfo; origin: string }> {
+  claims: PanelStartCheck,
+): Promise<Landing & { tabId: number }> {
   const restricted = restrictedPageError(url);
   if (restricted !== undefined) throw new Error(restricted);
   if (!isOpenableUrl(url)) throw new Error('Only http and https URLs can be opened');
-  const origin = originOf(url);
-  if (origin === undefined) throw new Error('Only http and https URLs can be opened');
-  const created = await chrome.tabs.create({ url, active: true });
+  // The debugger is on the tab before its page runs: a dialog opened earlier than that can never be answered.
+  const created = await chrome.tabs.create({ url: 'about:blank', active: false });
   if (created.id === undefined) throw new Error('The browser did not create a tab');
   try {
-    await attachToSessionGroup(session, created.id, store);
-    await waitForLoad(created.id, OPEN_TIMEOUT_MS);
-    await assertTabOrigin(created.id, origin);
-    return { tab: tabInfo(await getTab(created.id), true), origin };
+    await attachToSessionGroup(session, created.id, store, claims);
+    await ensureAttached(created.id);
+    const landing = await loadAddress(created.id, url);
+    await store.setCurrentTab(session.id, created.id);
+    return { ...landing, tabId: created.id };
   } catch (error) {
     await chrome.tabs.remove(created.id).catch(() => undefined);
     throw error;
   }
+}
+
+export const HTTPS_UPGRADE_FAILED = 'the browser upgraded the address to https and the https site did not answer';
+
+/**
+ * Why a load failed. The browser upgrades an `http:` address to `https:` before sending anything and reports the failed
+ * upgrade (the https site did not answer, or reset the connection) as `net::ERR_BLOCKED_BY_CLIENT`, which reads as if
+ * something blocked the page. That error on an `http:` address is the upgrade. (An extension that blocks requests gives
+ * the same error, and is named the same way: the browser does not tell the two apart.)
+ */
+export function loadFailure(url: string, errorText: string): string {
+  return `Could not load ${url}: ${errorText === 'net::ERR_BLOCKED_BY_CLIENT' && isHttp(url) ? `${HTTPS_UPGRADE_FAILED}.` : errorText}`;
+}
+
+export function isHttp(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+/** Loads an address in the tab and waits for it. A fragment change on the same document has nothing to wait for. */
+export async function loadAddress(tabId: number, url: string): Promise<Landing> {
+  return await navigated(tabId, async () => {
+    const result = await sendCommand<{ loaderId?: string; errorText?: string }>(tabId, 'Page.navigate', { url });
+    if (result.errorText !== undefined && result.errorText !== '') throw new Error(loadFailure(url, result.errorText));
+    return result.loaderId !== undefined;
+  });
+}
+
+/**
+ * Runs a command that moves the tab, then waits for the new document to load and paint its first frames. A dialog that
+ * opens counts as arrived. A hidden page gets no animation frames and slow timers, so a page that renders from script
+ * would stay blank: the tab counts as visible until it has settled, which goes on after this returns so the agent is not
+ * kept waiting, and then goes back to hidden.
+ */
+async function navigated(tabId: number, go: () => Promise<boolean>, throughHistory = false): Promise<Landing> {
+  const since = documentEpoch(tabId);
+  const blocked = blockedLoadCount(tabId);
+  // A history entry can belong to this same document (a fragment, `pushState`), which fires no load event.
+  const moves = throughHistory ? sameDocumentMoveCount(tabId) : undefined;
+  const release = await holdInputFocus(tabId);
+  let settling = false;
+  try {
+    if (!(await go())) return ARRIVED;
+    await waitForDocumentLoad(tabId, since, OPEN_TIMEOUT_MS, moves);
+    // A reload or a step through history has no reply of its own that says the load failed.
+    const unreachable = blockedLoadSince(tabId, blocked);
+    // The address came from the page (a link, a form), so it can hold a value the page treats as secret.
+    if (unreachable !== undefined && isHttp(unreachable)) {
+      throw new Error(loadFailure(scrubReported(tabId, unreachable, true), 'net::ERR_BLOCKED_BY_CLIENT'));
+    }
+    await firstFrames(tabId);
+    settling = true;
+    void settlePage(tabId)
+      .catch(() => undefined)
+      .finally(() => void release());
+    return { newDocument: true };
+  } catch (error) {
+    if (!(error instanceof DialogOpenError)) throw error;
+    return ARRIVED;
+  } finally {
+    if (!settling) await release();
+  }
+}
+
+/** Two animation frames, or 100 ms if the page produces none. */
+async function firstFrames(tabId: number): Promise<void> {
+  await sendCommand(tabId, 'Runtime.evaluate', {
+    contextId: await privateWorld(tabId),
+    awaitPromise: true,
+    expression: 'new Promise((done) => { setTimeout(done, 100); requestAnimationFrame(() => requestAnimationFrame(done)); })',
+  });
+}
+
+export interface HistoryTarget {
+  entryId: number;
+  url: string;
+}
+
+/** The page one step back or forward in the tab's history. The blank page a new tab starts on does not count. */
+export async function historyTarget(tabId: number, direction: 'back' | 'forward'): Promise<HistoryTarget> {
+  const history = await sendCommand<{ currentIndex: number; entries: Array<{ id: number; url: string }> }>(tabId, 'Page.getNavigationHistory');
+  const entry = history.entries[history.currentIndex + (direction === 'back' ? -1 : 1)];
+  if (entry === undefined || entry.url === 'about:blank') {
+    throw new Error(`No ${direction === 'back' ? 'earlier' : 'later'} page in tab ${tabId}.`);
+  }
+  const restricted = restrictedPageError(entry.url);
+  if (restricted !== undefined) throw new Error(restricted);
+  return { entryId: entry.id, url: entry.url };
+}
+
+export async function goToHistoryEntry(tabId: number, entryId: number): Promise<Landing> {
+  return await navigated(tabId, async () => {
+    await sendCommand(tabId, 'Page.navigateToHistoryEntry', { entryId });
+    return true;
+  }, true);
+}
+
+/**
+ * Loads the tab's page again. The browser's reload sends a form's POST again without asking, so unless the debugger
+ * saw this document come from a GET, the address is fetched with a new GET through `location.replace`, from T3-Tab's
+ * own world, which keeps the history as it is (`Page.navigate` and `chrome.tabs.update` each add an entry). That drops
+ * the fragment, which would otherwise make it a same-document move that loads nothing.
+ */
+export async function reloadTab(tabId: number, url: string): Promise<Landing> {
+  if (documentMethod(tabId) === 'GET') {
+    return await navigated(tabId, async () => {
+      await sendCommand(tabId, 'Page.reload');
+      return true;
+    });
+  }
+  const address = new URL(url);
+  address.hash = '';
+  return await navigated(tabId, async () => {
+    await sendCommand(tabId, 'Runtime.evaluate', {
+      contextId: await privateWorld(tabId),
+      expression: `location.replace(${JSON.stringify(address.href)})`,
+    });
+    return true;
+  });
 }
 
 export async function switchSessionTab(session: StoredSession, tabId: number, siteSetting: SiteSetting): Promise<TabInfo> {
@@ -129,9 +329,15 @@ async function getTab(tabId: number): Promise<chrome.tabs.Tab> {
 /**
  * A tab a page opened is kept in its opener's session group, so the session that works in the opener can
  * use it. Only the opener's group decides: a tab opened from the owner's own tabs, shared ones included, is
- * left alone. The tab carries no origin approval, so its first read still prompts.
+ * left alone. The tab carries no origin approval, so its first read still prompts, and it joins its opener's tree of
+ * openers, whose secret values are taken out of its title and address.
  */
 export async function adoptPopupTab(tabId: number, sourceTabId: number, store: SessionStore): Promise<void> {
+  // A form the opener sent into the new tab (a GET form with a target) puts its values in the new tab's address and title,
+  // so the tab joins its opener's tree and the opener's values are kept for the tree, which scrubs the title and address
+  // of its tabs. Done before anything else, while the tab is still loading; what the tree learns later reaches it too.
+  joinTree(sourceTabId, tabId);
+  rememberSecrets(sourceTabId, knownSecrets(sourceTabId));
   try {
     const opener = await chrome.tabs.get(sourceTabId);
     const owner = sessionForPopup(await store.list(), opener);
@@ -142,44 +348,69 @@ export async function adoptPopupTab(tabId: number, sourceTabId: number, store: S
   }
 }
 
-async function assertTabOrigin(tabId: number, expectedOrigin: string): Promise<void> {
-  const tab = await getTab(tabId);
-  assertAllowedTab(tab);
-  const url = tab.url ?? tab.pendingUrl ?? '';
-  const actual = originOf(url);
-  if (actual !== expectedOrigin) {
-    throw new Error(
-      `The page moved from ${expectedOrigin} to ${actual ?? 'an unknown origin'}. Read the new page and approve it before acting there.`,
-    );
-  }
-}
-
 function assertAllowedTab(tab: chrome.tabs.Tab): void {
   const error = restrictedPageError(tab.url ?? tab.pendingUrl ?? '');
   if (error !== undefined) throw new Error(error);
 }
 
-async function attachToSessionGroup(session: StoredSession, tabId: number, store: SessionStore): Promise<void> {
+/** Answers whether a session was started from the side panel (`ClaimStore.startedFromPanel`). */
+export interface PanelStartCheck {
+  startedFromPanel(sessionId: string, t3ThreadId?: string): Promise<boolean>;
+}
+
+/**
+ * Puts a tab the session opened in the session's group. A session that reached for the tools by itself gets its group
+ * created collapsed, so its tabs stay one chip in the owner's tab strip, and T3-Tab never collapses it again: once the
+ * owner expands it, it stays open. A panel-started session's group is expanded, as it always was.
+ */
+export async function attachToSessionGroup(
+  session: StoredSession,
+  tabId: number,
+  store: SessionStore,
+  claims: PanelStartCheck,
+): Promise<void> {
   await serialize(session.id, async () => {
     const stored = await store.get(session.id);
     if (stored === undefined) throw new Error('Session is not registered');
     let groupId = stored.groupId;
-    if (groupId === undefined) {
-      groupId = await chrome.tabs.group({ tabIds: [tabId] });
-      await store.rememberGroup(session.id, groupId);
-    } else {
+    let created = false;
+    if (groupId !== undefined) {
       try {
         groupId = await chrome.tabs.group({ tabIds: [tabId], groupId });
       } catch {
-        groupId = await chrome.tabs.group({ tabIds: [tabId] });
-        await store.rememberGroup(session.id, groupId);
+        groupId = undefined;
       }
     }
-    await chrome.tabGroups.update(groupId, {
-      title: groupTitle(session.name),
-      color: sessionColor(session.id),
-      collapsed: false,
-    });
+    if (groupId === undefined) {
+      groupId = await chrome.tabs.group({ tabIds: [tabId] });
+      created = true;
+    }
+    // Asked inside the serialized step, so a claim that arrives meanwhile is seen here or expands the group after.
+    const fromPanel = await claims.startedFromPanel(stored.id, stored.t3ThreadId);
+    const details: chrome.tabGroups.UpdateProperties = { title: groupTitle(session.name), color: sessionColor(session.id) };
+    if (created) {
+      await store.rememberGroup(session.id, groupId, !fromPanel);
+      details.collapsed = !fromPanel;
+    } else if (fromPanel) {
+      // As before for a panel-started session; for one that was taken for self-started, this is the expand on its claim.
+      details.collapsed = false;
+      if (stored.groupStartedCollapsed === true) await store.groupExpanded(session.id);
+    }
+    await chrome.tabGroups.update(groupId, details);
+  });
+}
+
+/**
+ * Expands a group T3-Tab created collapsed once its session turns out to be panel-started (its claim arrived after its
+ * first tab). A group that did not start collapsed, or was already expanded for the session, is left as the owner has it.
+ */
+export async function expandStartedCollapsedGroup(sessionId: string, store: SessionStore): Promise<void> {
+  await serialize(sessionId, async () => {
+    const stored = await store.get(sessionId);
+    if (stored?.groupId === undefined || stored.groupStartedCollapsed !== true) return;
+    await store.groupExpanded(sessionId);
+    // The group may be gone: the owner closed or ungrouped its tabs.
+    await chrome.tabGroups.update(stored.groupId, { collapsed: false }).catch(() => undefined);
   });
 }
 
@@ -193,23 +424,4 @@ async function serialize<T>(key: string, work: () => Promise<T>): Promise<T> {
   } finally {
     if (grouping.get(key) === tracked) grouping.delete(key);
   }
-}
-
-/** Resolves when the tab finishes loading, or after the timeout: a slow page is still returned. */
-async function waitForLoad(tabId: number, timeoutMs: number): Promise<void> {
-  await new Promise<void>((resolve) => {
-    const done = (): void => {
-      clearTimeout(timer);
-      chrome.tabs.onUpdated.removeListener(listener);
-      resolve();
-    };
-    const listener = (updatedId: number, change: { status?: string }): void => {
-      if (updatedId === tabId && change.status === 'complete') done();
-    };
-    const timer = setTimeout(done, timeoutMs);
-    chrome.tabs.onUpdated.addListener(listener);
-    void chrome.tabs.get(tabId).then((tab) => {
-      if (tab.status === 'complete' && tab.url !== undefined && tab.url !== '' && tab.url !== 'about:blank') done();
-    });
-  });
 }

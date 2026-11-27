@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { formatRead, MAX_OUTPUT_CHARS, TabState } from '../src/reader/page.js';
-import { ax, buttonPage, page, signInPage } from './ax-fixtures.js';
+import { OUTLINE_AT, OUTLINE_MAX_SHARE } from '../src/reader/outline.js';
+import { formatRead, MAX_OUTPUT_CHARS, REPEAT_MS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
+import { ax, buttonPage, docsPage, feed, fieldPage, longArticle, longPage, page, signInPage } from './ax-fixtures.js';
 
 describe('reading a page', () => {
   it('returns the full text on the first read, with a header line', async () => {
@@ -98,7 +99,7 @@ describe('reading a page', () => {
 
   it('says there is nothing to show on an empty view', async () => {
     const empty = page([ax(1, 'RootWebArea')]);
-    expect(await formatRead(new TabState(), 's1', empty, {})).toContain('(no interactive elements; use all to see the text)');
+    expect(await formatRead(new TabState(), 's1', empty, {})).toContain('(empty page; all also lists images)');
     expect(await formatRead(new TabState(), 's1', empty, { all: true })).toContain('(empty page)');
   });
 
@@ -113,21 +114,181 @@ describe('reading a page', () => {
     expect(reply).not.toContain('value="');
   });
 
+  it('masks a redacted field whatever its role, in a read, a find and a diff', async () => {
+    const field = (id: number, role: string, name: string): ReturnType<typeof ax> =>
+      ax(id, role, name, [], { value: 'hunter2-secret', props: { password: true } });
+    const build = (): ReturnType<typeof ax>[] => [
+      ax(1, 'RootWebArea', '', [2, 3, 4, 5]),
+      field(2, 'combobox', 'PW combo'),
+      field(3, 'searchbox', 'PW search'),
+      field(4, 'spinbutton', 'PW spin'),
+      field(5, 'slider', 'PW slider'),
+    ];
+    const state = new TabState();
+    const reply = await formatRead(state, 's1', page(build()), { all: true });
+    for (const name of ['combobox "PW combo"', 'searchbox "PW search"', 'spinbutton "PW spin"', 'slider "PW slider"']) {
+      expect(reply).toContain(`${name} value=<redacted>`);
+    }
+    expect(reply).not.toContain('hunter2');
+    expect(reply).not.toContain('value="');
+    const found = await formatRead(state, 's1', page(build()), { find: 'PW combo' });
+    expect(found).toContain('combobox "PW combo" value=<redacted>');
+    expect(found).not.toContain('hunter2');
+    const changed = build();
+    changed[1] = ax(2, 'combobox', 'PW combo', [], { value: 'another-secret', props: { password: true, invalid: true } });
+    const diff = await formatRead(state, 's1', page(changed), {});
+    expect(diff).toContain('value=<redacted>');
+    expect(diff).not.toContain('another-secret');
+  });
+
   it('cuts a long reply at a line and says how to read the rest', async () => {
-    const reply = await formatRead(new TabState(), 's1', page(buttonPage(2_000)), {});
-    expect(reply.length).toBeLessThan(MAX_OUTPUT_CHARS + 200);
+    const reply = await formatRead(new TabState(), 's1', page(buttonPage(2_000)), { all: true });
+    expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
     expect(reply).toMatch(/… truncated at 12000 characters\. Use find, a ref subtree or depth to read the rest\.$/);
     expect(reply).not.toContain('"Button 2000"');
   });
 });
 
+describe('a load reply', () => {
+  it('carries a short page and is the baseline: a full read right after it, unchanged, is not sent again', async () => {
+    const state = new TabState();
+    const loaded = await formatRead(state, 's', page(signInPage()), { load: true });
+    expect(loaded).toContain('# Sign in');
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toBe(
+      'tab 7\nNo changes since the load\'s reply, which showed the whole page.',
+    );
+    // Only right after the load: a second full read is the whole page again.
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
+  });
+
+  it('sends a full read whole when it comes later than a read sent with the load would', async () => {
+    const state = new TabState();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      await formatRead(state, 's', page(signInPage()), { load: true });
+      now.mockReturnValue(1_000_000 + REPEAT_MS);
+      expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('sends a full read whole when the page changed since the load', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(signInPage()), { load: true });
+    const changed = await formatRead(state, 's', page(buttonPage(3)), { full: true });
+    expect(changed).toContain('# Buttons');
+  });
+
+  it('leaves a long page to the read sent with it, and sets no baseline', async () => {
+    const state = new TabState();
+    const long = page(buttonPage(400));
+    const loaded = await formatRead(state, 's', long, { load: true });
+    expect(loaded).toMatch(/^tab 7: Test page — http:\/\/localhost\/test\n\(The page is [\d,]+ characters, too long for this reply: read shows it, find searches it\.\)$/);
+    // The read gets the page, outlined because it is long.
+    const read = await formatRead(state, 's', long, {});
+    expect(read).toContain('"Button 40"');
+    expect(read).toMatch(/\(Outline of a long page: 360 links and buttons left out\. .*\)$/);
+    // A find on a long page is still answered.
+    expect(await formatRead(new TabState(), 's', long, { load: true, find: 'Button 399' })).toContain('Button 399');
+  });
+
+  it('keeps the earlier baseline when a long page is left out', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(buttonPage(400)), {});
+    await formatRead(state, 's', page(buttonPage(400)), { load: true });
+    expect(await formatRead(state, 's', page(buttonPage(400)), {})).toBe('tab 7\nNo changes since the last read.');
+  });
+});
+
+describe('a full read after an act', () => {
+  const repeat = "tab 7\nNo changes since the act's reply, which showed the whole page.";
+
+  it('answers in one line when the act showed the whole page and nothing changed, once', async () => {
+    const state = new TabState();
+    const acted = await formatRead(state, 's', page(signInPage()), { act: true });
+    expect(acted).toContain('# Sign in');
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toBe(repeat);
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
+  });
+
+  it('answers in one line when the act fell back to the whole page from a diff', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(buttonPage(10)), {});
+    const acted = await formatRead(state, 's', page(signInPage()), { act: true });
+    expect(acted).toContain('# Sign in');
+    expect(acted).not.toContain('Changed since the last read');
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toBe(repeat);
+  });
+
+  it('sends the whole view when the act sent an outline: the agent saw only the outline', async () => {
+    const state = new TabState();
+    const acted = await formatRead(state, 's', page(longPage()), { act: true });
+    expect(acted).toContain('(Outline of a long page');
+    const full = await formatRead(state, 's', page(longPage()), { full: true });
+    expect(full).not.toContain('Outline of a long page');
+    expect(full).toContain('"Item 150"');
+  });
+
+  it('sends the whole view when the act sent a diff', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(buttonPage(30)), {});
+    const changed = buttonPage(30).map((node) => (node.id === '110' ? { ...node, name: 'Renamed' } : node));
+    expect(await formatRead(state, 's', page(changed), { act: true })).toContain('Changed since the last read:');
+    const full = await formatRead(state, 's', page(changed), { full: true });
+    expect(full).toContain('e30 button "Button 30"');
+    expect(full).toContain('e11 button "Renamed"');
+  });
+
+  it('sends the whole view when the page changed after the act', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(signInPage()), { act: true });
+    const changed = signInPage().map((node) => (node.id === '10' ? { ...node, name: 'Welcome back' } : node));
+    const full = await formatRead(state, 's', page(changed), { full: true });
+    expect(full).toContain('# Sign in');
+    expect(full).toContain('"Welcome back"');
+  });
+
+  it('sends the whole view when the act reply was cut at a lower cap', async () => {
+    const state = new TabState();
+    const acted = await formatRead(state, 's', page(buttonPage(200)), { act: true, cap: 2_000 });
+    expect(acted).toMatch(/… truncated at 2000 characters/);
+    expect(await formatRead(state, 's', page(buttonPage(200)), { full: true })).toContain('"Button 200"');
+  });
+
+  it('sends the whole view when the full read comes later than one sent with the act would', async () => {
+    const state = new TabState();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      await formatRead(state, 's', page(signInPage()), { act: true });
+      now.mockReturnValue(1_000_000 + REPEAT_MS);
+      expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('is only for full reads and for the session that got the reply', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(signInPage()), { act: true });
+    expect(await formatRead(state, 's2', page(signInPage()), { full: true })).toContain('# Sign in');
+    expect(await formatRead(state, 's', page(signInPage()), {})).toBe('tab 7\nNo changes since the last read.');
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
+  });
+});
+
 describe('find', () => {
-  it('returns only the matching lines, searching all text unless told otherwise', async () => {
+  it('returns only the matching lines, searching every node unless told otherwise', async () => {
     const reply = await formatRead(new TabState(), 's1', page(signInPage()), { find: 'hello' });
     expect(reply).toBe('tab 7: Test page — http://localhost/test\n  e3 button "Submit"\n"Hello there"');
-    expect(await formatRead(new TabState(), 's1', page(signInPage()), { find: 'hello', all: false })).toContain(
-      'No matches for "hello"',
-    );
+    const pictured = [ax(1, 'RootWebArea', '', [2]), ax(2, 'image', 'A hello sign')];
+    expect(await formatRead(new TabState(), 's1', page(pictured), { find: 'hello' })).toContain('img "A hello sign"');
+    expect(await formatRead(new TabState(), 's1', page(pictured), { find: 'hello', all: false })).toContain('No matches for "hello"');
+  });
+
+  it('searches text the default view left out', async () => {
+    const reply = await formatRead(new TabState(), 's1', page(longArticle(400)), { find: 'Sentence 399 ' });
+    expect(reply).toContain('"Sentence 399 of the article');
   });
 
   it('treats an empty query as no query', async () => {
@@ -142,11 +303,396 @@ describe('find', () => {
     expect(await formatRead(state, 's1', page(buttonPage(30)), {})).toContain('No changes since the last read.');
   });
 
+  it('keeps a price with its book, and a link found by name says where it goes', async () => {
+    const book = (id: number, title: string, price: string): ReturnType<typeof ax>[] => [
+      ax(id, 'listitem', '', [id + 1, id + 2, id + 3]),
+      ax(id + 1, 'link', title, [], { props: { url: `http://localhost/catalogue/${id}/index.html` } }),
+      ax(id + 2, 'paragraph', '', [id + 4]),
+      ax(id + 3, 'paragraph', '', [id + 5]),
+      ax(id + 4, 'StaticText', price),
+      ax(id + 5, 'StaticText', 'In stock'),
+    ];
+    const nodes = [ax(1, 'RootWebArea', '', [2]), ax(2, 'list', '', [10, 20]), ...book(10, 'Sharp Objects', '£47.82'), ...book(20, 'The Exiled', '£43.45')];
+    const prices = await formatRead(new TabState(), 's1', page(nodes), { find: '£' });
+    // Only the matches and the line before each, with its address (a cut title is whole there): no stock lines, no separators.
+    expect(prices.split('\n').slice(1)).toEqual([
+      'e1 link "Sharp Objects" → /catalogue/10/index.html',
+      '"£47.82"',
+      'e2 link "The Exiled" → /catalogue/20/index.html',
+      '"£43.45"',
+    ]);
+    const title = await formatRead(new TabState(), 's1', page(nodes), { find: 'exiled' });
+    expect(title.split('\n').slice(1)).toEqual(['"In stock"', 'e2 link "The Exiled" → /catalogue/20/index.html']);
+  });
+
   it('is much shorter than the page it searches', async () => {
     const full = await formatRead(new TabState(), 's1', page(buttonPage(200)), {});
     const found = await formatRead(new TabState(), 's1', page(buttonPage(200)), { find: 'Button 77"' });
-    expect(found.split('\n')).toHaveLength(1 + 3);
+    expect(found.split('\n')).toHaveLength(1 + 2);
     expect(found.length).toBeLessThan(full.length / 20);
+  });
+});
+
+describe('text in the default view', () => {
+  it('shows a short page whole: its text, lists and live regions', async () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 3, 5, 7]),
+      ax(2, 'heading', 'Activity log', [], { props: { level: 1 } }),
+      ax(3, 'alert', '', [4]),
+      ax(4, 'StaticText', 'Incorrect username or password.'),
+      ax(5, 'list', 'Entries', [6]),
+      ax(6, 'listitem', '', [8]),
+      ax(7, 'button', 'Load more'),
+      ax(8, 'StaticText', '#1 · Deploy finished · ref XD-8919'),
+    ];
+    expect(await formatRead(new TabState(), 's1', page(nodes), {})).toBe(
+      [
+        'tab 7: Test page — http://localhost/test',
+        '# Activity log',
+        'alert "Incorrect username or password."',
+        'e1 list "Entries"',
+        '  "#1 · Deploy finished · ref XD-8919"',
+        'e2 button "Load more"',
+      ].join('\n'),
+    );
+  });
+
+  it('keeps every element and as much text as the budget allows, the main content first, and says what it left out', async () => {
+    const reply = await formatRead(new TabState(), 's1', page(longArticle(400)), {});
+    const lines = reply.split('\n');
+    expect(reply).toContain('e1 link "Home"');
+    expect(reply).toContain('e2 button "Subscribe"');
+    expect(reply).toContain('"Sentence 1 of the article');
+    expect(reply).not.toContain('Sentence 399 ');
+    // The footer's text comes after the article's, so it is the part left out.
+    expect(reply).not.toContain('Footer text');
+    expect(reply).toContain('alert "Saved."');
+    const text = lines.filter((line) => line.trimStart().startsWith('"')).join('\n');
+    expect(text.length).toBeLessThanOrEqual(TEXT_BUDGET);
+    expect(text.length).toBeGreaterThan(TEXT_BUDGET - 200);
+    expect(lines.at(-1)).toMatch(/^\(\d+ text lines left out, \d+ characters: find searches them, read a ref for one part, all for the whole page\)$/);
+  });
+
+  it('folds a long sidebar to one line so the main text has room, and keeps every link in reach', async () => {
+    const state = new TabState();
+    const reply = await formatRead(state, 's1', page(docsPage(500, 60)), {});
+    const lines = reply.split('\n');
+    expect(lines[1]).toBe('e1 navigation "Sidebar" (500 links; read e1): "Guide to topic 0", "Guide to topic 1", "Guide to topic 2", "Guide to topic 3", …');
+    expect(reply).not.toContain('e2 link "Guide to topic 0"');
+    expect(lines[2]).toBe('# Getting started');
+    // The text, with its links written in.
+    expect(lines[3]).toBe('"Paragraph 0 explains one part of the subject, in words, and then points to [related page 0](e502) for the details that this page leaves out."');
+    expect(reply).toContain('e562 button "Edit this page"');
+    expect(lines.at(-1)).toMatch(/^\(\d+ text lines left out, \d+ characters, \d+ links in them: find searches them/);
+    // The sidebar's ref lists its links with the refs they had all along; find reaches one in the folded list and one in
+    // text the budget left out.
+    const sidebar = await formatRead(state, 's1', page(docsPage(500, 60)), { ref: 'e1' });
+    expect(sidebar).toContain('  e2 link "Guide to topic 0"');
+    expect(await formatRead(state, 's1', page(docsPage(500, 60)), { find: 'topic 499' })).toContain('e501 link "Guide to topic 499"');
+    expect(await formatRead(state, 's1', page(docsPage(500, 60)), { find: 'related page 59' })).toContain('[related page 59](e561)');
+    // A later read shows only what changed, as before.
+    expect(await formatRead(state, 's1', page(docsPage(500, 60)), {})).toBe('tab 7\nNo changes since the last read.');
+  });
+
+  it('counts the text of a folded list as left out', async () => {
+    const nodes = docsPage(500, 60);
+    const sidebar = nodes.find((node) => node.id === '2')!;
+    sidebar.children.push('9000');
+    nodes.push(ax(9000, 'StaticText', 'Version 4.2 of the guides'));
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).not.toContain('Version 4.2');
+    const [, lines] = /\((\d+) text lines left out/.exec(reply.split('\n').at(-1)!)!;
+    const withoutIt = await formatRead(new TabState(), 's1', page(docsPage(500, 60)), {});
+    const [, before] = /\((\d+) text lines left out/.exec(withoutIt.split('\n').at(-1)!)!;
+    expect(Number(lines)).toBe(Number(before) + 1);
+  });
+
+  it('finds a link written into text by its address, and prints the address on the matching line only', async () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 6]),
+      ax(2, 'paragraph', '', [3, 4, 5]),
+      ax(3, 'StaticText', 'The first browser was written in 1990 by '),
+      ax(4, 'link', 'Tim Berners-Lee', [], { props: { url: 'http://localhost/wiki/Tim_Berners-Lee' } }),
+      ax(5, 'StaticText', ' at CERN, as a tool for sharing papers.'),
+      ax(6, 'paragraph', '', [7]),
+      ax(7, 'StaticText', 'It ran on NeXT computers.'),
+    ];
+    const state = new TabState();
+    expect(await formatRead(state, 's1', page(nodes), {})).toContain('[Tim Berners-Lee](e1) at CERN');
+    const found = await formatRead(state, 's1', page(nodes), { find: '/wiki/Tim_Berners' });
+    expect(found).toContain('[Tim Berners-Lee](e1 → /wiki/Tim_Berners-Lee) at CERN');
+    // A search for the text prints the line as a read does, around its match.
+    expect(await formatRead(state, 's1', page(nodes), { find: 'NeXT' })).toContain('"The first browser was written in 1990 by [Tim Berners-Lee](e1) at CERN');
+  });
+
+  it('leaves a page that fits as it is', async () => {
+    const reply = await formatRead(new TabState(), 's1', page(docsPage(20, 3)), {});
+    expect(reply).toContain('  e2 link "Guide to topic 0"');
+    expect(reply).toContain('  e21 link "Guide to topic 19"');
+  });
+
+  it('gives text no more room than the cap leaves after the elements', async () => {
+    const nodes = buttonPage(450);
+    nodes[0] = { ...nodes[0]!, children: [...nodes[0]!.children, '9000'] };
+    nodes.push(ax(9000, 'paragraph', '', [9001]), ax(9001, 'StaticText', 'A closing remark that does not fit.'));
+    // A depth that hides nothing shows the default view whole: a long page's outline would leave the buttons out.
+    const reply = await formatRead(new TabState(), 's1', page(nodes), { depth: 5 });
+    expect(reply).toContain('"Button 450"');
+    expect(reply).not.toContain('closing remark');
+    expect(reply).toMatch(/\(1 text lines left out, 35 characters/);
+    expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
+  });
+
+  it('keeps the note when the elements alone pass the cap', async () => {
+    const nodes = buttonPage(2_000);
+    nodes[0] = { ...nodes[0]!, children: ['9000', ...nodes[0]!.children] };
+    nodes.push(ax(9000, 'paragraph', '', [9001]), ax(9001, 'StaticText', 'An intro.'));
+    const reply = await formatRead(new TabState(), 's1', page(nodes), { depth: 5 });
+    expect(reply).toContain('… truncated at 12000 characters.');
+    expect(reply).toMatch(/\(1 text lines left out, 9 characters: .*\)$/);
+  });
+
+  it('holds a long log to the budget, newest entries first, and keeps the controls after it', async () => {
+    const ids = Array.from({ length: 400 }, (_, index) => 1_000 + index * 2);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 3, 4]),
+      ax(2, 'log', 'Chat', ids),
+      ax(3, 'textbox', 'Message'),
+      ax(4, 'button', 'Send'),
+      ...ids.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', `Message ${index + 1}: hello there, this is a chat line.`)]),
+    ];
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toContain('e1 log "Chat"');
+    expect(reply).toContain('Message 400: hello');
+    expect(reply).not.toContain('"Message 1: hello');
+    expect(reply).toContain('e3 button "Send"');
+    expect(reply).toMatch(/\(\d+ text lines left out, \d+ characters: .*\)$/);
+    expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
+    const text = reply.split('\n').filter((line) => line.trimStart().startsWith('"')).join('\n');
+    expect(text.length).toBeLessThanOrEqual(TEXT_BUDGET);
+  });
+
+  it('keeps a dialog\'s buttons and the start of its text when the text is long', async () => {
+    const ids = Array.from({ length: 300 }, (_, index) => 1_000 + index * 2);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2]),
+      ax(2, 'dialog', 'Terms', [...ids, 3]),
+      ax(3, 'button', 'Accept'),
+      ...ids.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', `Clause ${index + 1}. The service is provided as is, without warranty of any kind.`)]),
+    ];
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toContain('"Clause 1. The service');
+    expect(reply).not.toContain('Clause 300.');
+    expect(reply).toContain('e2 button "Accept"');
+    expect(reply).toMatch(/text lines left out/);
+  });
+
+  it('keeps a change within the cap, its changed elements before its text', async () => {
+    const state = new TabState();
+    await formatRead(state, 's1', page(buttonPage(450)), {});
+    // One button in five renamed (about 10,000 characters of diff), and 80 paragraphs of new text.
+    const nodes = buttonPage(450).map((node) => (node.role === 'button' && Number(node.id) % 5 === 0 ? { ...node, name: `${node.name} renamed` } : node));
+    const ids = Array.from({ length: 80 }, (_, index) => 9_000 + index * 2);
+    nodes[0] = { ...nodes[0]!, children: [...nodes[0]!.children, ...ids.map(String)] };
+    nodes.push(...ids.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', `New paragraph ${index + 1}, which says something long enough to count.`)]));
+    const reply = await formatRead(state, 's1', page(nodes), {});
+    expect(reply).toContain('Changed since the last read:');
+    expect(reply).toContain('+e446 button "Button 446 renamed"');
+    expect(reply).not.toContain('truncated at');
+    expect(reply).toMatch(/\(\d+ changed text lines left out, \d+ characters: .*\)$/);
+    expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
+  });
+
+  it('gives a ref read all the text that fits under the cap', async () => {
+    const state = new TabState();
+    await formatRead(state, 's1', page(longArticle(400)), {});
+    const reply = await formatRead(state, 's1', page(longArticle(400)), { ref: 'e3' });
+    expect(reply).toContain('Sentence 150 ');
+    expect(reply.length).toBeGreaterThan(TEXT_BUDGET * 2);
+  });
+
+  it('shows new text in a change, within the budget', async () => {
+    const state = new TabState();
+    await formatRead(state, 's1', page(feed(10)), {});
+    const grown = await formatRead(state, 's1', page(feed(14)), {});
+    expect(grown).toContain('Changed since the last read:');
+    expect(grown).toContain('+  "#14 · Entry"');
+    const flooded = await formatRead(state, 's1', page(feed(600)), {});
+    expect(flooded).toContain('"#15 · Entry"');
+    expect(flooded).not.toContain('"#600 · Entry"');
+    expect(flooded).toMatch(/text lines left out/);
+  });
+
+  it('shows a live region\'s message on the page a form posts back to', async () => {
+    const state = new TabState();
+    const form = (message: string | undefined, epoch: number) =>
+      page(
+        [
+          ax(1, 'RootWebArea', '', message === undefined ? [2, 3] : [4, 2, 3]),
+          ax(2, 'textbox', 'Password', [], { props: { password: true }, value: 'hunter2' }),
+          ax(3, 'button', 'Sign in'),
+          ax(4, 'paragraph', '', [5], { props: { live: 'assertive' } }),
+          ax(5, 'StaticText', message ?? ''),
+        ],
+        { epoch },
+      );
+    await formatRead(state, 's1', form(undefined, 1), {});
+    const reloaded = await formatRead(state, 's1', form('Incorrect username or password.', 2), {});
+    expect(reloaded).toContain('"Incorrect username or password."');
+    expect(reloaded).toContain('textbox "Password" value=<redacted>');
+    expect(reloaded).not.toContain('hunter2');
+  });
+});
+
+describe('an outline of a long page', () => {
+  const note = /\n\(Outline of a long page: 141 links and 8 text lines left out, 2433 characters, 1 link in them\. find searches them, read a ref for one part, full for the whole view\)$/;
+
+  it('keeps the shape and the first of the rest, and says how to get at what it left out', async () => {
+    const whole = await formatRead(new TabState(), 's1', page(longPage()), { full: true });
+    expect(whole.length).toBeGreaterThan(OUTLINE_AT);
+    const reply = await formatRead(new TabState(), 's1', page(longPage()), {});
+    expect(reply).toMatch(note);
+    expect(reply.length).toBeLessThan(whole.length / 2);
+    // Headings, landmarks, the form with everything in it, the live region and the dialog.
+    for (const line of ['# Report', 'e23 form "Search"', '  e24 textbox "Query"', '  e25 textbox "Code" [invalid]', '  "A code has three letters."', '  e26 button "Go"', 'e27 list "Items"', 'alert "Report saved."', 'e190 dialog "Cookies"', '  "We use cookies."', '  e191 button "Accept"']) {
+      expect(reply.split('\n')).toContain(line);
+    }
+    // The first links, and the first text of the main content.
+    expect(reply).toContain('e67 link "Item 40"');
+    expect(reply).not.toContain('"Item 41"');
+    expect(reply).toContain('"Paragraph 4 of the report');
+    expect(reply).not.toContain('"Paragraph 5 of the report');
+    // Long lists around the content fold to one line each; a left-out link takes what it holds with it.
+    expect(reply).toContain('e1 navigation "Site" (20 links; read e1): "Nav 1"');
+    expect(reply).toContain('e179 contentinfo "Footer" (10 links; read e179)');
+    expect(reply).not.toContain('Story');
+  });
+
+  it('outlines a read and the whole page an act replies with, not full, a load, a ref, depth, all, find or a diff', async () => {
+    expect(await formatRead(new TabState(), 's1', page(longPage()), { echoed: [] })).toMatch(note);
+    expect(await formatRead(new TabState(), 's1', page(longPage()), { load: true })).toContain('too long for this reply');
+    for (const options of [{ full: true }, { ref: 'e27' }, { depth: 9 }, { all: true }, { find: 'Item' }]) {
+      const state = new TabState();
+      // A ref read needs the ref handed out first.
+      await formatRead(state, 's0', page(longPage()), {});
+      expect(await formatRead(state, 's1', page(longPage()), options)).not.toContain('Outline of a long page');
+    }
+    const state = new TabState();
+    await formatRead(state, 's1', page(longPage()), {});
+    const changed = longPage().map((node) => (node.id === '590' ? { ...node, name: 'Item ninety-one' } : node));
+    expect(await formatRead(state, 's1', page(changed), {})).toBe(
+      'tab 7\nChanged since the last read:\n@@\n   e117 link "Item 90"\n-  e118 link "Item 91"\n+  e118 link "Item ninety-one"\n   e119 link "Item 92"',
+    );
+  });
+
+  it('gives the whole view to a full read after an outline that said nothing changed', async () => {
+    const state = new TabState();
+    await formatRead(state, 's1', page(longPage()), {});
+    expect(await formatRead(state, 's1', page(longPage()), {})).toBe('tab 7\nNo changes since the last read.');
+    const whole = await formatRead(state, 's1', page(longPage()), { full: true });
+    expect(whole).toContain('"Item 41"');
+    expect(whole).not.toContain('Outline of a long page');
+  });
+
+  it('keeps a form\'s errors in the whole page an act replies with after the document changed', async () => {
+    const state = new TabState();
+    await formatRead(state, 's1', page(signInPage()), {});
+    const reply = await formatRead(state, 's1', page(longPage(), { epoch: 2 }), { echoed: [{ ref: 'e2', kind: 'value', text: 'x' }] });
+    expect(reply).toMatch(note);
+    expect(reply).toContain('  e25 textbox "Code" [invalid]\n  "A code has three letters."');
+  });
+
+  it('keeps every line in the baseline, so a later read sees a change to what it left out', async () => {
+    const state = new TabState();
+    await formatRead(state, 's1', page(longPage()), {});
+    const changed = longPage().map((node) => (node.id === '321' ? { ...node, name: 'Paragraph 11 was rewritten.' } : node));
+    const reply = await formatRead(state, 's1', page(changed), {});
+    expect(reply).toContain('+"Paragraph 11 was rewritten."');
+  });
+
+  it('keeps the buttons just after a field outside a form, and counts the others with the links', async () => {
+    const links = Array.from({ length: 300 }, (_, index) => 100 + index);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [...links, 2, 3, 4, 5, 6, 7]),
+      ...links.map((id, index) => ax(id, 'link', `Story number ${index + 1} on the list`)),
+      ax(2, 'textbox', 'Email'),
+      ax(3, 'button', 'Subscribe'),
+      ax(4, 'link', 'Privacy'),
+      ax(5, 'link', 'Terms'),
+      ax(6, 'link', 'Help'),
+      ax(7, 'button', 'Share'),
+    ];
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toContain('e301 textbox "Email"\ne302 button "Subscribe"\n');
+    expect(reply).not.toContain('Share');
+    expect(reply).toMatch(/\(Outline of a long page: 264 links and buttons left out\. /);
+  });
+
+  it('leaves out the text of the rows whose links it left out, on a page with no main', async () => {
+    const rows = Array.from({ length: 120 }, (_, index) => 1_000 + index * 4);
+    const nodes = [
+      ax(1, 'RootWebArea', '', rows),
+      ...rows.flatMap((id, index) => [
+        ax(id, 'generic', '', [id + 1, id + 2, id + 3]),
+        ax(id + 1, 'StaticText', `${index + 1}.`),
+        ax(id + 2, 'link', `A story with a long enough title, number ${index + 1}`),
+        ax(id + 3, 'StaticText', `${index + 7} points`),
+      ]),
+    ];
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toContain('"40."');
+    expect(reply).toContain('number 40"');
+    expect(reply).not.toContain('"41."');
+    expect(reply).not.toContain('"47 points"');
+  });
+
+  it('keeps the start of an article that comes after the menus of a page with no main', async () => {
+    // An old table layout: 150 menu links, then the headline and the article's paragraphs, with no landmark at all.
+    const menu = Array.from({ length: 150 }, (_, index) => 100 + index);
+    const paragraphs = Array.from({ length: 25 }, (_, index) => 300 + index * 2);
+    const prose = (index: number): string =>
+      `Paragraph ${index + 1} of the article. `.padEnd(380, 'The story goes on with more about the event and its causes. ').slice(0, 380);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [...menu, 2, ...paragraphs]),
+      ...menu.map((id, index) => ax(id, 'link', `Section ${index + 1}`)),
+      ax(2, 'heading', 'The article headline', [], { props: { level: 1 } }),
+      ...paragraphs.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', prose(index))]),
+    ];
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(reply).toMatch(/\(Outline of a long page: 110 links and 22 text lines left out, /);
+    expect(reply).toContain('link "Section 40"');
+    expect(reply).not.toContain('Section 41"');
+    expect(reply).toContain('\n# The article headline\n');
+    for (const index of [0, 1, 2]) expect(reply).toContain(`\n"${prose(index).trim()}"\n`);
+    expect(reply).not.toContain('Paragraph 4 of the article.');
+  });
+
+  it('leaves a long page whole when its outline would be over three quarters of it', async () => {
+    // Every field stays in an outline and 80 of the 120 links go: the outline would be between 0.75 and 1.0 of the view.
+    const fields = Array.from({ length: 250 }, (_, index) => 1_000 + index);
+    const links = Array.from({ length: 120 }, (_, index) => 2_000 + index);
+    const nodes = [
+      ax(1, 'RootWebArea', '', [...fields, ...links]),
+      ...fields.map((id, index) => ax(id, 'textbox', `Field ${index + 1}`)),
+      ...links.map((id, index) => ax(id, 'link', `Link ${index + 1}`)),
+    ];
+    const whole = await formatRead(new TabState(), 's1', page(nodes), { full: true });
+    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    expect(whole.length).toBeGreaterThan(OUTLINE_AT);
+    const outlined = whole.split('\n').filter((line) => Number(/ link "Link (\d+)"$/.exec(line)?.[1] ?? 0) <= 40).join('\n');
+    expect(outlined.length).toBeGreaterThan(OUTLINE_MAX_SHARE * whole.length);
+    expect(reply).toBe(whole);
+  });
+
+  it('decides on the view a read would send, whatever room a reply with opened tabs leaves it', async () => {
+    expect(await formatRead(new TabState(), 's1', page(longPage()), { cap: 5_000 })).toMatch(note);
+  });
+
+  it('leaves a long page whole when its outline would save less than a quarter of it', async () => {
+    const reply = await formatRead(new TabState(), 's1', page(fieldPage(400)), {});
+    expect(reply.length).toBeGreaterThan(OUTLINE_AT);
+    expect(reply).toContain('e400 textbox "Field 400"');
+    expect(reply).not.toContain('Outline');
   });
 });
 

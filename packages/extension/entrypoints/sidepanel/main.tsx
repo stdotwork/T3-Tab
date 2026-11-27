@@ -1,0 +1,26 @@
+import './inter.css';
+import './styles.css';
+
+import { createRoot } from 'react-dom/client';
+
+import { App } from './App';
+import { guardPanelDrops } from './Composer';
+import { applyHeadlessState, headlessRender } from './lib/store';
+import { t3 } from './lib/t3-client';
+import { loadAppearance } from './lib/theme';
+
+// The end-to-end run draws prompts, the site list and the helper's state from state it supplies.
+if (headlessRender) {
+  (globalThis as typeof globalThis & { __t3tabRenderPanelState?: typeof applyHeadlessState }).__t3tabRenderPanelState = applyHeadlessState;
+}
+
+// The harness that carries the panel's requests, or draws the panel from state it supplies, can also hand the panel's
+// T3 client threads and answer a thread's request the way T3's own app would.
+if (window.__t3tabPanelBridge !== undefined || headlessRender) (globalThis as typeof globalThis & { __t3tabT3?: typeof t3 }).__t3tabT3 = t3;
+
+guardPanelDrops();
+
+void loadAppearance().finally(() => {
+  const host = document.querySelector('#app');
+  if (host !== null) createRoot(host).render(<App />);
+});

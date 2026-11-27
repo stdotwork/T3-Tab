@@ -9,12 +9,17 @@ work, with the browser tools injected.
 
 - `packages/extension` — the WXT Manifest V3 Chromium extension, including its service worker and side panel.
 - `packages/server` — the Node.js/TypeScript daemon, Chrome native host and stdio MCP server. The
-  `t3-tab` binary in `dist/cli.js` provides all three commands.
+  `t3-tab` binary in `dist/cli.js` provides all three commands, plus `setup` and `uninstall`.
+- `packages/helper` — the npm package `t3-tab` (not published yet): `build.mjs` bundles the server and its
+  dependencies into one file, `dist/cli.js`, which is what users install (below).
+- `scripts/` — `install-test-build.sh` (installs the packed helper from a GitHub prerelease, the stand-in for npm
+  until the package is published) and `publish-test-build.sh` (refreshes that prerelease from a checkout).
 - `packages/protocol` — the versioned types shared by the extension and background program.
 - `docs/decisions.md` — lasting v1 design decisions, tradeoffs and out-of-scope boundaries.
 - `e2e/` — the Playwright end-to-end harness; `e2e/harness.mjs` holds the setup the end-to-end run and the
   benchmark share (temporary HOME, headless Chromium with the extension, MCP clients).
-- `bench/` — the token benchmark, its fixed pages and its budget.
+- `bench/` — the token benchmark, its fixed pages and its budget; `bench/compare` (T3-Tab against other browser MCP
+  servers, scripted calls) and `bench/agent` (the same, with a real model in the loop).
 - `.github/workflows/ci.yml` — the pull request and `main` checks.
 
 ## Commands
@@ -29,11 +34,32 @@ pnpm test
 pnpm build
 pnpm e2e
 pnpm bench
+pnpm bench:compare
+pnpm bench:agent
 ```
 
-`pnpm build` writes the Chromium extension to `packages/extension/.output/chrome-mv3`.
-The built server is `packages/server/dist/cli.js`; `node_modules/.bin/t3-tab` runs it after installation.
-`pnpm e2e` launches headless Playwright Chromium with that built extension, starts the real native host and
+`pnpm build` writes the Chromium extension to `packages/extension/.output/chrome-mv3` and the packed helper's
+bundle to `packages/helper/dist/cli.js`.
+The built server is `packages/server/dist/cli.js`; `node_modules/.bin/t3-tab` runs it after installation. That is
+the developer path; users get the helper from `t3-tab setup` (see "Installing the helper").
+`pnpm e2e` first installs the helper the way a user does (`e2e/checks-product-install.mjs`): `npm pack` of
+`packages/helper`, then `npx --package <tarball> t3-tab setup` run from a temporary folder outside the repository
+with a temporary HOME, into a headless Chromium that is already running with the extension and no helper. It checks
+that the extension opened its welcome tab on install and that the tab's one button copies the command it shows and
+opens the real side panel on that tab (read over the DevTools protocol, since Playwright does not list side panels):
+the new-thread screen with the setup card and no setup screen or Start, where a task typed before the helper exists
+waits with Send off; that the panel's helper state goes from missing to connected with no reload and the background
+program started by the browser, and that the side panel's setup card then goes by itself with the typed task kept, and
+Send turns on when the helper found Claude Code or Codex (with neither, the screen says no agent was found and Send
+stays off); that Add for Claude Code writes an entry naming the installed launcher and that entry's `mcp` server
+sees the browser, that running `setup` again over a daemon of another version stops it and the browser reconnects
+to a new one, that `uninstall` removes the helper folder, manifest, state and agent entry and stops the daemon,
+that `scripts/install-test-build.sh` (through a `file://` address) installs the same helper, and that a browser
+started with its own `--user-data-dir` finds it once `setup` names that folder. Then `e2e/checks-real-use.mjs` runs in a headless Chromium only the extension debugs, because Playwright answers
+dialogs itself and makes hidden tabs act focused: dialogs, background input, another extension's frame
+(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs, same-origin frames, and password inputs under other ARIA roles and text fields masked by `-webkit-text-security` staying redacted in `read`, `find`, a diff and an `act` reply, with the names built from them (a button, link, heading, label, `aria-labelledby` and a script's `ariaLabelledByElements`, open and closed shadow roots, 205 referrers), a 260-character value, show-password toggles by `autocomplete`, a short value that must not scrub other names, secrets in hidden, `aria-hidden`, `display:none`, `visibility:hidden` and closed-dialog content, fields under the roles link, checkbox and switch, a secret passed on through a label and a button, one echoed in the page's text, split over one element per character, upper-cased or taken from a hidden field no name was built from, a password a GET form puts in the address, also of a new tab it opens, of a tab a link opened earlier that the form names as its target, and of a new tab a `select`'s change sends the form into (the reply header, a read and `tabs list` leave it out), and a page of 3,000 masked fields with 200 buttons named from them read in bounded time. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that its reply carries the page (drawn by script too) and is the baseline of the next `read`, that `read` and `goto` with a url open a tab in an empty session behind the same prompt and take `find`, that `read` with the address of a tab the session has reads that tab without loading it again and opens a new tab for any other address, leaving the first where it was, that a load's reply leaves out a page too long for it (a page of long text without reading it) and a page a redirect took to an unapproved origin and names a dialog the page opened, that every tool works on that hidden tab, that the session's group is created collapsed and a click, a scroll and a screenshot work in it while it stays collapsed, that a new tab leaves a group the owner expanded open and the owner's own groups as they were, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, that an `act` reply names the tabs a click opened (with the page on an allowed site, by origin only on one
+set to ask or after a redirect to one, as loading while blank), an `act` with `find`, that a long page is read as an outline that keeps its form, that the `act` sending that form to
+a page that flags its field shows the flag and the error, and that `full` then gets the whole view, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
 two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
 links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
 `screenshot`, `act` and `run_js`. It also checks session tab groups, socket-bound session ids, tab sharing,
@@ -41,32 +67,72 @@ read and action prompts, cross-origin navigation and `window.open`, restricted p
 and a regex timeout. It also checks the review fixes: a read-only site grant that act, run_js and open
 still prompt past, a `run_js` escape expression, a screenshot and a key press that land on a page that
 changed, popups opened by the owner and by a session tab, member tabs shown only by origin until approved,
-a cross-origin iframe left out of `read`, and prompt buttons locked when rows shift. Existing tool checks
-run with the site still set to ask and the harness answering prompts with Allow once. The action run fills and submits the
+a cross-origin iframe left out of `read`, and prompt buttons locked when rows shift. Three act prompts are answered
+from the panel's own card: Enter allows once and Escape declines (each after the same key typed in the composer
+answered nothing), and the More menu's "Always allow everything on this site" sets the site to `allow`. Other tool
+checks run with the site still set to ask and the harness answering prompts with Allow once. The action run fills and submits the
 test form, checks a stale ref after navigation, evaluates page JavaScript and waits past the extension
-worker's idle timeout before another `status` call. It checks the install command through direct config
+worker's idle timeout, then asks the daemon whether the browser is still connected and makes another `tabs` call. It checks the install command through direct config
 edits, `--print`, a second install, uninstall and, when both agent CLIs are available, their CLI path and
 `mcp list` output. The `daemon.json` token sent with the extension's `Origin` is refused. It then checks side-panel sessions (`e2e/panel-sessions.mjs`) with fake `t3`, `claude`
 and `codex` commands (`e2e/fakes/`) first on the daemon's PATH, which record their arguments and drive the
 real `t3-tab mcp` server: a T3 thread started with project, provider and model claims the owner's tab and
-reads it, is continued with `t3 thread send` and polled with `t3 thread show`; the sign-in to a fake T3
-environment (`e2e/fakes/t3-server.mjs`, T3's OAuth and `/mcp` answers, recorded in the temporary T3 home's
-`server-runtime.json`) refuses a forged answer and a full-access grant, keeps a read-only one in a 0600 file,
-lists T3's projects and models in the panel, starts a thread with listed values and signs out, and no file,
-panel reply, command argument or environment but the credential file holds a token; a made-up claim code and a
+reads it, is continued with `t3 thread send` and polled with `t3 thread show`; a made-up claim code and a
 used one are refused; T3 stopped and T3 missing are reported; direct Claude Code and Codex runs start with
 their isolating flags, read the tab, and are resumed with the session id they printed and a new claim code;
-a tab the owner unshares during a direct turn is not shared with the next turn, and neither is one removed
+a direct run that opens a tab gets an expanded group, and a T3 thread's agent that opens a tab before it claims gets a collapsed one (the panel opened on that tab names it on the chip and lists the session under "Using the browser"), which opens when the claim arrives;
+Full access is confirmed with a fake T3 per request with no live panel, and an unbound claim, a lowered mode or a stopped T3 prompts; a tab the owner unshares during a direct turn is not shared with the next turn, and neither is one removed
 between turns with the conversation's Remove button; a missing, world-readable or replaced claim file warns in
-the conversation and in the agent's first tool reply. It renders the panel from that state and, when
+the conversation and in the agent's first tool reply. The thread list, given T3 threads as one shell snapshot, shows T3's
+sidebar sections in T3's order (pinned, active, then the Working, Snoozed and Settled shelves), leaves archived threads
+out, ends each row in its provider's logo (none when T3 lists no such provider) and names no machine, and the threads button carries a dot only while a thread waits on the owner's answer or approval. The composer
+keeps the paperclip, model, mic and send in that order at 320, 360 and 400 px with no access row under it; without T3 there is no mic and the model chip names the agent, never "Default"; a PDF for a direct run is named and holds the message; a pasted image is attached; a PNG
+dragged over the heading shows the whole-panel drop overlay, is attached when dropped there and
+reaches the fake Claude Code as an image block, while a file dropped on Settings is refused; Settings has a 28 px
+color scheme row, T3 Code's built-in theme with T3's shared theme ignored, and a theme menu with swatches, Create
+theme and Add theme, and each theme's actions beside it; and with T3's config handed to the panel, the access level is chosen in
+the model picker. The layout check (`e2e/checks-layout.mjs`, measuring with `e2e/ink.mjs`) walks the new-thread
+screen (direct, with no mic, and T3, with the mic, with and without a project), the model and project pickers, the thread list, a thread, a T3
+thread waiting on an approval (at its work-log row and above the composer), a running thread (its composer's Stop at the size of the icons beside it), three browser prompts on the new-thread
+screen (one a `goto` on another tab), the new-thread screen's setup card (helper missing) and Connect row (T3 Code
+running, not connected) drawn on the headless panel, Settings and a theme sheet at 320, 360 and 400 px in light and dark (and the sheet opened from each scheme, which must open on that scheme's tab with every panel role unchanged and its fields painted with the panel's surface and border), and measures visible ink (SVG strokes and fills, text glyphs
+on their baseline, painted boxes), never padding boxes. It also fails when an open popover or menu (the model and project pickers) has a background that is not opaque, or when the element at a grid of points inside it is not the popover, which is how the hero's "or start without a project" line painting over the open project list is caught (the hero's lines are moved with `translate`, which makes each a stacking context, so `.hero-picker` carries its own `z-index`). It fails when a bar's or the composer row's first and last
+controls sit at ink distances from its edges more than 1 px apart, when the composer's send circle is not as far from
+the frame's foot as from its side, when the composer's controls are not one size or their ink (and the model chip's
+logo and words) is off one centre line, when its text does not start on the paperclip's ink, when the hero's project
+line is off the heading's ink centre, when one bar's icons, or the composer row's glyphs, are drawn at different
+sizes or stroke weights, when an approval card's ink is over 160 px tall or its three answers are not on one row of
+one-line 28 px buttons inside it, when the setup card or the Connect row is not in the composer's column between the
+heading and the composer, cuts off any of its content, or is over 260 px tall (the Connect row: over 42 px or more than
+one line), or when a failed automatic attempt leaves error text on the Connect row, or when browser prompts on the new-thread screen move its heading or composer or cover the composer, or when the new-thread heading is not at one height (within 1 px) across the nine states it walks (direct, with a draft that wraps, the setup card with and without a draft, the Connect row, T3 with no project, with a project, with the project picker open, and reconnecting with the banner) or asks anything but T3's two questions. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
+each width and scheme the bars of all those screens must agree within 1 px (0.25 px for strokes): height, first and last
+ink insets, icon size and stroke, the thread toggle's ink, and the breadcrumb's start and baseline.
+`e2e/checks-approval-keys.mjs` then, on the headless panel with the panel's answers recorded,
+checks that a T3 approval under a browser prompt is locked when the prompt goes (a second click and an Enter at once
+answer nothing) and takes no keys at all, only a click; that an Enter held through the change of card answers nothing
+until released; that Enter answers nothing while a popover is open; that showing the panel again locks its cards; that a
+card scrolled out of the prompt list takes no key; that a T3 approval without `accept` or `decline` draws only More;
+that one T3 cannot take an answer for (not `live`) has its answers disabled and says why; that Escape on another control
+does nothing; that T3's warning shows on its answer; and that a `goto` card names its address, its tab and that it is
+another tab. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
-variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless.
+variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once, in the first reply of its new session, that the earlier one ended, and, with the browser's native host manifest moved aside so the browser cannot reach the new daemon, that each call that fails until it is put back and the browser reconnects says no browser is connected. Before an MCP client calls a tool, the e2e and bench harness wait for the browser with the daemon's own `status` control request (`daemonBrowsers` in `e2e/harness.mjs`, with `daemon.json`'s token), which no MCP tool exposes.
+
+`e2e/panel-flow.mjs` (not part of `pnpm e2e`, because it needs a real agent login) walks the panel from first open to
+finished threads against a real throwaway T3 and again with T3 absent, and saves each screen at 400 px in light and
+dark to the folder named by `T3_TAB_FLOW_SHOTS`.
+
+`pnpm captures` (after `pnpm build`, with `T3_TAB_CAPTURES_DIR` naming an output folder; not part of `pnpm e2e`) renders every panel view at 400 x 800 in light and dark from one fixed shopping scenario with the e2e fakes and the product's `npx t3-tab@latest setup` command, and writes it three ways: `panel/` as drawn, `framed/` on one browser-window frame with the product's and T3 Code's names masked (for blind rating beside other products), `framed-named/` on the same frame unmasked, and the welcome tab as a 1280 x 800 browser tab in `welcome/` (`e2e/captures.mjs`).
 
 `pnpm bench` (after `pnpm build`) measures what an agent is sent, in characters and estimated tokens: the
-`tools/list` payload (total and per tool) and each tool reply on four fixed tasks over three local pages
-(`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link, and search a longer page
-with `find`, a ref subtree, `all` and a screenshot (text part, JPEG bytes and size, estimated image tokens).
+`tools/list` payload (total and per tool) and each tool reply on six fixed tasks over five local pages
+(`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link (and a `full` read sent with the click, answered in one line), search a longer page
+with `read` given its address and `find`, then with `find`, a ref subtree, `all` and a screenshot (text part, JPEG bytes and size, estimated image tokens),
+a catalogue too long to send whole: its outline from `read` with its address, an order sent with a bad address whose
+`act` reply is the next page's outline with the error inside the form, a `find` for an item the outline left out, and a
+`full` read after that outline, which sends the whole view; and a delivery form whose State combobox opens its list of 20
+states on a click and closes it when one is picked, the `act` reply then counting the options that went in one line.
 It drives the real tools through `e2e/harness.mjs` the way the end-to-end run does, with the bench site
 set to `allow` so no prompt waits. It prints a markdown table and writes `bench/results/latest.json` (not
 committed) and the replies it measured to `bench/results/latest.replies.txt`. Text tokens are an estimate:
@@ -78,9 +144,101 @@ current run (the measured number plus 5%, plus 40% for JPEG bytes, which vary wi
 change only on purpose and give the reason in the PR. `pnpm bench --check results.json` judges a saved
 results file without a browser. Changing `bench/pages.mjs` changes every number, so redo the budget with it.
 
+`pnpm bench:compare` and `pnpm bench:agent` (after `pnpm build`) set T3-Tab against `chrome-devtools-mcp` (default and
+`--slim`), Playwright MCP, agent-browser and Playwriter; neither is part of CI or `pnpm test`, and each has a README in its folder.
+`bench:compare` sends each tool a fixed call sequence, no model, and counts what comes back. `bench:agent` runs a real model
+(headless Claude Code, Haiku 5.5 by default, one MCP server and no built-in tools, a temporary HOME) on ten local tasks, or with
+`--sites real` on the frozen held-out set of eight public-site tasks (`bench/agent/real-tasks.mjs`: change a task only because
+its site changed, never to suit a tool; needs network and keeps the rate low). Success is checked from the page or a known answer,
+never from the model's words. Every run is also measured net of a no-tool baseline run on the same task, so a tool is judged on
+tool-attributable tokens (a run's tokens minus the input of the baseline's first request, not the baseline's whole run: with no tools the model improvises and Claude Code continues it, so a whole baseline run makes several requests and its total moves by thousands of tokens) and model requests, as the geometric mean over tasks of
+per-task ratios against T3-Tab with a 90% bootstrap interval; `--repeats` defaults to 5. It needs a model route in the
+environment (`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN`) and spends real quota: run it
+with a small `--repeats`, `--tools` and `--tasks` while developing. The other tools' browsers start with `--disable-extensions`,
+because this machine registers Claude in Chrome system-wide and a browser with a new profile would install it. Every browser
+the benchmarks start themselves (`bench/compare` and `bench/agent`, T3-Tab's included) also gets
+`--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable` (`NO_HTTPS_UPGRADE_FLAG` in `e2e/harness.mjs`), as Playwright's
+launches do, so a run on an http site does not depend on whether its https side answers. The end-to-end browsers keep the upgrade
+on, to behave as the owner's does; their sites are on loopback addresses, which the browser does not upgrade.
+
+## Installing the helper
+
+Users add the extension from the browser's store and run one command from any folder: `npx t3-tab@latest setup`.
+On a fresh install (`runtime.onInstalled` with reason `install`) the extension opens a tab of its own, `welcome.html`,
+whose one button, "Copy the command and open T3-Tab", copies the command and opens the side panel on that tab, so the
+owner does not have to find the toolbar icon, which the browser keeps under the puzzle piece until it is pinned. The
+browser opens a side panel only from a user gesture: called from the service worker with none, `sidePanel.open` fails
+with "may only be called in response to a user gesture", so `onInstalled` cannot open the panel itself; from a click on
+the extension's own page it opens, also after an `await` of 200 ms (checked in headless Chromium; a `--load-extension`
+browser counts every launch as an install, so every test browser gets the tab). The panel opens on
+the new-thread screen; while the helper is not connected, one setup card above the composer says why, shows the command
+with a copy button and the live state, and the composer stays usable: a task typed meanwhile is kept, Send waits, and the
+card goes by itself once the helper connects (`SetupCard` in `Setup.tsx`; there is no setup screen and no Start). The
+command is held in `packages/extension/src/helper-command.ts`, with the test command the prototype build shows until the
+package is published, behind one constant, `HELPER_CHANNEL`. It needs Node.js
+20 or newer; without it the shell reports `npx` or `node` not found and the panel keeps showing the command.
+`setup` runs from the bundled file (an unbundled build refuses; `__T3_TAB_VERSION__` is set only by the bundler):
+
+- It copies the bundle to the per-user helper folder (`helperLayout` in `packages/server/src/helper-layout.ts`:
+  `$XDG_DATA_HOME` or `~/.local/share/t3-tab` on Linux, `~/Library/Application Support/T3-Tab` on macOS,
+  `%LOCALAPPDATA%\T3-Tab` on Windows) and writes the launchers `t3-tab` and `native-host` (`.cmd` on Windows) that run it
+  with the Node that ran `setup`, or `node` on PATH if that one is gone. `install.json` records the version and
+  everything `setup` wrote.
+- It registers the native host for every browser it finds (`install-native-host.ts`): Chromium, Chrome, Brave, Edge
+  and Vivaldi. Linux and macOS write `NativeMessagingHosts/com.t3tab.native.json` in the browser's profile folder
+  (Linux honours `XDG_CONFIG_HOME`), and also in the profile folder of a browser process running with its own
+  `--user-data-dir`, which a browser reads instead of its usual folder (`runningProfiles`: `/proc` on Linux, `ps` on
+  macOS). Browsers running headless and profiles under a temporary folder are test browsers and are skipped;
+  `--user-data-dir <folder>` names a folder to serve whatever it is, running or not. Windows adds an HKCU key per browser
+  (`Software\<vendor>\NativeMessagingHosts\com.t3tab.native`, through `reg.exe`) pointing at one manifest file in the
+  helper folder. The manifest allows `EXTENSION_IDS` (the manifest `key`'s ID, plus `STORE_EXTENSION_ID` once set in
+  `packages/protocol/src/index.ts`).
+- It stops a running daemon whose `daemon.json` shows another helper or protocol version (after an authenticated
+  health check, so a reused process number is never signalled), so the browser's next connection starts the new one.
+- `--agents` also adds T3-Tab to Claude Code and Codex when found; the panel's Add buttons do the same one agent at
+  a time (`Setup.addAgent`). The entry is the launcher with `mcp` (`mcpCommand`), or Node and the installed file on
+  Windows, never a checkout path or the npx cache. `--print` describes without writing.
+- `uninstall` (also from the installed `t3-tab`) first removes every registration in `install.json` and the usual places and
+  the native host launcher, so the browser can no longer start the helper, then stops the daemon, removes agent entries, the
+  helper folder, stops a daemon that started in between, and removes the state folder; a manifest that is not T3-Tab's is
+  left alone. With `--claude` or `--codex` it removes only those agents' entries and keeps the rest, which the other
+  agent and the browser still use.
+- With no browser link written, `setup` says how to name one (`--browser`, `--user-data-dir`) and exits 1. `--help`,
+  `-h` and `help` print usage and exit 0, for the program and for each command.
+
+A browser reads the native host manifest again on every `sendNativeMessage`, so a helper installed while the browser
+runs is found without a reload (checked in headless Chromium, in the end-to-end run). The panel asks every three
+seconds while the helper is missing; the browser starts the daemon through the native host. The panel's helper state
+says why it is missing (`HelperProblem` in `daemon-link.ts`): not registered, registered for another extension ID,
+the native host stopped, or the helper or the extension is behind (the side that sees the other's newer or older
+protocol version says so), and shows the command or a pointer to the extensions page accordingly.
+
+**The panel and the service worker can be different builds.** An unpacked extension's panel files are read from disk
+each time the panel opens, but its service worker keeps the code it started with until the extension is reloaded (the
+daemon link's 20-second ping keeps it alive), so after a rebuild a new panel can talk to an old worker. Both carry
+`BUILD_ID` (`src/build-id.ts`, set per build by `wxt.config.ts`; `T3_TAB_BUILD_ID` fixes it). The panel asks the worker
+`panel.build` first (`checkWorkerBuild` in `lib/store.ts`). A different ID, or a worker too old to know the request
+(it answers `Invalid panel request`), makes the panel write `t3tab.workerReload` (its build ID and the time) to
+`chrome.storage.local` and call `chrome.runtime.reload()`, which closes the panel; opening it again finds the new worker.
+The write comes first and a reload already tried for the same panel build in the last five minutes is not repeated, so
+it cannot loop: the panel then says the extension is still an old build and to reload it on the extensions page. A
+failed request (the worker restarting) is asked again later and reloads nothing. Whatever the helper connection last
+hit is shown in the setup card and in the helper row of Settings → Connections (`helperNote` in `Setup.tsx`, from
+`HelperState` in `daemon-link.ts`): a native
+messaging error, a `native.error` from the host, or a WebSocket that never opened or was closed, with its code and
+reason (`noteSocketClosed`), each with its one action; "Run this in a terminal" appears only when the browser reports
+no helper registered, and "Connecting" while no attempt has failed yet. `e2e/checks-stale-worker.mjs` swaps the files
+under a running browser, covers a worker too old to answer and a reload that does not help, and renders each error.
+Headless Chromium cannot bring back a `--load-extension` extension after `chrome.runtime.reload()`, so there the
+panel's call is recorded and the browser is restarted on the same profile without its cached worker script; the real
+call was not exercised in headless Chromium, and whether a real side panel comes back by itself after it was not checked.
+
+The macOS and Windows registrations are written and unit-tested (`helper-install.test.ts`) but have not been run
+on those systems. Linux was run, with Node 26.13.1 only.
+
 ## CLI
 
-Build before running the CLI:
+The developer path, from a checkout. Build before running the CLI:
 
 ```sh
 pnpm exec t3-tab install
@@ -95,15 +253,17 @@ pnpm exec t3-tab native-host install --browser brave
 pnpm exec t3-tab mcp
 ```
 
+`setup` is what users run (see above); from a checkout it refuses, because only the bundle can be copied.
 `install` registers `t3-tab mcp` as a user-level stdio MCP server for Claude Code in `~/.claude.json` and
-Codex in `~/.codex/config.toml`. When neither `--claude` nor `--codex` is given, it registers every agent
-whose CLI or config it finds. When `--browser` is omitted, it installs the native host for every Chromium,
-Chrome or Brave installation it finds. It uses `claude mcp add` or `codex mcp add` when that CLI is on PATH,
+Codex in `$CODEX_HOME/config.toml` (`~/.codex/config.toml` when `CODEX_HOME` is unset), with a 330-second
+`tool_timeout_sec`, because a browser prompt can wait longer than Codex's 60-second default. When neither `--claude`
+nor `--codex` is given, it registers every agent whose CLI or config it finds. When `--browser` is omitted, it installs
+the native host for every Chromium, Chrome, Brave, Edge or Vivaldi installation it finds. It uses `claude mcp add` or `codex mcp add` when that CLI is on PATH,
 and otherwise edits the config file directly. The registered command uses absolute paths to the running Node
 binary and built `dist/cli.js`, so it works from any working directory. Running `install` again leaves one
-entry. `install --print` describes the same changes without writing anything. `uninstall` removes the
-`t3-tab` entries, plus the native host manifests and launcher; `--claude` and `--codex` limit it to those
-agents.
+entry. `install --print` describes the same changes, including running profiles, without writing anything. `uninstall`
+removes the `t3-tab` entries, plus the helper, native host manifests and state; `--claude` and `--codex` limit it to
+those agents' entries.
 
 `daemon` listens on `127.0.0.1:8765` by default. Set `T3_TAB_PORT` or pass `--port <number>` to change the
 port. Its random token is stored in `$XDG_STATE_HOME/t3-tab/daemon.json` with mode `0600`, falling back to
@@ -112,8 +272,14 @@ folder, also `0600`, which the native host passes to the extension. The daemon g
 token together with the extension's `Origin`, so an MCP client using the `daemon.json` token cannot connect as the
 extension. Any program running as the owner can read either file or run `t3-tab native-host` to get the extension
 token. `native-host` is normally started by Chromium, not by hand. `mcp`
-serves the `status`, `tabs`, `read`, `screenshot`, `act` and `run_js` tools over stdio and starts the daemon
-when needed.
+serves the `tabs`, `read`, `screenshot`, `act` and `run_js` tools over stdio and starts the daemon
+when needed. Its `tools/list` (`listedTools` in `mcp.ts`) is made from the same shapes the calls are checked against
+(`tool-schemas.ts`), without the keywords those checks enforce anyway (`$schema`, lengths, ranges, item counts,
+`additionalProperties`) and without `read`'s `regex` and `depth` (`READ_UNLISTED`), which a call may still pass: every call
+is checked against the whole shape by the SDK in the MCP server and again in the daemon. What `tab` defaults to is said once,
+in `read`'s description. Claude Code sends these definitions on every model request, so their wording is measured with
+`pnpm bench:agent` before it changes. A tool call that finds no browser says so, and when the daemon refused the extension's
+last connection in the past minute for another protocol version, it names which side is older.
 
 ## Page tools
 
@@ -121,32 +287,346 @@ when needed.
 `chrome.debugger` (`Accessibility.getFullAXTree`), trimmed in the extension to what the reader prints
 (`packages/extension/src/ax.ts`). The reader is in `packages/server/src/reader`: `format.ts` turns the
 tree into lines with refs, `refs.ts` keeps a ref stable for an element until the tab's document is
-replaced, `smart-diff.ts` is the line diff, `find.ts` the search, and `page.ts` puts a reply together and
+replaced, `smart-diff.ts` is the line diff, `find.ts` the search, `outline.ts` the outline of a long page, and `page.ts` puts a reply together and
 caps it at 12,000 characters. Diff baselines are kept per MCP server process, so two agents reading the
 same tab do not take each other's diffs. A reply starts with `tab <id>: <title> — <url>`; when the session
 last saw that same title and address for the tab, it starts with `tab <id>` alone.
+
+Text is cut for display, never for search. The extension keeps each name up to 8,000 characters (2 MB a page, then 300
+each) and drops the line-wrap boxes the reader never prints; the reader prints a line of text up to 1,000 and a name up to 160, and `find` searches all of it
+and prints a window around the match. A run of text longer than a line is split into lines of up to 1,000 between its pieces
+(text nodes, links, text-level elements); only one piece longer than a line is cut. `find` prints only the lines that
+match: one up to 200 characters whole, a longer one 80 characters either side of its match. A match shorter than 100
+characters (a price, a label, a button) also keeps the one line before it, which says whose it is, up to 120 characters
+(a longer one keeps its start); a longer match (prose) stands alone, nothing after a match is printed, and there are no
+separators. Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
+site) when another link of the same name goes elsewhere, when it has no name, when it is the element a `ref` read asks
+for, and on its own line in `find` (a match, or the line kept before one: a card's cut title is often whole in its
+address). With `depth` (accepted, not listed), an element with more inside ends in `…`.
+
+`tabs` also moves a tab: `goto` with a `url`, `back`, `forward` and `reload`. `goto` asks like `open` does. `back`,
+`forward` and `reload` revisit a page the tab has shown, so they ask only for an origin the session holds no approval
+for on that tab. The browser's reload resends a form's POST without asking, so unless the debugger saw the document come
+from a GET, `reload` fetches the address with a new GET (`location.replace`, which keeps the history).
+
+A load (`open`, `goto`, `back`, `forward`, `reload`) replies with the page as `read` would show it, header first (`Opened
+tab <id> [current]: <title> — <url>`, with `Redirected from <origin>.` under it when a redirect landed on an origin the
+session may read), and that reply is the tab's diff baseline for the MCP server process, as a `read` is; with `find` it
+replies with the matching lines instead. A page whose view is over `LOAD_REPLY_MAX` (4,000 characters, `page.ts`) is left
+out of a load's reply, which says how long it is and sets no baseline: agents send a `read` (or a `find`) in the same turn
+as the load, before they see its reply, and that read then gets the page once. So a load without `find` first asks the
+page how much text it shows (`innerText`, `pageTextLength` in `settle.ts`), and a page with more than `LOAD_REPLY_MAX`
+characters of it is not read for the load at all (`skipReadOver` and `textLength` in the protocol); the reply says how
+much text it has. A `read` with `full` right after a load's or an `act`'s reply that showed the whole page (within 5
+seconds, `REPEAT_MS`), with nothing changed, says so in one line instead of sending it again (once; the next one is
+whole). It does so only when the reply it would send is the very one the agent got: after an outline, a diff, or an
+`act` reply cut short to leave room for the tabs it opened, `full` sends the whole view. The extension reads the page in the same request (`describeLanding` in
+`requests.ts`) as soon as the new document has loaded and drawn its first frames, without waiting for it to go quiet. If
+the page moved while it was read (its content, layout or document per `settleSnapshot`, not only its network traffic) and
+that read ended within `LOAD_REREAD_MS` (100 ms), it is read once more after the first read ended, and that read is the
+answer; a page that never stops moving costs at most that and one more read. A move within the same document (a fragment)
+or a dialog that opened on load is read once. It reads only where a `read` would pass without a prompt: the origin the
+load was approved for, or one the session already holds on that tab or the owner lets it read. A load that went through
+on T3's Full access carries the page only if T3 still confirms the mode once the page was read; otherwise the reply says
+to read the tab. A redirect to any other origin replies as before, with the origin only and how to ask; a page that could
+not be read (a dialog opened on load, say) replies with the tab and the reason.
+
+`read` with a `url` never moves or reloads a tab. A tab of the session already at that address (the fragment aside; only
+the tab it names, when it names one), whose page the session may read without a prompt, is read as any `read` reads it
+(a diff when there is a baseline) and becomes the current tab. Otherwise the address opens in a new tab behind the
+owner's, asking as `open` does, and the reply is that load's (`tabs.open` with `reuse` in the protocol). A tab the
+session may not read yet does not count, so which prompt comes up says nothing about where that tab is. A `ref` does not
+go with a `url`. Moving a tab is left to `tabs goto`. A `goto` that names no tab, in a session with no tab, opens one
+(`opened` in the result), asking as `open` does, so `read {url}` and `tabs goto` work from an empty session; every other
+tool says in one line how to get a tab (`NO_TAB_MESSAGE` in the protocol package).
+
+Chromium upgrades an `http:` address to `https:` before it sends anything, and when the https site does not answer within
+about 5 s or resets the connection the load fails as `net::ERR_BLOCKED_BY_CLIENT` and the tab is left on its error page, which
+reads as if something blocked it. A load of an `http:` address that fails that way (`open`, `goto`, `back`, `forward`, `reload`,
+and an `act` step that followed a link) says so in one sentence: `Could not load <address>: the browser upgraded the address to
+https and the https site did not answer.` (`loadFailure` in `tabs.ts`). `goto` and `open` read it from `Page.navigate`'s reply;
+the others have no reply that carries it, so `cdp.ts` notes a top frame that ended on the browser's error page after a document
+request failed as blocked (`blockedLoadSince`). An extension that blocks requests gives the same error and gets the same
+sentence, because the browser does not tell them apart. Any other failure keeps the browser's own error text, and a failed
+`back`, `forward` or `reload` of another kind still reports nothing.
+
+A call that names no tab uses the session's current tab, marked `[current]`: the last it opened, switched to or was
+handed by the owner, else the tab in front, else its first. The owner moving between tabs does not change it, so an
+action cannot land on a tab the agent did not mean.
 
 `act` takes its steps as flat objects, `{ "action": "fill", "ref": "e7", "text": "Ada" }`, with the fields
 `ref`, `text`, `key`, `dx`, `dy` and `ms` (`packages/server/src/tool-schemas.ts`): the schema the agent reads
 is one object so the tool definition stays small, and `convertStep` there refuses a step that is missing a
 field its action needs, carries one it does not take, or is out of range, then turns the step into the
-nested form the extension runs (`ActStep` in `packages/protocol`). It resolves refs to backend DOM node ids,
-runs its steps through Chrome DevTools Protocol input and DOM commands, and settles after every step by
-waiting for network, DOM and layout activity to stay quiet. A navigation invalidates refs held from before
+nested form the extension runs (`ActStep` in `packages/protocol`). A batch with a ref the session does not hold runs
+nothing. When such a ref is not shaped like one (`ref: "State"`, a name in place of `e12`), the error says what refs look
+like and lists, for up to three such names, the elements of the tab as it is now whose name (unescaped) or line holds
+the name, case-insensitive, links written into text included, as `find` prints them with their refs: those named exactly
+so first, five a name, then how many more match in all, so the agent can send the batch again without a separate read
+(`unknownRefError` in `tools.ts`). When the page was replaced since the session's refs were made, it lists nothing and
+says to read the page, because the new page's refs start again from `e1` and an old ref sent again would name another
+element. That read is `page.read` with `ifReadable`, which reads only when no prompt is needed (an origin the session
+holds on the tab, or a site set to `read` or `allow`, from one read of the site's setting) and otherwise fails without
+asking anyone; Full access alone never gives it, since it lets a request through without recording the origin. The error
+then only says to read the page. It resolves refs to backend DOM node ids,
+runs its steps through Chrome DevTools Protocol input and DOM commands, and settles after a click, a key press, a
+scroll, a hover, a wait and the last step by waiting for network, DOM and layout activity to stay quiet. A `fill`, `type` or
+`select` between other steps does not settle on its own: the batch settles once before the next step of the kinds above. The
+settle ends after 150 ms of quiet, so a check the page runs within about 150 ms of the field change (a short debounce) is in
+before the click, and a longer one may not be: the agent adds a `wait` step, which the `act` description says. A field step settles at once when a document was
+replaced or a request began while it ran, and the stale-ref error then names that step. A `wait` for a time is itself a
+settle that lasts at least that long (`settlePage` with `minMs`): it watches the page all the while and ends once the time
+has passed and the page has been quiet for the last 150 ms, quiet that began during the wait included, so a change in the
+wait's last 150 ms keeps it going. The step just before such a wait does not settle on its own, and the checks it would have
+run after its settle (another origin, a replaced page) run after the wait instead. A `wait` for text keeps the settle before it. A navigation invalidates refs held from before
 it. `run_js` evaluates an expression or async function body in the page for cases the structured tools do
 not cover. The extension sends a WebSocket ping every 20 seconds while the daemon is connected so Chrome
 does not stop its service worker.
 
-`read` returns the main frame's document and same-origin child frames only. A child frame of another
-origin, or one the browser cannot name, is left out with one line `frame omitted: <origin>` in its place
-(`restrictToOriginFrames` in `packages/extension/src/ax.ts`). In Chromium 159 (checked headless) `Accessibility.getFullAXTree`
-does not return child-frame content at all, so for now the filter only adds those lines. Screenshots are
+`read` returns the main frame's document and same-origin child frames. `Accessibility.getFullAXTree` does not
+include child-frame content, so `addSameOriginFrames` (`packages/extension/src/page.ts`) fetches each child frame of
+the approved origin, up to 20, walking down only through such frames, and drops one that navigated during the fetch.
+A child frame of another origin, or one the browser cannot name (a sandboxed frame), is left out with one line
+`frame omitted: <origin>` in its place (`restrictToOriginFrames` in `packages/extension/src/ax.ts`). Screenshots are
 not filtered for iframes.
 
-`find` matches case-insensitive literal text by default. Passing `regex: true` opts into a regular
-expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. Every text box
-is inspected in bounded batches; password values are removed before the accessibility tree leaves the
-extension and render as `value=<redacted>`.
+The default view shows the page's text as well as its elements and headings (`format.ts`): paragraphs, list items, and
+a table row of text cells as one line with its cells apart by `|`. A link inside running text (its parent holds text of
+its own) is written into that line as `[name](e12)`, with the ref its own line would carry (and its address, `[name](e12 →
+/path)`, only where its name is ambiguous, in `find` too), when the line is prose: it does not start with a link, and the letters and digits outside its links are at least as many
+as those in its links. Otherwise (a story line on a news site, a menu with `|` between its links, a product's link and
+the line about it) the links print on lines of their own as before, between the text around them. Text lines and headings
+escape `[`, `]` and `\` with a backslash (a link's name inside its mark too), so a page that writes `[Cancel](e3)` or names
+a link `Continue](e3)` cannot pass for a mark; a printed text line is a JSON string, so the escape shows doubled
+(`\\[Cancel\\](e3)`), and `LINK_MARK` in `format.ts` finds the real marks. `find` searches the address of
+every link written into text as well, so a search for an address finds a link in text; a matching text line shows those
+addresses only when the query matched in one of them, and otherwise prints as a read does. The text of a block is run together while it fits on
+one 1,000-character line: with no space added where it flows as one line (the parent holds text of its own, or both
+pieces are text-level elements such as `<em>` or `<sub>`), because Chromium keeps the real spaces of inline text in the
+text (`$<span>1,284</span>.50` is `"$1,284.50"`); with a space between boxes side by side, such as flex items or block
+`<div>`s, which Chromium gives no space between (`"Price $5"`); a line break is a space. Each node's text is built once
+and never past a line, so a page of many small text nodes (highlighted code) reads in time proportional to its size.
+Separators with no letter or digit (`|`, `(`) and icon-font glyphs are left out, and so is text inside a field that only
+repeats the field's value (an editable combobox's text). A live region (`alert`, `status`, `log` or `aria-live`) and a
+dialog always print; an `alert` or `status` that says one short thing is one line with no ref, `alert "Incorrect
+username or password."`, and an empty one prints nothing. Text is held to `TEXT_BUDGET` (4,000 characters, `page.ts`)
+and gets only the room the 12,000-character cap leaves after every element and heading, so text never pushes an element
+past the cut. Within it, the text of live regions and dialogs comes first (a `log` from its newest entry back, others from
+their start), then the page's `main` or `article`, then the rest. What is left out is said in one last line, `(N text
+lines left out, M characters, K links in them: find searches them, read a ref for one part, all for the whole page)`
+(the links part only when there are some), which stays even when the reply is cut; the whole reply, notes included, stays within the cap. A `ref` read and `all` have no text budget,
+only the cap. The diff baseline holds every line, text left out included; a diff's text lines are held to the same
+budget and to the room its other lines leave, live-region and dialog lines (judged on both sides of the diff) first, with
+the same kind of note. A run of removed lines in a diff (`packages/server/src/reader/removed-runs.ts`), such as the options of
+a combobox that closed or the rows a filter took away, prints in full only while it holds fewer than `REMOVED_RUN` (8)
+lines that may be counted; otherwise those lines become one line at the place and indent of the first, `-  (56 lines
+removed: "Alabama", … "Wyoming")`, naming the first and last by their name or text (40 characters at most). Within a run,
+the old line of a changed element (its ref is on an added line of the same hunk), a field (`FIELDS` in `outline.ts`) and
+every line of a live region or a dialog (`vitalLines`, kept with the baseline) always print, so an error that went or a
+field that went shows. Added lines always print whole, and every diff counts its runs, `all` and ref reads included.
+With `all`, images are also listed with a ref, named or not, so they can be hovered or clicked.
+
+Long lists of links or buttons give way to the page's text (`renderView` and `collapseGroups` in `format.ts`). A group is
+the outermost node below the page whose lines hold at least 8 links, buttons, menu items, tabs, options, tree items or
+disclosure triangles, no heading, field, live region or dialog, and no more characters of text than of elements: a
+sidebar, a menu bar, a footer, a table of files, a browser-compatibility table. When the default view's elements and
+`TEXT_BUDGET` characters of its text (or all of it, if less) would not fit under the cap with the notes' room, groups fold
+to one line each until they do: first those around the content (in a `navigation`, `banner`, `contentinfo` or
+`complementary` landmark, or outside `main` and `article` on a page that has one), then the rest, largest first. A group
+in the content folds only when at least 1,000 characters of text lie outside it, so a page that is mostly its links (a
+news site's stories, search results) keeps them, and a cut at the cap still shows the first (a view that is still over
+7,000 characters is outlined instead, below, and keeps only the first 40 links). The folded line is the
+group's own line, or a ref for its node, then the count and the first names: `e14 navigation "Docs sidebar" (66 links, 5
+buttons; read e14): "Getting Started", "Installation", …`, and the last name too when it moves on (`Next`, `More`, `Older`,
+`»`). The text a folded list held counts in the note on what was left out. Reading that ref lists them with the refs they already had, and
+`find` searches them. Only the default view of a whole page folds; a `ref` read, `depth`, `all`, `find` and diffs do not,
+and the diff baseline holds every line.
+A long page is outlined (`packages/server/src/reader/outline.ts`). When the default view of a whole page, folded and held to
+the text budget as above, is over `OUTLINE_AT` (7,000 characters, measured as a plain `read` would send it, whatever room an
+`act` reply that opened tabs leaves), a `read` (also `read` with a `url`) or an `act` reply that shows the whole page sends
+its outline instead: every heading, landmark and other named container; every field; everything inside a form or search
+landmark, its text too (labels, hints, an error under a field); a button among the three elements after a field (a submit
+outside a form); live regions and dialogs whole; the first `OUTLINE_LINKS` (40) links, other buttons and other elements of
+the kinds a folded list holds, in page order (one left out takes the lines inside it, such as a story's heading inside its
+link, with it); the first `OUTLINE_TEXT` (1,500) characters of the text of `main` or `article` (list items' text
+included), in order until a line does not fit, or, on a page with neither, of the page's text, where past the last link
+kept only lines of 80 characters or more count (so the numbers, points and bylines of rows whose links went are left out
+too, and an article after the menus of an old page without landmarks keeps its start); and the long lists around the
+content folded to one line each, as above, while the lists in the content keep their first links. It ends in one line, `(Outline of a long page: 141 links and 8 text lines
+left out, 2433 characters, 1 link in them. find searches them, read a ref for one part, full for the whole view)`, and is
+sent only when it is at most `OUTLINE_MAX_SHARE` (three quarters) of the view. A load's reply keeps its own rule (a page
+over `LOAD_REPLY_MAX` is left out), and `read` with `full`, a `ref` read, `depth`, `all`, `find` and diffs are never
+outlined: after an outline and a "No changes", `full` gets the default view. The diff baseline still holds every line, so a
+later read's diff is against the whole page.
+An `act` reply names the tabs its steps opened (`noteOpenedTab` in `packages/extension/src/opened-tabs.ts`, from
+`chrome.webNavigation.onCreatedNavigationTarget`, once the tab is adopted), each as a load's reply shows a tab: a tab that
+joined the session shows only its origin and `[needs approval]` until the session may read it without a prompt (its
+site set to `read` or `allow`, or, on the origin the batch was let through for and only there, Full access), and the
+first one it may read comes with its page under a load's rules: up to `LOAD_REPLY_MAX`, read again for Full access,
+redacted as any read. What Full access let through this way is listed in `autoAllowed`. The whole reply stays within the
+cap: the batch's own part is cut first to leave the opened tabs their room, and a failed step's line (its error held to 1,000 characters) counts in it. The reply waits up to 5 seconds in all for
+those tabs to commit and load (`describeOpenedTabs` in `requests.ts`), and a tab still on its blank page after a second
+is said to be loading. A tab the session does not hold (opened from a tab the owner shared, or not adopted in time) is
+only counted. The opened tab carries no approval and does not become the current tab. It joins its opener's tree of
+openers (`joinTree` in `opened-tabs.ts`, from `adoptPopupTab`), and the secret values of a tree's tabs are taken out of
+the title and address of all of them (see *Title and address* below), so a GET form sent into it, or by name into a tab a
+link opened earlier, does not show its password there. With `find`, a batch that went through replies with the matching lines only, as `read` with `find`, and sets no
+baseline; an empty `find` is none.
+An `act` reply leaves out what the batch itself set: a changed line whose only change is the value a `fill`, a `type` with a
+ref or a `select` gave it (`packages/server/src/reader/echo.ts`) is settled against the earlier read, so it is not a change, and
+the reply names those refs on one line (`Set e7, e8, e10.`). A line the page changed in any other way, or to another value
+(a mask, a rejected option, an `invalid` flag), and any line it cannot match to the step, stays in the reply.
+
+**JavaScript dialogs.** A dialog pauses the page, so every command that reaches it would hang. `cdp.ts` tracks
+`Page.javascriptDialogOpening` and fails such commands at once with a notice naming the dialog. `act` answers it:
+`press Enter` accepts, `press Escape` dismisses (in any of the usual spellings), and a `type` step without a ref holds a prompt's text until Enter.
+A step that opens a dialog counts as done, so the same batch can answer it. Answers run one at a time per tab and
+are refused if another dialog replaced the one checked; the browser's command names no dialog, so a replacement in
+the instant before it lands cannot be caught. A dialog from a frame of another origin
+is named by origin only and can only be dismissed. `tabs open` attaches the debugger on `about:blank` before loading
+the page, because a dialog opened before the debugger attached cannot be answered through it; on a tab the owner
+already had open, the tool says to ask the owner to answer it.
+
+**Background tabs.** Chromium never acknowledges wheel input on a hidden page and holds mouse input for seconds, so
+an `act` batch on a hidden tab turns on `Emulation.setFocusEmulationEnabled` while its steps run and off afterwards.
+So do a screenshot and a load through `tabs`, because a hidden page gets no animation frames and would stay blank if it
+renders from script. A load holds the tab visible from before it starts until the page settles (at most 4 seconds), which goes on after its reply. The page sees itself as visible and focused for that long.
+Focus emulation does not make a hidden page draw, and a page dispatches a mouse move only with a frame, so the browser can
+take up to a second to answer a move there. A click therefore sends its press without waiting for the move's answer: the
+press is a discrete event, and the page dispatches the queued move before it (`clickAt` in `actions.ts`). The click still
+fails with the move's error when the move failed. A `hover`, which is a move alone, still waits. A click whose move opens a
+dialog (a `mouseover` handler's `alert`) has already sent its press, which the page gets once the dialog is answered; its
+release is not sent.
+A tab the owner cannot see (not the active tab of its window, or in a window that is minimised, `visibility.ts`;
+a window that is merely not in focus is still on screen) that has been in the background for a few seconds can ignore the mouse wheel and draw no frame. There a
+wheel scroll reads the scroll position of the page and of the elements under the pointer (`scroll.ts`, in T3-Tab's own
+world) before and after, and the step fails with a reason when nothing moved although the page or one of them had room. The
+reading stops at a scroller that overflows on the wheel's axis and whose `overscroll-behavior` keeps the wheel, and treats a page with `overflow` hidden or clipped
+as having no room; a page at its end or one that does not scroll is not an error. In a tab the owner can see a scroll is never
+failed, because a page may take the wheel itself. A screenshot of a tab the owner cannot see gives up after 3 seconds
+(a `CommandTimeoutError` for `Page.captureScreenshot`) and says the tab is in the background; a tab the owner can see keeps the
+browser's 15 second limit. The messages do not tell the agent to `tabs switch`, which moves the owner's view.
+The settle probe runs in an isolated world (`privateWorld` in `cdp.ts`), so its observer and counter are not on the page.
+
+**Other extensions' frames.** Chromium drops `chrome.debugger` from a tab, and refuses to attach, while any frame in
+it belongs to another extension, such as a password manager's autofill menu; blocking the frame's request does not
+prevent it. `clearForeignFrames` (`foreign-frames.ts`) points those frames at `about:blank`, including inside closed
+shadow roots, and the debugger attaches again. This is the only use of the `scripting` permission and `<all_urls>`
+host access, and it runs only while the tab is on the origin the running tool call was approved for. Refs stay valid
+after a reattach only when the main document's loader id is unchanged and `chrome.webNavigation` saw no top-frame
+commit in between. Input that was in flight when the debugger dropped is not sent again.
+
+`find` matches case-insensitive literal text by default. Passing `regex: true` (accepted, not listed) opts into a regular
+expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. It prints the first 20 matches
+and says how many more there were (`(N more matches; narrow the query)`).
+
+**Redacted fields** (`packages/extension/src/password.ts`, called from `readPage` on the raw tree, before `slimAxNodes` trims
+it). Every node that holds a value, and every field the reader prints a value for (textbox, searchbox, combobox, spinbutton,
+slider), is checked, whatever its ARIA role: one `DOM.resolveNode` each into T3-Tab's own isolated world, so a page cannot change
+what `type`, `autocomplete` or `getComputedStyle` answer, then one `Runtime.callFunctionOn` per batch of 25, which also reads
+the value the field really holds. The value is removed and the line renders as `value=<redacted>`, with no length, when the field is:
+- a password input (the check is the element's `type`, not its role);
+- masked by `-webkit-text-security` (a PIN or card number in `type=text`, set on the field or inherited);
+- or marked by its `autocomplete` as a secret: `current-password`, `new-password`, `one-time-code`, `cc-number` or `cc-csc`
+  (any token of the attribute). This also catches a password field a show-password toggle turned into `type=text`, and costs
+  the agent the value of such a field when it is plain text on purpose (decided: safety over convenience). **A show-password
+  toggle on a password field that has no `autocomplete` attribute is not covered**: once it is `type=text` nothing marks it.
+
+A run of password bullets as a value is redacted under any role without asking (a `button`, for one), and a redacted node loses
+its children, because the bullets the browser draws for a password are a text child that would show the length. A field that
+cannot be checked (the browser could not resolve it, or the batch failed) is redacted too, and its value is looked for like a
+secret's; a dialog that opens during the read stops the read instead. When the private world was destroyed by a navigation, it
+is made again and the batch asked once more. `slimAxNodes` keeps a node's value only for the roles the reader prints one for, so
+no other role's value leaves the extension. A standalone script making the calls of the first version of this check in
+headless Chromium (median of 5 alternating runs, Chromium 159, Node 26.12) took 12 ms instead of 9 ms for 30 fields, 80 ms
+instead of 58 ms for 260, and 0.76 s instead of 0.57 s for 3,000, against the old `DOM.describeNode` per field, next to 0.5 s,
+0.9 s and 4.6 s to fetch the accessibility trees of those pages (the shipped code was not timed on its own). `find`, diffs and
+the `act` reply are built from the same lines, so they show nothing a read does not.
+
+**Names and text that took a hidden value in.** The browser puts a field's value into other elements' names, and a page can echo
+it in its text, so each secret is followed wherever it can have gone, with the value taken whole from the raw tree before any
+cut. The analysis (`redactPasswordValues`) does each step once for the whole page, so what it costs follows the size of the tree
+and of the values, not their product:
+- *Which values.* The fields the checks above found, the values of the hidden fields inside what names were built from, and the
+  page's own list: before the tree is read, one `Runtime.evaluate` in T3-Tab's world (`COLLECT_SECRETS` in `page.ts`) lists the
+  value of every input and textarea that is a password input, marked by `autocomplete` or masked, in the document, open shadow
+  roots and same-origin frames, **hidden fields included whether or not a name was built from them** (up to 3,000 values, at
+  most 5,000 fields asked about their style, 200,000 elements). A failed call leaves that list empty and the read goes on.
+  The values seen in a tab are also remembered for it (`rememberSecrets` in `secret-text.ts`, memory of the extension's worker:
+  400 values a tab, 30 minutes, dropped when the tab closes or the worker restarts), so a later read of the same tab, whose
+  form is gone, still hides them. A tab with no such value gets no entry, so tabs without secrets do not push out those
+  of one.
+- *Where a name came from.* Each source of a name that the browser did not set aside carries the nodes it was built from
+  (`relatedNodes` with `backendDOMNodeId`, under `attributeValue` for `aria-labelledby` and a script's `ariaLabelledByElements`
+  and under `nativeSourceValue` for `<label for>`). A name built from a hidden field, or from a node that is an ancestor of one
+  in the tree (a `LabelText`, a shadow host, an ignored wrapper), is cleaned of the values, and becomes `<redacted>` whole when
+  none is found in it or a node it was built from is not in the tree. A field's own label around it is not part of its name;
+  a field that names itself is. A name built from content (a button, link, heading, cell or tab around the field, a
+  `fieldset`'s legend) is treated the same way, for every ancestor of the field that holds it.
+- *Hidden content.* The tree marks hidden, `aria-hidden`, `display:none`, `visibility:hidden` and closed-dialog content as
+  ignored and gives its nodes no role or value, yet a name built from it still holds what is in it. So the ignored nodes inside
+  any element some name was built from (up to 1,000 a read, in one walk of the tree) are checked as well. If there are more, or
+  the check fails, the names built from them are hidden whole, when the page holds a secret or the check failed.
+- *It travels.* A name that took a secret in passes it on the same two ways, to the names above it built from content and to the
+  names whose sources list it or an element around it. Each node is expanded once (not once per value), so a form of thousands of
+  fields named by hundreds of buttons costs one pass. A name that had to be hidden whole, because no value could be found in it,
+  is passed on as unknown: the names above it that are built from content are hidden whole.
+- *The net.* Every value of four characters or more, including the value the field really holds and not only the bullets the
+  tree shows, is replaced in every name, value, link address and line of text on the page, tied to a field or not, so a path not
+  modelled cannot print a secret the extension knows. The matcher (`matcher` in `secret-text.ts`) is an Aho-Corasick automaton:
+  one pass over a text whatever the number of values or how alike they start, case-insensitive (a page that upper-cases its text
+  is caught), overlapping matches joined into one marker, never inside a marker; a value over 256 characters is found by its
+  first 256 and then hidden as far as the text follows it. **Text is matched as a stream**: the lines of text of the page in
+  document order are joined with nothing between, as the reader joins sibling text, so a value a page wrote one element per
+  character, or with its first letters in a `<b>`, is found, and every line it covers loses its part (the first keeps the
+  marker, the rest go empty). This also joins text across blocks, so two separate lines that together spell a value are hidden
+  too (a rare false positive, on purpose). A link address is also matched in these forms of a value (`addressForms`): as
+  it is, `encodeURIComponent`, `encodeURI`, the form encoding a GET form uses (which also encodes `!'()~`), and the last
+  two with `+` for a space; an address that holds a value another way (a script's own encoding, say) is not matched. A value of fewer than four characters is replaced only
+  as a whole word and never in plain text, only in names tied to a hidden field (the names that took a value in, and those
+  around the field that holds it; in a tied name every short value of the page is looked for, not only its own field's).
+- *Title and address.* The tab's title and address come from the browser, not the tree, and a form that sends a password in
+  its address (a GET login) puts it in both, in the header of every later reply and in `tabs list`. `scrubReported` takes the
+  tab's remembered values out of the title and address (in their address forms) in `readPage`, `tabInfo` (`tabs list`,
+  `open`, `switch`) and the dialog branch of `act`, whose dialog message also loses the tab's own values (`scrubKnown`). A
+  form can also be sent into another tab, a new one or one it names (`target="results"`), which puts the values in that
+  tab's title and address. So the extension keeps each open tab's tree of openers (`opened-tabs.ts`: from
+  `onCreatedNavigationTarget`, written to `chrome.storage.session` and loaded again when the worker starts, for the tabs the
+  browser still lists; the browser's `openerTabId` is the tab strip's opener, which it reassigns and clears, so it is not
+  used) and remembers every value of a tree's tabs once more for the tree (400 values, 200 trees, dropped when the tree's
+  last tab closes, apart from the tabs' own entries, which a tree never pushes out). A tab's tree values are taken out of
+  its title and address only, in the address forms above, never out of its page. One its address holds becomes one of its
+  own (`promoteAddressSecrets`), and a top-frame commit the browser reports as `form_submit` makes all of the tree's values
+  the tab's own (`noteCommitted`), since a page a form was sent into, by GET or POST, can echo them. When `tabs.onReplaced`
+  reports a tab swapped for another (a prerendered page), the new tab joins the old one's tree before the old one leaves
+  and takes over its own values; if the browser reports the old tab's removal first, its own values are gone (the order
+  was not checked in a real browser). Each entry keeps the matchers built from its values, and their address forms, until
+  the values change; finding which tree values an address holds compares the address with those kept forms. Before a `click`, `press`, `select`, `fill` or `type` step, `act`
+  collects the page's secret values again (`rememberPageSecrets`, about 1 ms on a small form and 12 ms on a page of 3,000
+  masked fields; the whole collection, making T3-Tab's world on a new document included, is given up after 2 s), and before a `scroll`, `hover` or `wait` only when a field step ran or the document
+  changed since the last collection, so a form the owner or an earlier step filled after the last read is covered whatever
+  sends it: a click, a key press, or page script a step sets off, such as a `select` whose change submits.
+- *The budget.* The steps after the checks run under a time budget of 1.5 s (`budgetMs`). Past it, the analysis stops and
+  every name, value, link address and line of text that holds a value the extension knows (or a run of two or more password
+  bullets) is hidden whole, and past a second budget every name built from content or from other nodes is hidden whole. The
+  fallback never reads a text more than once.
+Measured: a stub inspector and synthetic trees in the unit tests (Node 26.12, vitest, one run each, tree building included):
+3,000 masked fields in a form with 200 buttons named from it, 0.59 s; groups 500 deep with 20 fields each, 0.15 s; 30 deep with
+300 each, 0.10 s. The version before took 29 to 31 s on shapes like those (as a review measured them, with its own stub). In headless Chromium (`e2e/checks-real-use.mjs`, one
+run, wall time of the `read` call) the real 3,000-field, 200-button page read in 3.4 s, 12,083 characters, and `tabs list`
+answered straight after; the version before did not answer within 25 s.
+Not covered: a show-password toggle on a field with no `autocomplete` attribute (above); `aria-describedby` (a description is not
+part of the tree the reader gets, so it never leaves the extension); a name or text that holds the value in another form than
+the field showed it (the match is the value with its whitespace collapsed, in any case, with the encoded forms in addresses
+only); a secret that is in none of the ways above a field's value, such as one a script types into plain text or builds from
+other values; a field masked another way (a text input drawn as dots by a script or a font), and the bullets a masked field
+outside the value roles draws as text (its length); a secret field inside a closed shadow root that no name was built from
+(the page's list cannot reach it; the checks above reach it only through the tree) and fields past the caps above; secrets of
+a tab after the extension's worker restarted or 30 minutes passed (the memory is gone; the tab's address from before then
+shows as the browser reports it); a form sent by name into a tab the extension did not see opened (one opened before the
+extension was running, or after the browser restarted, which empties session storage); `run_js`, which is the agent's own code; and a screenshot, which shows what the
+page draws. A short value of one tab also hides the same text in the titles and addresses of the other tabs of its tree (a
+false positive, on purpose).
 
 ## Sessions and permissions
 
@@ -156,6 +636,37 @@ running as the owner, which can already read the owner's home folder, browser pr
 The daemon issues each session id and binds it to the control connection that registered it; tool requests
 on another socket, or with another id, are refused. Tabs a session opens go into its own Chromium tab
 group. It can list and use only tabs in that group or tabs the owner shares from the side panel.
+
+Where that group shows depends on who started the session (`startedFromPanel` in `claims.ts`, `attachToSessionGroup` in
+`tabs.ts`). A session is panel-started when a claim grant lists it (a direct run redeems its code before its first tool
+call) or when the T3 thread the daemon proved it runs for is one the panel bound a claim to. Its group is expanded, and
+expanded again with each tab it opens, as before. Any other session reached for the tools by itself (an MCP client of
+the owner's own, a T3 thread not started from the panel): its group is created collapsed with its first tab, one chip in
+the owner's tab strip, and T3-Tab never collapses it again, so a group the owner expanded stays open. A session taken for
+self-started whose claim arrives after its first tab (a panel-launched T3 agent that opened a tab before claiming, or a
+thread that could not be proven, off Linux) has its group expanded once, when it redeems the code or when the panel binds
+the code to its proven thread (`expandStartedCollapsedGroup`). Only a group T3-Tab created collapsed is expanded that
+way; the owner's own groups are never collapsed or expanded. The tabs open in the background either way, and act,
+screenshots and scrolling work in a collapsed group's tab as in any background tab; `tabs switch` brings the tab to the
+front, which expands its group, as Chrome does. A later turn of a direct run that has no tabs left to share gets no
+code, so it holds no grant and its group starts collapsed.
+
+`tabs open` asks first, for the requested address: nothing is created, fetched or run until the owner says yes. Then
+the page loads in a new tab behind the one the owner is on, with the debugger attached on `about:blank` first. If a
+redirect takes it to another origin, the tab stays in the session's group unapproved, and the reply names the origin and
+says to read it to ask for access; an origin that is already allowed just carries on. `read` with a url that no readable
+tab of the session shows, and `tabs goto` with a url in a session that has no tab, ask the same `open` prompt, with no
+tab named, before anything is created.
+
+When the control connection closes (the daemon stopped or restarted), that session is over: the daemon forgot
+it, with its tab group, approvals and shared tabs. An MCP server does not resume it. A call that was in flight
+fails, and the next tool call starts a new session on a new connection, through `ensureDaemon`, which restarts
+the daemon if needed; if that fails, the error says why and the call after it tries again. The first browser
+tool reply after that says the earlier session ended and that its tabs and approvals are gone, so the agent
+opens tabs again or asks the owner to share one. A claim code, and a claim-file report, go with the first
+registration that succeeds and are never sent again, because a code works once: a direct run's new session
+starts without the owner's tabs. The new session id is bound to its new socket like any other. No tool reports
+the link on its own: the next call is how an agent learns it ended.
 
 Site permissions are stored per HTTP(S) origin: `ask` by default, `read` or `allow`. `read` lets sessions
 read the site without a prompt and never covers opening, acting or `run_js`; `allow` covers all four. A read
@@ -167,9 +678,11 @@ action. `tabs list`, `switch` and `open` show only the origin and `[needs approv
 current origin the session has not approved (and the site is not set to `read` or `allow`). A tab opened
 from a tab of a session, through `chrome.webNavigation.onCreatedNavigationTarget`, joins that session's
 group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own
-(shared or not), is left alone. A prompt names its tab id and title; it can time out or be declined, and one session may
+(shared or not), is left alone. A prompt names its site and its tab's title, or, for a page being opened (which has no tab yet), the address it would load. An act prompt also says what the batch will do (`click “Add to cart”`): the MCP server builds that from each step's action and the role and name its reads printed for the step's ref (`RefTable.targetOf`, `actSummary` in `tools.ts`), sends it with `page.act` as `summary`, and the extension keeps it only when it describes that very batch (`summaryForSteps`: one entry per step, each with that step's action and, for a key, its key, every field checked as `cleanActSummary` does), else the prompt says "act on". It never holds the text a step types, the option it picks, or a key that is a character (a key is shown only as a named key or a shortcut with each modifier once, at most 24 characters), and its names are the MCP server's own, from its read of the tree the extension redacted; the extension cannot tell them from names a program running as the owner made up, which is outside T3-Tab's trust model (above). The daemon passes the steps on with the prompt, checked the same way (`parsePromptNotice`), so the question in the agent's thread names the action too. It can time out or be declined, and one session may
 have at most three waiting prompts. The side panel keeps prompt rows stable and disables a prompt's buttons
-for 500 ms when it appears and again whenever a row is removed or inserted above another.
+for 500 ms when it appears, again whenever a row is removed or inserted above another, whenever it becomes the card
+Enter and Escape answer, and when the panel is shown again after it was hidden. A thread's T3 approval is in the same
+lock list as the browser prompts (after them), so a prompt answered above it locks it too.
 
 Membership, restricted-page and approved-origin checks run again after every permission wait and before
 every `act` step. `run_js` runs only in the main frame's JavaScript context after the browser reports that
@@ -178,26 +691,220 @@ context's origin as the approved one, pinned by `uniqueContextId` (`mainWorldCon
 agent's text is never part of a check. A screenshot records the document epoch and address before the
 capture and discards the image if either changed. An `act` batch stops if a document from another origin
 replaced the page during a step other than `wait`, checked after the step's input and again after it
-settles, so a page that came and went is caught too; a new document on the approved origin, such as the
+settles (for the step before a `wait` for a time, after that wait), so a page that came and went is caught too; a new document on the approved origin, such as the
 page a `press Enter` submits to, is fine. CDP input cannot be aimed at one document, so input that reached
 such a page is reported, not prevented. A tab that moves while approval is pending or between
 steps is refused until its new origin is approved. Site setting writes are serialised.
 
 Every browser tool refuses `chrome:`, `brave:`, `edge:`, `devtools:`, `chrome-extension:`,
 `view-source:`, the Chrome Web Store and other non-HTTP(S) pages. The side panel lives in
-`packages/extension/entrypoints/sidepanel` (inbox layout: Home with waiting prompts in "Needs you",
-conversations, current tab and connected sessions, plus pushed Conversation, New conversation and
-Settings views styled through `tokens.css`); its sharing and prompt calls live in
-`packages/extension/src/panel.ts`, and the policy is in `permissions.ts`, `sessions.ts` and `tabs.ts`.
+`packages/extension/entrypoints/sidepanel` (React: a new-thread screen, which carries the setup card until the helper
+connects, the thread view, and the
+thread list and settings behind icons, coloured only from T3's theme roles);
+every screen has the same top bar in T3's anatomy (`Bar` in `Frame.tsx`): T3's sidebar toggle, which opens and closes
+the thread list, then a breadcrumb, then the screen's icons (New thread and Settings), or, on Settings and its sheets,
+the breadcrumb (`Settings / General`) and Close, as T3's settings have. T3 Code's built-in theme is painted as T3's app
+paints it, not as its palette file lists it: in dark a black canvas with the thread list on the card surface, so the list
+sits lighter than the canvas in dark and darker in light (`T3_CODE_PAINTED_DARK` in `lib/theme.ts`); its sharing and prompt calls live in
+`packages/extension/src/panel.ts`, and the policy is in `permissions.ts`, `sessions.ts` and `tabs.ts`. The extension's icon
+is T3-Tab's own: `packages/extension/icon-source.svg`, rendered to `public/icons/`. T3 Code's mark appears only on the row
+that names T3 Code.
+
+The panel bundles Inter Variable's Latin and Latin-ext faces only (`entrypoints/sidepanel/inter.css`); text in another script
+is drawn by the system's fonts through the `--font-sans` fallbacks. The panel loads the markdown renderer and Settings when they are first needed. It asks the worker on a timer only as a
+safety net: the worker's `panel.changed` message, `chrome.storage.onChanged` and tab events bring changes at once. The
+timers are 5 seconds for prompts and sessions, 10 seconds for the helper (3 while it is missing or a screen shows setup
+details), 15 seconds for the list of direct runs (1.5 while one runs) and one minute for the agent and T3 checks. Each timer's next time is set from the answer it just merged, so a list that first shows a run running is asked again 1.5 seconds later, not 15. An open
+direct run is fetched every 400 ms only while it runs. A hidden panel slows every timer to at least 15 seconds, or 5 for a
+missing helper.
+
+The panel belongs to the tab it was opened on (`panel-tab.ts`). The worker turns the manifest's window-wide panel off, and
+the toolbar button calls `chrome.sidePanel.setOptions({ tabId, path: 'sidepanel.html?tabId=<id>', enabled: true })` and
+`open` for that tab, so other tabs show no panel until the owner opens one there. The tab chip is always that tab. Each
+tab's panel keeps its draft, its project and the screen it was on in session storage, removed when the tab closes.
+Opened on a tab a thread holds, the panel shows that thread. Opened on any other tab it shows a new thread, with the
+threads working elsewhere listed above the composer, each saying whether it is working or needs the owner; a permission
+card for another tab says so and has a Go to tab button.
+
+The new-thread heading asks T3's two questions: "What should we build?" in a project and "What should we work on?" everywhere
+else, direct runs included, so the first screen keeps its question when T3 connects. It does not move when the setup card,
+the Connect row, a draft that wraps, browser prompts or the banner come and go: the dock floats over the screen's foot, the
+banner under the bar, and the hero hangs from a fixed line, so a line added under the heading grows downwards. It moves
+up only when the dock would otherwise cover it, in a panel too short for both (`useSteadyHero` in `NewThread.tsx`).
+
+The tab chip shows what the next message shares before it is sent: the tab, or the whole tab group when the owner made
+that group. In a thread, a tab waiting for the next message is outlined and says so, and a tab already shared is filled;
+a tab not shared is the button "Share this tab", the chip's shape outlined in the line colour with a plus.
+The Threads screen is T3's sidebar: the search row, then the threads, each row ending in its provider's logo. Under it, where
+T3's sidebar keeps its own status, "Using the browser" lists every connected agent session in one slim row, named by its T3
+thread when it has one and otherwise by its agent, with how many tabs it holds and a toggle that shares the current tab
+with it. The toggle is left out on a page that cannot be shared. A green dot on the Threads button says at least one
+session is connected.
+
+A thread shows why a turn failed, using T3's failure message or the direct run's error. Follow-ups queued in a T3 thread
+are listed above the composer, where they can be removed; after a Stop, T3 holds them and the first has a Send now button.
+A direct run cannot queue, so its composer says to wait and keeps Stop visible.
+
+Browser prompts and a T3 thread's approvals share one card (`Approval.tsx`, built from `approval-model.ts`) in T3 Code's
+anatomy: a line saying what is asked (who asks, the action and the site, for an act what it will do to which element, kept
+to three lines: its first part and "and more" when it is long, then its first step with a shorter name, and "act on" when
+even that is over 48 characters, so the site is never pushed off; or the command or path T3 asks about), then
+the address a prompt would load or T3's reason, then the tab it is about by its title in the curly quotes the action's names use, its own quote marks turned into `'` and
+its bidirectional and zero-width marks dropped (`in “<title>”` under an address, as for `goto`, `back`, `forward` and `reload`), then Decline, the primary answer (Allow once, or T3's Approve)
+and More, in T3's order on one row. More holds the other answers with what each grants: for a browser prompt the
+lasting choice and Manage sites, for T3 its own (such as Always allow this session and Cancel), with T3's warning on an
+answer shown as T3 shows it. A T3 approval draws only the answers T3 offers: with no `accept` there is no primary
+answer, with no `decline` no Decline; with no options at all it offers T3's own defaults. Unless T3 reports the request's
+`responseCapability` as `live`, its answers are disabled and the card says, in T3's words, that the provider process is
+gone. A card about another tab says so and has a Go to tab button.
+
+The cards of a screen share one `ApprovalStack`: their locks are one list. Only browser prompts take keys: a T3 approval
+is answered by click, as in T3's own client. Enter (the primary answer) and Escape (Decline) answer only the keyed
+card, the first browser prompt that is at least 98% on screen (an `IntersectionObserver`, so a card scrolled out of the
+prompt list is never answered). A key answers only a press that began after that card became keyed: an Enter or Escape
+still held from before the change answers nothing until it is released. Keys never act while a popover, menu or dialog
+is open, from a text field (the composer included), during composition, with a modifier, held down, or while the card
+is locked; Enter on a button is that button's own, and Escape declines only from the panel's body or from inside the
+card. The keyed card shows the two keys, hidden below 360 px. A T3 approval is drawn at its row in the running work log, as T3 does, and above the composer when that
+row is not among the last eight steps shown; browser prompts sit above the composer, and on the new-thread screen they
+float over the hero's lower part so nothing moves. In a question card, keys 1 to 9 choose
+an option unless the owner is typing, and Enter in the answer box moves on or submits. Browser steps name the action and
+the element it was on (`Clicked “Add to cart”`, `Filled “Email” and “Password”`; `actStepsText` in `packages/protocol`),
+taken from what the thread's earlier T3-Tab replies printed for that ref on that tab (`RefNames` in `lib/thread-model.ts`),
+or the site when the element is not known, with one icon per tool; never the text typed into a field, an option chosen or a
+key that is a character. An element's name is the page's own words, so it is shown on one line of at most 40 characters,
+with its quote marks of every kind turned into `'` and its bidirectional and zero-width marks dropped (`plainName` in
+`act-words.ts`): a name cannot end the quotes it is shown in or reorder the words after it, such as the site a permission
+card names. A reply's part about each tab starts at its `tab <id>` or `Opened tab <id>` line (a failed step's
+error before it names no element), and a tab's names start again with a load, a document the session sees for the first
+time (its head names title and address) or a whole read, so a ref of an earlier page is not named after the page changed.
+Each step's reply is taken apart once, not again on every event that redraws the thread. T3 leaves a tool's reply out of the
+thread it streams, so the panel fetches each finished T3-Tab step's reply with `orchestration.getTurnItem`, as T3's own
+client fetches a step's detail: at most four at a time, each given up after ten seconds, and one that failed or timed out
+keeps the words it has and is not asked again while the panel is open (`lib/turn-replies.ts`). The replies stay on the
+panel's T3 client, by thread and step, for the 50 threads shown last, so a thread opened again fetches only its new
+steps. The running step is T3's
+live row: its icon in the text colour and a light sweeping over its words, resting on its first words, so a still frame
+shows it too (with reduced motion, its words in the text colour).
+
+A new tab's thread starts in no project, which is T3's Scratch project (`projects.ensureScratch`), and Settings can change
+that default to the last used project or a fixed one. Settings has two pages: General (default project when T3 is connected, Connections
+folded away, appearance) and Sites. Sites lists this tab's site and the sites with a grant, since a site left on `ask`
+is the same as one never seen, and the last requests Full access let through.
+
+A permission prompt shows as a card in the side panel and, when the agent's client supports MCP form elicitation,
+in the thread the agent runs in. The first answer counts and closes the other. An accepted question allows that one
+request; site-wide grants are made only in the side panel. `claude -p` and `codex exec` cancel these questions, so a
+direct run asks in the side panel only.
+
+T3's Full access counts as yes for a browser request only while T3 itself confirms it (`t3-full-access.ts`), for any T3
+thread, started from the panel or not. T3 sets `T3CODE_THREAD_ID` for the provider processes of a thread, and the MCP
+servers they start inherit it. When an MCP server registers it sends its pid, and the daemon accepts its thread
+(`agents/t3-thread-identity.ts`) only if that process holds the connection's socket, carries exactly one valid id, and its
+parent chain reaches the T3 server recorded in `server-runtime.json` (not started after its record) without passing through
+the daemon and without any process naming a different thread. A process with no id does not break the chain, because
+Codex's shared app-server has none. So a command an agent starts with another thread's id is refused, since its own shell
+names the real one, and a direct run from the panel never counts. Anything else, and every platform but Linux, means no
+thread and normal prompts.
+
+This widens what Full access reaches. A process in a T3 terminal also carries that thread's id, so an agent the owner
+starts there counts as that thread. The check stops a mislabelled command, not a program running as the owner that rewrites
+its own environment, which is outside T3-Tab's trust model as before. It names the thread only; the mode is still T3's
+answer per request.
+
+When a request needs a prompt, the extension asks the daemon, which runs `t3 thread show --json --messages 0 <threadId>` for
+the session's proven thread and every thread its claims are bound to; that works with the side panel closed. If each of them
+reports `full-access`, the request goes through with no card, writes no site setting and is listed in
+`autoAllowed`. A session holding a direct run's grant never counts, and a claim not bound yet counts only alongside a proven
+thread. A yes counts for two seconds on a monotonic clock from when its read started, and a request is allowed only at a moment when every
+thread the session holds has such a yes; a thread that lapsed while another answered is read again. So after any of its
+threads leaves Full access, a session's request can pass for at most two seconds, and a late answer never allows the request
+waiting on it. A request waits at most five seconds for all of them to be live together, then prompts. Requests share one
+read per thread until that read is five seconds old; after that the next request starts a fresh `t3` command, and an
+abandoned read that answers later cannot overwrite a newer answer. The daemon ends a stuck command after 30 seconds, so a
+hung T3 can hold about seven of them per thread while requests keep arriving. A pass from
+Full access records no origin approval, so reads, screenshots and the title in `tabs` follow the live mode too, and the tab
+shows `[needs approval]` again once the thread leaves it. An Allow once still records its approval for the tab. No proven
+thread and no bound claim, a direct run's claim, another mode, a stopped T3 or no answer within five seconds all mean a normal prompt. Every
+other check still runs. Withdrawing a claim no thread was bound to also takes back the tabs an agent got through it.
 
 ## Side panel sessions
 
-The side panel starts and continues agents with the owner's tabs; T3-Tab never runs a model. The panel asks
-the extension's service worker, which passes the request over its link to the daemon
-(`browser.daemonRequest`, answered with `daemon.reply`); the panel never talks to T3 itself. The daemon keeps
-the conversations in memory (`packages/server/src/agents/`), so they end when it stops.
+The side panel starts and continues agents with the owner's tabs; T3-Tab never runs a model. When T3 Code is
+connected the panel is a T3 client and T3 starts and runs every thread. When it is not, the picked provider runs
+directly through the daemon and feeds the same thread view.
 
-- **T3 Code threads.** The daemon runs `t3 thread start --json [--provider <instance> --model <slug>]
+- **The panel's T3 session.** While T3 runs on this machine and the panel holds no session, the new-thread screen shows
+  one row, "T3 Code is running", with Connect (Settings → Connections has the same button). Every Connect goes through
+  `connectT3` in `lib/t3-connect.ts`. The panel also connects by itself, with no click (`CONNECT_T3_BY_ITSELF`, on, owner's
+  decision): once per panel page, when the helper reports T3 running and the panel holds no session and is not connecting.
+  A failed pairing is not tried again in that page, and the panel's own attempt shows no error: the row stays the plain
+  Connect row (`failureNote`), no banner, no loop; the error text shows only when the owner clicks Connect and that fails.
+  A Disconnect holds until the panel is opened again. It is the same `t3.pair` as the click, so the daemon's process check
+  applies to it unchanged, and with T3 stopped, missing or not checked it does nothing. Where Connect is unavailable
+  (anything but Linux) the one attempt fails quietly and the row stays as it is. Connect signs a DPoP proof and calls the daemon's `t3.pair`. The daemon checks that the
+  recorded T3 process owns the listener, mints a five-minute pairing credential with `t3 auth pairing create`, and spends
+  it at T3's `/oauth/token` itself, so the credential never reaches the extension. The result is a DPoP-bound session with
+  T3's default client scopes, the same access T3's own apps get. The signing key is non-extractable and stays in the
+  extension's IndexedDB; the token is in `chrome.storage.local`, renewed by T3 for up to 30 days. Renewal and WebSocket
+  tickets go through the daemon's `t3.session`, which sends them with `confirmedFetch` and sends nothing when T3 now runs at
+  another address than the stored one; the panel then asks the owner to connect again. Those requests are checked on
+  Linux only, as `confirmedFetch` is, so Connect is unavailable elsewhere.
+- **The WebSocket is not checked.** The browser opens the panel's one socket to T3's `/ws`
+  (`entrypoints/sidepanel/lib/t3-rpc.ts`, `t3-client.ts`), so no process check covers it. A process that took T3's port
+  between the ticket request and the socket could receive that ticket and its one-use proof, and whatever the panel sends
+  on the socket. The same holds for the two other connections the browser opens to T3: an attachment upload and the
+  voice socket (below). Disconnect drops the session and revokes it through `t3.unpair`. The `t3 thread` polling below remains in
+  the daemon, but the panel no longer uses it.
+- **The composer.** The bottom row is T3's: the paperclip at the left end, then the model, the mic and send (Stop in its
+  place while a turn runs, drawn at the same 16 px as the other icons), every control 32 px and the row 8 px from the
+  box's edges. A direct run whose model is the agent's own default names the agent on the chip ("Claude Code"), not
+  "Default", since T3-Tab never learns which model that is. Until an agent is known (the helper is still missing, or found
+  none) there is no chip at all, and the greyed Send points to the setup card's line saying it waits for the helper
+  (`aria-describedby`, and its title). A running turn's header reads "Working…" until its first full
+  second, then "Working for 7s" in whole seconds, as T3's timer counts; it never shows "0.0s". The access level (runtime mode) is in the model picker's footer, as
+  in T3; a running T3 thread's model chip opens the same footer, and a change there is sent at once with
+  `thread.runtime-mode.set`.
+- **Attachments.** Paperclip, paste and drop add files. Files dragged anywhere over a screen with a composer (the
+  new-thread screen and a thread) show T3's whole-workspace drop overlay and go to that composer; on any other screen a
+  drop does nothing. For a T3 thread each file is uploaded the way T3's own composer
+  does it: `attachments.createUploadUrl` over the socket signs a ten-minute upload address, the bytes are POSTed there
+  (the address is the only credential), and the message carries the returned ids; a launch with uploads also sends the
+  thread id T3 files them under. PNG, JPEG, GIF and WebP up to 10 MB go as images, anything else up to 50 MB as a file.
+  A direct run takes PNG, JPEG, GIF and WebP only, up to 5 MB each and 6 MB a message (`lib/attachments.ts`, checked again
+  in `agents/images.ts`). Any other file is shown as one that cannot go to that agent and holds the message until it is
+  removed; nothing is dropped silently.
+- **Dictation.** The mic records 16 kHz mono PCM in an audio worklet (`public/pcm-capture.js`) and streams it to T3's
+  `/ws/voice`, where T3 transcribes it on this machine with the model chosen in its Settings → Voice, the same route T3's
+  composer takes. The media ticket and `GET /api/voice/status` go through the daemon's `t3.session` like the RPC ticket.
+  As in T3's composer, the mic is not drawn where it cannot work: T3 not connected, no `voiceTranscription` capability, a
+  voice status that says unsupported (asked once when T3 connects, so a refused one never appears), or a page that cannot
+  record. A downloaded voice model that is missing keeps the button, as T3 opens its setup there: pressing it says where
+  to download one. A blocked microphone keeps it too, and says how to allow it. A side panel cannot show the browser's microphone prompt, so the first press opens
+  `microphone.html` in a tab, where the browser asks once for the extension; after that the panel records without asking.
+  Nothing uses the browser's Web Speech service.
+- **Themes.** Settings shows the color scheme as one segmented row and the theme as one menu (every theme with its
+  light and dark swatches, then Create theme and Add theme); edit, duplicate, export and remove for the current theme
+  sit in a menu beside it. A fresh install uses T3 Code's built-in theme with the System scheme. The panel does not
+  follow T3's theme, and a stored "follow T3 Code" choice from an earlier version, or a theme that is gone, falls back
+  to that default (`known` in `lib/theme.ts`). The theme sheet (Create, Duplicate and Edit) opens on the scheme the panel is
+  drawn in and in the panel's own palette: a new theme starts as a copy of the theme in use for that scheme (`currentPalette`
+  in `lib/theme.ts`), so the sheet looks the same a moment after it opens as before, and picking a new Canvas or Accent is
+  what makes the other colours from the two seeds. While it is open the whole panel previews the draft, as T3's editor does:
+  its Light and Dark tabs preview those schemes, and closing it brings the saved theme back. T3 theme files can be imported. The owner's themes can be
+  edited, and any theme can be duplicated with all its colours and both of its modes. A name already in use gets a number
+  instead of replacing that theme. A change reaches panels open on other tabs through `chrome.storage.onChanged`. Custom
+  CSS goes through T3's own filter, which removes rules that load remote files.
+- **Adding the tools to the owner's agents.** Add in Settings → Connections registers `t3-tab mcp` for the owner's own Claude Code and Codex
+  sessions; threads started in the panel do not need it. The panel has no Remove button, so it never edits agent configuration
+  itself. Connections shows the command that removes the entry: `claude mcp remove -s user t3-tab` or
+  `codex mcp remove t3-tab` (or `t3-tab uninstall --claude` / `--codex`).
+
+For direct runs and the older routes, the panel asks the extension's service worker, which passes the request over
+its link to the daemon (`browser.daemonRequest`, answered with `daemon.reply`). The daemon keeps those conversations
+in memory (`packages/server/src/agents/`), so they end when it stops.
+
+- **T3 Code threads through the CLI (older route, not used by the panel).** The daemon runs `t3 thread start --json [--provider <instance> --model <slug>]
   <project> -`, `t3 thread send --json <thread> -` and `t3 thread show --json --messages 20 <thread>`, with
   the message on stdin, and polls `show` every 3 seconds until the run it started reaches a terminal status.
   A run waiting on an answer stays followed, polled less often up to every 30 seconds. `idle` and `completed`
@@ -207,40 +914,20 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
   though the thread may still be running in T3. Each `t3 thread` command signs in to T3
   for a moment, so the panel checks T3's state at most once a minute unless the owner reopens the panel. The project is
   a T3 project id or a folder inside one; provider and model are optional (both or neither). The `t3` CLI has
-  no command that lists projects, providers or models; the panel picks them from lists once T3-Tab is signed
-  in to T3 (below), and otherwise takes them as text. Choosing "Type…" in a list brings the text fields back.
-- **Signing in to T3 for the lists.** A one-time "Sign in to T3 Code" in the panel signs the daemon in to the
-  local T3 environment's `/mcp` endpoint the way T3's outside agents do (`packages/server/src/agents/t3-access.ts`):
-  OAuth metadata, dynamic client registration as "T3-Tab", and the authorization code flow with PKCE (S256).
-  The address comes from `<T3 home>/userdata/server-runtime.json` (only `origin`, `pid` and `startedAt`; its server
-  must be alive, and the address a loopback `http` one). The extension opens T3's approval page in a normal tab; the owner
-  approves there and picks the access level. When T3 asks for a sign-in code there, the owner creates one in T3 Code under
-  Settings → Sharing & access, and the panel says so while the sign-in waits. T3 sends the answer to a one-use listener on `127.0.0.1` that
-  checks `state` and `iss` (T3's metadata must promise `iss`, and an answer without it is refused) and closes after
-  one answer. T3-Tab keeps the sign-in only when T3 granted exactly
-  `orchestration:read` (T3's "Read only"); anything broader is not stored, and the panel asks the owner to
-  revoke it in T3 and sign in again. The token is stored only in `t3-credential.json` in T3-Tab's state folder
-  (next to `daemon.json`, written as a new 0600 file and renamed into place), sent only to that environment's
-  `/mcp` with redirects refused, and used only for `t3_project_list` and `orchestrator_capabilities`
-  (`t3-catalog.ts`). T3-Tab never hands it to the extension, the panel, logs, error messages, agents, or a
-  command's arguments or environment. Like every file in the owner's home, the 0600 file is still readable by any
-  program running as the owner, coding agents included; the sign-in is read-only and ends after 30 days.
-  A sign-out cancels a sign-in at any stage, and writing the file and signing out run one at a time, so a sign-out
-  during a sign-in leaves no credential. Every request to T3 opens its own connection and is sent on it only after
-  `/proc/net/tcp{,6}` and `/proc/<pid>/fd` show that the recorded pid accepted that connection and that the process
-  did not start after T3's `startedAt` (`t3-connection.ts`). That comparison has no tolerance: the start time read
-  from `/proc` is rounded down by at most 1.01 s, so a process started less than that after the record can still
-  pass, and a forward wall-clock step after T3 started can refuse T3 until it restarts. A backward wall-clock step
-  makes processes look as if they started earlier, so a process that reused T3's recorded pid could pass the
-  start-time check; it still has to hold the accepted connection, and programs running as the owner are outside
-  T3-Tab's trust model anyway. Where there is no `/proc` (any platform but Linux),
-  T3-Tab sends nothing, so the sign-in and the lists are unavailable and the project and model are typed instead.
-  T3 issues no refresh tokens and offers a client no way to revoke itself: a
-  sign-in lasts 30 days, a refused token is deleted, and "Sign out" deletes the file and any temporary copy a crash left (the
-  daemon also removes those when it starts) and tells the owner to
-  revoke T3-Tab in T3's Settings → Sharing & access to end it there at once. The lists are fetched on sign-in,
-  when the panel opens, and on "Reload lists"; after a failure, at most once a minute. Threads still start and
-  continue through `t3 thread`.
+  no command that lists projects, providers or models, so on this route they are given as text.
+- **Every request to T3 is checked.** The address comes from `<T3 home>/userdata/server-runtime.json` (only `origin`,
+  `pid` and `startedAt`; its server must be alive, and the address a loopback `http` one). Every request opens its own
+  connection and is sent on it only after `/proc/net/tcp{,6}` and `/proc/<pid>/fd` show that the recorded pid accepted
+  that connection and that the process did not start after T3's `startedAt` (`t3-connection.ts`). That comparison has no
+  tolerance: the start time read from `/proc` is rounded down by at most 1.01 s, so a process started less than that
+  after the record can still pass, and a forward wall-clock step after T3 started can refuse T3 until it restarts. A
+  backward wall-clock step makes processes look as if they started earlier, so a process that reused T3's recorded pid
+  could pass the start-time check; it still has to hold the accepted connection, and programs running as the owner are
+  outside T3-Tab's trust model anyway. Where there is no `/proc` (any platform but Linux), T3-Tab sends nothing.
+- **The older T3 sign-in is gone.** T3-Tab used to sign in to T3's `/mcp` for its project and model lists and keep a
+  read-only token in `t3-credential.json`. When the daemon starts it deletes that file and any temporary copy of it
+  (`agents/stale-t3-credential.ts`). T3 offers a client no way to revoke itself, so such a grant stays listed in T3's
+  Settings → Sharing & access until it expires, at most 30 days after it was made.
 - **Finding `t3`.** `T3_TAB_T3` when set (and then only it), else `t3` on PATH or in the usual install
   folders, else the launchers listed in `<T3 home>/runtime/launchers`, else `<T3 home>/runtime/bin/t3`, else
   the desktop app's launcher `<T3 home>/bin/t3`, else the newest fully installed
@@ -248,8 +935,11 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
   comes from `t3 thread list --json --project /`: a running server answers that no project matches, a stopped
   one that it is not running. The panel shows "not found" or "not running" and then offers the direct runs.
 - **Direct runs.** The message goes on stdin, the folder defaults to the home folder, and each turn is one
-  process, continued with the session id the CLI printed. The agent gets T3-Tab's tools and no others:
-  - Claude Code: `claude -p --output-format stream-json --verbose --restricted --setting-sources ""
+  process, continued with the session id the CLI printed. Images go with a turn as the CLI takes them: Claude Code gets
+  `--input-format stream-json` and one user message line with the text and a base64 image block per image; Codex gets
+  `--image=<file>` for each, written to a `0600` file in a private folder under the state folder and removed when the turn
+  ends. The agent gets T3-Tab's tools and no others:
+  - Claude Code: `claude -p [--input-format stream-json] --output-format stream-json --verbose --restricted --setting-sources ""
     --strict-mcp-config --mcp-config <T3-Tab only> --tools "" --allowedTools mcp__t3-tab --permission-mode
     dontAsk --disable-slash-commands [--model <m>] [--resume <session>]`. User, project and local settings and
     their hooks are not loaded, there are no built-in tools, and anything not allowed is denied without a
@@ -257,7 +947,7 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
     is still read as text.
   - Codex: `codex exec [resume] --json --skip-git-repo-check --ignore-user-config --ignore-rules --disable
     <feature>… -c approval_policy="never" -c sandbox_mode="read-only" -c web_search="disabled" -c
-    mcp_servers.t3-tab.*=… [-m <m>] [<session>] -`. `$CODEX_HOME/config.toml` is ignored while the login there
+    mcp_servers.t3-tab.*=… [--image=<file>…] [-m <m>] [<session>] -`. `$CODEX_HOME/config.toml` is ignored while the login there
     still works, which also leaves a project's `.codex/config.toml` untrusted and unapplied. The disabled
     features are the shell, image viewing, apps, plugins, hooks, sub-agents, browser and computer use, image
     generation, goals, memories and web search; `--disable` stops the run if Codex no longer knows a name. Codex
@@ -290,7 +980,7 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
   - A T3 thread's agent starts its MCP servers from its own config, so the code has to be in its first message,
     in a line asking it to call `tabs` with `{"claim": "<code>"}`. That message stays in T3's stored transcript.
     The code there is harmless once used, and it expires after 10 minutes if it is not. If the provider restarts,
-    the new session has no tabs until the owner shares one from the session list.
+    the new session has no tabs until the owner shares one from the Threads screen.
   - The panel hides the claim line and replaces any code of the conversation in replies, titles and errors.
   - Each conversation's view lists the tabs it holds, each with a Remove button, and says which tabs the next
     message will share. Remove works between direct turns, when no session is connected: the tab leaves the
@@ -298,11 +988,13 @@ the conversations in memory (`packages/server/src/agents/`), so they end when it
 
   The session that claims gets the tabs shared as the panel's "Share current tab" does: a tab still on the
   origin it showed at start is shared with that origin approved, and a tab that moved is shared unapproved.
-  Every prompt, site setting and check above still applies, and the owner can unshare from the session list or the
+  Every prompt, site setting and check above still applies, and the owner can unshare from the Threads screen or the
   conversation's view. A
   code the extension did not issue is refused.
 - **Versions.** The extension, native host and daemon must speak the same `PROTOCOL_VERSION`. On a mismatch
-  the link closes and the panel says to rebuild, run `t3-tab install` and reload the extension.
+  the link closes with a reason that says which side is behind (`mismatchReason` in the protocol package): when
+  the helper is, the panel shows the setup command (running it updates the helper, no reload); when the extension is,
+  it points to the browser's extensions page.
 
 ## CI
 
@@ -323,7 +1015,8 @@ plugin are proprietary: study their behaviour and tool design, never copy their 
 - Before merge: the end-to-end run (Chromium with the extension loaded, driving a local test page through
   the real tools).
 - When the tools or page reading change: the token benchmark (`pnpm bench`), with its results in the PR
-  and the change from the base branch's numbers. CI runs it and fails when a number is over its budget.
+  and the change from the base branch's numbers. CI runs it and fails when a number is over its budget. For a change
+  meant to make agents cheaper, also `pnpm bench:agent` (local, then `--sites real`).
 
 Browser checks run headless or on another machine, never on the owner's desktop display.
 

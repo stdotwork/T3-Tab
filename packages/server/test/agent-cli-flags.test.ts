@@ -39,12 +39,12 @@ async function output(context: TestContext, target: HelpTarget, args: string[]):
 // the gate: Codex registers no shell tool of either kind while `shell_tool` is off (`add_shell_tools` in core/src/tools/spec_plan.rs).
 const FORCED_ON = new Set(['unified_exec']);
 
-const flagsOf = (args: string[]): string[] => [...new Set(args.filter((value) => value.startsWith('--')))];
+const flagsOf = (args: string[]): string[] => [...new Set(args.filter((value) => value.startsWith('--')).map((value) => value.split('=')[0] as string))];
 
 describe('the flags direct runs depend on', () => {
   it('are all in `claude --help`', async (context) => {
     const text = await output(context, claude, ['--help']);
-    const flags = flagsOf(claudeArgs({ server, env: {}, model: 'm', resume: 'r' }));
+    const flags = flagsOf(claudeArgs({ server, env: {}, model: 'm', resume: 'r', imageInput: true }));
     expect(flags.length).toBeGreaterThanOrEqual(10);
     for (const flag of flags) expect(text, flag).toContain(flag);
     expect(text).toContain('"dontAsk"');
@@ -52,14 +52,14 @@ describe('the flags direct runs depend on', () => {
 
   it('are all in `codex exec --help`', async (context) => {
     const text = await output(context, codex, ['exec', '--help']);
-    const flags = flagsOf(codexArgs({ server, env: {} }));
+    const flags = flagsOf(codexArgs({ server, env: {}, imageFiles: ['/x/a.png'] }));
     expect(flags.length).toBeGreaterThanOrEqual(5);
     for (const flag of flags) expect(text, flag).toContain(flag);
   }, 30_000);
 
   it('are all in `codex exec resume --help`', async (context) => {
     const text = await output(context, codex, ['exec', 'resume', '--help']);
-    for (const flag of flagsOf(codexArgs({ server, env: {}, resume: 'r' }))) expect(text, flag).toContain(flag);
+    for (const flag of flagsOf(codexArgs({ server, env: {}, resume: 'r', imageFiles: ['/x/a.png'] }))) expect(text, flag).toContain(flag);
   }, 30_000);
 
   it('name only Codex features that exist, and turn each one off', async (context) => {

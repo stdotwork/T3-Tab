@@ -62,6 +62,50 @@ describe('origin and restricted-page policy', () => {
   });
 });
 
+describe('prompt hooks and full access', () => {
+  it('reports a prompt when it opens and when it ends, and a hook that throws does not fail the prompt', async () => {
+    const events: string[] = [];
+    const prompts = new PermissionPrompts(new MemorySites(), {
+      makeId: () => 'p1',
+      onOpen: ({ id, tool }) => {
+        events.push(`open ${id} ${tool}`);
+        throw new Error('link is down');
+      },
+      onClose: (id) => void events.push(`close ${id}`),
+    });
+    const waiting = prompts.authorize('https://example.com', 'read', session, tab);
+    await until(() => prompts.list().length === 1);
+    await prompts.decide('p1', 'decline');
+    await expect(waiting).rejects.toThrow('declined');
+    expect(events).toEqual(['open p1 read', 'close p1']);
+  });
+
+  it('asks as usual when the session has no full access, and when the hook says no', async () => {
+    const asked: string[] = [];
+    const prompts = new PermissionPrompts(new MemorySites(), {
+      makeId: () => 'p1',
+      fullAccess: async (id) => (asked.push(id), false),
+    });
+    const waiting = prompts.authorize('https://example.com', 'act', session, tab);
+    await until(() => prompts.list().length === 1);
+    expect(asked).toEqual(['session-a']);
+    expect(prompts.autoAllowed()).toEqual([]);
+    await prompts.decide('p1', 'allow-once');
+    await waiting;
+  });
+
+  it('lets a full-access session through without a prompt or a site setting, and remembers each request', async () => {
+    const store = new MemorySites();
+    const prompts = new PermissionPrompts(store, { fullAccess: async () => true });
+    await prompts.authorize('https://example.com', 'run_js', session, tab);
+    expect(prompts.list()).toEqual([]);
+    expect(store.sites.size).toBe(0);
+    expect(prompts.autoAllowed()).toEqual([
+      { tool: 'run_js', origin: 'https://example.com', tabId: 7, tabTitle: 'Test tab', at: expect.any(Number) as number },
+    ]);
+  });
+});
+
 describe('per-site permission prompts', () => {
   it('defaults a new origin to ask, records it, and allows one call', async () => {
     const store = new MemorySites();
@@ -71,7 +115,7 @@ describe('per-site permission prompts', () => {
     expect(await store.get('https://example.com')).toBe('ask');
     expect(prompts.list()[0]).toMatchObject({ origin: 'https://example.com', tool: 'act', session });
     await prompts.decide('p1', 'allow-once');
-    await expect(waiting).resolves.toBeUndefined();
+    await expect(waiting).resolves.toBe('approved');
     expect(await store.get('https://example.com')).toBe('ask');
     expect(prompts.list()).toEqual([]);
   });
@@ -80,14 +124,14 @@ describe('per-site permission prompts', () => {
     const store = new MemorySites();
     store.sites.set('https://allowed.test', 'allow');
     const allowed = new PermissionPrompts(store, { makeId: () => 'p1' });
-    await expect(allowed.authorize('https://allowed.test', 'run_js', session, tab)).resolves.toBeUndefined();
+    await expect(allowed.authorize('https://allowed.test', 'run_js', session, tab)).resolves.toBe('approved');
     expect(allowed.list()).toEqual([]);
 
     const prompts = new PermissionPrompts(store, { makeId: () => 'p2' });
     const waiting = prompts.authorize('https://asked.test', 'open', session, tab);
     await until(() => prompts.list().length === 1);
     await prompts.decide('p2', 'always-allow');
-    await expect(waiting).resolves.toBeUndefined();
+    await expect(waiting).resolves.toBe('approved');
     expect(await store.get('https://asked.test')).toBe('allow');
   });
 
@@ -98,11 +142,11 @@ describe('per-site permission prompts', () => {
     const waiting = prompts.authorize(origin, 'read', session, tab);
     await until(() => prompts.list().length === 1);
     await prompts.decide('p1', 'always-allow-read');
-    await expect(waiting).resolves.toBeUndefined();
+    await expect(waiting).resolves.toBe('approved');
     expect(await store.get(origin)).toBe('read');
 
     // Reading is now allowed without a prompt.
-    await expect(prompts.authorize(origin, 'read', session, tab)).resolves.toBeUndefined();
+    await expect(prompts.authorize(origin, 'read', session, tab)).resolves.toBe('approved');
     expect(prompts.list()).toEqual([]);
 
     // Everything else still asks, one prompt each.
@@ -121,7 +165,7 @@ describe('per-site permission prompts', () => {
     store.sites.set('https://full.test', 'allow');
     const prompts = new PermissionPrompts(store, { makeId: () => 'p1' });
     for (const tool of ['read', 'open', 'act', 'run_js'] as const) {
-      await expect(prompts.authorize('https://full.test', tool, session, tab)).resolves.toBeUndefined();
+      await expect(prompts.authorize('https://full.test', tool, session, tab)).resolves.toBe('approved');
     }
     expect(prompts.list()).toEqual([]);
 
@@ -148,7 +192,7 @@ describe('per-site permission prompts', () => {
     await until(() => prompts.list().length === 1);
     store.sites.set('https://raised.test', 'allow');
     await prompts.decide('p1', 'always-allow-read');
-    await expect(reading).resolves.toBeUndefined();
+    await expect(reading).resolves.toBe('approved');
     expect(await store.get('https://raised.test')).toBe('allow');
   });
 
@@ -179,7 +223,7 @@ describe('per-site permission prompts', () => {
       'Too many permission requests for this session (maximum 3)',
     );
     store.sites.set('https://allowed.test', 'allow');
-    await expect(prompts.authorize('https://allowed.test', 'act', session, tab)).resolves.toBeUndefined();
+    await expect(prompts.authorize('https://allowed.test', 'act', session, tab)).resolves.toBe('approved');
     prompts.cancelSession(session.id);
     await Promise.allSettled(waiting);
   });

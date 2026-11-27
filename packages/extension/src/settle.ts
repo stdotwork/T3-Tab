@@ -1,9 +1,8 @@
-import { documentEpoch, networkRevision, sendCommand } from './cdp';
+import { documentEpoch, forgetPrivateWorld, networkRevision, openDialog, privateWorld, sendCommand } from './cdp';
 
 const QUIET_MS = 150;
 const POLL_MS = 50;
 const MAX_SETTLE_MS = 4_000;
-const OBSERVER_KEY = '__t3TabSettle';
 
 export interface SettleSnapshot {
   ready: boolean;
@@ -60,33 +59,72 @@ export class SettleTracker {
   }
 }
 
-/** Waits for network quiet and no DOM or layout changes for a short window, capped in duration. */
-export async function settlePage(tabId: number): Promise<SettleResult> {
+/**
+ * Waits for network quiet and no DOM or layout changes for a short window, capped in duration. With `minMs` (an `act`
+ * wait for a time) it lasts at least that long and watches the page all the while: it ends once `minMs` have passed and
+ * the page has been quiet for the last 150 ms, quiet that may have begun during the wait. The cap moves out by `minMs`.
+ */
+export async function settlePage(tabId: number, minMs = 0): Promise<SettleResult> {
   const startedAt = Date.now();
-  const tracker = new SettleTracker(startedAt);
+  const maxMs = MAX_SETTLE_MS + minMs;
+  const tracker = new SettleTracker(startedAt, QUIET_MS, maxMs);
   while (true) {
-    const probe = await probePage(tabId);
+    // A dialog pauses the page, so there is nothing to wait for until it is answered; a wait still lasts as long as asked.
+    if (openDialog(tabId) !== undefined) {
+      const left = minMs - (Date.now() - startedAt);
+      if (left > 0) await sleep(left);
+      return { settled: true, timedOut: false, elapsedMs: Date.now() - startedAt };
+    }
+    // The tab closed: its epoch is forgotten, and there is nothing left to wait for.
+    if (documentEpoch(tabId) === 0) return { settled: false, timedOut: false, elapsedMs: Date.now() - startedAt };
+    const snapshot = await settleSnapshot(tabId);
     const now = Date.now();
-    const snapshot: SettleSnapshot = {
-      ready: probe.ready && probe.url !== '',
-      revision: probe.revision,
-      layout: `${documentEpoch(tabId)}|${probe.width}|${probe.height}|${probe.scrollWidth}|${probe.scrollHeight}|${probe.url}`,
-      networkRevision: networkRevision(tabId),
-    };
     const state = tracker.observe(snapshot, now);
-    if (state === 'settled') {
-      return { settled: now - startedAt < MAX_SETTLE_MS, timedOut: tracker.timedOut(now), elapsedMs: now - startedAt };
+    const left = minMs - (now - startedAt);
+    if (state === 'settled' && left <= 0) {
+      return { settled: now - startedAt < maxMs, timedOut: tracker.timedOut(now), elapsedMs: now - startedAt };
     }
     if (tracker.timedOut(now)) return { settled: false, timedOut: true, elapsedMs: now - startedAt };
-    await sleep(POLL_MS);
+    await sleep(left > 0 ? Math.min(POLL_MS, left) : POLL_MS);
+  }
+}
+
+/**
+ * The page's state as the settle wait compares it: two snapshots that are the same mean nothing in the document, its
+ * layout or its network traffic moved between them. A load's reply uses it to see whether the page moved while it was read.
+ */
+export async function settleSnapshot(tabId: number): Promise<SettleSnapshot> {
+  const probe = await probePage(tabId);
+  return {
+    ready: probe.ready && probe.url !== '',
+    revision: probe.revision,
+    layout: `${documentEpoch(tabId)}|${probe.width}|${probe.height}|${probe.scrollWidth}|${probe.scrollHeight}|${probe.url}`,
+    networkRevision: networkRevision(tabId),
+  };
+}
+
+/** How many characters of text the page shows (`innerText` of its body), read in T3-Tab's own world; 0 when it cannot say. */
+export async function pageTextLength(tabId: number): Promise<number> {
+  try {
+    const evaluated = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.evaluate', {
+      contextId: await privateWorld(tabId),
+      expression: 'document.body ? document.body.innerText.length : 0',
+      returnByValue: true,
+    });
+    return numberOrZero(evaluated.result?.value);
+  } catch {
+    return 0;
   }
 }
 
 async function probePage(tabId: number): Promise<PageProbe> {
   try {
+    // In T3-Tab's own world: the observer and its counter must not be something a site can find.
+    const contextId = await privateWorld(tabId);
     const evaluated = await sendCommand<{ result?: { value?: unknown } }>(tabId, 'Runtime.evaluate', {
+      contextId,
       expression: `(() => {
-        const state = globalThis[${JSON.stringify(OBSERVER_KEY)}] ||= { revision: 0, observer: null };
+        const state = globalThis.settleState ||= { revision: 0, observer: null };
         if (state.observer === null && document.documentElement) {
           state.observer = new MutationObserver(() => { state.revision += 1; });
           state.observer.observe(document.documentElement, {
@@ -119,6 +157,7 @@ async function probePage(tabId: number): Promise<PageProbe> {
     };
   } catch {
     // A navigation can destroy the execution context between two probes.
+    forgetPrivateWorld(tabId);
     return emptyProbe();
   }
 }

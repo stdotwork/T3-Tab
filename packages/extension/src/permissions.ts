@@ -1,4 +1,4 @@
-import type { ToolSession } from '@t3-tab/protocol';
+import type { ActStepSummary, ToolSession } from '@t3-tab/protocol';
 
 /**
  * What the owner has granted a site: `ask` prompts for everything, `read` lets sessions read it without a
@@ -8,6 +8,8 @@ export type SitePermission = 'ask' | 'read' | 'allow';
 /** `always-allow-read` is offered only on a read prompt and `always-allow` only on the others. */
 export type PermissionDecision = 'allow-once' | 'always-allow-read' | 'always-allow' | 'decline';
 export type PromptKind = 'read' | 'act' | 'run_js' | 'open';
+/** How `authorize` let a request through. */
+export type AuthorizeResult = 'approved' | 'full-access';
 
 export interface StoredSitePermission {
   origin: string;
@@ -24,7 +26,12 @@ export interface PermissionPrompt {
   origin: string;
   tool: PromptKind;
   session: ToolSession;
-  tab: PromptTab;
+  /** The tab it concerns. A page being opened has none until the owner says yes. */
+  tab?: PromptTab;
+  /** The address being opened or gone to. */
+  url?: string;
+  /** For `act`: what the batch does, as the MCP server described it from the steps (`cleanActSummary` checked it). */
+  steps?: ActStepSummary[];
 }
 
 export interface SitePermissionStore {
@@ -39,13 +46,32 @@ interface Pending extends PermissionPrompt {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** A request let through without a prompt because the session's thread has full access in T3 Code. */
+export interface AutoAllowed {
+  tool: PromptKind;
+  origin: string;
+  tabId: number;
+  tabTitle: string;
+  /** Milliseconds since the epoch. */
+  at: number;
+}
+
 export interface PermissionPromptsOptions {
   timeoutMs?: number | (() => number | Promise<number>);
   onChange?: (pending: PermissionPrompt[]) => void;
+  /** Called once when a prompt starts waiting, and once when it ends, however it ends. */
+  onOpen?: (prompt: PermissionPrompt) => void;
+  onClose?: (promptId: string) => void;
+  /**
+   * Whether a session's thread has full access in T3 Code, which counts as yes for a request the site's setting does
+   * not cover. It never changes a site's setting and every other check still runs.
+   */
+  fullAccess?: (sessionId: string) => Promise<boolean>;
   makeId?: () => string;
 }
 
 const MAX_PENDING_PER_SESSION = 3;
+const MAX_AUTO_ALLOWED = 20;
 
 /** Whether a site's setting lets a tool call through without a prompt. A read grant never covers more than reading. */
 function settingCovers(setting: SitePermission | undefined, tool: PromptKind): boolean {
@@ -62,6 +88,8 @@ export class PermissionPrompts {
   private readonly timeoutMs: number | (() => number | Promise<number>);
   private readonly onChange: (pending: PermissionPrompt[]) => void;
   private readonly makeId: () => string;
+  private readonly autoAllowedLog: AutoAllowed[] = [];
+  private readonly options: PermissionPromptsOptions;
 
   constructor(
     private readonly store: SitePermissionStore,
@@ -70,11 +98,36 @@ export class PermissionPrompts {
     this.timeoutMs = options.timeoutMs ?? 60_000;
     this.onChange = options.onChange ?? (() => undefined);
     this.makeId = options.makeId ?? (() => crypto.randomUUID());
+    this.options = options;
   }
 
-  async authorize(origin: string, tool: PromptKind, session: ToolSession, tab: PromptTab): Promise<void> {
+  /** The last requests a full-access thread had allowed without a prompt, oldest first. Kept in memory only. */
+  autoAllowed(): AutoAllowed[] {
+    return [...this.autoAllowedLog];
+  }
+
+  /** Lists a request Full access let through without a prompt, here or where a caller checked the mode itself. */
+  noteAutoAllowed(tool: PromptKind, origin: string, tab: PromptTab | undefined, url?: string): void {
+    this.autoAllowedLog.push({ tool, origin, tabId: tab?.id ?? -1, tabTitle: tab?.title ?? url ?? origin, at: Date.now() });
+    if (this.autoAllowedLog.length > MAX_AUTO_ALLOWED) this.autoAllowedLog.splice(0, this.autoAllowedLog.length - MAX_AUTO_ALLOWED);
+  }
+
+  /** Whether T3 confirms Full access for this session now. */
+  async hasFullAccess(sessionId: string): Promise<boolean> {
+    return (await this.options.fullAccess?.(sessionId)) === true;
+  }
+
+  /**
+   * Lets a request through or throws. `full-access` holds for this one request: the caller must not record an origin
+   * approval for it, so later requests on the origin follow T3's live mode.
+   */
+  async authorize(origin: string, tool: PromptKind, session: ToolSession, tab: PromptTab | undefined, url?: string, steps?: ActStepSummary[]): Promise<AuthorizeResult> {
     const setting = await this.store.get(origin);
-    if (settingCovers(setting, tool)) return;
+    if (settingCovers(setting, tool)) return 'approved';
+    if (await this.hasFullAccess(session.id)) {
+      this.noteAutoAllowed(tool, origin, tab, url);
+      return 'full-access';
+    }
     if (this.pendingFor(session.id).length >= MAX_PENDING_PER_SESSION) {
       throw new Error(`Too many permission requests for this session (maximum ${MAX_PENDING_PER_SESSION}). Decide one first.`);
     }
@@ -88,9 +141,12 @@ export class PermissionPrompts {
         this.settle(id);
         reject(new Error(`Permission for ${origin} timed out and was declined.`));
       }, timeoutMs);
-      this.pending.set(id, { id, origin, tool, session, tab, resolve, reject, timer });
+      const target = { ...(tab === undefined ? {} : { tab }), ...(url === undefined ? {} : { url }), ...(steps === undefined || steps.length === 0 ? {} : { steps }) };
+      this.pending.set(id, { id, origin, tool, session, ...target, resolve, reject, timer });
       this.emit();
+      this.notify(() => this.options.onOpen?.({ id, origin, tool, session, ...target }));
     });
+    return 'approved';
   }
 
   async decide(id: string, decision: PermissionDecision): Promise<void> {
@@ -128,7 +184,15 @@ export class PermissionPrompts {
 
   list(): PermissionPrompt[] {
     return [...this.pending.values()]
-      .map(({ id, origin, tool, session, tab }) => ({ id, origin, tool, session, tab }));
+      .map(({ id, origin, tool, session, tab, url, steps }) => ({
+        id,
+        origin,
+        tool,
+        session,
+        ...(tab === undefined ? {} : { tab }),
+        ...(steps === undefined ? {} : { steps }),
+        ...(url === undefined ? {} : { url }),
+      }));
   }
 
   private settle(id: string, allowed?: boolean): void {
@@ -144,11 +208,21 @@ export class PermissionPrompts {
     clearTimeout(prompt.timer);
     this.pending.delete(id);
     this.emit();
+    this.notify(() => this.options.onClose?.(id));
     return prompt;
   }
 
   private pendingFor(sessionId: string): Pending[] {
     return [...this.pending.values()].filter((prompt) => prompt.session.id === sessionId);
+  }
+
+  /** A hook that fails must not fail the prompt it reports on. */
+  private notify(hook: () => void): void {
+    try {
+      hook();
+    } catch {
+      // The prompt still works in the side panel.
+    }
   }
 
   private emit(): void {
@@ -236,6 +310,15 @@ export function originOf(value: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+const MAX_PROMPT_ADDRESS = 300;
+
+/** An address as a prompt shows it: no credentials, which could pose as another site's name, and no fragment. */
+export function promptAddress(value: string): string {
+  const url = new URL(value);
+  const address = `${url.origin}${url.pathname}${url.search}`;
+  return address.length <= MAX_PROMPT_ADDRESS ? address : `${address.slice(0, MAX_PROMPT_ADDRESS - 1)}…`;
 }
 
 /** A page no T3-Tab tool may read or act on. */

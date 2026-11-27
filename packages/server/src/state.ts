@@ -9,6 +9,8 @@ export interface DaemonState {
   pid: number;
   port: number;
   token: string;
+  /** The packed helper's version, when the daemon runs from one. */
+  helperVersion?: string;
 }
 
 /**
@@ -37,6 +39,23 @@ export async function readDaemonState(directory: string): Promise<DaemonState | 
   try {
     const parsed: unknown = JSON.parse(await readFile(daemonStatePath(directory), 'utf8'));
     return isDaemonState(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The daemon's state file whatever protocol version wrote it, so an install can tell it to stop. */
+export async function readRawDaemonState(directory: string): Promise<(Omit<DaemonState, 'protocolVersion'> & { protocolVersion: number }) | null> {
+  try {
+    const parsed = JSON.parse(await readFile(daemonStatePath(directory), 'utf8')) as Record<string, unknown> | null;
+    if (parsed === null || typeof parsed.pid !== 'number' || typeof parsed.port !== 'number' || typeof parsed.token !== 'string') return null;
+    return {
+      protocolVersion: typeof parsed.protocolVersion === 'number' ? parsed.protocolVersion : 0,
+      pid: parsed.pid,
+      port: parsed.port,
+      token: parsed.token,
+      ...(typeof parsed.helperVersion === 'string' ? { helperVersion: parsed.helperVersion } : {}),
+    } as DaemonState & { protocolVersion: number };
   } catch {
     return null;
   }

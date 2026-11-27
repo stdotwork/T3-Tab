@@ -1,11 +1,17 @@
 import {
+  EXTENSION_OUTDATED,
+  HELPER_OUTDATED,
   PROTOCOL_MISMATCH,
   PROTOCOL_VERSION,
   type BrowserDaemonRequestMessage,
+  type BrowserPromptClosedMessage,
+  type BrowserPromptOpenedMessage,
   type DaemonMethod,
   type DaemonMethods,
   type DaemonReplyMessage,
 } from '@t3-tab/protocol';
+
+import { NOT_CONNECTED, classifyHelperProblem, type HelperProblem } from './helper-problem';
 
 interface Pending {
   resolve(result: unknown): void;
@@ -19,15 +25,24 @@ const CONNECT_WAIT_MS = 5_000;
 
 let socket: WebSocket | undefined;
 let connect: (() => void) | undefined;
-/** Set when the background program closed the link because it speaks another protocol version. */
-let versionProblem = false;
+/** Set when the helper closed the link because it speaks another protocol version: what it said. */
+let closeReason: string | undefined;
 const pending = new Map<string, Pending>();
+/** Why the last attempt to reach the background program failed, for the panel's "install the helper" step. */
+let lastProblem: string | undefined;
+/** Set when the problem is one the message alone does not name, such as a refused WebSocket. */
+let lastKind: HelperProblem | undefined;
+
 
 /** The service worker's current link to the background program, set when it opens and cleared when it closes. */
 export function setDaemonSocket(current: WebSocket | undefined): void {
-  if (current !== undefined) versionProblem = false;
+  if (current !== undefined) {
+    closeReason = undefined;
+    lastProblem = undefined;
+    lastKind = undefined;
+  }
   if (socket !== undefined && socket !== current) {
-    failAll(new Error(versionProblem ? PROTOCOL_MISMATCH : 'The connection to the T3-Tab background program closed'));
+    failAll(new Error(closeReason ?? 'The connection to the T3-Tab helper closed'));
   }
   socket = current;
 }
@@ -37,7 +52,56 @@ export function setDaemonSocket(current: WebSocket | undefined): void {
  * message", because it does not know this version's messages.
  */
 export function noteDaemonClose(code: number, reason: string): void {
-  versionProblem = code === 1008 && (reason === 'Invalid protocol message' || reason === PROTOCOL_MISMATCH);
+  const versionProblem = code === 1008 && (reason === 'Invalid protocol message' || reason === PROTOCOL_MISMATCH || reason === HELPER_OUTDATED || reason === EXTENSION_OUTDATED);
+  closeReason = versionProblem ? (reason === 'Invalid protocol message' ? HELPER_OUTDATED : reason) : undefined;
+}
+
+/**
+ * Records a WebSocket that closed or never opened, with the browser's code and the helper's reason, so the panel can
+ * show it. A version mismatch is recorded by `noteDaemonClose`, which the caller runs first.
+ */
+export function noteSocketClosed(code: number, reason: string, wasOpen: boolean): void {
+  if (closeReason !== undefined) return;
+  const why = reason === '' ? `code ${code}` : `${reason}, code ${code}`;
+  lastProblem = wasOpen ? `The helper's background program closed the connection (${why}).` : `The browser could not connect to the helper's background program (${why}).`;
+  lastKind = 'connection';
+}
+
+/** Records why the worker could not reach the helper, such as a native host that is not installed. */
+export function noteDaemonProblem(error: unknown): void {
+  closeReason = undefined;
+  lastKind = undefined;
+  lastProblem = error instanceof Error ? error.message : String(error);
+}
+
+/** Tells the background program a permission prompt opened or closed. Nothing is sent when the link is down. */
+export function sendPromptNotice(message: BrowserPromptOpenedMessage | BrowserPromptClosedMessage): void {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+}
+
+export type { HelperProblem } from './helper-problem';
+
+export interface HelperState {
+  connected: boolean;
+  error?: string;
+  problem?: HelperProblem;
+}
+
+/**
+ * Whether the worker has a link to the helper, and if not, why. Answers when nothing is reachable: it tries to
+ * connect, waits a moment, and reports what it found. Each call is a new attempt, so a helper installed a moment ago
+ * is found without reloading anything: the browser reads its registration again every time.
+ */
+export async function daemonLinkState(waitMs = 1_500): Promise<HelperState> {
+  const deadline = Date.now() + waitMs;
+  if (socket?.readyState !== WebSocket.OPEN) connect?.();
+  while (socket?.readyState !== WebSocket.OPEN && closeReason === undefined && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (socket?.readyState === WebSocket.OPEN) return { connected: true };
+  const error = closeReason ?? lastProblem;
+  // No error yet means an attempt is still under way, not that the helper is missing.
+  return error === undefined ? { connected: false, problem: 'pending' } : { connected: false, error, problem: lastKind ?? classifyHelperProblem(error) };
 }
 
 /** Called when a request finds no open link, so the worker tries to connect again. */
@@ -81,9 +145,9 @@ async function openSocket(): Promise<WebSocket> {
   const deadline = Date.now() + CONNECT_WAIT_MS;
   if (socket?.readyState !== WebSocket.OPEN) connect?.();
   while (socket?.readyState !== WebSocket.OPEN) {
-    if (versionProblem) throw new Error(PROTOCOL_MISMATCH);
+    if (closeReason !== undefined) throw new Error(closeReason);
     if (Date.now() >= deadline) {
-      throw new Error('T3-Tab is not connected to its background program. Run `t3-tab install`, then reopen the browser.');
+      throw new Error(NOT_CONNECTED);
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }

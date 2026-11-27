@@ -1,6 +1,7 @@
 import type { TabInfo, ToolSession } from '@t3-tab/protocol';
 
 import { isOriginKey, restrictedPageReason } from './permissions';
+import { scrubReported } from './secret-text';
 
 export interface StoredSession extends ToolSession {
   groupId?: number;
@@ -9,6 +10,15 @@ export interface StoredSession extends ToolSession {
   approvedOrigins: Record<string, string[]>;
   /** Last origin observed for each tab. A different origin invalidates its approvals. */
   currentOrigins: Record<string, string>;
+  /** The tab the page tools use when a call names none: the last one this session opened, switched to or was handed. */
+  currentTabId?: number;
+  /** The T3 thread the daemon showed this session's process runs for. Its mode is still asked of T3 per request. */
+  t3ThreadId?: string;
+  /**
+   * True while the session's group is one T3-Tab created collapsed, for a session that reached for the tools by itself,
+   * and has not expanded since. Only such a group is expanded when the session turns out to be panel-started.
+   */
+  groupStartedCollapsed?: boolean;
 }
 
 /** What one `shareAll` added for a tab, so a failed redemption can take back exactly that. */
@@ -63,11 +73,21 @@ export function usableSessionTabs(session: StoredSession, tabs: chrome.tabs.Tab[
   );
 }
 
+/** The tab a call that names none is about: the session's current tab, else the one in front, else its first. */
+export function currentSessionTab(session: StoredSession, usable: chrome.tabs.Tab[], frontId: number | undefined): chrome.tabs.Tab | undefined {
+  return (
+    usable.find((tab) => tab.id === session.currentTabId) ??
+    usable.find((tab) => tab.id === frontId) ??
+    usable[0]
+  );
+}
+
 export function tabInfo(tab: chrome.tabs.Tab, active: boolean): TabInfo {
   const info: TabInfo = {
     id: tab.id ?? -1,
-    title: tab.title ?? '',
-    url: tab.url ?? tab.pendingUrl ?? '',
+    // What the browser reports for a tab can hold a secret the page was given (a form that sends it in the address).
+    title: scrubReported(tab.id, tab.title ?? '', false),
+    url: scrubReported(tab.id, tab.url ?? tab.pendingUrl ?? '', true),
     active,
   };
   if (tab.groupId !== undefined && tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) info.groupId = tab.groupId;
@@ -94,16 +114,14 @@ export class SessionStore {
     return (await this.all())[id];
   }
 
-  async register(session: ToolSession): Promise<StoredSession> {
+  async register(session: ToolSession, t3ThreadId?: string): Promise<StoredSession> {
     return await this.mutate((sessions) => {
-      const existing = sessions[session.id];
-      if (existing !== undefined) {
-        existing.name = session.name;
-        return existing;
-      }
-      const created: StoredSession = { ...session, sharedTabIds: [], approvedOrigins: {}, currentOrigins: {} };
-      sessions[session.id] = created;
-      return created;
+      const record = sessions[session.id] ?? { ...session, sharedTabIds: [], approvedOrigins: {}, currentOrigins: {} };
+      record.name = session.name;
+      if (typeof t3ThreadId === 'string' && t3ThreadId !== '') record.t3ThreadId = t3ThreadId;
+      else delete record.t3ThreadId;
+      sessions[session.id] = record;
+      return record;
     });
   }
 
@@ -113,12 +131,22 @@ export class SessionStore {
     });
   }
 
-  async rememberGroup(id: string, groupId: number): Promise<StoredSession> {
+  async rememberGroup(id: string, groupId: number, collapsed = false): Promise<StoredSession> {
     return await this.mutate((sessions) => {
       const session = sessions[id];
       if (session === undefined) throw new Error('Session is not registered');
       session.groupId = groupId;
+      if (collapsed) session.groupStartedCollapsed = true;
+      else delete session.groupStartedCollapsed;
       return session;
+    });
+  }
+
+  /** Records that the session's group was expanded for it, so it is never expanded or collapsed by T3-Tab again. */
+  async groupExpanded(id: string): Promise<void> {
+    await this.mutate((sessions) => {
+      const session = sessions[id];
+      if (session !== undefined) delete session.groupStartedCollapsed;
     });
   }
 
@@ -128,6 +156,7 @@ export class SessionStore {
       if (session === undefined) throw new Error('Session is not registered');
       if (!session.sharedTabIds.includes(tabId)) session.sharedTabIds.push(tabId);
       if (origin !== undefined) approve(session, tabId, origin);
+      session.currentTabId = tabId;
       return session;
     });
   }
@@ -137,6 +166,7 @@ export class SessionStore {
     return await this.mutate((sessions) => {
       const session = sessions[id];
       if (session === undefined) throw new Error('Session is not registered');
+      let handedOver = false;
       return tabs.map(({ tabId, origin }) => {
         const key = String(tabId);
         const undo: ShareUndo = {
@@ -145,7 +175,12 @@ export class SessionStore {
           addedOrigin: origin !== undefined && session.approvedOrigins[key]?.includes(origin) !== true ? origin : undefined,
           previousOrigin: session.currentOrigins[key],
         };
-        if (undo.addedShare) session.sharedTabIds.push(tabId);
+        if (undo.addedShare) {
+          session.sharedTabIds.push(tabId);
+          // The owner handed this tab over just now, so it is what the agent should look at next.
+          if (!handedOver) session.currentTabId = tabId;
+          handedOver = true;
+        }
         if (origin !== undefined) approve(session, tabId, origin);
         return undo;
       });
@@ -160,7 +195,10 @@ export class SessionStore {
       if (session === undefined) return;
       for (const undo of undos) {
         const key = String(undo.tabId);
-        if (undo.addedShare) session.sharedTabIds = session.sharedTabIds.filter((value) => value !== undo.tabId);
+        if (undo.addedShare) {
+          session.sharedTabIds = session.sharedTabIds.filter((value) => value !== undo.tabId);
+          if (session.currentTabId === undo.tabId) delete session.currentTabId;
+        }
         if (undo.addedOrigin === undefined) continue;
         const left = (session.approvedOrigins[key] ?? []).filter((origin) => origin !== undo.addedOrigin);
         if (left.length === 0) delete session.approvedOrigins[key];
@@ -183,6 +221,14 @@ export class SessionStore {
         delete session.approvedOrigins[String(tabId)];
         delete session.currentOrigins[String(tabId)];
       }
+    });
+  }
+
+  async setCurrentTab(id: string, tabId: number): Promise<void> {
+    await this.mutate((sessions) => {
+      const session = sessions[id];
+      if (session === undefined) throw new Error('Session is not registered');
+      session.currentTabId = tabId;
     });
   }
 
@@ -218,6 +264,7 @@ export class SessionStore {
     await this.mutate((sessions) => {
       for (const session of Object.values(sessions)) {
         session.sharedTabIds = session.sharedTabIds.filter((value) => value !== tabId);
+        if (session.currentTabId === tabId) delete session.currentTabId;
         delete session.approvedOrigins[String(tabId)];
         delete session.currentOrigins[String(tabId)];
       }
@@ -267,6 +314,9 @@ export class SessionStore {
         currentOrigins: parseCurrentOrigins(record.currentOrigins),
       };
       if (typeof record.groupId === 'number') session.groupId = record.groupId;
+      if (typeof record.currentTabId === 'number') session.currentTabId = record.currentTabId;
+      if (typeof record.t3ThreadId === 'string') session.t3ThreadId = record.t3ThreadId;
+      if (record.groupStartedCollapsed === true) session.groupStartedCollapsed = true;
       sessions[id] = session;
     }
     return sessions;

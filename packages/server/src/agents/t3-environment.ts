@@ -7,8 +7,6 @@ import { confirmedFetch, type T3Fetch, type T3Process } from './t3-connection.js
 export interface T3Environment {
   /** Such as `http://127.0.0.1:3773`. */
   origin: string;
-  /** `<origin>/mcp`, the only address T3-Tab sends its T3 credential to. */
-  resource: string;
   /** Sends a request only on a connection the recorded T3 process accepted. Every request to T3 goes through it. */
   fetch: T3Fetch;
 }
@@ -44,8 +42,22 @@ export async function findT3Environment(env: NodeJS.ProcessEnv): Promise<T3Envir
   return t3EnvironmentAt(url.origin, { pid: state.pid as number, startedAt });
 }
 
+/** The live process `server-runtime.json` records, without its address. Undefined when T3 is not running. */
+export async function recordedT3Process(env: NodeJS.ProcessEnv): Promise<T3Process | undefined> {
+  let value: unknown;
+  try {
+    value = JSON.parse(await readFile(join(t3Home(env), 'userdata', 'server-runtime.json'), 'utf8'));
+  } catch {
+    return undefined;
+  }
+  const state = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+  if (!Number.isInteger(state.pid) || !processIsAlive(state.pid as number)) return undefined;
+  const startedAt = typeof state.startedAt === 'string' ? Date.parse(state.startedAt) : Number.NaN;
+  return Number.isNaN(startedAt) ? undefined : { pid: state.pid as number, startedAt };
+}
+
 export function t3EnvironmentAt(origin: string, owner: T3Process): T3Environment {
-  return { origin, resource: `${origin}/mcp`, fetch: confirmedFetch(origin, owner) };
+  return { origin, fetch: confirmedFetch(origin, owner) };
 }
 
 function processIsAlive(pid: number): boolean {

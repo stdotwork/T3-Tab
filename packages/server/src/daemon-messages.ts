@@ -29,15 +29,22 @@ export function isBrowserMessage(value: unknown): value is BrowserMessage {
       candidate.type === 'browser.pong' ||
       candidate.type === 'browser.tabCount' ||
       candidate.type === 'browser.tabClosed' ||
+      candidate.type === 'browser.promptOpened' ||
+      candidate.type === 'browser.promptClosed' ||
       (candidate.type === 'browser.daemonRequest' && typeof candidate.requestId === 'string' && typeof candidate.method === 'string') ||
       (candidate.type === 'browser.response' && typeof candidate.requestId === 'string' && typeof candidate.ok === 'boolean'))
   );
 }
 
 export function isOtherProtocolVersion(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null) return false;
+  return otherProtocolVersion(value) !== undefined;
+}
+
+/** The protocol version a message carries when it is not this daemon's own. */
+export function otherProtocolVersion(value: unknown): number | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
   const version = (value as Record<string, unknown>).protocolVersion;
-  return typeof version === 'number' && version !== PROTOCOL_VERSION;
+  return typeof version === 'number' && version !== PROTOCOL_VERSION ? version : undefined;
 }
 
 export function isControlRequest(value: unknown): value is {
@@ -48,8 +55,11 @@ export function isControlRequest(value: unknown): value is {
   clientName?: unknown;
   claim?: unknown;
   claimFileProblem?: unknown;
+  pid?: unknown;
   session?: unknown;
   params?: unknown;
+  promptId?: unknown;
+  decision?: unknown;
 } {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;

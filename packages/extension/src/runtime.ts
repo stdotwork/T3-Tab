@@ -1,6 +1,10 @@
+import { PROTOCOL_VERSION } from '@t3-tab/protocol';
+
 import { ClaimStore } from './claims';
+import { askDaemon, sendPromptNotice } from './daemon-link';
 import { ChromeSitePermissionStore, PermissionPrompts, type PermissionPrompt } from './permissions';
 import { SessionStore } from './sessions';
+import { t3FullAccess } from './t3-full-access';
 
 export const sessionStore = new SessionStore();
 export const siteStore = new ChromeSitePermissionStore();
@@ -14,7 +18,19 @@ export const permissionPrompts = new PermissionPrompts(siteStore, {
     const value = stored.permissionTimeoutMs;
     return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_PERMISSION_TIMEOUT_MS;
   },
-  onChange: (pending) => void updatePermissionBadge(pending).catch(() => undefined),
+  onChange: (pending) => {
+    void updatePermissionBadge(pending).catch(() => undefined);
+    // Open panels show a new prompt at once instead of on their next poll. No receiver is normal, so its error is ignored.
+    void Promise.resolve(chrome.runtime?.sendMessage?.({ type: 'panel.changed' })).catch(() => undefined);
+  },
+  // The agent's own thread can show the prompt too; the background program tells the session that asked.
+  onOpen: ({ session, ...prompt }) =>
+    sendPromptNotice({ type: 'browser.promptOpened', protocolVersion: PROTOCOL_VERSION, session, prompt }),
+  onClose: (promptId) => sendPromptNotice({ type: 'browser.promptClosed', protocolVersion: PROTOCOL_VERSION, promptId }),
+  fullAccess: t3FullAccess(
+    async (sessionId) => await claimStore.t3ThreadsOf(sessionId, (await sessionStore.get(sessionId))?.t3ThreadId),
+    async (threadId) => (await askDaemon('t3.threadMode', { threadId })).runtimeMode,
+  ),
 });
 
 async function updatePermissionBadge(pending: PermissionPrompt[]): Promise<void> {

@@ -1,4 +1,4 @@
-import { assert, jpegSize, parseStatusTabCount, refFor, sleep, text } from './harness.mjs';
+import { assert, daemonBrowsers, jpegSize, refFor, sleep, text } from './harness.mjs';
 import { decidePrompt, pendingPrompts } from './checks-permissions.mjs';
 
 let autoPromptSessionId;
@@ -12,7 +12,11 @@ export function setAutoPrompt(serviceWorker, sessionId) {
 export async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   const { tools } = await mcpClient.listTools();
   const names = tools.map((tool) => tool.name).sort();
-  assert(JSON.stringify(names) === JSON.stringify(['act', 'read', 'run_js', 'screenshot', 'status', 'tabs']), `Unexpected tools: ${names}`);
+  assert(JSON.stringify(names) === JSON.stringify(['act', 'read', 'run_js', 'screenshot', 'tabs']), `Unexpected tools: ${names}`);
+  // The list leaves out what each call is checked against anyway, and read's unlisted parameters (still accepted below).
+  assert(!JSON.stringify(tools).includes('"$schema"') && !JSON.stringify(tools).includes('"maxLength"'), 'The tool list carries checked keywords');
+  const readProperties = Object.keys(tools.find((tool) => tool.name === 'read').inputSchema.properties);
+  assert(!readProperties.includes('depth') && !readProperties.includes('regex'), `read lists ${readProperties}`);
   const sizes = tools.map((tool) => `${tool.name} ${JSON.stringify(tool).length}`);
   const definitionChars = JSON.stringify(tools).length;
   console.log(
@@ -22,18 +26,18 @@ export async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   // tabs: list, open, switch, close.
   const listed = await call(mcpClient, 'tabs', {});
   show('tabs list', listed);
-  assert(/^\d+ \[front\] T3-Tab E2E — http:\/\/127\.0\.0\.1:\d+\/?$/m.test(text(listed)), `tabs list does not show the front test tab:\n${text(listed)}`);
-  const frontId = Number(/^(\d+) \[front\]/m.exec(text(listed))?.[1]);
+  assert(/^\d+ \[current\] T3-Tab E2E — http:\/\/127\.0\.0\.1:\d+\/?$/m.test(text(listed)), `tabs list does not show the front test tab:\n${text(listed)}`);
+  const frontId = Number(/^(\d+) \[current\]/m.exec(text(listed))?.[1]);
 
   const opened = await call(mcpClient, 'tabs', { action: 'open', url: `${siteUrl}/about` });
   show('tabs open', opened);
-  assert(/^Opened tab \d+ \[front\] About — /.test(text(opened)), `tabs open: ${text(opened)}`);
+  assert(/^Opened tab \d+ \[current\]: About — /.test(text(opened)) && text(opened).includes('# About'), `tabs open: ${text(opened)}`);
   const aboutId = Number(/^Opened tab (\d+)/.exec(text(opened))?.[1]);
   const refusedOpen = await call(mcpClient, 'tabs', { action: 'open', url: 'chrome://settings' });
   assert(refusedOpen.isError === true && /restricted/.test(text(refusedOpen)), `tabs open chrome://: ${text(refusedOpen)}`);
   const switched = await call(mcpClient, 'tabs', { action: 'switch', tab: frontId });
   show('tabs switch', switched);
-  assert(text(switched).startsWith(`Switched to tab ${frontId} [front] T3-Tab E2E`), `tabs switch: ${text(switched)}`);
+  assert(text(switched).startsWith(`Switched to tab ${frontId} [current] T3-Tab E2E`), `tabs switch: ${text(switched)}`);
   const closed = await call(mcpClient, 'tabs', { action: 'close', tab: aboutId });
   show('tabs close', closed);
   assert(text(closed) === `Closed tab ${aboutId}.`, `tabs close: ${text(closed)}`);
@@ -104,6 +108,10 @@ export async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   assert(/textbox "Password"/.test(text(found)), 'find shows the password field');
   assert(!text(found).includes('link "Contact"'), 'find leaves out the rest of the page');
   assert(text(found).length < firstText.length / 3, `find (${text(found).length}) is not much shorter than the page (${firstText.length})`);
+  // Only the match, and the line before a short one: nothing after it and no separators.
+  assert(!text(found).includes('combobox "Country"') && !text(found).includes('\n--\n'), `find printed more than its match:\n${text(found)}`);
+  const foundLink = await call(mcpClient, 'read', { find: 'contact' });
+  assert(/link "Contact" → \/contact/.test(text(foundLink)), `a link found by name does not say where it goes:\n${text(foundLink)}`);
   const foundRegex = await call(mcpClient, 'read', { find: 'link "(about|home)"', regex: true });
   assert(text(foundRegex).includes('link "About"') && text(foundRegex).includes('link "Home"') && !text(foundRegex).includes('link "Contact"'), `find with a regex:\n${text(foundRegex)}`);
   const notFound = await call(mcpClient, 'read', { find: 'no such thing' });
@@ -114,7 +122,7 @@ export async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   show(`read (ref ${formRef})`, subtree);
   assert(text(subtree).includes('textbox "Email"') && !text(subtree).includes('link "About"'), 'A ref reads only that element');
   const shallow = await call(mcpClient, 'read', { ref: formRef, depth: 0 });
-  assert(text(shallow).split('\n').length === 2, `depth 0 shows only the element:\n${text(shallow)}`);
+  assert(text(shallow).split('\n').length === 3 && text(shallow).includes('more inside'), `depth 0 shows only the element:\n${text(shallow)}`);
 
   // Navigation: the refs held for the page are void, and the next read is the whole new page.
   await page.goto(`${siteUrl}/about`);
@@ -165,6 +173,15 @@ export async function checkActionTools({ mcpClient, page }) {
   const emailRef = refFor(beforeText, 'textbox "Email"');
   const submitRef = refFor(beforeText, 'button "Create account"');
   assert(nameRef && emailRef && submitRef, `The form refs are missing:\n${beforeText}`);
+
+  // A name where a ref goes runs nothing and lists the elements of that name with their refs, which then work.
+  const guessed = await call(mcpClient, 'act', { steps: [{ action: 'click', ref: 'Create account' }] });
+  show('act (a name for a ref)', guessed);
+  assert(guessed.isError === true && /refs look like e12/.test(text(guessed)) && /Nothing was run/.test(text(guessed)), `A made-up ref: ${text(guessed)}`);
+  const listedRef = refFor(text(guessed), 'button "Create account"');
+  assert(listedRef !== undefined, `The made-up ref's reply does not list the button:\n${text(guessed)}`);
+  const hovered = await call(mcpClient, 'act', { steps: [{ action: 'hover', ref: listedRef }] });
+  assert(hovered.isError !== true, `The listed ref did not work: ${text(hovered)}`);
 
   const acted = await call(mcpClient, 'act', {
     steps: [
@@ -229,13 +246,16 @@ export async function checkActionTools({ mcpClient, page }) {
   console.log('Act, stale ref and run_js: all checks passed');
 }
 
-export async function checkKeepalive(mcpClient) {
+export async function checkKeepalive(mcpClient, home) {
   console.log('Keepalive: waiting 36 seconds past the service worker idle timeout...');
   await new Promise((resolve) => setTimeout(resolve, 36_000));
-  const result = await call(mcpClient, 'status', {});
-  show('status after 36s idle', result);
-  assert(/^Browsers: 1$/m.test(text(result)), `The extension did not stay connected: ${text(result)}`);
-  assert(parseStatusTabCount(text(result)) >= 1, `The kept-alive browser reported no tabs: ${text(result)}`);
+  const browsers = await daemonBrowsers(home);
+  console.log(`Daemon status after 36s idle: ${JSON.stringify(browsers)}`);
+  assert(browsers.length === 1, `The extension did not stay connected: ${JSON.stringify(browsers)}`);
+  assert(browsers[0].tabCount >= 1, `The kept-alive browser reported no tabs: ${JSON.stringify(browsers)}`);
+  const result = await call(mcpClient, 'tabs', {});
+  show('tabs after 36s idle', result);
+  assert(result.isError !== true, `A tool call failed after 36s idle: ${text(result)}`);
   console.log('Keepalive after 36s: passed');
 }
 

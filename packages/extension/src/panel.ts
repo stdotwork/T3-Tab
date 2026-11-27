@@ -1,9 +1,22 @@
-import type { AgentConversation, AgentsStatus, AgentVia, T3Access } from '@t3-tab/protocol';
+import {
+  claimNote,
+  type AgentConversation,
+  type AgentImage,
+  type AgentsStatus,
+  type AgentVia,
+  type SetupAgent,
+  type SetupStatus,
+  type T3Pairing,
+  type T3SessionParams,
+  type T3SessionReply,
+} from '@t3-tab/protocol';
 
-import { newClaimCode, removeConversationTab, type ClaimTab } from './claims';
-import { askDaemon } from './daemon-link';
+import { newClaimCode, removeConversationTab, T3_CONVERSATION_PREFIX, type ClaimTab } from './claims';
+import { BUILD_ID } from './build-id';
+import { askDaemon, daemonLinkState, type HelperState } from './daemon-link';
 import {
   isOriginKey,
+  type AutoAllowed,
   originOf,
   type PermissionDecision,
   type PermissionPrompt,
@@ -11,7 +24,8 @@ import {
   type StoredSitePermission,
 } from './permissions';
 import { claimStore, permissionPrompts, sessionStore, siteStore } from './runtime';
-import type { StoredSession } from './sessions';
+import { canSessionUseTab, type StoredSession } from './sessions';
+import { expandStartedCollapsedGroup } from './tabs';
 
 export interface PanelTab {
   id: number;
@@ -19,22 +33,28 @@ export interface PanelTab {
   url: string;
 }
 
+/** A thread of T3 Code or a direct run. */
+export interface TabThread {
+  id: string;
+  source: 't3' | 'direct';
+}
+
 export interface PanelState {
   sessions: StoredSession[];
   currentTab: PanelTab | undefined;
+  /** The thread holding the panel's tab, so opening the panel on that tab shows it. */
+  tabThread?: TabThread;
   pending: PermissionPrompt[];
   sites: StoredSitePermission[];
+  /** The last requests let through without a prompt because the thread has full access in T3 Code. */
+  autoAllowed: AutoAllowed[];
 }
 
-/**
- * What the panel's agent section shows: which agents can run, the tabs a start would share, the conversations, and
- * T3-Tab's read-only T3 sign-in with T3's project and model lists.
- */
+/** What the panel's agent section shows: which agents can run, the tabs a start would share and the conversations. */
 export interface AgentPanelState {
   status: AgentsStatus;
   shareTabs: PanelTab[];
   conversations: AgentConversation[];
-  t3Access: T3Access;
   /** The owner's tabs each conversation holds, by conversation id. A closed tab is left out. */
   conversationTabs: Record<string, PanelTab[]>;
 }
@@ -47,16 +67,32 @@ export interface AgentStartRequest {
   provider?: string;
   model?: string;
   tabId?: number;
+  /** The owner took the tab chip off: the run starts with no shared tabs. */
+  noTabs?: boolean;
+  /** Images for a direct run; the background program checks them. */
+  images?: AgentImage[];
 }
 
 export type PanelRequest =
   | { type: 'panel.state'; tabId?: number }
+  | { type: 'panel.helper' }
+  | { type: 'panel.build' }
+  | { type: 'panel.setup'; refresh?: boolean }
+  | { type: 'panel.addAgent'; agent: SetupAgent }
+  | { type: 'panel.t3Pair'; origin: string; dpop: string }
+  | ({ type: 'panel.t3Session' } & T3SessionParams)
+  | { type: 'panel.t3Unpair' }
+  | { type: 'panel.agentGet'; id: string }
+  | { type: 'panel.agentStop'; id: string }
+  | { type: 'panel.t3Claim'; tabId?: number }
+  | { type: 'panel.t3ClaimBind'; code: string; threadId: string }
+  | { type: 'panel.t3ClaimRevoke'; code: string }
   | { type: 'panel.agents'; refresh?: boolean; tabId?: number }
   | AgentStartRequest
-  | { type: 'panel.agentSend'; id: string; message: string }
-  | { type: 'panel.t3SignIn' }
-  | { type: 'panel.t3SignOut' }
+  | { type: 'panel.agentSend'; id: string; message: string; images?: AgentImage[] }
   | { type: 'panel.agentRemoveTab'; id: string; tabId: number }
+  | { type: 'panel.conversationTabs'; id: string }
+  | { type: 'panel.shareTargets'; tabId?: number }
   | { type: 'panel.shareTab'; sessionId: string; tabId?: number }
   | { type: 'panel.unshareTab'; sessionId: string; tabId?: number }
   | { type: 'panel.decide'; promptId: string; decision: PermissionDecision }
@@ -65,14 +101,56 @@ export type PanelRequest =
 /** The extension API the side panel uses; the end-to-end harness calls the same messages. */
 export async function handlePanelRequest(
   value: unknown,
-): Promise<PanelState | AgentPanelState | { conversation: AgentConversation } | T3Access | { ok: true }> {
+): Promise<
+  | PanelState
+  | { tabs: PanelTab[]; groupTitle?: string }
+  | AgentPanelState
+  | { conversation: AgentConversation }
+  | HelperState
+  | { buildId: string }
+  | SetupStatus
+  | T3Pairing
+  | T3SessionReply
+  | T3ClaimResult
+  | { revoked: number }
+  | { ok: true }
+> {
   const request = parsePanelRequest(value);
   if (request.type === 'panel.state') return await panelState(request.tabId);
+  if (request.type === 'panel.helper') return await daemonLinkState();
+  if (request.type === 'panel.build') return { buildId: BUILD_ID };
+  if (request.type === 'panel.setup') return await askDaemon('setup.status', request.refresh === true ? { refresh: true } : {});
+  if (request.type === 'panel.addAgent') return await askDaemon('setup.addAgent', { agent: request.agent });
+  if (request.type === 'panel.t3Pair') return await askDaemon('t3.pair', { origin: request.origin, dpop: request.dpop });
+  if (request.type === 'panel.t3Session') {
+    const { kind, origin, accessToken, dpop } = request;
+    return await askDaemon('t3.session', { kind, origin, accessToken, dpop });
+  }
+  if (request.type === 'panel.t3Unpair') return await askDaemon('t3.unpair', {});
+  if (request.type === 'panel.agentGet') return await askDaemon('agents.get', { id: request.id });
+  if (request.type === 'panel.agentStop') return await askDaemon('agents.stop', { id: request.id });
+  if (request.type === 'panel.t3Claim') return await issueT3Claim(request.tabId);
+  if (request.type === 'panel.t3ClaimBind') {
+    if (!(await claimStore.bindByCode(request.code, t3ConversationKey(request.threadId)))) throw new Error('Unknown claim code');
+    // A session the daemon proved runs for this thread is panel-started from now on, even before it redeems the code.
+    for (const session of await sessionStore.list()) {
+      if (session.t3ThreadId === request.threadId) await expandStartedCollapsedGroup(session.id, sessionStore).catch(() => undefined);
+    }
+    return { ok: true };
+  }
+  if (request.type === 'panel.t3ClaimRevoke') {
+    await revokeClaim(request.code);
+    return { ok: true };
+  }
   if (request.type === 'panel.agents') return await agentPanelState(request.refresh === true, request.tabId);
   if (request.type === 'panel.agentStart') return await startAgent(request);
-  if (request.type === 'panel.agentSend') return await sendToAgent(request.id, request.message);
-  if (request.type === 'panel.t3SignIn') return await signInToT3();
-  if (request.type === 'panel.t3SignOut') return await askDaemon('t3.signOut', {});
+  if (request.type === 'panel.agentSend') return await sendToAgent(request.id, request.message, request.images);
+  if (request.type === 'panel.conversationTabs') {
+    const held = (await claimStore.conversationTabs())[request.id] ?? [];
+    const tabs = await Promise.all(held.map(async ({ tabId }) => await panelTab(tabId).catch(() => undefined)));
+    return { tabs: tabs.filter((tab) => tab !== undefined) };
+  }
+  if (request.type === 'panel.shareTargets') return await shareView(request.tabId);
   if (request.type === 'panel.agentRemoveTab') {
     await removeConversationTab(claimStore, sessionStore, request.id, request.tabId);
     return { ok: true };
@@ -111,38 +189,33 @@ async function panelState(tabId: number | undefined): Promise<PanelState> {
       visibleSites = [...sites, currentSite].sort((left, right) => left.origin.localeCompare(right.origin));
     }
   }
-  return { sessions, pending, sites: visibleSites, currentTab };
+  const tabThread = currentTab === undefined ? undefined : await threadOnTab(currentTab.id, sessions).catch(() => undefined);
+  return { sessions, pending, sites: visibleSites, currentTab, autoAllowed: permissionPrompts.autoAllowed(), ...(tabThread === undefined ? {} : { tabThread }) };
+}
+
+/** The thread whose session can use this tab, or whose conversation the owner shared it with. */
+async function threadOnTab(tabId: number, sessions: StoredSession[]): Promise<TabThread | undefined> {
+  const tab = await chrome.tabs.get(tabId);
+  const proven = sessions.find((session) => session.t3ThreadId !== undefined && canSessionUseTab(session, tab))?.t3ThreadId;
+  if (proven !== undefined) return { id: proven, source: 't3' };
+  const held = Object.entries(await claimStore.conversationTabs()).find(([, tabs]) => tabs.some((entry) => entry.tabId === tabId))?.[0];
+  if (held === undefined) return undefined;
+  return held.startsWith(T3_CONVERSATION_PREFIX) ? { id: held.slice(T3_CONVERSATION_PREFIX.length), source: 't3' } : { id: held, source: 'direct' };
 }
 
 async function agentPanelState(refresh: boolean, tabId: number | undefined): Promise<AgentPanelState> {
-  const [status, list, shareTabs, held, t3Access] = await Promise.all([
+  const [status, list, shareTabs, held] = await Promise.all([
     askDaemon('agents.status', refresh ? { refresh: true } : {}),
     askDaemon('agents.list', {}),
     shareTargets(tabId).catch(() => []),
     claimStore.conversationTabs(),
-    askDaemon('t3.access', refresh ? { refresh: true } : {}).catch(
-      (error: unknown): T3Access => ({ state: 'signed-out', detail: error instanceof Error ? error.message : String(error) }),
-    ),
   ]);
   const conversationTabs: Record<string, PanelTab[]> = {};
   for (const conversation of list.conversations) {
     const tabs = await Promise.all((held[conversation.id] ?? []).map(async ({ tabId: id }) => await panelTab(id).catch(() => undefined)));
     conversationTabs[conversation.id] = tabs.filter((tab) => tab !== undefined);
   }
-  return { status, conversations: list.conversations, shareTabs, conversationTabs, t3Access };
-}
-
-/**
- * Asks the background program to start the sign-in, then opens T3's approval page in a normal tab of this browser,
- * where the owner approves it in T3 Code's own page. The tab joins no session, and the extension never sees the
- * credential: T3 sends the answer to the background program's one-use listener.
- */
-async function signInToT3(): Promise<{ ok: true }> {
-  const { url } = await askDaemon('t3.signIn', {});
-  const page = new URL(url);
-  if (page.protocol !== 'http:' && page.protocol !== 'https:') throw new Error('The T3 sign-in page has an address T3-Tab does not open');
-  await chrome.tabs.create({ url: page.href, active: true });
-  return { ok: true };
+  return { status, conversations: list.conversations, shareTabs, conversationTabs };
 }
 
 /**
@@ -150,7 +223,7 @@ async function signInToT3(): Promise<{ ok: true }> {
  * themselves. The extension issues the claim code here, so only a start from the panel can share tabs.
  */
 async function startAgent(request: AgentStartRequest): Promise<{ conversation: AgentConversation }> {
-  const tabs = await shareTargets(request.tabId);
+  const tabs = request.noTabs === true ? [] : await shareTargets(request.tabId);
   const claimTabs: ClaimTab[] = tabs.map((tab) => {
     const origin = originOf(tab.url);
     return origin === undefined ? { tabId: tab.id } : { tabId: tab.id, origin };
@@ -158,25 +231,58 @@ async function startAgent(request: AgentStartRequest): Promise<{ conversation: A
   const claim = newClaimCode();
   // A direct run gets its code through a private file; a T3 thread's agent can only read it in its first message.
   const grant = await claimStore.issue(claim, claimTabs, { route: request.via === 't3' ? 'message' : 'launch' });
-  const params = { via: request.via, message: request.message, claim, ...optionalFields(request) };
+  const params = { via: request.via, message: request.message, claim, ...optionalFields(request), ...(request.images === undefined ? {} : { images: request.images }) };
   try {
     const started = await askDaemon('agents.start', params);
     await claimStore.bindConversation(grant, started.conversation.id);
     return started;
   } catch (error) {
-    await claimStore.revoke(claim);
+    await revokeClaim(claim);
     throw error;
   }
 }
 
+/** What the panel needs to start a T3 thread that shares the owner's tabs. */
+export interface T3ClaimResult {
+  code: string;
+  /** The line to add to the thread's first message: the agent reads the code from it and claims the tabs. */
+  note: string;
+  tabs: PanelTab[];
+}
+
+/** The key a claim's grant uses for a T3 thread the panel started itself. */
+function t3ConversationKey(threadId: string): string {
+  return `${T3_CONVERSATION_PREFIX}${threadId}`;
+}
+
+/**
+ * Issues a claim code for the owner's current tab (or its group, by the rule `startAgent` uses) for a thread the panel
+ * launches over its own connection to T3. Whether the thread has Full access is asked of T3 when a request needs it.
+ */
+async function issueT3Claim(tabId: number | undefined): Promise<T3ClaimResult> {
+  const tabs = await shareTargets(tabId);
+  const claimTabs: ClaimTab[] = tabs.map((tab) => {
+    const origin = originOf(tab.url);
+    return origin === undefined ? { tabId: tab.id } : { tabId: tab.id, origin };
+  });
+  const code = newClaimCode();
+  await claimStore.issue(code, claimTabs, { route: 'message' });
+  return { code, note: claimNote(code), tabs };
+}
+
+/** Withdraws a code, and takes back any tab an agent got through it if no thread was ever bound to it. */
+async function revokeClaim(code: string): Promise<void> {
+  for (const { sessionId, tabId } of await claimStore.revoke(code)) await sessionStore.dropShare([sessionId], tabId);
+}
+
 /** Each turn of a direct run is a new process and session, so it gets a new code for the tabs still shared. */
-async function sendToAgent(id: string, message: string): Promise<{ conversation: AgentConversation }> {
+async function sendToAgent(id: string, message: string, images: AgentImage[] | undefined): Promise<{ conversation: AgentConversation }> {
   const claim = newClaimCode();
   const renewed = await claimStore.renew(id, claim);
   try {
-    return await askDaemon('agents.send', { id, message, ...(renewed ? { claim } : {}) });
+    return await askDaemon('agents.send', { id, message, ...(renewed ? { claim } : {}), ...(images === undefined ? {} : { images }) });
   } catch (error) {
-    if (renewed) await claimStore.revoke(claim);
+    if (renewed) await revokeClaim(claim);
     throw error;
   }
 }
@@ -203,6 +309,15 @@ async function shareTargets(tabId: number | undefined): Promise<PanelTab[]> {
   );
 }
 
+/** What a thread started now would share, for the panel to show before the owner sends. */
+async function shareView(tabId: number | undefined): Promise<{ tabs: PanelTab[]; groupTitle?: string }> {
+  const tabs = await shareTargets(tabId);
+  if (tabs.length < 2) return { tabs };
+  const groupId = (await chrome.tabs.get(tabs[0]!.id)).groupId;
+  const title = groupId === undefined ? undefined : (await chrome.tabGroups.get(groupId).catch(() => undefined))?.title;
+  return title === undefined || title === '' ? { tabs } : { tabs, groupTitle: title };
+}
+
 async function panelTab(tabId: number | undefined): Promise<PanelTab> {
   const tab =
     tabId === undefined
@@ -210,6 +325,16 @@ async function panelTab(tabId: number | undefined): Promise<PanelTab> {
       : await chrome.tabs.get(tabId).catch(() => undefined);
   if (tab?.id === undefined) throw new Error('No current tab');
   return { id: tab.id, title: tab.title ?? '', url: tab.url ?? tab.pendingUrl ?? '' };
+}
+
+/** The images a panel request carries, checked for shape only; the background program checks what they hold. */
+function parseImages(value: unknown): AgentImage[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return value.map((entry: unknown) => {
+    const { name, mimeType, data } = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+    if (typeof name !== 'string' || typeof mimeType !== 'string' || typeof data !== 'string') throw new Error('Invalid image');
+    return { name, mimeType, data };
+  });
 }
 
 function parsePanelRequest(value: unknown): PanelRequest {
@@ -241,11 +366,47 @@ function parsePanelRequest(value: unknown): PanelRequest {
       if (typeof field === 'string' && field.trim() !== '') request[key] = field.trim();
     }
     if (Number.isInteger(candidate.tabId)) request.tabId = candidate.tabId as number;
+    if (candidate.noTabs === true) request.noTabs = true;
+    const images = parseImages(candidate.images);
+    if (images !== undefined) request.images = images;
     return request;
   }
-  if (candidate.type === 'panel.t3SignIn' || candidate.type === 'panel.t3SignOut') return { type: candidate.type };
+  if (candidate.type === 'panel.conversationTabs' && typeof candidate.id === 'string') return { type: 'panel.conversationTabs', id: candidate.id };
+  if (candidate.type === 'panel.shareTargets') {
+    return Number.isInteger(candidate.tabId) ? { type: 'panel.shareTargets', tabId: candidate.tabId as number } : { type: 'panel.shareTargets' };
+  }
+  if (candidate.type === 'panel.t3Pair' && typeof candidate.origin === 'string' && typeof candidate.dpop === 'string') {
+    return { type: 'panel.t3Pair', origin: candidate.origin, dpop: candidate.dpop };
+  }
+  if (
+    candidate.type === 'panel.t3Session' &&
+    (candidate.kind === 'renew' || candidate.kind === 'ticket' || candidate.kind === 'media-ticket' || candidate.kind === 'voice-status') &&
+    typeof candidate.origin === 'string' &&
+    typeof candidate.accessToken === 'string' &&
+    typeof candidate.dpop === 'string'
+  ) {
+    return { type: 'panel.t3Session', kind: candidate.kind, origin: candidate.origin, accessToken: candidate.accessToken, dpop: candidate.dpop };
+  }
+  if (candidate.type === 'panel.helper' || candidate.type === 'panel.build' || candidate.type === 'panel.t3Unpair') {
+    return { type: candidate.type };
+  }
+  if (candidate.type === 'panel.setup') return { type: 'panel.setup', refresh: candidate.refresh === true };
+  if (candidate.type === 'panel.addAgent' && (candidate.agent === 'claude' || candidate.agent === 'codex')) {
+    return { type: 'panel.addAgent', agent: candidate.agent };
+  }
+  if ((candidate.type === 'panel.agentGet' || candidate.type === 'panel.agentStop') && typeof candidate.id === 'string') {
+    return { type: candidate.type, id: candidate.id };
+  }
+  if (candidate.type === 'panel.t3Claim') {
+    return Number.isInteger(candidate.tabId) ? { type: 'panel.t3Claim', tabId: candidate.tabId as number } : { type: 'panel.t3Claim' };
+  }
+  if (candidate.type === 'panel.t3ClaimBind' && typeof candidate.code === 'string' && typeof candidate.threadId === 'string' && candidate.threadId !== '') {
+    return { type: 'panel.t3ClaimBind', code: candidate.code, threadId: candidate.threadId };
+  }
+  if (candidate.type === 'panel.t3ClaimRevoke' && typeof candidate.code === 'string') return { type: 'panel.t3ClaimRevoke', code: candidate.code };
   if (candidate.type === 'panel.agentSend' && typeof candidate.id === 'string' && typeof candidate.message === 'string') {
-    return { type: 'panel.agentSend', id: candidate.id, message: candidate.message };
+    const images = parseImages(candidate.images);
+    return { type: 'panel.agentSend', id: candidate.id, message: candidate.message, ...(images === undefined ? {} : { images }) };
   }
   if (candidate.type === 'panel.agentRemoveTab' && typeof candidate.id === 'string' && Number.isInteger(candidate.tabId)) {
     return { type: 'panel.agentRemoveTab', id: candidate.id, tabId: candidate.tabId as number };

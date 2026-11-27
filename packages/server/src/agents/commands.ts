@@ -1,30 +1,18 @@
-import type { AgentMessage, AgentStatus, AgentVia, T3State } from '@t3-tab/protocol';
+import { claimNote, withoutClaimNote, type AgentMessage, type AgentStatus, type AgentVia, type T3State } from '@t3-tab/protocol';
 
 import { TOOL_TIMEOUT_MS } from '../client.js';
 import { tomlString } from '../toml.js';
 import { tomlValue, type CodexProvider } from './codex-provider.js';
 
 const MCP_SERVER_NAME = 't3-tab';
-const CLAIM_NOTE_MARK = '\n\n[T3-Tab] ';
 
 export interface McpServerCommand {
   command: string;
   args: string[];
 }
 
-/**
- * The line added to a T3 thread's first message. A T3 thread's agent starts its MCP servers from its own
- * config, so nothing but the message can tell its session which tabs the owner picked.
- */
-export function claimNote(code: string): string {
-  return `${CLAIM_NOTE_MARK}The owner shared browser tabs with this thread. Before other browser tools, call the t3-tab \`tabs\` tool with {"claim": "${code}"}.`;
-}
-
-/** The message as the owner wrote it, without the claim note. */
-export function withoutClaimNote(text: string): string {
-  const index = text.indexOf(`${CLAIM_NOTE_MARK}The owner shared browser tabs`);
-  return index === -1 ? text : text.slice(0, index);
-}
+// The claim note is shared with the panel, which adds it to the threads it starts itself.
+export { claimNote, withoutClaimNote };
 
 export function t3StartArgs(options: { project: string; provider?: string | undefined; model?: string | undefined }): string[] {
   const selection =
@@ -141,6 +129,10 @@ export interface DirectRunOptions {
   model?: string | undefined;
   /** The CLI's session id to continue. */
   resume?: string | undefined;
+  /** Claude Code: the message and its images go on stdin as one stream-json user message. */
+  imageInput?: boolean | undefined;
+  /** Codex: private files holding this turn's images. */
+  imageFiles?: readonly string[] | undefined;
   /** Codex only: the owner's active custom provider, the one thing carried over from their config. */
   codexProvider?: CodexProvider | undefined;
 }
@@ -163,9 +155,11 @@ export function claudeArgs(options: DirectRunOptions): string[] {
   };
   return [
     '-p',
+    ...(options.imageInput === true ? ['--input-format', 'stream-json'] : []),
     '--output-format',
     'stream-json',
     '--verbose',
+    '--include-partial-messages',
     '--restricted',
     '--setting-sources',
     '',
@@ -210,7 +204,7 @@ const CODEX_DISABLED_FEATURES = [
   'memories',
   'standalone_web_search',
 ];
-const T3_TAB_TOOLS = ['status', 'tabs', 'read', 'screenshot', 'act', 'run_js'];
+const T3_TAB_TOOLS = ['tabs', 'read', 'screenshot', 'act', 'run_js'];
 // Longer than T3-Tab's own wait, so its error arrives first. Codex's default is 60 seconds.
 const CODEX_TOOL_TIMEOUT_SEC = Math.ceil(TOOL_TIMEOUT_MS / 1_000) + 20;
 
@@ -252,6 +246,8 @@ export function codexArgs(options: DirectRunOptions): string[] {
     '--ignore-rules',
     ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['--disable', feature]),
     ...config,
+    // `--image` takes several values, so each is joined to its flag: a bare one would take the session id and `-` too.
+    ...(options.imageFiles ?? []).map((path) => `--image=${path}`),
     ...(options.model === undefined ? [] : ['-m', options.model]),
     ...(options.resume === undefined ? [] : [options.resume]),
     '-',
@@ -262,28 +258,116 @@ export function codexArgs(options: DirectRunOptions): string[] {
 export interface DirectEvent {
   sessionId?: string;
   text?: string;
+  /** Changes to the thread view's items, in the order they happened. */
+  parts?: DirectPart[];
   /** Set on the line that ends the turn. */
   done?: { ok: boolean; error?: string; result?: string };
   error?: string;
 }
 
+/**
+ * One change to the thread view. `key` names a streamed block; `text` with `final: false` is appended to it and with
+ * `final: true` replaces it. A `tool` part updates the tool call with that id, creating it on its first mention.
+ */
+export type DirectPart =
+  | { op: 'text'; key: string; kind: 'assistant' | 'reasoning'; text: string; final: boolean }
+  | { op: 'end'; key: string }
+  | { op: 'tool'; id: string; name?: string; summary?: string; output?: string; status?: 'running' | 'done' | 'failed' }
+  | { op: 'error'; key: string; text: string };
+
+const MAX_SUMMARY_CHARS = 200;
+
+function short(text: string): string {
+  return text.length <= MAX_SUMMARY_CHARS ? text : `${text.slice(0, MAX_SUMMARY_CHARS)}…`;
+}
+
+/** An agent's tool arguments in one short line; nothing for an empty object. */
+function summarize(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'object' && Object.keys(value).length === 0) return undefined;
+  try {
+    return short(typeof value === 'string' ? value : JSON.stringify(value));
+  } catch {
+    return undefined;
+  }
+}
+
+/** The text of a tool result's content: a string, or blocks whose text is joined and whose images are named. */
+function resultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .flatMap((block) => {
+      if (typeof block !== 'object' || block === null) return [];
+      const { type, text } = block as { type?: unknown; text?: unknown };
+      if (type === 'text' && typeof text === 'string') return [text];
+      return type === 'image' ? ['[image]'] : [];
+    })
+    .join('\n');
+}
+
+/** `mcp__t3-tab__read` is shown as `read`. */
+function toolName(name: string): string {
+  return name.replace(/^mcp__.+?__/, '') || name;
+}
+
+/** What `claude -p --output-format stream-json --include-partial-messages` has said about the message being written. */
+export interface ClaudeStreamState {
+  messageId?: string | undefined;
+  /** Blocks streamed in the current message and not yet completed by a full `assistant` line, in order. */
+  open: Array<{ index: number; type: string }>;
+}
+
+export function newClaudeState(): ClaudeStreamState {
+  return { open: [] };
+}
+
 /** One line of `claude -p --output-format stream-json`. */
-export function parseClaudeLine(line: string): DirectEvent {
+export function parseClaudeLine(line: string, state: ClaudeStreamState = newClaudeState()): DirectEvent {
   const value = parseJsonObject(line);
   if (value === undefined) return {};
   const event: DirectEvent = {};
   if (typeof value.session_id === 'string') event.sessionId = value.session_id;
-  if (value.type === 'assistant') {
-    const content = (value.message as { content?: unknown } | undefined)?.content;
-    const texts = Array.isArray(content)
-      ? content.flatMap((block) =>
-          typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text' &&
-          typeof (block as { text?: unknown }).text === 'string'
-            ? [(block as { text: string }).text]
-            : [],
-        )
-      : [];
+  if (value.type === 'stream_event') {
+    const parts = claudeStreamParts(value.event, state);
+    if (parts.length > 0) event.parts = parts;
+  } else if (value.type === 'assistant') {
+    const message = value.message as { id?: unknown; content?: unknown } | undefined;
+    const content = Array.isArray(message?.content) ? (message.content as unknown[]) : [];
+    const texts: string[] = [];
+    const parts: DirectPart[] = [];
+    const messageId = typeof message?.id === 'string' ? message.id : state.messageId ?? 'message';
+    let unstreamed = 0;
+    for (const block of content) {
+      if (typeof block !== 'object' || block === null) continue;
+      const { type, text, thinking, id, name, input } = block as Record<string, unknown>;
+      if (type === 'text' && typeof text === 'string') texts.push(text);
+      if (type === 'text' || type === 'thinking') {
+        const body = type === 'text' ? text : thinking;
+        if (typeof body !== 'string') continue;
+        const at = state.open.findIndex((open) => open.type === type);
+        const index = at === -1 ? undefined : state.open.splice(at, 1)[0]?.index;
+        const key = `${messageId}:${index ?? `x${unstreamed++}`}`;
+        parts.push({ op: 'text', key, kind: type === 'text' ? 'assistant' : 'reasoning', text: body, final: true }, { op: 'end', key });
+      } else if (type === 'tool_use' && typeof id === 'string' && typeof name === 'string') {
+        const at = state.open.findIndex((open) => open.type === 'tool_use');
+        if (at !== -1) state.open.splice(at, 1);
+        const summary = summarize(input);
+        parts.push({ op: 'tool', id, name: toolName(name), ...(summary === undefined ? {} : { summary }), status: 'running' });
+      }
+    }
     if (texts.length > 0) event.text = texts.join('\n');
+    if (parts.length > 0) event.parts = parts;
+  } else if (value.type === 'user') {
+    const content = (value.message as { content?: unknown } | undefined)?.content;
+    const parts: DirectPart[] = [];
+    for (const block of Array.isArray(content) ? (content as unknown[]) : []) {
+      if (typeof block !== 'object' || block === null) continue;
+      const { type, tool_use_id: id, content: result, is_error: failed } = block as Record<string, unknown>;
+      if (type !== 'tool_result' || typeof id !== 'string') continue;
+      parts.push({ op: 'tool', id, output: resultText(result), status: failed === true ? 'failed' : 'done' });
+    }
+    if (parts.length > 0) event.parts = parts;
   } else if (value.type === 'result') {
     const ok = value.is_error !== true && (value.subtype === undefined || value.subtype === 'success');
     const done: NonNullable<DirectEvent['done']> = { ok };
@@ -294,15 +378,54 @@ export function parseClaudeLine(line: string): DirectEvent {
   return event;
 }
 
+function claudeStreamParts(raw: unknown, state: ClaudeStreamState): DirectPart[] {
+  if (typeof raw !== 'object' || raw === null) return [];
+  const event = raw as Record<string, unknown>;
+  if (event.type === 'message_start') {
+    const id = (event.message as { id?: unknown } | undefined)?.id;
+    state.messageId = typeof id === 'string' ? id : undefined;
+    state.open = [];
+    return [];
+  }
+  const index = typeof event.index === 'number' ? event.index : undefined;
+  if (index === undefined) return [];
+  const key = `${state.messageId ?? 'message'}:${index}`;
+  if (event.type === 'content_block_start') {
+    const block = event.content_block as Record<string, unknown> | undefined;
+    const type = typeof block?.type === 'string' ? block.type : '';
+    if (type === 'text' || type === 'thinking' || type === 'tool_use') state.open.push({ index, type });
+    if (type === 'text' || type === 'thinking') {
+      return [{ op: 'text', key, kind: type === 'text' ? 'assistant' : 'reasoning', text: '', final: false }];
+    }
+    if (type === 'tool_use' && typeof block?.id === 'string' && typeof block.name === 'string') {
+      return [{ op: 'tool', id: block.id, name: toolName(block.name), status: 'running' }];
+    }
+    return [];
+  }
+  if (event.type === 'content_block_delta') {
+    const delta = event.delta as Record<string, unknown> | undefined;
+    if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+      return [{ op: 'text', key, kind: 'assistant', text: delta.text, final: false }];
+    }
+    if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+      return [{ op: 'text', key, kind: 'reasoning', text: delta.thinking, final: false }];
+    }
+    return [];
+  }
+  if (event.type === 'content_block_stop') {
+    state.open = state.open.filter((open) => open.index !== index);
+    return [{ op: 'end', key }];
+  }
+  return [];
+}
+
 /** One line of `codex exec --json`. */
 export function parseCodexLine(line: string): DirectEvent {
   const value = parseJsonObject(line);
   if (value === undefined) return {};
   if (value.type === 'thread.started' && typeof value.thread_id === 'string') return { sessionId: value.thread_id };
-  if (value.type === 'item.completed') {
-    const item = value.item as { type?: unknown; text?: unknown } | undefined;
-    if (item?.type === 'agent_message' && typeof item.text === 'string') return { text: item.text };
-    return {};
+  if (value.type === 'item.started' || value.type === 'item.updated' || value.type === 'item.completed') {
+    return codexItemEvent(value.item, value.type === 'item.completed');
   }
   if (value.type === 'turn.completed') return { done: { ok: true } };
   if (value.type === 'turn.failed') {
@@ -313,8 +436,69 @@ export function parseCodexLine(line: string): DirectEvent {
   return {};
 }
 
+const CODEX_STATUS = new Map<string, 'running' | 'done' | 'failed'>([
+  ['in_progress', 'running'],
+  ['completed', 'done'],
+  ['failed', 'failed'],
+]);
+
+function codexItemEvent(raw: unknown, completed: boolean): DirectEvent {
+  if (typeof raw !== 'object' || raw === null) return {};
+  const item = raw as Record<string, unknown>;
+  const id = typeof item.id === 'string' ? item.id : undefined;
+  const type = typeof item.type === 'string' ? item.type : '';
+  const text = typeof item.text === 'string' ? item.text : undefined;
+  if (type === 'agent_message' || type === 'reasoning') {
+    if (text === undefined) return {};
+    const key = id ?? type;
+    const kind = type === 'agent_message' ? 'assistant' : 'reasoning';
+    const parts: DirectPart[] = [{ op: 'text', key, kind, text, final: true }, ...(completed ? [{ op: 'end' as const, key }] : [])];
+    return { ...(completed && type === 'agent_message' ? { text } : {}), parts };
+  }
+  if (type === 'error') {
+    return typeof item.message === 'string' && completed ? { parts: [{ op: 'error', key: id ?? 'error', text: item.message }] } : {};
+  }
+  if (id === undefined || type === '') return {};
+  const status = CODEX_STATUS.get(String(item.status)) ?? (completed ? 'done' : 'running');
+  let part: Extract<DirectPart, { op: 'tool' }>;
+  if (type === 'command_execution') {
+    part = { op: 'tool', id, name: 'command', status };
+    if (typeof item.command === 'string') part.summary = short(item.command);
+    if (typeof item.aggregated_output === 'string') part.output = item.aggregated_output;
+  } else if (type === 'mcp_tool_call') {
+    part = { op: 'tool', id, name: typeof item.tool === 'string' ? item.tool : 'tool', status };
+    const summary = summarize(item.arguments);
+    if (summary !== undefined) part.summary = summary;
+    const error = (item.error as { message?: unknown } | null | undefined)?.message;
+    const output = typeof error === 'string' ? error : resultText((item.result as { content?: unknown } | null | undefined)?.content);
+    if (output !== '') part.output = output;
+  } else if (type === 'file_change') {
+    part = { op: 'tool', id, name: 'file change', status };
+    const paths = Array.isArray(item.changes)
+      ? (item.changes as unknown[]).flatMap((change) => (typeof (change as { path?: unknown })?.path === 'string' ? [(change as { path: string }).path] : []))
+      : [];
+    if (paths.length > 0) part.summary = short(paths.join(', '));
+  } else if (type === 'web_search') {
+    part = { op: 'tool', id, name: 'web search', status };
+    if (typeof item.query === 'string') part.summary = short(item.query);
+  } else if (type === 'todo_list') {
+    part = { op: 'tool', id, name: 'plan', status: completed ? 'done' : 'running' };
+    const entries = Array.isArray(item.items) ? (item.items as unknown[]) : [];
+    const lines = entries.flatMap((entry) => {
+      const { text: step, completed: finished } = (entry ?? {}) as { text?: unknown; completed?: unknown };
+      return typeof step === 'string' ? [`${finished === true ? '[x]' : '[ ]'} ${step}`] : [];
+    });
+    if (lines.length > 0) part.output = lines.join('\n');
+  } else {
+    part = { op: 'tool', id, name: type, status };
+  }
+  return { parts: [part] };
+}
+
 export function directParser(via: Exclude<AgentVia, 't3'>): (line: string) => DirectEvent {
-  return via === 'claude' ? parseClaudeLine : parseCodexLine;
+  if (via === 'codex') return parseCodexLine;
+  const state = newClaudeState();
+  return (line) => parseClaudeLine(line, state);
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | undefined {

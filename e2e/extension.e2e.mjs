@@ -16,7 +16,12 @@ import {
   stopDaemon,
   waitForBrowser,
 } from './harness.mjs';
+import { checkDaemonRestart } from './checks-reconnect.mjs';
 import { checkInstallCommand } from './checks-install.mjs';
+import { checkProductInstall } from './checks-product-install.mjs';
+import { checkStaleWorker } from './checks-stale-worker.mjs';
+import { checkRealUse } from './checks-real-use.mjs';
+import { checkAgentTools } from './checks-agent-tools.mjs';
 import { checkFrames, checkPermissions } from './checks-permissions.mjs';
 import { checkActionTools, checkBrowserTools, checkKeepalive, rawCall, setAutoPrompt } from './checks-tools.mjs';
 import { checkPanelSessions, installFakeAgents, startFakeT3Environment } from './panel-sessions.mjs';
@@ -36,10 +41,14 @@ let fakeT3;
 
 try {
   await requireBuild(home);
+  await checkProductInstall();
+  await checkStaleWorker(home.extensionDir);
+  await checkRealUse();
+  await checkAgentTools();
   await checkInstallCommand({ cliPath, tempHome, childEnv });
   // After the install check, which uses the real agent CLIs: from here on the daemon finds the fakes first.
   const fakes = await installFakeAgents(home);
-  // A fake T3 environment (OAuth and /mcp) recorded under the temporary T3 home; the real T3 is never reached.
+  // A running-T3 record under the temporary T3 home, with a stub address; the real T3 is never reached.
   fakeT3 = await startFakeT3Environment(home);
   // The install check's `mcp list` started a daemon without the fakes on its PATH; the next client starts another.
   await stopDaemon(statePath);
@@ -79,8 +88,8 @@ try {
   console.log(`Extension ID: ${extensionId}`);
 
   ({ client: mcpClient } = await connectMcp(home, 't3-tab-e2e-a'));
-  const statusText = await waitForBrowser(mcpClient);
-  console.log(`MCP status result:\n${statusText}`);
+  const statusText = await waitForBrowser(home);
+  console.log(`Daemon status:\n${statusText}`);
 
   const state = JSON.parse(await readFile(statePath, 'utf8'));
   if (typeof state.port !== 'number') {
@@ -132,7 +141,7 @@ try {
     newCheckFailures.push(`act/run_js: ${error.message}`);
   }
   try {
-    await checkKeepalive(mcpClient);
+    await checkKeepalive(mcpClient, home);
   } catch (error) {
     newCheckFailures.push(`keepalive: ${error.message}`);
   }
@@ -145,11 +154,12 @@ try {
     panelPage,
     siteUrl,
     fakes,
-    fakeT3,
     home,
     mcpClient,
     screenshotPath: process.env.T3_TAB_E2E_SCREENSHOT,
   });
+  // Last: it stops the daemon the other checks use.
+  await checkDaemonRestart({ home });
 } finally {
   if (mcpClient !== undefined) {
     await mcpClient.close().catch(() => undefined);

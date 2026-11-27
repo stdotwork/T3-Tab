@@ -1,11 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_DAEMON_PORT,
-  PROTOCOL_MISMATCH,
+  mismatchReason,
   PROTOCOL_VERSION,
   type BrowserDaemonRequestMessage,
   type BrowserPongMessage,
@@ -15,12 +14,15 @@ import {
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
 import { Agents } from './agents/conversations.js';
-import { T3Access } from './agents/t3-access.js';
-import { removeTemporaryCredentials } from './agents/t3-credential.js';
+import { removeStaleT3Credentials } from './agents/stale-t3-credential.js';
+import { T3PanelPairing } from './agents/t3-pairing.js';
 import { BrowserConnection } from './browser-link.js';
 import { handleControlMessage, type ControlState } from './daemon-control.js';
-import { isBrowserMessage, isOtherProtocolVersion, parseJson } from './daemon-messages.js';
+import { isBrowserMessage, otherProtocolVersion, parseJson } from './daemon-messages.js';
+import { browserPromptsGone, promptClosed, promptOpened } from './daemon-prompts.js';
 import { connectionRole, tokensMatch, isLoopbackHostHeader, type ConnectionCredential, type ConnectionRole } from './security.js';
+import { Setup } from './setup.js';
+import { HELPER_VERSION, runningMcpCommand } from './version.js';
 import { clearDaemonState, clearExtensionState, writeDaemonState, writeExtensionState, type DaemonState } from './state.js';
 
 export interface DaemonOptions {
@@ -29,8 +31,10 @@ export interface DaemonOptions {
   stateDir?: string;
   /** The side panel's agent runs; tests pass their own. */
   agents?: Agents;
-  /** The side panel's read-only T3 sign-in; tests pass their own. */
-  t3Access?: T3Access;
+  /** The panel's first-run steps; tests pass their own. */
+  setup?: Setup;
+  /** The panel's own T3 pairing; tests pass their own. */
+  pairing?: T3PanelPairing;
 }
 
 export interface DaemonHandle {
@@ -50,25 +54,19 @@ const MAX_BROWSER_MESSAGE_BYTES = 16 * 1_024 * 1_024;
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   if (options.stateDir === undefined) throw new Error('A state directory is required');
   const stateDir = options.stateDir;
-  // A crash can leave a temporary copy of the T3 token. A failure here must not keep the browser tools from starting.
-  await removeTemporaryCredentials(stateDir).catch(() => {
-    process.stderr.write('T3-Tab could not remove a leftover temporary credential file from its state folder.\n');
-  });
+  // An older T3-Tab kept a T3 token here that nothing reads now. It is not worth waiting for: a few directory entries.
+  await removeStaleT3Credentials(stateDir);
   const token = randomBytes(32).toString('base64url');
   const extensionToken = randomBytes(32).toString('base64url');
   const roles = new WeakMap<IncomingMessage, ConnectionRole>();
   const browsers = new Map<WebSocket, BrowserConnection>();
   const sessions = new Map<WebSocket, ToolSession>();
-  const control: ControlState = { sessions, claims: new Map(), redeeming: new Map() };
-  const agents =
-    options.agents ??
-    new Agents({
-      env: process.env,
-      stateDir,
-      server: { command: process.execPath, args: [fileURLToPath(new URL('./cli.js', import.meta.url)), 'mcp'] },
-    });
-  const t3Access = options.t3Access ?? new T3Access({ env: process.env, stateDir });
-  const panel: PanelServices = { agents, t3Access };
+  const control: ControlState = { sessions, claims: new Map(), redeeming: new Map(), prompts: new Map(), peers: new Map(), t3Threads: new Map() };
+  const server = runningMcpCommand();
+  const agents = options.agents ?? new Agents({ env: process.env, stateDir, server });
+  const setup = options.setup ?? new Setup({ env: process.env, server, agents });
+  const pairing = options.pairing ?? new T3PanelPairing({ env: process.env });
+  const panel: PanelServices = { agents, setup, pairing };
   const httpServer = createServer((request, response) => handleHttpRequest(request, response, token));
   const sockets = {
     extension: new WebSocketServer({ noServer: true, maxPayload: MAX_BROWSER_MESSAGE_BYTES }),
@@ -113,18 +111,24 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     if (role === 'extension') {
       connection = new BrowserConnection(webSocket);
       browsers.set(webSocket, connection);
+    } else {
+      const { remoteAddress, remotePort, localAddress, localPort } = request.socket;
+      control.peers.set(webSocket, { address: remoteAddress, port: remotePort, localAddress, localPort });
     }
 
     webSocket.on('message', (data) => {
-      if (role === 'extension') handleBrowserMessage(webSocket, browsers, panel, data);
+      if (role === 'extension') handleBrowserMessage(webSocket, browsers, control, panel, data);
       else if (role === 'control') handleControlMessage(webSocket, browsers, control, agents, data);
     });
     const forget = (): void => {
       browsers.delete(webSocket);
       connection?.close();
+      browserPromptsGone(control, webSocket);
       const session = sessions.get(webSocket);
       sessions.delete(webSocket);
       control.claims.delete(webSocket);
+      control.peers.delete(webSocket);
+      control.t3Threads.delete(webSocket);
       if (session !== undefined) {
         const live = [...browsers.values()].at(-1);
         if (live !== undefined) void live.request(session, 'session.unregister', {}).catch(() => undefined);
@@ -148,6 +152,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     pid: process.pid,
     port: address.port,
     token,
+    ...(HELPER_VERSION === undefined ? {} : { helperVersion: HELPER_VERSION }),
   };
   try {
     // Written first: whoever finds this daemon in `daemon.json` can then find the extension's secret too.
@@ -169,7 +174,6 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
       if (closed) return;
       closed = true;
       await agents.close();
-      t3Access.close();
       await clearDaemonState(stateDir, token);
       await clearExtensionState(stateDir, extensionToken);
       await closeServer(httpServer, sockets);
@@ -196,18 +200,22 @@ function handleHttpRequest(request: IncomingMessage, response: ServerResponse, t
 
 interface PanelServices {
   agents: Agents;
-  t3Access: T3Access;
+  setup: Setup;
+  pairing: T3PanelPairing;
 }
 
 function handleBrowserMessage(
   webSocket: WebSocket,
   browsers: Map<WebSocket, BrowserConnection>,
+  control: ControlState,
   panel: PanelServices,
   data: RawData,
 ): void {
   const value = parseJson(data);
   if (!isBrowserMessage(value)) {
-    webSocket.close(1008, isOtherProtocolVersion(value) ? PROTOCOL_MISMATCH : 'Invalid protocol message');
+    const theirs = otherProtocolVersion(value);
+    if (theirs !== undefined) control.browserRefused = { reason: mismatchReason(theirs), at: Date.now() };
+    webSocket.close(1008, theirs === undefined ? 'Invalid protocol message' : mismatchReason(theirs));
     return;
   }
 
@@ -224,6 +232,10 @@ function handleBrowserMessage(
     webSocket.send(JSON.stringify(pong));
   } else if (message.type === 'browser.pong') {
     // The activity itself keeps the extension's service worker alive.
+  } else if (message.type === 'browser.promptOpened') {
+    promptOpened(control, webSocket, message);
+  } else if (message.type === 'browser.promptClosed') {
+    promptClosed(control, message.promptId);
   } else if (message.type === 'browser.tabClosed') {
     if (Number.isInteger(message.tabId)) connection.forgetTab(message.tabId);
   } else if (message.type === 'browser.hello') {
@@ -233,6 +245,7 @@ function handleBrowserMessage(
     }
     browser.id = message.browserId;
     browser.name = message.browserName;
+    delete control.browserRefused;
   } else if (message.type === 'browser.tabCount') {
     if (!Number.isInteger(message.tabCount) || message.tabCount < 0) {
       webSocket.close(1008, 'Invalid tab count');
@@ -243,10 +256,15 @@ function handleBrowserMessage(
 }
 
 /**
- * A side-panel request the extension passed on: start, continue or list the panel's agent conversations, or sign in
- * to T3 for its lists. Replies never carry the T3 credential; T3Access errors name what failed, not what was sent.
+ * A side-panel request the extension passed on: start, continue, stop, read or list the panel's agent conversations,
+ * set up an agent, run the panel's T3 session requests, or report a thread's mode. Pairing and session replies carry
+ * the panel's own T3 token and nothing else; errors name what failed, not what was sent.
  */
-async function answerDaemonRequest(webSocket: WebSocket, { agents, t3Access }: PanelServices, message: BrowserDaemonRequestMessage): Promise<void> {
+async function answerDaemonRequest(
+  webSocket: WebSocket,
+  { agents, setup, pairing }: PanelServices,
+  message: BrowserDaemonRequestMessage,
+): Promise<void> {
   let reply: DaemonReplyMessage;
   try {
     const params = (typeof message.params === 'object' && message.params !== null ? message.params : {}) as Record<string, unknown>;
@@ -254,10 +272,15 @@ async function answerDaemonRequest(webSocket: WebSocket, { agents, t3Access }: P
     if (message.method === 'agents.status') result = await agents.status(params.refresh === true);
     else if (message.method === 'agents.list') result = { conversations: agents.list() };
     else if (message.method === 'agents.start') result = { conversation: await agents.start(params) };
-    else if (message.method === 'agents.send') result = { conversation: await agents.send(params.id, params.message, params.claim) };
-    else if (message.method === 't3.access') result = await t3Access.view(params.refresh === true);
-    else if (message.method === 't3.signIn') result = await t3Access.signIn();
-    else if (message.method === 't3.signOut') result = await t3Access.signOut();
+    else if (message.method === 'agents.send') result = { conversation: await agents.send(params.id, params.message, params.claim, params.images) };
+    else if (message.method === 'agents.get') result = { conversation: agents.get(params.id) };
+    else if (message.method === 'agents.stop') result = { conversation: await agents.stop(params.id) };
+    else if (message.method === 'setup.status') result = await setup.status(params.refresh === true);
+    else if (message.method === 'setup.addAgent') result = await setup.addAgent(params.agent);
+    else if (message.method === 't3.pair') result = await pairing.pair(params);
+    else if (message.method === 't3.session') result = await pairing.session(params);
+    else if (message.method === 't3.threadMode') result = await pairing.threadMode(params.threadId);
+    else if (message.method === 't3.unpair') result = await pairing.unpair();
     else throw new Error(`Unknown method: ${String((message as { method?: unknown }).method)}`);
     reply = { type: 'daemon.reply', protocolVersion: PROTOCOL_VERSION, requestId: message.requestId, ok: true, result };
   } catch (error) {
