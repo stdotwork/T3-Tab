@@ -4,6 +4,7 @@ import {
   actStepRef,
   DEFAULT_SCREENSHOT_MAX_EDGE,
   NO_TAB_MESSAGE,
+  type PageReadResult,
   type TabInfo,
   type TabLoadResult,
   type TabNavigation,
@@ -174,12 +175,11 @@ async function runAct(
     if (typeof step === 'string') throw new Error(`Invalid arguments: ${step}`);
     return step;
   });
+  const unknown = steps.map(actStepRef).filter((ref): ref is string => ref !== undefined && state.refTable.backendIdOf(ref) === undefined);
+  if (unknown.length > 0) throw new Error(await unknownRefError(link, session, tabId, unknown));
   const backendIds = steps.map((step) => {
     const ref = actStepRef(step);
-    if (ref === undefined) return null;
-    const backendId = state.refTable.backendIdOf(ref);
-    if (backendId === undefined) throw new Error(`Unknown ref ${ref}: read the page again`);
-    return backendId;
+    return ref === undefined ? null : (state.refTable.backendIdOf(ref) ?? null);
   });
   const page = await link.request(session, 'page.act', {
     tab: tabId,
@@ -207,6 +207,48 @@ async function runAct(
   const whole = `${reply}${await openedLines(link, session, page)}`;
   if (failed !== '') throw new Error(`${failed}${whole}`);
   return whole;
+}
+
+/** What a ref an agent made up looks like: anything but the `e12` a read prints. */
+const REF_SHAPE = /^e\d+$/;
+/** Most element lines listed for one made-up ref, and most made-up refs looked up in one batch. */
+const GUESS_LINES = 5;
+const GUESSES = 3;
+/** Most characters of the elements listed for made-up refs. */
+const GUESS_MAX = 2_000;
+
+/**
+ * Why a batch with a ref the session does not hold ran nothing. A ref that is not shaped like one (`ref: "State"`, a name)
+ * is looked up as `find` would look it up, on the tab as it is now, and the elements that match are listed with their refs,
+ * so the agent can send the batch again without a separate read. That read never asks the owner: when the page needs a
+ * prompt to be read, or cannot be read, the error says only what refs are.
+ */
+async function unknownRefError(link: BrowserLink, session: ToolSession, tabId: number, refs: string[]): Promise<string> {
+  const guesses = [...new Set(refs.filter((ref) => !REF_SHAPE.test(ref)))].slice(0, GUESSES);
+  if (guesses.length === 0) return `Unknown ref ${refs[0]}: read the page again`;
+  const head = `Unknown ref ${guesses.map((guess) => JSON.stringify(guess)).join(', ')}: refs look like e12 and come from a read. Nothing was run.`;
+  let page: PageReadResult;
+  try {
+    page = await link.request(session, 'page.read', { tab: tabId, ifReadable: true });
+  } catch {
+    return `${head} Read the page for its refs.`;
+  }
+  const state = link.tabState(page.tab);
+  let header = '';
+  const parts: string[] = [];
+  for (const guess of guesses) {
+    const found = (await formatRead(state, session.id, page, { find: truncate(guess, MAX_FIND) })).split('\n');
+    header = found[0] ?? header;
+    const needle = guess.toLowerCase();
+    const elements = found.slice(1).map((line) => line.trim()).filter((line) => /^e\d+ /.test(line) && line.toLowerCase().includes(needle));
+    const more = elements.length - GUESS_LINES;
+    parts.push(
+      elements.length === 0
+        ? `No element matches ${JSON.stringify(guess)}.`
+        : [`Elements that match ${JSON.stringify(guess)}:`, ...elements.slice(0, GUESS_LINES), ...(more > 0 ? [`(${more} more: read with find lists them.)`] : [])].join('\n'),
+    );
+  }
+  return truncate(`${head}\n${header}\n${parts.join('\n')}`, GUESS_MAX);
 }
 
 /** Most characters of a failed step's error an `act` reply carries. */

@@ -314,6 +314,49 @@ describe('act tool', () => {
     expect(link.calls).toHaveLength(1);
   });
 
+  it('lists the elements that match a made-up ref, runs nothing, and the listed ref then works', async () => {
+    const link = fakeBrowser({ 'page.read': () => page(signInPage()), 'page.act': () => page(signInPage()) });
+    const failure = await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'click', ref: 'email' }] }).then(() => '', (error: Error) => error.message);
+    expect(failure).toBe(
+      [
+        'Unknown ref "email": refs look like e12 and come from a read. Nothing was run.',
+        'tab 7: Test page — http://localhost/test',
+        'Elements that match "email":',
+        'e2 textbox "Email" value="a@b.c" [required]',
+      ].join('\n'),
+    );
+    expect(link.calls).toEqual(['page.read {"tab":7,"ifReadable":true}']);
+    const ref = /^(e\d+) textbox "Email"/m.exec(failure)?.[1] ?? '';
+    await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'fill', ref, text: 'x@y.z' }] });
+    expect(link.calls.at(-1)).toContain('page.act {"tab":7');
+  });
+
+  it('caps the elements listed for a made-up ref and says when a name matches nothing', async () => {
+    const link = fakeBrowser({ 'page.read': () => page(buttonPage(8, 'Load more')) });
+    const failure = await runTool(link, SESSION, 'act', {
+      tab: 7,
+      steps: [{ action: 'click', ref: 'Load more' }, { action: 'click', ref: 'Checkout' }],
+    }).then(() => '', (error: Error) => error.message);
+    const lines = failure.split('\n');
+    expect(lines.filter((line) => /^e\d+ button "Load more \d"$/.test(line))).toHaveLength(5);
+    expect(failure).toContain('(3 more: read with find lists them.)');
+    expect(failure).toContain('No element matches "Checkout".');
+    expect(link.calls).toHaveLength(1);
+  });
+
+  it('never asks the owner to read the page for a made-up ref', async () => {
+    const link = fakeBrowser({
+      'page.read': (params) => {
+        if (params.ifReadable === true) throw new Error('Reading this page needs the owner to allow it.');
+        return page(signInPage());
+      },
+    });
+    await expect(runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'click', ref: 'Submit' }] })).rejects.toThrow(
+      'Unknown ref "Submit": refs look like e12 and come from a read. Nothing was run. Read the page for its refs.',
+    );
+    expect(link.calls).toEqual(['page.read {"tab":7,"ifReadable":true}']);
+  });
+
   it('names the failed step and includes the page diff after navigation', async () => {
     const link = fakeBrowser({
       'page.read': () => page(signInPage()),

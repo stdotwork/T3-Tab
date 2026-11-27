@@ -104,7 +104,7 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
     case 'tabs.close':
       return { closed: await closeSessionTab(session, request.params.tab) } satisfies BrowserMethods['tabs.close']['result'];
     case 'page.read': {
-      const access = await authorizeRead(session, request.params.tab);
+      const access = await authorizeRead(session, request.params.tab, request.params.ifReadable === true);
       return await readPage(access.session, access.tab.id, access.origin, async () => await registeredSession(session));
     }
     case 'page.screenshot': {
@@ -518,9 +518,13 @@ async function readableAfterLoad(
   return origin === requested && (await permissionPrompts.hasFullAccess(session.id));
 }
 
+/** Thrown by a read asked for only if it needs no prompt, when it would need one. */
+export const READ_NEEDS_PROMPT = 'Reading this page needs the owner to allow it.';
+
 async function authorizeRead(
   session: StoredSession,
   requestedTab: number | undefined,
+  ifReadable = false,
 ): Promise<{ tab: chrome.tabs.Tab; session: StoredSession; origin: string }> {
   let tab = await resolveSessionTab(session, requestedTab);
   const tabId = tab.id ?? -1;
@@ -528,6 +532,10 @@ async function authorizeRead(
   await sessionStore.observeTabOrigin(tabId, origin);
   // A site the owner allows, even for reading only, passes `authorize` without a prompt.
   const approved = await sessionStore.hasApprovedOrigin(session.id, tabId, origin);
+  if (ifReadable && !approved) {
+    const setting = await siteStore.get(origin);
+    if (setting !== 'read' && setting !== 'allow') throw new Error(READ_NEEDS_PROMPT);
+  }
   const pass = approved ? 'approved' : await permissionPrompts.authorize(origin, 'read', session, promptTab(tab));
   await recordApproval(pass, session.id, tabId, origin);
   const currentSession = await registeredSession(session);

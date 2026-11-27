@@ -185,6 +185,24 @@ describe('a load\'s reply', () => {
   });
 });
 
+describe('a read asked for only if it needs no prompt', () => {
+  it('reads a tab the session may read, and refuses one that would need a prompt without asking', async () => {
+    const { sessionStore, siteStore, permissionPrompts, call } = await load();
+    await sessionStore.register(alice);
+    await siteStore.set(SHOP, 'allow');
+    browser.redirect = () => 'https://mail.test/inbox';
+    const hidden = await call('tabs.open', { url: `${SHOP}/cart` });
+    const asked = vi.spyOn(permissionPrompts, 'authorize');
+    await expect(call('page.read', { tab: hidden.tab.id, ifReadable: true })).rejects.toThrow('Reading this page needs the owner to allow it.');
+    expect(asked).not.toHaveBeenCalled();
+    expect(reader.reads).toHaveLength(0);
+
+    await siteStore.set('https://mail.test', 'read');
+    const read = await call('page.read', { tab: hidden.tab.id, ifReadable: true });
+    expect(read.url).toBe('https://mail.test/inbox');
+  });
+});
+
 describe('a load that Full access let through', () => {
   async function fullAccessSession() {
     const runtime = await load();

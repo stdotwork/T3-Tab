@@ -174,6 +174,15 @@ export async function checkActionTools({ mcpClient, page }) {
   const submitRef = refFor(beforeText, 'button "Create account"');
   assert(nameRef && emailRef && submitRef, `The form refs are missing:\n${beforeText}`);
 
+  // A name where a ref goes runs nothing and lists the elements of that name with their refs, which then work.
+  const guessed = await call(mcpClient, 'act', { steps: [{ action: 'click', ref: 'Create account' }] });
+  show('act (a name for a ref)', guessed);
+  assert(guessed.isError === true && /refs look like e12/.test(text(guessed)) && /Nothing was run/.test(text(guessed)), `A made-up ref: ${text(guessed)}`);
+  const listedRef = refFor(text(guessed), 'button "Create account"');
+  assert(listedRef !== undefined, `The made-up ref's reply does not list the button:\n${text(guessed)}`);
+  const hovered = await call(mcpClient, 'act', { steps: [{ action: 'hover', ref: listedRef }] });
+  assert(hovered.isError !== true, `The listed ref did not work: ${text(hovered)}`);
+
   const acted = await call(mcpClient, 'act', {
     steps: [
       { action: 'fill', ref: nameRef, text: 'Ada Lovelace' },

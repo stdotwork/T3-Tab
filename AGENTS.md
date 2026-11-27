@@ -351,7 +351,13 @@ action cannot land on a tab the agent did not mean.
 `ref`, `text`, `key`, `dx`, `dy` and `ms` (`packages/server/src/tool-schemas.ts`): the schema the agent reads
 is one object so the tool definition stays small, and `convertStep` there refuses a step that is missing a
 field its action needs, carries one it does not take, or is out of range, then turns the step into the
-nested form the extension runs (`ActStep` in `packages/protocol`). It resolves refs to backend DOM node ids,
+nested form the extension runs (`ActStep` in `packages/protocol`). A batch with a ref the session does not hold runs
+nothing. When such a ref is not shaped like one (`ref: "State"`, a name in place of `e12`), the error says what refs look
+like and lists, for up to three such names, the elements of the tab as it is now whose line matches the name, as `find`
+prints them with their refs (five each, then how many more), so the agent can send the batch again without a separate
+read (`unknownRefError` in `tools.ts`). That read is `page.read` with `ifReadable`, which reads only when no prompt is
+needed (an origin the session holds on the tab, or a site set to `read` or `allow`) and otherwise fails without asking
+anyone; the error then only says to read the page. It resolves refs to backend DOM node ids,
 runs its steps through Chrome DevTools Protocol input and DOM commands, and settles after a click, a key press, a
 scroll, a hover, a wait and the last step by waiting for network, DOM and layout activity to stay quiet. A `fill`, `type` or
 `select` between other steps does not settle on its own: the batch settles once before the next step of the kinds above. The

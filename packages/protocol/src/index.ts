@@ -271,7 +271,11 @@ export interface BrowserMethods {
   };
   'tabs.switch': { params: { tab: number }; result: { tab: TabInfo } };
   'tabs.close': { params: { tab: number }; result: { closed: number } };
-  'page.read': { params: { tab?: number }; result: PageReadResult };
+  /**
+   * With `ifReadable`, the page is read only when the session may read it without a prompt (an origin it holds on the
+   * tab, or a site set to `read` or `allow`); otherwise the request fails and nobody is asked.
+   */
+  'page.read': { params: { tab?: number; ifReadable?: true }; result: PageReadResult };
   'page.screenshot': { params: { tab?: number; maxEdge: number }; result: ScreenshotResult };
   /** `skipReadOver` is for the tabs the batch opened, as for a load. */
   'page.act': {
