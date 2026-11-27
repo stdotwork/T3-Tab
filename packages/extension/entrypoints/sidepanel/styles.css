@@ -150,8 +150,10 @@ ul { list-style: none; margin: 0; padding: 0; }
 .tab-chip small { flex: none; opacity: 0.75; font-size: var(--text-2xs); }
 .tab-chip.pending { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-theme-accent) 55%, var(--line)); }
 .tab-chip.off { background: transparent; color: var(--muted-fg); padding: 0; }
+/* Share this tab is a button: the chip's shape, outlined in the line colour, with a plus. "No tabs shared" stays text. */
+.tab-chip.off:not(.static) { padding: 0 8px 0 6px; box-shadow: inset 0 0 0 1px var(--line); }
 .tab-chip.off.static { cursor: default; }
-.tab-chip.off:not(.static):hover { color: var(--fg); }
+.tab-chip.off:not(.static):hover { color: var(--fg); background: var(--hover); }
 
 .picker { position: relative; min-width: 0; }
 /* Its logo and words share the row's centre line (useInkAlign). */
