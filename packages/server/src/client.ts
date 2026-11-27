@@ -5,7 +5,6 @@ import { join } from 'node:path';
 
 import {
   PROTOCOL_VERSION,
-  type BrowserStatus,
   type ClaimFileProblem,
   type ControlEvent,
   type ControlRequest,
@@ -51,20 +50,6 @@ export async function ensureDaemon(env: NodeJS.ProcessEnv = process.env): Promis
   }
 }
 
-export async function getStatus(env: NodeJS.ProcessEnv = process.env): Promise<BrowserStatus[]> {
-  const state = await ensureDaemon(env);
-  const request: ControlRequest = {
-    type: 'control.request',
-    protocolVersion: PROTOCOL_VERSION,
-    requestId: randomUUID(),
-    method: 'status',
-  };
-  const response = await sendControlRequest(state, request, CONTROL_TIMEOUT_MS);
-  if (!response.ok) throw new Error(response.error);
-  if (!('browsers' in response.result)) throw new Error('T3-Tab daemon returned an unexpected status');
-  return response.result.browsers;
-}
-
 interface PendingControl {
   resolve(response: ControlResponse): void;
   reject(error: Error): void;
@@ -101,7 +86,7 @@ export class DaemonSession {
     this.claimFileProblem = claimFileProblem;
   }
 
-  /** This server's own link to the daemon, for `status`. */
+  /** This server's own link to the daemon. */
   link(): 'connected' | 'not-started' | 'ended' {
     if (this.session !== undefined && this.socket?.readyState === WebSocket.OPEN) return 'connected';
     return this.ended ? 'ended' : 'not-started';
@@ -312,54 +297,6 @@ function startDaemonProcess(env: NodeJS.ProcessEnv): void {
     stdio: 'ignore',
   });
   child.unref();
-}
-
-async function sendControlRequest(
-  state: DaemonState,
-  request: ControlRequest,
-  timeoutMs: number,
-): Promise<ControlResponse> {
-  return await new Promise<ControlResponse>((resolve, reject) => {
-    const socket = new WebSocket(`ws://127.0.0.1:${state.port}/`, {
-      headers: { authorization: `Bearer ${state.token}` },
-    });
-    let settled = false;
-    const finish = (error: Error | undefined, response?: ControlResponse): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.terminate();
-      if (error !== undefined) reject(error);
-      else if (response !== undefined) resolve(response);
-      else reject(new Error('T3-Tab daemon returned no response'));
-    };
-    const timer = setTimeout(() => {
-      finish(new Error('T3-Tab daemon did not answer the control request'));
-    }, timeoutMs);
-
-    socket.on('open', () => socket.send(JSON.stringify(request)));
-    socket.on('message', (data) => {
-      try {
-        const response: unknown = JSON.parse(data.toString());
-        if (isControlResponse(response, request.requestId)) finish(undefined, response);
-      } catch {
-        finish(new Error('T3-Tab daemon returned invalid JSON'));
-      }
-    });
-    socket.on('error', (error) => finish(error));
-    socket.on('close', () => finish(new Error('T3-Tab daemon closed the control connection')));
-  });
-}
-
-function isControlResponse(value: unknown, requestId: string): value is ControlResponse {
-  if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    candidate.type === 'control.response' &&
-    candidate.protocolVersion === PROTOCOL_VERSION &&
-    candidate.requestId === requestId &&
-    typeof candidate.ok === 'boolean'
-  );
 }
 
 async function acquireStartLock(directory: string): Promise<() => Promise<void>> {

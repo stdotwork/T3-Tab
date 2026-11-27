@@ -314,7 +314,7 @@ describe('direct run isolation', () => {
       '-c',
       'mcp_servers.t3-tab.enabled=true',
       '-c',
-      'mcp_servers.t3-tab.enabled_tools=["status", "tabs", "read", "screenshot", "act", "run_js"]',
+      'mcp_servers.t3-tab.enabled_tools=["tabs", "read", "screenshot", "act", "run_js"]',
       '-c',
       'mcp_servers.t3-tab.disabled_tools=[]',
       '-c',

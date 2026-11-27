@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import { DaemonSession } from '../src/client.js';
-import { browserToolHandler, formatLink, SESSION_RESTARTED_NOTICE } from '../src/mcp.js';
+import { browserToolHandler, SESSION_RESTARTED_NOTICE } from '../src/mcp.js';
 
 interface FakeDaemon {
   port: number;
@@ -193,13 +193,6 @@ describe('DaemonSession after its connection closes', () => {
     const later = await tool({});
     expect(later.content).toHaveLength(1);
     expect(text(later.content)).not.toContain(SESSION_RESTARTED_NOTICE);
-  });
-
-  it('describes its link in status', () => {
-    expect(formatLink('connected')).toContain('connected');
-    expect(formatLink('not-started')).toContain('not started yet');
-    expect(formatLink('ended')).toContain('ended');
-    expect(formatLink('ended')).toContain('starts a new session');
   });
 });
 

@@ -308,7 +308,7 @@ try {
 
   // ---- A real browser permission prompt from a connected agent session -----------------------------------------------
   ({ client: mcp } = await connectMcp(home, 'claude-code'));
-  await waitForBrowser(mcp);
+  await waitForBrowser(home);
   await mcp.callTool({ name: 'tabs', arguments: {} });
   const { sessions } = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
   const session = sessions.at(-1);

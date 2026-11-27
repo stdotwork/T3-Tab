@@ -4,6 +4,7 @@ import {
   actStepRef,
   DEFAULT_SCREENSHOT_MAX_EDGE,
   NO_TAB_MESSAGE,
+  type PageReadResult,
   type TabInfo,
   type TabLoadResult,
   type TabNavigation,
@@ -15,8 +16,8 @@ import type { z } from 'zod';
 
 import type { BrowserLink } from './browser-link.js';
 import type { SetValue } from './reader/echo.js';
-import { truncate } from './reader/format.js';
-import { formatRead, LOAD_REPLY_MAX, MAX_OUTPUT_CHARS, type ReadOptions } from './reader/page.js';
+import { type RenderedLine, truncate } from './reader/format.js';
+import { formatRead, LOAD_REPLY_MAX, MAX_OUTPUT_CHARS, type ReadOptions, searchView } from './reader/page.js';
 import { actParams, convertStep, MAX_FIND, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
 
 const MAX_TAB_TITLE = 80;
@@ -174,12 +175,11 @@ async function runAct(
     if (typeof step === 'string') throw new Error(`Invalid arguments: ${step}`);
     return step;
   });
+  const unknown = steps.map(actStepRef).filter((ref): ref is string => ref !== undefined && state.refTable.backendIdOf(ref) === undefined);
+  if (unknown.length > 0) throw new Error(await unknownRefError(link, session, tabId, unknown));
   const backendIds = steps.map((step) => {
     const ref = actStepRef(step);
-    if (ref === undefined) return null;
-    const backendId = state.refTable.backendIdOf(ref);
-    if (backendId === undefined) throw new Error(`Unknown ref ${ref}: read the page again`);
-    return backendId;
+    return ref === undefined ? null : (state.refTable.backendIdOf(ref) ?? null);
   });
   const page = await link.request(session, 'page.act', {
     tab: tabId,
@@ -208,6 +208,100 @@ async function runAct(
   if (failed !== '') throw new Error(`${failed}${whole}`);
   return whole;
 }
+
+/** What a ref an agent made up looks like: anything but the `e12` a read prints. */
+const REF_SHAPE = /^e\d+$/;
+/** Most element lines listed for one made-up ref, and most made-up refs looked up in one batch. */
+const GUESS_LINES = 5;
+const GUESSES = 3;
+/** Most characters of the elements listed for made-up refs. */
+const GUESS_MAX = 2_000;
+/** Most characters of a made-up ref the error repeats. */
+const GUESS_NAME = 100;
+/** An element's line: its ref, what comes before the first quoted string, and that string (its name, unless a value). */
+const ELEMENT_LINE = /^(e\d+) ([^"]*)("(?:[^"\\]|\\.)*")?/;
+/**
+ * A link written into a line of text once the line's JSON is read: `[name](e12 → /path)`, its name with `[`, `]` and `\`
+ * escaped by a backslash, and an opening bracket of its own (after an even run of backslashes).
+ */
+const TEXT_LINK = /(?<!\\)(?:\\\\)*\[((?:[^\\[\]]|\\.)*)\]\((e\d+)(?: → ([^)]*))?\)/g;
+
+interface RefCandidate {
+  ref: string;
+  name: string;
+  line: string;
+}
+
+/** Every element of a search view with its ref and name, links written into text included, once each, in page order. */
+function refCandidates(lines: RenderedLine[]): RefCandidate[] {
+  const found = new Map<string, RefCandidate>();
+  for (const item of lines) {
+    const line = item.line.trim();
+    if (item.text) {
+      const text = jsonText(line);
+      for (const [, quoted = '', ref = '', address] of text.matchAll(TEXT_LINK)) {
+        const name = quoted.replace(/\\([\\[\]])/g, '$1');
+        if (!found.has(ref)) found.set(ref, { ref, name, line: `${ref} link ${JSON.stringify(name)}${address === undefined ? '' : ` → ${address}`}` });
+      }
+      continue;
+    }
+    const element = ELEMENT_LINE.exec(line);
+    if (element === null) continue;
+    const [, ref = '', before = '', quoted] = element;
+    const name = quoted !== undefined && !before.endsWith('=') ? jsonText(quoted) : '';
+    if (!found.has(ref)) found.set(ref, { ref, name, line });
+  }
+  return [...found.values()];
+}
+
+/** A quoted string of a printed line as its text, or nothing when it is not one. */
+function jsonText(quoted: string): string {
+  try {
+    const value: unknown = JSON.parse(quoted);
+    return typeof value === 'string' ? value : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Why a batch with a ref the session does not hold ran nothing. A ref that is not shaped like one (`ref: "State"`, a name)
+ * is looked up on the tab as it is now, by the elements' names (unescaped) and their lines, and the elements that match
+ * are listed with their refs, those named exactly so first, so the agent can send the batch again without a separate
+ * read. That read never asks the owner: when the page needs a prompt to be read, or cannot be read, the error says only
+ * what refs are. A page replaced since the session's refs were made lists nothing, because the new refs would start
+ * again from e1 and an old ref sent again would name another element.
+ */
+async function unknownRefError(link: BrowserLink, session: ToolSession, tabId: number, refs: string[]): Promise<string> {
+  const guesses = [...new Set(refs.filter((ref) => !REF_SHAPE.test(ref)))].slice(0, GUESSES);
+  if (guesses.length === 0) return `Unknown ref ${refs[0]}: read the page again`;
+  const head = `Unknown ref ${guesses.map(quoteGuess).join(', ')}: refs look like e12 and come from a read. Nothing was run.`;
+  let page: PageReadResult;
+  try {
+    page = await link.request(session, 'page.read', { tab: tabId, ifReadable: true });
+  } catch {
+    return `${head} Read the page for its refs.`;
+  }
+  const state = link.tabState(page.tab);
+  if (state.refTable.size > 0 && page.epoch !== state.currentEpoch) {
+    return `${head} The page was replaced since the last read, so the refs from before are gone: read it again.`;
+  }
+  const { header, lines } = searchView(state, session.id, page);
+  const candidates = refCandidates(lines);
+  const parts = guesses.map((guess) => {
+    const needle = guess.toLowerCase();
+    const matching = candidates.filter((item) => item.name.toLowerCase().includes(needle) || item.line.toLowerCase().includes(needle));
+    if (matching.length === 0) return `No element matches ${quoteGuess(guess)}.`;
+    const exact = matching.filter((item) => item.name.toLowerCase() === needle);
+    const listed = [...exact, ...matching.filter((item) => !exact.includes(item))].slice(0, GUESS_LINES);
+    const more = matching.length - listed.length;
+    return [`Elements that match ${quoteGuess(guess)}:`, ...listed.map((item) => item.line), ...(more > 0 ? [`(${more} more: read with find lists them.)`] : [])].join('\n');
+  });
+  return truncate(`${head}\n${header}\n${parts.join('\n')}`, GUESS_MAX);
+}
+
+/** A made-up ref as the error names it, held to a line. */
+const quoteGuess = (guess: string): string => JSON.stringify(truncate(guess, GUESS_NAME));
 
 /** Most characters of a failed step's error an `act` reply carries. */
 const MAX_FAILURE = 1_000;

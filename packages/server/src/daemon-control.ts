@@ -39,6 +39,19 @@ export interface ControlState {
   peers: Map<WebSocket, ControlPeer>;
   /** The T3 thread each connection's process was shown to run for, settled once per connection. */
   t3Threads: Map<WebSocket, Promise<string | undefined>>;
+  /** Why the extension's last connection was refused (another protocol version), until one is accepted. */
+  browserRefused?: { reason: string; at: number };
+}
+
+/** How long a refused extension connection is still named in a tool call's error. */
+const REFUSAL_SHOWN_MS = 60_000;
+
+/** The error for a tool call with no browser: why the extension could not connect, when the daemon saw it refused. */
+export function noBrowserError(refused: ControlState['browserRefused'], now = Date.now()): string {
+  if (refused !== undefined && now - refused.at <= REFUSAL_SHOWN_MS) {
+    return `No browser is connected: the T3-Tab extension tried and was refused. ${refused.reason} Ask the owner to update T3-Tab.`;
+  }
+  return 'No browser is connected. Open the browser with the T3-Tab extension.';
 }
 
 /** What the extension is told about a session: its T3 thread, only when the daemon proved it. */
@@ -145,7 +158,7 @@ async function answerTool(
     }
     // The browser that connected last is the live one: an older socket may not have been cleaned up yet.
     const connection = [...browsers.values()].at(-1);
-    if (connection === undefined) throw new Error('No browser is connected. Open the browser with the T3-Tab extension.');
+    if (connection === undefined) throw new Error(noBrowserError(control.browserRefused));
     // Register only the session making this request. A new extension connection never learns other sessions.
     await connection.request(registered, 'session.register', registerParams(await control.t3Threads.get(webSocket)));
     await redeemClaim(webSocket, connection, registered, control, agents);

@@ -94,7 +94,7 @@ async function measure() {
     browserContext = await launchBrowser(home);
     const { serviceWorker } = await extensionWorker(browserContext);
     mcp = (await connectMcp(home, 't3-tab-bench')).client;
-    await waitForBrowser(mcp);
+    await waitForBrowser(home);
     // Allow the bench site so no prompt waits on a person: the replies measured are the tools' own.
     await setSite(serviceWorker, siteUrl, 'allow');
 

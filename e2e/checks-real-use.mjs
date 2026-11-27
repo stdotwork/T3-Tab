@@ -190,7 +190,7 @@ export async function checkRealUse() {
     await installNativeHost(home);
     browser = await launchUndrivenBrowser(home, `${siteUrl}/plain`, [join(rootDir, 'e2e/fixtures/frame-injector')]);
     mcp = await connectMcp(home, 'real-use');
-    await waitForBrowser(mcp.client);
+    await waitForBrowser(home);
     await browser.panel({ type: 'panel.setSite', origin: siteUrl, setting: 'allow' });
 
     const call = async (name, args) => {

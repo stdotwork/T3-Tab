@@ -37,10 +37,18 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 
 ## MCP tools and token budget
 
-- **One core tool set for every model.** Every MCP client receives the same six tools: `status`,
-  `tabs`, `read`, `screenshot`, `act` and `run_js`. MCP identifies the client rather than the model,
+- **One core tool set for every model.** Every MCP client receives the same five tools: `tabs`,
+  `read`, `screenshot`, `act` and `run_js`. MCP identifies the client rather than the model,
   so per-model tool profiles were rejected. Rarer actions are left to optional future tool packs to
-  keep prompt overhead small.
+  keep prompt overhead small. A `status` tool (connected browsers and their tab counts) was dropped:
+  agents almost never called it, its tab count covered the owner's unshared tabs too, and what an
+  agent needs from it comes back in tool replies anyway (no browser connected, and why, in the
+  error; a restarted session in the first reply after it).
+- **The listed schemas are lean; the checks are not.** Claude Code sends every tool definition on
+  every model request, so `tools/list` leaves out what the server checks on each call anyway (the
+  JSON Schema dialect, lengths, ranges, item counts, the refusal of unknown step fields) and two
+  `read` parameters no agent was seen to use (`regex`, `depth`), which calls may still pass. Every
+  call is still checked against the full shape, in the MCP server and again in the daemon.
 - **Accessibility-tree reading with short refs.** `read` fetches the Chrome DevTools Protocol (CDP)
   accessibility tree (`Accessibility.getFullAXTree`) instead of raw HTML or DOM dumps. By default
   it returns interactive elements with short refs (`e1`, `e2`, ...) held in the daemon and

@@ -126,6 +126,21 @@ export interface Baseline {
 }
 
 /**
+ * The page as a `find` sees it (every node, text uncut, every link's address) and the header a read gives, for a lookup
+ * that is not a read's reply. Refs are taken from the tab's table, as a read takes them.
+ */
+export function searchView(state: TabState, session: string, page: PageReadResult): { header: string; lines: RenderedLine[] } {
+  state.syncEpoch(page.epoch);
+  const header = state.headerFor(
+    session,
+    page.tab,
+    `tab ${page.tab}: ${truncate(page.title, MAX_TITLE)} — ${truncate(page.url, MAX_URL)}`,
+  );
+  const view = renderView(page.nodes, state.refTable, { all: true, uncut: true, linkAddresses: 'all', pageUrl: page.url });
+  return { header, lines: view.lines };
+}
+
+/**
  * The reply to a `read`: a header line (the tab, title and address, or only the tab id when the session
  * already has that title and address), then the page text on the first read of a view, a line diff on
  * later ones, or only the matching lines for a `find`.

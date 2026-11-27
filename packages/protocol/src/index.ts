@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 5 as const;
+export const PROTOCOL_VERSION = 6 as const;
 /** Shown when the extension and the background program speak different protocol versions. It is also a WebSocket close reason, so at most 123 bytes. */
 export const PROTOCOL_MISMATCH = 'The T3-Tab extension and helper are different versions.';
 /** The close reason and error text that say which side is behind. Each fits a WebSocket close reason. */
@@ -271,7 +271,11 @@ export interface BrowserMethods {
   };
   'tabs.switch': { params: { tab: number }; result: { tab: TabInfo } };
   'tabs.close': { params: { tab: number }; result: { closed: number } };
-  'page.read': { params: { tab?: number }; result: PageReadResult };
+  /**
+   * With `ifReadable`, the page is read only when the session may read it without a prompt (an origin it holds on the
+   * tab, or a site set to `read` or `allow`); otherwise the request fails and nobody is asked.
+   */
+  'page.read': { params: { tab?: number; ifReadable?: true }; result: PageReadResult };
   'page.screenshot': { params: { tab?: number; maxEdge: number }; result: ScreenshotResult };
   /** `skipReadOver` is for the tabs the batch opened, as for a load. */
   'page.act': {
@@ -356,7 +360,7 @@ export type AgentItem =
   | {
       id: string;
       kind: 'tool';
-      /** The tool's name without its server prefix, such as `read`, `act` or `status`. */
+      /** The tool's name without its server prefix, such as `read`, `act` or `tabs`. */
       name: string;
       /** What was asked, in one short line. */
       summary?: string;

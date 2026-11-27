@@ -88,8 +88,8 @@ try {
   console.log(`Extension ID: ${extensionId}`);
 
   ({ client: mcpClient } = await connectMcp(home, 't3-tab-e2e-a'));
-  const statusText = await waitForBrowser(mcpClient);
-  console.log(`MCP status result:\n${statusText}`);
+  const statusText = await waitForBrowser(home);
+  console.log(`Daemon status:\n${statusText}`);
 
   const state = JSON.parse(await readFile(statePath, 'utf8'));
   if (typeof state.port !== 'number') {
@@ -141,7 +141,7 @@ try {
     newCheckFailures.push(`act/run_js: ${error.message}`);
   }
   try {
-    await checkKeepalive(mcpClient);
+    await checkKeepalive(mcpClient, home);
   } catch (error) {
     newCheckFailures.push(`keepalive: ${error.message}`);
   }
