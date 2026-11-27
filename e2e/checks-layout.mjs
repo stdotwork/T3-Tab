@@ -586,6 +586,14 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
   });
   await page.locator('.composer-row .send-btn.stop').waitFor();
   await run('thread-running', { controls: ['Attach files', 'Start voice input', 'Stop'], without: ['Send'] });
+  // Turned off, the current tab's chip is a button that looks like one: the chip's outline, not a line of grey text.
+  const shareChip = page.locator('.composer-chips .tab-chip').first();
+  if ((await shareChip.count()) > 0 && !(await shareChip.evaluate((chip) => chip.classList.contains('off')))) await shareChip.getByRole('button').click();
+  const offChip = page.locator('.composer-chips button.tab-chip.off');
+  await offChip.waitFor();
+  const outline = await offChip.evaluate((chip) => getComputedStyle(chip).boxShadow);
+  assert(outline !== 'none' && /inset/.test(outline), `"Share this tab" has no outline: ${outline}`);
+  await offChip.click();
   await page.evaluate(() => {
     window.__t3tabT3.watches.delete('layout-approval');
     delete window.__layoutApproval;

@@ -717,7 +717,8 @@ threads working elsewhere listed above the composer, each saying whether it is w
 card for another tab says so and has a Go to tab button.
 
 The tab chip shows what the next message shares before it is sent: the tab, or the whole tab group when the owner made
-that group. In a thread, a tab waiting for the next message is outlined and says so, and a tab already shared is filled.
+that group. In a thread, a tab waiting for the next message is outlined and says so, and a tab already shared is filled;
+a tab not shared is the button "Share this tab", the chip's shape outlined in the line colour with a plus.
 The Threads screen is T3's sidebar: the search row, then the threads, each row ending in its provider's logo. Under it, where
 T3's sidebar keeps its own status, "Using the browser" lists every connected agent session in one slim row, named by its T3
 thread when it has one and otherwise by its agent, with how many tabs it holds and a toggle that shares the current tab
