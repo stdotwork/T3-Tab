@@ -750,7 +750,13 @@ card. The keyed card shows the two keys, hidden below 360 px. A T3 approval is d
 row is not among the last eight steps shown; browser prompts sit above the composer, and on the new-thread screen they
 float over the hero's lower part so nothing moves. In a question card, keys 1 to 9 choose
 an option unless the owner is typing, and Enter in the answer box moves on or submits. Browser steps name the action and
-site, and never the text typed into a field.
+the element it was on (`Clicked “Add to cart”`, `Filled “Email” and “Password”`; `actStepsText` in `packages/protocol`),
+taken from what the thread's earlier T3-Tab replies printed for that ref on that tab (`RefNames` in `lib/thread-model.ts`),
+or the site when the element is not known, with one icon per tool; never the text typed into a field, an option chosen or a
+key that is a character. T3 leaves a tool's reply out of the thread it streams, so the panel fetches each finished T3-Tab
+step's reply once with `orchestration.getTurnItem`, as T3's own client fetches a step's detail. The running step is T3's
+live row: its icon in the text colour and a light sweeping over its words, resting on its first words, so a still frame
+shows it too (with reduced motion, its words in the text colour).
 
 A new tab's thread starts in no project, which is T3's Scratch project (`projects.ensureScratch`), and Settings can change
 that default to the last used project or a fixed one. Settings has two pages: General (default project when T3 is connected, Connections

@@ -339,10 +339,11 @@ try {
       window.__t3tabT3.watches.set(threadId, { listeners: new Set(), view: value, stop() {} });
     }, [id, view]);
   const now = Date.now();
+  // The words the thread model gives these calls (claim, read, then a click on the ref the read printed for the button).
   const steps = (running) => [
-    { id: 'e1', icon: 'browser', label: 'Took the shared tabs', status: 'done' },
-    { id: 'e2', icon: 'browser', label: 'Read soundhaus.example', status: 'done' },
-    { id: 'e3', icon: 'browser', label: 'Clicked on soundhaus.example', status: running ? 'running' : 'done' },
+    { id: 'e1', icon: 'page-tabs', label: 'Got access to the shared tabs', status: 'done' },
+    { id: 'e2', icon: 'page-read', label: 'Read soundhaus.example', status: 'done' },
+    { id: 'e3', icon: 'page-act', label: 'Clicked “Add to cart”', status: running ? 'running' : 'done' },
   ];
   const shared = { source: 't3', failed: false, queued: [], runtimeMode: 'full-access', provider: 'claudeAgent', model: 'claude-opus-5-5', modelOptions: { effort: 'high' }, projectId: 'p0' };
   const running = {

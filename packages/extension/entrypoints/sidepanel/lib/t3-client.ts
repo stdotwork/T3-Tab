@@ -6,7 +6,7 @@ import { t3Kind, type DraftAttachment } from './attachments';
 import { DEFAULT_SNOOZE_PRESETS, snoozePresets, type SnoozePreset } from './snooze';
 import { RpcSocket } from './t3-rpc';
 import { forgetSession, pairWithT3, SessionRefused, socketUrl, storedSession, voiceSocketUrl, voiceStatus, type T3Session } from './t3-session';
-import { t3ThreadView, type T3Projection, type ThreadView } from './thread-model';
+import { omittedBrowserReplies, t3ThreadView, toolOutputText, type T3Projection, type ThreadView } from './thread-model';
 
 export interface ModelOptionChoice {
   id: string;
@@ -185,6 +185,9 @@ type ThreadItem =
 
 interface Watch {
   projection?: T3Projection;
+  /** Browser replies T3 left out of the stream, fetched once each; null when T3 had none to give. */
+  replies?: Map<string, string | null>;
+  fetching?: boolean;
   view?: ThreadView;
   stop?: () => void;
   listeners: Set<(view: ThreadView) => void>;
@@ -505,9 +508,42 @@ export class T3Client {
         watch.projection = applyThreadEvent(watch.projection, (item as Extract<ThreadItem, { kind: 'event' }>).event);
       } else return;
       if (watch.projection === undefined) return;
-      watch.view = t3ThreadView(watch.projection);
+      watch.replies ??= new Map();
+      watch.view = t3ThreadView(watch.projection, watch.replies);
       for (const listener of watch.listeners) listener(watch.view);
+      void this.fetchReplies(id, watch, socket);
     });
+  }
+
+  /**
+   * Fetches, one at a time, the replies of the thread's finished browser steps that T3 left out of the stream, as T3's own
+   * client fetches a step's detail (`orchestration.getTurnItem`), and draws the thread again once they are in.
+   */
+  private async fetchReplies(id: string, watch: Watch, socket: NonNullable<typeof this.socket>): Promise<void> {
+    const replies = watch.replies;
+    if (watch.projection === undefined || replies === undefined || watch.fetching === true) return;
+    watch.fetching = true;
+    try {
+      for (;;) {
+        const wanted = watch.projection === undefined ? [] : omittedBrowserReplies(watch.projection, replies);
+        if (wanted.length === 0 || this.socket !== socket || this.watches.get(id) !== watch) return;
+        for (const itemId of wanted) {
+          let text: string | null = null;
+          try {
+            const result = await socket.request<{ item: { output?: unknown } | null }>('orchestration.getTurnItem', { threadId: id, itemId });
+            text = toolOutputText(result.item?.output) ?? null;
+          } catch {
+            // Not given: the row keeps the words it has.
+          }
+          replies.set(itemId, text);
+        }
+        if (watch.projection === undefined) return;
+        watch.view = t3ThreadView(watch.projection, replies);
+        for (const listener of watch.listeners) listener(watch.view);
+      }
+    } finally {
+      watch.fetching = false;
+    }
   }
 
   private rpc<T>(tag: string, payload: unknown): Promise<T> {

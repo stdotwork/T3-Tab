@@ -676,3 +676,5 @@ export interface NativeErrorResponse {
 }
 
 export type NativeResponse = NativeDaemonResponse | NativeErrorResponse;
+
+export { actStepsText, namedKey, type ActStepSummary, type ActTarget } from './act-words.js';
