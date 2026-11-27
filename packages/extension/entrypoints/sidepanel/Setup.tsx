@@ -212,6 +212,9 @@ export const helperReady = (live: LiveState): boolean => live.helper.connected &
  * The composer under it stays usable, so the owner can write the task while the helper installs, and the card goes by
  * itself once the helper connects.
  */
+/** The setup card's line saying Send waits for the helper; the composer's Send points to it while the card shows. */
+export const SETUP_WAIT = { text: 'Send works once the helper connects', describedBy: 'setup-card-wait' } as const;
+
 export function SetupCard({ live }: { live: LiveState }): ReactNode {
   useFreshSetup();
   const note = helperNote(live);
@@ -227,7 +230,7 @@ export function SetupCard({ live }: { live: LiveState }): ReactNode {
         {note.detail === undefined ? null : <p className="setup-card-text helper-detail">The browser said: {note.detail}</p>}
         {note.command ? <CommandLine /> : null}
         {note.command ? (
-          <p className="setup-card-wait" role="status">
+          <p className="setup-card-wait" id={SETUP_WAIT.describedBy} role="status">
             <Spinner />
             Waiting for the helper. Send works once it connects.
           </p>
