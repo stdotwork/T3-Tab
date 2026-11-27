@@ -28,6 +28,7 @@ import { Bar, BarActions, directRuns, useWakeClock, type Screen } from './Frame'
 import { ActiveSessions } from './Sessions';
 import { errorText } from './lib/api';
 import { useStored, type LiveState } from './lib/store';
+import { projectName } from './lib/new-thread';
 import { snoozeChoices } from './lib/snooze';
 import { t3, type T3State } from './lib/t3-client';
 import { SETTLED_FIRST, SETTLED_MORE, SHELF_LABEL, STATUS_LABEL, threadSections, wakeLabel, type ListRow, type RowStatus } from './lib/thread-sections';
@@ -116,7 +117,7 @@ export function ThreadList({
     const provider = providers.get(row.shell.modelSelection?.instanceId ?? row.shell.providerInstanceId ?? '');
     return {
       title: row.shell.title,
-      project: project !== undefined && project.workspaceRoot === state.scratchRoot ? 'No project' : (project?.title ?? 'T3 Code'),
+      project: project === undefined ? 'T3 Code' : projectName(project, state.scratchRoot),
       provider: provider === undefined ? undefined : { driver: provider.driver, name: provider.displayName ?? provider.instanceId },
     };
   };
