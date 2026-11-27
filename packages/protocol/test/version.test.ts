@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { EXTENSION_OUTDATED, HELPER_OUTDATED, PROTOCOL_MISMATCH, PROTOCOL_VERSION, mismatchReason } from '../src/index.js';
 
 describe('protocol version', () => {
-  it('is version 5, which added tabs.navigate and prompts for an address with no tab yet', () => {
-    expect(PROTOCOL_VERSION).toBe(5);
+  it('is version 6, which added page.read with ifReadable, a read that never prompts', () => {
+    expect(PROTOCOL_VERSION).toBe(6);
   });
 
   it('has mismatch messages that fit a WebSocket close reason', () => {

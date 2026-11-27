@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { BrowserLink } from '../src/browser-link.js';
 import { TabState } from '../src/reader/page.js';
 import { runTool } from '../src/tools.js';
-import { buttonPage, page, signInPage } from './ax-fixtures.js';
+import { ax, buttonPage, page, signInPage } from './ax-fixtures.js';
 
 type Handlers = { [M in BrowserMethod]?: (params: BrowserMethods[M]['params']) => BrowserMethods[M]['result'] };
 
@@ -355,6 +355,78 @@ describe('act tool', () => {
       'Unknown ref "Submit": refs look like e12 and come from a read. Nothing was run. Read the page for its refs.',
     );
     expect(link.calls).toEqual(['page.read {"tab":7,"ifReadable":true}']);
+  });
+
+  it('lists nothing for a made-up ref once the page was replaced, so an earlier ref still names the earlier page', async () => {
+    let epoch = 1;
+    const link = fakeBrowser({
+      'page.read': () => (epoch === 1 ? page(signInPage()) : page(buttonPage(3, 'Load more'), { epoch })),
+      'page.act': () => page(signInPage()),
+    });
+    const read = text(await runTool(link, SESSION, 'read', { tab: 7 }));
+    const email = /^\s*(e\d+) textbox "Email"/m.exec(read)?.[1] ?? '';
+    epoch = 2;
+    const failure = await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'click', ref: 'Load more' }] }).then(
+      () => '',
+      (error: Error) => error.message,
+    );
+    expect(failure).toBe(
+      'Unknown ref "Load more": refs look like e12 and come from a read. Nothing was run. The page was replaced since the last read, so the refs from before are gone: read it again.',
+    );
+    // The earlier ref goes to the browser with the epoch it came from, which refuses it as stale, not as the new page's e2.
+    await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'click', ref: email }] }).catch(() => undefined);
+    expect(link.calls.at(-1)).toContain('"backendIds":[5],"epoch":1');
+  });
+
+  it('lists a link written into text, and names with quotes and backslashes, for a made-up ref', async () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 9, 11]),
+      ax(2, 'paragraph', '', [3, 4, 6]),
+      ax(3, 'StaticText', 'A web browser is a program for reading '),
+      ax(4, 'link', 'websites', [5]),
+      ax(5, 'StaticText', 'websites'),
+      ax(6, 'StaticText', ' on the open web.'),
+      ax(9, 'button', 'Say "hi"'),
+      ax(11, 'button', 'C:\\temp'),
+    ];
+    const link = fakeBrowser({ 'page.read': () => page(nodes) });
+    const failure = await runTool(link, SESSION, 'act', {
+      tab: 7,
+      steps: [{ action: 'click', ref: 'websites' }, { action: 'click', ref: 'say "hi"' }, { action: 'click', ref: 'C:\\temp' }],
+    }).then(() => '', (error: Error) => error.message);
+    expect(failure.split('\n').slice(2)).toEqual([
+      'Elements that match "websites":',
+      'e1 link "websites"',
+      'Elements that match "say \\"hi\\"":',
+      'e2 button "Say \\"hi\\""',
+      'Elements that match "C:\\\\temp":',
+      'e3 button "C:\\\\temp"',
+    ]);
+  });
+
+  it('counts every element that matches a made-up ref, past what find prints', async () => {
+    const link = fakeBrowser({ 'page.read': () => page(buttonPage(30, 'Load more')) });
+    const failure = await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'click', ref: 'load more' }] }).then(
+      () => '',
+      (error: Error) => error.message,
+    );
+    expect(failure.split('\n').filter((line) => /^e\d+ button/.test(line))).toHaveLength(5);
+    expect(failure).toContain('(25 more: read with find lists them.)');
+  });
+
+  it('puts the element named exactly so first', async () => {
+    const nodes = [
+      ax(1, 'RootWebArea', '', [2, 3, 4]),
+      ax(2, 'link', 'United States'),
+      ax(3, 'combobox', 'State', [], { value: '' }),
+      ax(4, 'link', 'Statement'),
+    ];
+    const link = fakeBrowser({ 'page.read': () => page(nodes) });
+    const failure = await runTool(link, SESSION, 'act', { tab: 7, steps: [{ action: 'select', ref: 'state', text: 'Ohio' }] }).then(
+      () => '',
+      (error: Error) => error.message,
+    );
+    expect(failure.split('\n').slice(3)).toEqual(['e2 combobox "State"', 'e1 link "United States"', 'e3 link "Statement"']);
   });
 
   it('names the failed step and includes the page diff after navigation', async () => {

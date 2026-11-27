@@ -532,11 +532,15 @@ async function authorizeRead(
   await sessionStore.observeTabOrigin(tabId, origin);
   // A site the owner allows, even for reading only, passes `authorize` without a prompt.
   const approved = await sessionStore.hasApprovedOrigin(session.id, tabId, origin);
-  if (ifReadable && !approved) {
+  let pass: AuthorizeResult;
+  if (approved) pass = 'approved';
+  else if (ifReadable) {
+    // Decided here from one read of the site's setting, never through `authorize`, which could prompt or take Full
+    // access's pass.
     const setting = await siteStore.get(origin);
     if (setting !== 'read' && setting !== 'allow') throw new Error(READ_NEEDS_PROMPT);
-  }
-  const pass = approved ? 'approved' : await permissionPrompts.authorize(origin, 'read', session, promptTab(tab));
+    pass = 'approved';
+  } else pass = await permissionPrompts.authorize(origin, 'read', session, promptTab(tab));
   await recordApproval(pass, session.id, tabId, origin);
   const currentSession = await registeredSession(session);
   tab = await resolveSessionTab(currentSession, tabId);

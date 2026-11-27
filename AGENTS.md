@@ -115,7 +115,7 @@ does nothing; that T3's warning shows on its answer; and that a `goto` card name
 another tab. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
-variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once, in the first reply of its new session, that the earlier one ended, and that every call that fails until the browser's link is back says why. Before an MCP client calls a tool, the e2e and bench harness wait for the browser with the daemon's own `status` control request (`daemonBrowsers` in `e2e/harness.mjs`, with `daemon.json`'s token), which no MCP tool exposes.
+variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once, in the first reply of its new session, that the earlier one ended, and, with the browser's native host manifest moved aside so the browser cannot reach the new daemon, that each call that fails until it is put back and the browser reconnects says no browser is connected. Before an MCP client calls a tool, the e2e and bench harness wait for the browser with the daemon's own `status` control request (`daemonBrowsers` in `e2e/harness.mjs`, with `daemon.json`'s token), which no MCP tool exposes.
 
 `e2e/panel-flow.mjs` (not part of `pnpm e2e`, because it needs a real agent login) walks the panel from first open to
 finished threads against a real throwaway T3 and again with T3 absent, and saves each screen at 400 px in light and
@@ -353,11 +353,15 @@ is one object so the tool definition stays small, and `convertStep` there refuse
 field its action needs, carries one it does not take, or is out of range, then turns the step into the
 nested form the extension runs (`ActStep` in `packages/protocol`). A batch with a ref the session does not hold runs
 nothing. When such a ref is not shaped like one (`ref: "State"`, a name in place of `e12`), the error says what refs look
-like and lists, for up to three such names, the elements of the tab as it is now whose line matches the name, as `find`
-prints them with their refs (five each, then how many more), so the agent can send the batch again without a separate
-read (`unknownRefError` in `tools.ts`). That read is `page.read` with `ifReadable`, which reads only when no prompt is
-needed (an origin the session holds on the tab, or a site set to `read` or `allow`) and otherwise fails without asking
-anyone; the error then only says to read the page. It resolves refs to backend DOM node ids,
+like and lists, for up to three such names, the elements of the tab as it is now whose name (unescaped) or line holds
+the name, case-insensitive, links written into text included, as `find` prints them with their refs: those named exactly
+so first, five a name, then how many more match in all, so the agent can send the batch again without a separate read
+(`unknownRefError` in `tools.ts`). When the page was replaced since the session's refs were made, it lists nothing and
+says to read the page, because the new page's refs start again from `e1` and an old ref sent again would name another
+element. That read is `page.read` with `ifReadable`, which reads only when no prompt is needed (an origin the session
+holds on the tab, or a site set to `read` or `allow`, from one read of the site's setting) and otherwise fails without
+asking anyone; Full access alone never gives it, since it lets a request through without recording the origin. The error
+then only says to read the page. It resolves refs to backend DOM node ids,
 runs its steps through Chrome DevTools Protocol input and DOM commands, and settles after a click, a key press, a
 scroll, a hover, a wait and the last step by waiting for network, DOM and layout activity to stay quiet. A `fill`, `type` or
 `select` between other steps does not settle on its own: the batch settles once before the next step of the kinds above. The

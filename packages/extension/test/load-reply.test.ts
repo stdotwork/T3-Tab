@@ -200,6 +200,20 @@ describe('a read asked for only if it needs no prompt', () => {
     await siteStore.set('https://mail.test', 'read');
     const read = await call('page.read', { tab: hidden.tab.id, ifReadable: true });
     expect(read.url).toBe('https://mail.test/inbox');
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it('is not given by Full access alone', async () => {
+    const { sessionStore, permissionPrompts, call } = await load();
+    await sessionStore.register(alice, 'th1');
+    daemon.askDaemon.mockImplementation(async () => ({ runtimeMode: 'full-access' }));
+    // Full access lets the open through and records no approval for the tab.
+    const opened = await call('tabs.open', { url: `${SHOP}/cart` });
+    const asked = vi.spyOn(permissionPrompts, 'authorize');
+    const reads = reader.reads.length;
+    await expect(call('page.read', { tab: opened.tab.id, ifReadable: true })).rejects.toThrow('Reading this page needs the owner to allow it.');
+    expect(asked).not.toHaveBeenCalled();
+    expect(reader.reads).toHaveLength(reads);
   });
 });
 
