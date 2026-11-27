@@ -824,7 +824,9 @@ directly through the daemon and feeds the same thread view.
 - **The composer.** The bottom row is T3's: the paperclip at the left end, then the model, the mic and send (Stop in its
   place while a turn runs, drawn at the same 16 px as the other icons), every control 32 px and the row 8 px from the
   box's edges. A direct run whose model is the agent's own default names the agent on the chip ("Claude Code"), not
-  "Default", since T3-Tab never learns which model that is. A running turn's header reads "Working…" until its first full
+  "Default", since T3-Tab never learns which model that is. Until an agent is known (the helper is still missing, or found
+  none) there is no chip at all, and the greyed Send points to the setup card's line saying it waits for the helper
+  (`aria-describedby`, and its title). A running turn's header reads "Working…" until its first full
   second, then "Working for 7s" in whole seconds, as T3's timer counts; it never shows "0.0s". The access level (runtime mode) is in the model picker's footer, as
   in T3; a running T3 thread's model chip opens the same footer, and a change there is sent at once with
   `thread.runtime-mode.set`.

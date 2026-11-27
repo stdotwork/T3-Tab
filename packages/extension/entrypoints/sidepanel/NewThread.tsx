@@ -12,7 +12,7 @@ import { resolveChoice, selectionFor, type Choice } from './lib/catalog';
 import { DEFAULT_PROJECT_KEY, NO_PROJECT, pickableProjects, resolveProject } from './lib/new-thread';
 import { refreshRunsNow, useShareTargets, useStored, useTabStored, type LiveState } from './lib/store';
 import { useT3Connect } from './lib/t3-connect';
-import { helperReady, SetupCard, T3ConnectRow } from './Setup';
+import { helperReady, SETUP_WAIT, SetupCard, T3ConnectRow } from './Setup';
 import { t3, type Project, type T3State } from './lib/t3-client';
 import { ICON, ProjectAvatar, useDismiss, useInkCentre } from './ui';
 
@@ -259,16 +259,21 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
           onSend={() => void send()}
           running={false}
           busy={busy || choice === undefined || setupCard}
+          waiting={setupCard ? SETUP_WAIT : undefined}
           autoFocus
           placeholder="Ask anything"
           chip={shareable ? <TabChip title={tab.title} state={shareTab ? 'pending' : 'off'} tabs={targets.tabs} group={targets.groupTitle} onToggle={() => setShareTab(!shareTab)} /> : null}
           picker={
-            <ModelPicker
-              providers={catalog.providers}
-              choice={choice}
-              onChoice={setSavedChoice}
-              access={catalog.source === 't3' ? { value: runtimeMode, modes: provider?.runtimeModes, onChange: setRuntimeMode } : undefined}
-            />
+            // Nothing to name until an agent is known (the helper is still on its way, or found none): no chip, rather
+            // than one that reads as a fault.
+            catalog.providers.length === 0 ? null : (
+              <ModelPicker
+                providers={catalog.providers}
+                choice={choice}
+                onChoice={setSavedChoice}
+                access={catalog.source === 't3' ? { value: runtimeMode, modes: provider?.runtimeModes, onChange: setRuntimeMode } : undefined}
+              />
+            )
           }
           attachments={attachments}
           dictation={dictation}

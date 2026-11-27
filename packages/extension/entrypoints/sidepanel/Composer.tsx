@@ -458,6 +458,7 @@ export function Composer({
   attachments,
   dictation,
   notice,
+  waiting,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -475,6 +476,8 @@ export function Composer({
   dictation?: Dictation | undefined;
   /** A line above the box: why an attachment cannot go, or what the mic needs. */
   notice?: string | undefined;
+  /** What Send waits for, and the line on screen that says so (the setup card's), which Send points to while it waits. */
+  waiting?: { text: string; describedBy: string } | undefined;
 }): ReactNode {
   const input = useRef<HTMLTextAreaElement>(null);
   // The paperclip's and send's ink sit the composer's inset from its edges, and every control's ink stands on one line.
@@ -569,7 +572,15 @@ export function Composer({
             </button>
           ) : null}
           {!running || onStop === undefined || (canQueue === true && value.trim() !== '') ? (
-            <button type="submit" className="send-btn" data-ink="box" aria-label={running ? 'Queue message' : 'Send'} title={running ? 'Queue for when this turn ends' : undefined} disabled={!canSend}>
+            <button
+              type="submit"
+              className="send-btn"
+              data-ink="box"
+              aria-label={running ? 'Queue message' : 'Send'}
+              title={running ? 'Queue for when this turn ends' : waiting?.text}
+              aria-describedby={waiting?.describedBy}
+              disabled={!canSend}
+            >
               <SendArrow />
             </button>
           ) : null}
