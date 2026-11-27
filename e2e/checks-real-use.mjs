@@ -208,16 +208,20 @@ export async function checkRealUse() {
       const tab = Number(/^Opened tab (\d+)/.exec(opened.text)?.[1]);
       assert(Number.isInteger(tab), `tabs open ${path}: ${opened.text}`);
       lastOpened = opened.text;
-      loadReplies.set(tab, opened.text);
+      shownReplies.set(tab, opened.text);
       return tab;
     };
-    const act = (tab, ...steps) => call('act', { tab, steps });
+    const act = async (tab, ...steps) => {
+      const reply = await call('act', { tab, steps });
+      shownReplies.set(tab, reply.text);
+      return reply;
+    };
     const js = async (tab, expression) => (await call('run_js', { tab, expression })).text;
-    const loadReplies = new Map();
-    // A full read right after a load that showed the page says only that nothing changed: the page is the load's reply.
+    const shownReplies = new Map();
+    // A full read right after a load or an act that showed the page says only that nothing changed: the page is that reply.
     const read = async (tab, extra = {}) => {
       const reply = await call('read', { tab, full: true, ...extra });
-      return /^tab \d+\nNo changes since the load's reply/.test(reply.text) ? { ...reply, text: loadReplies.get(tab) ?? reply.text } : reply;
+      return /^tab \d+\nNo changes since the (?:load|act)'s reply/.test(reply.text) ? { ...reply, text: shownReplies.get(tab) ?? reply.text } : reply;
     };
     const check = async (name, run) => {
       try {

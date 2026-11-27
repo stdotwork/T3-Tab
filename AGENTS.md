@@ -127,10 +127,11 @@ dark to the folder named by `T3_TAB_FLOW_SHOTS`.
 
 `pnpm bench` (after `pnpm build`) measures what an agent is sent, in characters and estimated tokens: the
 `tools/list` payload (total and per tool) and each tool reply on five fixed tasks over four local pages
-(`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link, search a longer page
+(`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link (and a `full` read sent with the click, answered in one line), search a longer page
 with `read` given its address and `find`, then with `find`, a ref subtree, `all` and a screenshot (text part, JPEG bytes and size, estimated image tokens),
 and a catalogue too long to send whole: its outline from `read` with its address, an order sent with a bad address whose
-`act` reply is the next page's outline with the error inside the form, and a `find` for an item the outline left out.
+`act` reply is the next page's outline with the error inside the form, a `find` for an item the outline left out, and a
+`full` read after that outline, which sends the whole view.
 It drives the real tools through `e2e/harness.mjs` the way the end-to-end run does, with the bench site
 set to `allow` so no prompt waits. It prints a markdown table and writes `bench/results/latest.json` (not
 committed) and the replies it measured to `bench/results/latest.replies.txt`. Text tokens are an estimate:
@@ -315,9 +316,10 @@ out of a load's reply, which says how long it is and sets no baseline: agents se
 as the load, before they see its reply, and that read then gets the page once. So a load without `find` first asks the
 page how much text it shows (`innerText`, `pageTextLength` in `settle.ts`), and a page with more than `LOAD_REPLY_MAX`
 characters of it is not read for the load at all (`skipReadOver` and `textLength` in the protocol); the reply says how
-much text it has. A `read` with `full` right after a load
-reply that showed the whole page (within 5 seconds, `LOAD_REPEAT_MS`), with nothing changed, says so instead of sending it
-again (once; the next one is whole). The extension reads the page in the same request (`describeLanding` in
+much text it has. A `read` with `full` right after a load's or an `act`'s reply that showed the whole page (within 5
+seconds, `REPEAT_MS`), with nothing changed, says so in one line instead of sending it again (once; the next one is
+whole). It does so only when the reply it would send is the very one the agent got: after an outline, a diff, or an
+`act` reply cut short to leave room for the tabs it opened, `full` sends the whole view. The extension reads the page in the same request (`describeLanding` in
 `requests.ts`) as soon as the new document has loaded and drawn its first frames, without waiting for it to go quiet. If
 the page moved while it was read (its content, layout or document per `settleSnapshot`, not only its network traffic) and
 that read ended within `LOAD_REREAD_MS` (100 ms), it is read once more after the first read ended, and that read is the
