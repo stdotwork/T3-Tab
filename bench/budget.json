@@ -67,6 +67,10 @@
       "chars": 327,
       "tokens": 114
     },
+    "navigate.read-full": {
+      "chars": 81,
+      "tokens": 23
+    },
     "navigate.tabs-list": {
       "chars": 170,
       "tokens": 70
@@ -112,6 +116,10 @@
     "outline.find": {
       "chars": 118,
       "tokens": 43
+    },
+    "outline.read-full": {
+      "chars": 7713,
+      "tokens": 2353
     }
   }
 }

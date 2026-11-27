@@ -202,6 +202,7 @@ async function runAct(
         ? await formatRead(state, session.id, page, { find, cap })
         : await formatRead(state, session.id, page, {
             echoed: setValues(steps.slice(0, page.failure === undefined ? undefined : page.failure.step - 1)),
+            act: true,
             cap,
           });
   const whole = `${reply}${await openedLines(link, session, page)}`;

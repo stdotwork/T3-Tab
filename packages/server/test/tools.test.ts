@@ -568,6 +568,22 @@ describe('act follow-through', () => {
     expect(reply).toBe('tab 7\nSet e2. Nothing else changed.');
   });
 
+  it('answers a full read sent with an act that showed a new screen whole in one line, once', async () => {
+    let current = page(signInPage());
+    const screen = page(buttonPage(5), { epoch: 2 });
+    const link = fakeBrowser({
+      'page.read': () => current,
+      'page.act': () => {
+        current = screen;
+        return screen;
+      },
+    });
+    await runTool(link, SESSION, 'read', {});
+    expect(text(await runTool(link, SESSION, 'act', click))).toContain('# Buttons');
+    expect(text(await runTool(link, SESSION, 'read', { tab: 7, full: true }))).toBe("tab 7\nNo changes since the act's reply, which showed the whole page.");
+    expect(text(await runTool(link, SESSION, 'read', { tab: 7, full: true }))).toContain('# Buttons');
+  });
+
   it('refuses an overlong find before asking the browser', async () => {
     const link = await afterRead({});
     await expect(runTool(link, SESSION, 'act', { ...click, find: 'x'.repeat(201) })).rejects.toThrow('Invalid arguments: find: at most 200 characters');

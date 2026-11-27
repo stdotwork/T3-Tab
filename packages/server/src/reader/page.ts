@@ -36,9 +36,11 @@ export interface ReadOptions {
   /**
    * The reply to a load (`tabs open`, `goto`, `back`, `forward`, `reload`). A whole page longer than `LOAD_REPLY_MAX` is
    * left out of it and sets no baseline, so the `read` an agent sends with the load gets the page once; a page that fits
-   * is the baseline, and a `full` read right after it that finds nothing changed says so instead of sending it again.
+   * is the baseline, and a `full` read right after it that would send the same reply says so instead of sending it again.
    */
   load?: boolean | undefined;
+  /** The reply to an `act` batch: when it shows the whole view, a `full` read right after it is answered as a load's is. */
+  act?: boolean | undefined;
   /** A cap below `MAX_OUTPUT_CHARS`, for a reply that carries more than this read (an `act` that opened tabs). */
   cap?: number | undefined;
 }
@@ -46,10 +48,11 @@ export interface ReadOptions {
 /** Longest whole page a load's reply carries, in characters; a longer one is left to `read` or `find`. */
 export const LOAD_REPLY_MAX = 4_000;
 /**
- * How long after a load's reply a `full` read that finds nothing changed is answered with that: a read the agent sent
- * in the same turn as the load comes within a second or two. A later one may be meant to see the page again.
+ * How long after a load's or an act's reply that showed the whole view a `full` read that would send the same reply is
+ * answered with one line: a read the agent sent in the same turn comes within a second or two. A later one may be meant
+ * to see the page again.
  */
-export const LOAD_REPEAT_MS = 5_000;
+export const REPEAT_MS = 5_000;
 
 /** What the background program holds for one tab: its refs and, per calling session, the last text read. */
 export class TabState {
@@ -121,8 +124,11 @@ export class TabState {
 export interface Baseline {
   text: string;
   kept: ReadonlyMap<string, Keep>;
-  /** When a load's reply showed this whole view (`Date.now()`); the next read replaces the baseline and drops it. */
-  loadedAt?: number;
+  /**
+   * The reply a load or an act sent that showed this view whole (not outlined), without its header, and when
+   * (`Date.now()`); the next read replaces the baseline and drops it.
+   */
+  shown?: { by: 'load' | 'act'; at: number; body: string };
 }
 
 /**
@@ -212,7 +218,9 @@ export async function formatRead(
   }
   // A ref read is a request for that part, so only the cap limits its text; `all` has no text budget.
   const budget = all || options.ref !== undefined ? Number.POSITIVE_INFINITY : TEXT_BUDGET;
-  const whole = (): string => {
+  let built: string | undefined;
+  const whole = (): string => (built ??= wholeView());
+  const wholeView = (): string => {
     if (all) return limit(`${header}\n${text}`);
     // Long lists of links or buttons give way to one line each where the page's text would otherwise get no room.
     const sized = (cap: number): { text: string; note: string | undefined } => {
@@ -238,17 +246,24 @@ export async function formatRead(
   // A load's reply carries the page only when it is short; otherwise the agent's read gets it.
   const wholeReply = (): string => {
     const reply = whole();
-    if (options.load !== true || all || options.ref !== undefined) return reply;
+    if (all || options.ref !== undefined) return reply;
+    if (options.act === true) {
+      state.setBaseline(session, key, { text, kept, shown: { by: 'act', at: Date.now(), body: reply.slice(header.length) } });
+      return reply;
+    }
+    if (options.load !== true) return reply;
     if (reply.length - header.length > LOAD_REPLY_MAX) {
       state.restoreBaseline(session, key, last);
       return `${header}\n(The page is ${(reply.length - header.length - 1).toLocaleString('en-US')} characters, too long for this reply: read shows it, find searches it.)`;
     }
-    state.setBaseline(session, key, { text, kept, loadedAt: Date.now() });
+    state.setBaseline(session, key, { text, kept, shown: { by: 'load', at: Date.now(), body: reply.slice(header.length) } });
     return reply;
   };
-  // The agent asked for the whole page and has it, unchanged, from the load it sent this read with.
-  if (options.full === true && last?.loadedAt !== undefined && Date.now() - last.loadedAt < LOAD_REPEAT_MS && previous === text) {
-    return `${header}\nNo changes since the load's reply, which showed the whole page.`;
+  // The agent asked for the whole page and has it, unchanged, from the load or act it sent this read with. Only when the
+  // reply would be the very one it got: an outline, a reply cut at a lower cap or one with less room for text is not it.
+  const seen = last?.shown;
+  if (options.full === true && seen !== undefined && Date.now() - seen.at < REPEAT_MS && previous === text && whole().slice(header.length) === seen.body) {
+    return `${header}\nNo changes since the ${seen.by}'s reply, which showed the whole page.`;
   }
   // What the batch itself set is no news to the agent: the earlier read is settled to show it already.
   const echoes =

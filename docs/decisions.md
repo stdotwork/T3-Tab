@@ -195,7 +195,9 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   first read was quick, so a load does at most two reads. Models send a `read` or `find` with the load in the same turn,
   before they see its reply, so a page over 4,000 characters is left out of the load's reply and comes with that read (a
   page whose text alone is longer is not even read for the load), and a `read` with `full` right after a load that
-  showed the page says it is unchanged instead of resending it.
+  showed the page says it is unchanged instead of resending it. The same holds after an `act` whose reply was the whole
+  page (a new screen): models send `full` with an action as they do with a load. It holds only when the agent got that
+  very reply: an outline, a diff or a reply cut short for opened tabs showed less, so `full` then sends the whole view.
   The `tabs` description says a load replies with "the page", not "a short page": with "short", Haiku asked for `full`
   with the load and after every action, and paid for each page twice.
 - **An action says what it did, so no read follows it.** A click that opened a tab used to reply "No changes", and the
