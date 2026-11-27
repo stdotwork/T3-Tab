@@ -704,7 +704,7 @@ The panel bundles Inter Variable's Latin and Latin-ext faces only (`entrypoints/
 is drawn by the system's fonts through the `--font-sans` fallbacks. The panel loads the markdown renderer and Settings when they are first needed. It asks the worker on a timer only as a
 safety net: the worker's `panel.changed` message, `chrome.storage.onChanged` and tab events bring changes at once. The
 timers are 5 seconds for prompts and sessions, 10 seconds for the helper (3 while it is missing or a screen shows setup
-details), 15 seconds for the list of direct runs (1.5 while one runs) and one minute for the agent and T3 checks. An open
+details), 15 seconds for the list of direct runs (1.5 while one runs) and one minute for the agent and T3 checks. Each timer's next time is set from the answer it just merged, so a list that first shows a run running is asked again 1.5 seconds later, not 15. An open
 direct run is fetched every 400 ms only while it runs. A hidden panel slows every timer to at least 15 seconds, or 5 for a
 missing helper.
 
