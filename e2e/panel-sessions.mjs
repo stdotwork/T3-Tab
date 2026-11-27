@@ -286,7 +286,7 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
     await panelPage.evaluate((next) => globalThis.__t3tabRenderPanelState(next), realPanelState);
     console.log(`Panel screenshots: ${shotsDir}`);
   }
-  await checkThreadSections(livePanel, screenshotPath);
+  await checkThreadSections(livePanel, serviceWorker, screenshotPath);
   await checkComposer({ livePanel, fakes, screenshotPath });
   await checkAppearance({ livePanel, screenshotPath });
   await checkLayout({ livePanel, serviceWorker, panelPage, screenshotPath });
@@ -307,7 +307,7 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
  * waits on the owner. The panel here is not signed in to T3, so the threads are handed to its T3 client as one shell
  * snapshot, the way T3's shell stream would send them; the direct runs are the real ones from this run.
  */
-async function checkThreadSections(livePanel, screenshotPath) {
+async function checkThreadSections(livePanel, serviceWorker, screenshotPath) {
   const supply = async (threads) =>
     await livePanel.evaluate((list) => {
       const minutes = (count) => new Date(Date.now() + count * 60_000).toISOString();
@@ -352,7 +352,20 @@ async function checkThreadSections(livePanel, screenshotPath) {
   ]);
   await livePanel.locator('#btn-threads').click();
   await livePanel.locator('.thread-row').filter({ hasText: 'Pick a colour' }).waitFor();
-  const shelves = await livePanel.locator('.shelf').evaluateAll((nodes) => nodes.map((node) => `${node.querySelector('.shelf-label').textContent} ${node.querySelector('.shelf-count').textContent}`));
+  // The Working shelf also counts the panel's direct runs, and the panel learns a direct run ended only on its next
+  // poll of the worker (up to 15 s after the run, since it times the next poll by what the last one saw). So first
+  // check that no direct run is running in the worker, then give the panel one poll to show the same.
+  const stillRunning = (await panelRequest(serviceWorker, { type: 'panel.agents' })).conversations.filter(
+    (conversation) => conversation.via !== 't3' && (conversation.status === 'running' || conversation.status === 'waiting'),
+  );
+  assert(stillRunning.length === 0, `A direct run is still running before the shelves check: ${JSON.stringify(stillRunning.map((conversation) => [conversation.id, conversation.status]))}`);
+  const readShelves = async () =>
+    await livePanel.locator('.shelf').evaluateAll((nodes) => nodes.map((node) => `${node.querySelector('.shelf-label').textContent} ${node.querySelector('.shelf-count').textContent}`));
+  let shelves = await readShelves();
+  for (let attempt = 0; attempt < 40 && JSON.stringify(shelves) !== JSON.stringify(['Working 1', 'Snoozed 1', 'Settled 1']); attempt += 1) {
+    await sleep(500);
+    shelves = await readShelves();
+  }
   assert(JSON.stringify(shelves) === JSON.stringify(['Working 1', 'Snoozed 1', 'Settled 1']), `Thread list shelves: ${JSON.stringify(shelves)}`);
   const visibleRows = async () => await livePanel.locator('.thread-row').evaluateAll((nodes) => nodes.map((node) => `${node.dataset.section}:${node.querySelector('.thread-title').textContent}`));
   let rows = await visibleRows();
