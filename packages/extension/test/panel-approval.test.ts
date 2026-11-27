@@ -68,6 +68,12 @@ describe('one approval card for both kinds of ask', () => {
     }
   });
 
+  it('shows a tab\'s title so its own quote marks and bidirectional marks cannot change what the card says', () => {
+    const title = (text: string) => promptApproval(prompt('read', { tab: { id: 7, title: text } }), 'Codex').tab;
+    expect(title('Shop” on bank.example “x')).toBe("“Shop' on bank.example 'x”");
+    expect(title('Shop\u202Eelpmaxe.knab\u202C\u200B')).toBe('“Shopelpmaxe.knab”');
+  });
+
   it('names the address for a page not opened yet', () => {
     const model = promptApproval(prompt('open', { tab: null, url: 'http://127.0.0.1:41889/cart?id=1' }), 'Codex');
     expect(model.detail).toEqual({ text: 'http://127.0.0.1:41889/cart?id=1', mono: true });

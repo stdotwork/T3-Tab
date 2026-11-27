@@ -739,8 +739,8 @@ Browser prompts and a T3 thread's approvals share one card (`Approval.tsx`, buil
 anatomy: a line saying what is asked (who asks, the action and the site, for an act what it will do to which element, kept
 to three lines: its first part and "and more" when it is long, then its first step with a shorter name, and "act on" when
 even that is over 48 characters, so the site is never pushed off; or the command or path T3 asks about), then
-the address a prompt would load or T3's reason, then the tab it is about by its title in the curly quotes the action's names use (`in “<title>”` under an
-address, as for `goto`, `back`, `forward` and `reload`), then Decline, the primary answer (Allow once, or T3's Approve)
+the address a prompt would load or T3's reason, then the tab it is about by its title in the curly quotes the action's names use, its own quote marks turned into `'` and
+its bidirectional and zero-width marks dropped (`in “<title>”` under an address, as for `goto`, `back`, `forward` and `reload`), then Decline, the primary answer (Allow once, or T3's Approve)
 and More, in T3's order on one row. More holds the other answers with what each grants: for a browser prompt the
 lasting choice and Manage sites, for T3 its own (such as Always allow this session and Cancel), with T3's warning on an
 answer shown as T3 shows it. A T3 approval draws only the answers T3 offers: with no `accept` there is no primary

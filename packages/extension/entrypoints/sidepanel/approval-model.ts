@@ -40,6 +40,11 @@ export interface ApprovalModel<D extends string = string> {
 }
 
 const plain = (text: string): string => [...text].filter((character) => (character.codePointAt(0) ?? 0) >= 32).join('');
+/**
+ * A tab's title as the card shows it, in the curly quotes the action's names use: the page chooses it, so its own quote
+ * marks become ' and its bidirectional and zero-width marks are dropped, as `actStepsText` does for a name.
+ */
+const plainTitle = (text: string): string => plain(text.replace(/\p{Cf}/gu, '')).replace(/[\p{Pi}\p{Pf}"＂＇„‚〝〞〟❛❜❝❞❮❯「」『』﹁﹂﹃﹄]/gu, "'");
 
 const VERB: Record<PermissionPrompt['tool'], string> = {
   read: 'wants to read',
@@ -92,7 +97,7 @@ export function promptApproval(prompt: PermissionPrompt, asker: string): Approva
     return { decision: found.decision, label: found.label, ...(found.detail === undefined ? {} : { detail: found.detail }) };
   };
   const address = prompt.url === undefined ? undefined : plain(prompt.url);
-  const quoted = prompt.tab === undefined ? undefined : `“${plain(prompt.tab.title) || '(untitled)'}”`;
+  const quoted = prompt.tab === undefined ? undefined : `“${plainTitle(prompt.tab.title) || '(untitled)'}”`;
   const tab = quoted === undefined ? undefined : address === undefined ? quoted : `in ${quoted}`;
   return {
     ask: { who: plain(asker), verb: prompt.tool === 'act' ? actVerb(prompt.steps) : VERB[prompt.tool], subject: hostOf(prompt.origin), mono: true },
