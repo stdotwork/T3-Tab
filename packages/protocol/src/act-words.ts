@@ -115,7 +115,8 @@ const joinAnd = (items: readonly string[]): string => (items.length < 2 ? (items
  */
 export function actStepsText(steps: readonly ActStepSummary[], mood: Mood): string {
   const phrases: string[] = [];
-  let last: { action: ActAction; targets: string[] } | undefined;
+  // Targets are told apart by their whole role and name, so two fields whose shortened names match are both listed.
+  let last: { action: ActAction; targets: string[]; seen: Set<string> } | undefined;
   const flush = (): void => {
     if (last === undefined) return;
     phrases.push(`${VERBS[last.action][mood]} ${joinAnd(last.targets)}`);
@@ -127,7 +128,7 @@ export function actStepsText(steps: readonly ActStepSummary[], mood: Mood): stri
       if (last?.action === 'press') last.targets.push(key);
       else {
         flush();
-        last = { action: 'press', targets: [key] };
+        last = { action: 'press', targets: [key], seen: new Set() };
       }
       continue;
     }
@@ -138,11 +139,15 @@ export function actStepsText(steps: readonly ActStepSummary[], mood: Mood): stri
       continue;
     }
     const words = targetWords(step.target);
+    const id = `${step.target.role}\n${step.target.name}`;
     if (last?.action === step.action) {
-      if (!last.targets.includes(words)) last.targets.push(words);
+      if (!last.seen.has(id)) {
+        last.seen.add(id);
+        last.targets.push(words);
+      }
     } else {
       flush();
-      last = { action: step.action, targets: [words] };
+      last = { action: step.action, targets: [words], seen: new Set([id]) };
     }
   }
   flush();

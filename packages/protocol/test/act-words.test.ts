@@ -36,5 +36,9 @@ describe('act steps in words', () => {
     expect(text).not.toMatch(/[‮\n]/);
     expect(text.length).toBeLessThan(60);
     expect(actStepsText([{ action: 'click' }, { action: 'hover' }, { action: 'scroll' }, { action: 'wait' }], 'done')).toBe('Clicked an element, hovered over an element and more');
+    // Two fields whose names start alike are two fields, though their shortened names match; the same one twice is one.
+    const line = (n: string) => ({ action: 'fill' as const, target: { role: 'textbox', name: `Shipping address, the line that holds the ${n}` } });
+    expect(actStepsText([line('street'), line('suburb')], 'done')).toBe('Filled “Shipping address, the line that holds t…” and “Shipping address, the line that holds t…”');
+    expect(actStepsText([line('street'), line('street')], 'done')).toBe('Filled “Shipping address, the line that holds t…”');
   });
 });
