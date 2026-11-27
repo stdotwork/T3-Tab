@@ -18,7 +18,7 @@ import {
 import { readPage, rememberPageSecrets } from './page';
 import { originOf } from './permissions';
 import { scrollWithWheel } from './scroll';
-import { scrubReported } from './secret-text';
+import { scrubKnown, scrubReported } from './secret-text';
 import type { StoredSession } from './sessions';
 import { isHttp, loadFailure, resolveSessionTab } from './tabs';
 import { settlePage, sleep } from './settle';
@@ -224,7 +224,8 @@ export async function actOnPage(
       url: scrubReported(tabId, tab.url ?? tab.pendingUrl ?? '', true),
       epoch: documentEpoch(tabId),
       nodes: [],
-      dialog: dialogNotice(tabId, waiting),
+      // The page wrote the message: it can repeat a value the tab's fields held.
+      dialog: scrubKnown(tabId, dialogNotice(tabId, waiting)),
       ...(failure === undefined ? {} : { failure }),
     };
   }

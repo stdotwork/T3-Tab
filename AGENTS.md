@@ -516,23 +516,30 @@ and of the values, not their product:
   document order are joined with nothing between, as the reader joins sibling text, so a value a page wrote one element per
   character, or with its first letters in a `<b>`, is found, and every line it covers loses its part (the first keeps the
   marker, the rest go empty). This also joins text across blocks, so two separate lines that together spell a value are hidden
-  too (a rare false positive, on purpose). A link address is also matched in the forms an address holds a value:
-  as it is, `encodeURIComponent`, `encodeURI` and with `+` for a space. A value of fewer than four characters is replaced only
+  too (a rare false positive, on purpose). A link address is also matched in these forms of a value (`addressForms`): as
+  it is, `encodeURIComponent`, `encodeURI`, the form encoding a GET form uses (which also encodes `!'()~`), and the last
+  two with `+` for a space; an address that holds a value another way (a script's own encoding, say) is not matched. A value of fewer than four characters is replaced only
   as a whole word and never in plain text, only in names tied to a hidden field (the names that took a value in, and those
   around the field that holds it; in a tied name every short value of the page is looked for, not only its own field's).
 - *Title and address.* The tab's title and address come from the browser, not the tree, and a form that sends a password in
   its address (a GET login) puts it in both, in the header of every later reply and in `tabs list`. `scrubReported` takes the
   tab's remembered values out of the title and address (in their address forms) in `readPage`, `tabInfo` (`tabs list`,
-  `open`, `switch`) and the dialog branch of `act`. A form can also be sent into another tab, a new one or one it names
-  (`target="results"`), which puts the values in that tab's title and address. So the extension keeps each open tab's
-  tree of openers (`opened-tabs.ts`: from `onCreatedNavigationTarget`, rebuilt from the browser's `openerTabId` when the
-  worker starts, a tab swapped by `tabs.onReplaced` keeping its place) and remembers every value of a tree's tabs once more
-  for the tree (400 values, 200 trees, dropped when the tree's last tab closes, apart from the tabs' own entries, which a
-  tree never pushes out). A tab's tree values are taken out of its title and address only, in their address forms, never
-  out of its page; one its address holds becomes one of its own (`promoteAddressSecrets`), since its page can echo it. Each
-  entry builds its matcher once until its values change. Before a `click`, `press`, `select`, `fill` or `type` step, `act`
+  `open`, `switch`) and the dialog branch of `act`, whose dialog message also loses the tab's own values (`scrubKnown`). A
+  form can also be sent into another tab, a new one or one it names (`target="results"`), which puts the values in that
+  tab's title and address. So the extension keeps each open tab's tree of openers (`opened-tabs.ts`: from
+  `onCreatedNavigationTarget`, written to `chrome.storage.session` and loaded again when the worker starts, for the tabs the
+  browser still lists; the browser's `openerTabId` is the tab strip's opener, which it reassigns and clears, so it is not
+  used) and remembers every value of a tree's tabs once more for the tree (400 values, 200 trees, dropped when the tree's
+  last tab closes, apart from the tabs' own entries, which a tree never pushes out). A tab's tree values are taken out of
+  its title and address only, in the address forms above, never out of its page. One its address holds becomes one of its
+  own (`promoteAddressSecrets`), and a top-frame commit the browser reports as `form_submit` makes all of the tree's values
+  the tab's own (`noteCommitted`), since a page a form was sent into, by GET or POST, can echo them. When `tabs.onReplaced`
+  reports a tab swapped for another (a prerendered page), the new tab joins the old one's tree before the old one leaves
+  and takes over its own values; if the browser reports the old tab's removal first, its own values are gone (the order
+  was not checked in a real browser). Each entry keeps the matchers built from its values, and their address forms, until
+  the values change; finding which tree values an address holds compares the address with those kept forms. Before a `click`, `press`, `select`, `fill` or `type` step, `act`
   collects the page's secret values again (`rememberPageSecrets`, about 1 ms on a small form and 12 ms on a page of 3,000
-  masked fields, given up after 1.5 s), and before a `scroll`, `hover` or `wait` only when a field step ran or the document
+  masked fields; the whole collection, making T3-Tab's world on a new document included, is given up after 2 s), and before a `scroll`, `hover` or `wait` only when a field step ran or the document
   changed since the last collection, so a form the owner or an earlier step filled after the last read is covered whatever
   sends it: a click, a key press, or page script a step sets off, such as a `select` whose change submits.
 - *The budget.* The steps after the checks run under a time budget of 1.5 s (`budgetMs`). Past it, the analysis stops and
@@ -552,8 +559,8 @@ other values; a field masked another way (a text input drawn as dots by a script
 outside the value roles draws as text (its length); a secret field inside a closed shadow root that no name was built from
 (the page's list cannot reach it; the checks above reach it only through the tree) and fields past the caps above; secrets of
 a tab after the extension's worker restarted or 30 minutes passed (the memory is gone; the tab's address from before then
-shows as the browser reports it); a form sent by name into a tab of no tree the extension knows (one whose opener the browser
-did not record, after the worker restarted); `run_js`, which is the agent's own code; and a screenshot, which shows what the
+shows as the browser reports it); a form sent by name into a tab the extension did not see opened (one opened before the
+extension was running, or after the browser restarted, which empties session storage); `run_js`, which is the agent's own code; and a screenshot, which shows what the
 page draws. A short value of one tab also hides the same text in the titles and addresses of the other tabs of its tree (a
 false positive, on purpose).
 

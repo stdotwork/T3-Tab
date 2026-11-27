@@ -37,12 +37,27 @@ export function openedSince(sourceTabId: number, mark: number): OpenedTab[] {
 /**
  * Every open tab that opened or was opened by another, by the tree of openers it belongs to (named by one of its tabs), and
  * the open tabs of each tree. A page can send a form into any tab of its tree by the tab's name (`target="results"`), not
- * only into a tab it opens then; `secret-text.ts` keeps a tree's secret values for the addresses of all its tabs.
+ * only into a tab it opens then; `secret-text.ts` keeps a tree's secret values for the addresses of all its tabs. The trees
+ * are kept in `chrome.storage.session` too, so a worker that restarts gets them back (`loadOpenerTrees`): the browser's
+ * own `openerTabId` is the tab strip's idea of an opener, which it reassigns and clears, so it cannot stand in for them.
  */
 const treeOf = new Map<number, number>();
 const members = new Map<number, Set<number>>();
-/** The tabs closed while `rebuildOpenerTrees` waited for the browser's list, which it must not add. */
-let closedWhileRebuilding: Set<number> | undefined;
+/** The tabs closed while `loadOpenerTrees` waited for the browser, which it must not add. */
+let closedWhileLoading: Set<number> | undefined;
+const TREES_KEY = 't3tab.openerTrees';
+let saving = false;
+
+/** Writes the trees to session storage once the current task is done, however many changes it made. */
+function saveTrees(): void {
+  if (saving) return;
+  saving = true;
+  queueMicrotask(() => {
+    saving = false;
+    const session = (globalThis as { chrome?: { storage?: { session?: chrome.storage.StorageArea } } }).chrome?.storage?.session;
+    void session?.set({ [TREES_KEY]: Object.fromEntries(treeOf) }).catch(() => undefined);
+  });
+}
 
 function setTree(tabId: number, tree: number): void {
   const old = treeOf.get(tabId);
@@ -52,6 +67,7 @@ function setTree(tabId: number, tree: number): void {
   const set = members.get(tree) ?? new Set<number>();
   set.add(tabId);
   members.set(tree, set);
+  saveTrees();
 }
 
 function leaveTree(tabId: number, tree: number): void {
@@ -84,57 +100,68 @@ export function treeOfTab(tabId: number): number | undefined {
 export function forgetClosedTab(tabId: number): void {
   byOpener.delete(tabId);
   const tree = treeOf.get(tabId);
-  if (tree !== undefined) leaveTree(tabId, tree);
-  treeOf.delete(tabId);
-  closedWhileRebuilding?.add(tabId);
-}
-
-/** The browser swapped a tab for another (a prerendered page), which keeps its place in the tree. */
-export function replaceTreeTab(addedTabId: number, removedTabId: number): void {
-  const tree = treeOf.get(removedTabId);
-  if (tree === undefined) return;
-  forgetClosedTab(removedTabId);
-  setTree(addedTabId, tree);
-}
-
-/** What the browser records of a tab for `rebuildOpenerTrees`. */
-export interface OpenerRecord {
-  id?: number | undefined;
-  openerTabId?: number | undefined;
+  if (tree !== undefined) {
+    leaveTree(tabId, tree);
+    treeOf.delete(tabId);
+    saveTrees();
+  }
+  closedWhileLoading?.add(tabId);
 }
 
 /**
- * The trees again after the worker started, from the openers the browser records (`openerTabId`), so a restart does not
- * lose which tabs a form can reach. A tab that closed meanwhile is left out, and a tab a page opened since is kept as it is.
+ * The browser swapped a tab for another (a prerendered page): the new tab joins the old one's tree before the old one
+ * leaves it, so a tree whose last tab is swapped keeps its values.
  */
-export async function rebuildOpenerTrees(
-  list: () => Promise<OpenerRecord[]> = async () => await chrome.tabs.query({}),
-): Promise<void> {
+export function replaceTreeTab(addedTabId: number, removedTabId: number): void {
+  const tree = treeOf.get(removedTabId);
+  if (tree !== undefined) setTree(addedTabId, tree);
+  forgetClosedTab(removedTabId);
+}
+
+interface TreeSources {
+  stored: () => Promise<unknown>;
+  open: () => Promise<Array<{ id?: number | undefined }>>;
+}
+
+const browserSources: TreeSources = {
+  stored: async () => (await chrome.storage.session.get(TREES_KEY))[TREES_KEY],
+  open: async () => await chrome.tabs.query({}),
+};
+
+/**
+ * The trees the worker kept before it restarted, from session storage, for the tabs the browser still lists. A tab that
+ * closed meanwhile is left out. A tree a page added to since the worker started is merged with the stored one it meets,
+ * so a tab opened during the load stays in one tree with its opener's.
+ */
+export async function loadOpenerTrees(sources: TreeSources = browserSources): Promise<void> {
   const closed = new Set<number>();
-  closedWhileRebuilding = closed;
-  let tabs: OpenerRecord[];
+  closedWhileLoading = closed;
+  let stored: unknown;
+  let open: Array<{ id?: number | undefined }>;
   try {
-    tabs = await list();
+    [stored, open] = await Promise.all([sources.stored(), sources.open()]);
   } catch {
     return;
   } finally {
-    closedWhileRebuilding = undefined;
+    closedWhileLoading = undefined;
   }
-  const openerOf = new Map<number, number | undefined>();
-  for (const tab of tabs) if (tab.id !== undefined && !closed.has(tab.id)) openerOf.set(tab.id, tab.openerTabId);
-  for (const [tabId, opener] of openerOf) {
-    if (opener === undefined || !openerOf.has(opener) || treeOf.has(tabId)) continue;
-    // Up the openers to the first tab already in a tree, or to the top; every tab on the way joins that tree.
-    const chain = [tabId];
-    let tree: number | undefined;
-    for (let at = opener; tree === undefined; ) {
-      chain.push(at);
-      const known = treeOf.get(at);
-      const up = openerOf.get(at);
-      if (known !== undefined) tree = known;
-      else if (up === undefined || !openerOf.has(up) || chain.includes(up)) tree = at;
-      else at = up;
+  if (typeof stored !== 'object' || stored === null) return;
+  const listed = new Set(open.flatMap((tab) => (tab.id === undefined || closed.has(tab.id) ? [] : [tab.id])));
+  const byStoredTree = new Map<number, number[]>();
+  for (const [key, value] of Object.entries(stored)) {
+    const tabId = Number(key);
+    if (!Number.isInteger(tabId) || typeof value !== 'number' || !listed.has(tabId)) continue;
+    byStoredTree.set(value, [...(byStoredTree.get(value) ?? []), tabId]);
+  }
+  for (const [storedTree, tabs] of byStoredTree) {
+    if (tabs.length < 2 && !tabs.some((tabId) => treeOf.has(tabId))) continue;
+    const live = tabs.map((tabId) => treeOf.get(tabId)).find((tree) => tree !== undefined);
+    const tree = live ?? storedTree;
+    for (const tabId of tabs) {
+      const current = treeOf.get(tabId);
+      // Another tree a page made since the worker started, which this stored tree meets: its tabs join this one.
+      if (current !== undefined && current !== tree) for (const other of Array.from(members.get(current) ?? [])) setTree(other, tree);
+      setTree(tabId, tree);
     }
-    for (const id of chain) setTree(id, tree);
   }
 }

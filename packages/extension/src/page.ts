@@ -254,11 +254,12 @@ const COLLECT_SECRETS = `function () {
 
 /**
  * The values of the page's secret fields, found without a node; empty when the browser cannot be asked. With `timeoutMs`
- * the page's script is stopped and the answer given up after that long.
+ * each command (making T3-Tab's world on a new document included) is given up after that long, and the page's script is
+ * stopped after it.
  */
 async function collectSecrets(tabId: number, timeoutMs?: number): Promise<string[]> {
   try {
-    const context = await privateWorld(tabId);
+    const context = await (timeoutMs === undefined ? privateWorld(tabId) : privateWorld(tabId, timeoutMs));
     const answer = await sendCommand<{ result?: { value?: unknown } }>(
       tabId,
       'Runtime.evaluate',
@@ -281,14 +282,21 @@ const STEP_COLLECT_MS = 1_500;
 const COLLECT_REPLY_MS = 500;
 
 /**
- * Remembers the values of the page's secret fields for the tab, as they are now, waiting at most `STEP_COLLECT_MS` for
- * them. Never fails the call it is part of.
+ * Remembers the values of the page's secret fields for the tab, as they are now, waiting at most `STEP_COLLECT_MS` (and
+ * the browser's answer) for them in all, whatever the commands it takes. Never fails the call it is part of.
  */
 export async function rememberPageSecrets(tabId: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), STEP_COLLECT_MS + COLLECT_REPLY_MS);
+  });
   try {
-    rememberSecrets(tabId, await collectSecrets(tabId, STEP_COLLECT_MS));
+    const values = await Promise.race([collectSecrets(tabId, STEP_COLLECT_MS), late]);
+    if (values !== undefined) rememberSecrets(tabId, values);
   } catch {
     // The read that follows asks again.
+  } finally {
+    clearTimeout(timer);
   }
 }
 

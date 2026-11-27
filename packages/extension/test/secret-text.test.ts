@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { forgetClosedTab, joinTree, rebuildOpenerTrees, treeOfTab } from '../src/opened-tabs';
+import { forgetClosedTab, joinTree, loadOpenerTrees, replaceTreeTab, treeOfTab } from '../src/opened-tabs';
 import {
   addressForms,
   forgetSecrets,
   knownSecrets,
   matcher,
+  noteCommitted,
   promoteAddressSecrets,
   rememberSecrets,
+  replaceSecretsTab,
+  scrubKnown,
   scrubReported,
   shortScrub,
   shortScrubber,
@@ -107,6 +110,18 @@ describe('what is remembered about a tab', () => {
     expect(scrubReported(undefined, 'Welcome p@ss w&rd', false)).toBe('Welcome p@ss w&rd');
   });
 
+  it('is taken out of an address in the form a GET form writes it, which also encodes !\'()~', () => {
+    rememberSecrets(1, ["pa ss!w(rd)'~"]);
+    expect(scrubReported(1, 'https://a.test/secure?password=pa+ss%21w%28rd%29%27%7E&x=1', true)).toBe('https://a.test/secure?password=<redacted>&x=1');
+    expect(scrubReported(1, 'https://a.test/secure?password=pa%20ss%21w%28rd%29%27%7E', true)).toBe('https://a.test/secure?password=<redacted>');
+  });
+
+  it('is taken out of text the page wrote, such as a dialog\'s message, as written', () => {
+    rememberSecrets(1, ['hunter2x']);
+    expect(scrubKnown(1, 'Tab 1 is waiting on a JavaScript alert: "Saved hunter2x".')).toBe('Tab 1 is waiting on a JavaScript alert: "Saved <redacted>".');
+    expect(scrubKnown(2, 'Saved hunter2x')).toBe('Saved hunter2x');
+  });
+
   it('keeps no entry for a tab with no value, so tabs without secrets do not push out the values of one', () => {
     rememberSecrets(1, ['hunter2x']);
     for (let tab = 1_000; tab < 1_300; tab += 1) rememberSecrets(tab, ['abc', '']);
@@ -175,19 +190,74 @@ describe('what is remembered about a tab', () => {
       expect(scrubReported(2, 'https://a.test/?pw=later-value', true)).toBe('https://a.test/?pw=<redacted>');
     });
 
-    it('is built again from the openers the browser records when the worker starts, leaving out a tab that closed', async () => {
-      const listing = rebuildOpenerTrees(async () => {
-        // Tab 33 closes while the browser lists the tabs.
-        forgetClosedTab(33);
-        return [{ id: 30 }, { id: 31, openerTabId: 30 }, { id: 32, openerTabId: 31 }, { id: 33, openerTabId: 30 }, { id: 34 }];
+    it('comes back from session storage after the worker restarted, merged with a tree a page made meanwhile', async () => {
+      // Stored before the restart: 30 opened 31, 32 and 33. Since the restart 31 opened 50; 33 closes during the load.
+      joinTree(31, 50);
+      trees.push(30, 31, 32, 33, 50);
+      await loadOpenerTrees({
+        stored: async () => {
+          forgetClosedTab(33);
+          return { 30: 30, 31: 30, 32: 30, 33: 30, 60: 60 };
+        },
+        open: async () => [{ id: 30 }, { id: 31 }, { id: 32 }, { id: 33 }, { id: 50 }],
       });
-      await listing;
-      trees.push(30, 31, 32, 33, 34);
-      expect([treeOfTab(30), treeOfTab(31), treeOfTab(32)]).toEqual([30, 30, 30]);
+      const tree = treeOfTab(30);
+      expect([treeOfTab(31), treeOfTab(32), treeOfTab(50)]).toEqual([tree, tree, tree]);
       expect(treeOfTab(33)).toBeUndefined();
-      expect(treeOfTab(34)).toBeUndefined();
+      expect(treeOfTab(60)).toBeUndefined();
       rememberSecrets(32, ['restart-secret']);
-      expect(scrubReported(30, 'https://a.test/?pw=restart-secret', true)).toBe('https://a.test/?pw=<redacted>');
+      expect(scrubReported(50, 'https://a.test/?pw=restart-secret', true)).toBe('https://a.test/?pw=<redacted>');
+    });
+
+    it('is written to session storage as it changes', async () => {
+      const written: Array<Record<string, unknown>> = [];
+      const host = globalThis as unknown as { chrome?: unknown };
+      const before = host.chrome;
+      host.chrome = { storage: { session: { set: async (items: Record<string, unknown>) => void written.push(items) } } };
+      try {
+        tree(70, 71);
+        await Promise.resolve();
+        expect(written.at(-1)).toEqual({ 't3tab.openerTrees': expect.objectContaining({ 70: 70, 71: 70 }) });
+      } finally {
+        host.chrome = before;
+      }
+    });
+
+    it('finds the tree values an address holds without building a matcher for each', () => {
+      tree(1, 2);
+      const values = Array.from({ length: 399 }, (_, index) => `value-${index}-${'x'.repeat(4_990)}`);
+      rememberSecrets(1, values);
+      const address = `https://a.test/?q=${values[7] ?? ''}`;
+      const started = performance.now();
+      for (let round = 0; round < 50; round += 1) scrubReported(2, address, true);
+      // One matcher a value took about 46 ms a call (2.3 s for these 50).
+      expect(performance.now() - started).toBeLessThan(1_000);
+      expect(knownSecrets(2)).toEqual([values[7]]);
+    });
+
+    it('keeps a tree\'s values and a tab\'s own when the browser swaps the tab for another', () => {
+      tree(1, 2);
+      rememberSecrets(2, ['tree-only-value']);
+      forgetClosedTab(2);
+      forgetSecrets(2);
+      rememberSecrets(1, ['own-value']);
+      // Tab 1 is the tree's last tab.
+      replaceTreeTab(3, 1);
+      replaceSecretsTab(3, 1);
+      trees.push(3);
+      expect(knownSecrets(3)).toEqual(['own-value']);
+      expect(knownSecrets(1)).toEqual([]);
+      expect(scrubReported(3, 'https://a.test/?a=tree-only-value', true)).toBe('https://a.test/?a=<redacted>');
+    });
+
+    it('makes the tree\'s values the own of a tab a form was sent into, which can echo them', () => {
+      tree(1, 2);
+      rememberSecrets(1, ['posted-secret']);
+      noteCommitted({ tabId: 2, frameId: 0, transitionType: 'link' });
+      noteCommitted({ tabId: 2, frameId: 3, transitionType: 'form_submit' });
+      expect(knownSecrets(2)).toEqual([]);
+      noteCommitted({ tabId: 2, frameId: 0, transitionType: 'form_submit' });
+      expect(knownSecrets(2)).toEqual(['posted-secret']);
     });
   });
 });

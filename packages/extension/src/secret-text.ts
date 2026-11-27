@@ -154,16 +154,23 @@ export function matcher(needles: Iterable<string>): Matcher {
   };
 }
 
-/** The forms a value takes in an address: as it is, percent-encoded, and encoded as a form does (a plus for a space). */
+/**
+ * The forms a value takes in an address: as it is, percent-encoded (`encodeURIComponent`, `encodeURI`), and encoded as a
+ * form sends it, which also encodes `!'()~` and writes a space as a plus.
+ */
 export function addressForms(needles: Iterable<string>): string[] {
   const forms = new Set<string>();
   for (const needle of needles) {
     const text = collapse(needle);
     forms.add(text);
     try {
-      forms.add(encodeURIComponent(text));
+      const component = encodeURIComponent(text);
+      forms.add(component);
       forms.add(encodeURI(text));
-      forms.add(encodeURIComponent(text).replace(/%20/g, '+'));
+      forms.add(component.replace(/%20/g, '+'));
+      const form = component.replace(/[!'()~]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+      forms.add(form);
+      forms.add(form.replace(/%20/g, '+'));
     } catch {
       // A lone surrogate cannot be encoded; the plain form still stands.
     }
@@ -257,18 +264,24 @@ const MAX_TREES = 200;
 interface Remembered {
   at: number;
   needles: Set<string>;
-  /** Matchers built from `needles`, dropped whenever they change. */
+  /** Matchers built from `needles`, and each address form lower-cased with its value, dropped whenever they change. */
   plain?: Matcher;
   address?: Matcher;
+  forms?: Array<[form: string, needle: string]>;
 }
 
 const remembered = new Map<number, Remembered>();
 const byTree = new Map<number, Remembered>();
 onTreeClosed((tree) => byTree.delete(tree));
 
-/** The entry's values as they are matched in a title (`plain`) or in an address, built once until they change. */
+/** Each of the entry's values in its address forms, lower-cased, kept until the values change. */
+function formsOf(entry: Remembered): Array<[string, string]> {
+  return (entry.forms ??= [...entry.needles].flatMap((needle) => addressForms([needle]).map((form): [string, string] => [form.toLowerCase(), needle])));
+}
+
+/** The entry's values as they are matched in a title or a message (`plain`) or in an address, kept until they change. */
 function matcherOf(entry: Remembered, address: boolean): Matcher {
-  return address ? (entry.address ??= matcher(addressForms(entry.needles))) : (entry.plain ??= matcher(entry.needles));
+  return address ? (entry.address ??= matcher(formsOf(entry).map(([form]) => form))) : (entry.plain ??= matcher(entry.needles));
 }
 
 function needlesOf(needles: Iterable<string>): Set<string> {
@@ -299,6 +312,7 @@ function store(entries: Map<number, Remembered>, key: number, texts: Set<string>
   if (entry.needles.size !== size) {
     delete entry.plain;
     delete entry.address;
+    delete entry.forms;
   }
   entry.at = now;
   entries.delete(key);
@@ -346,8 +360,38 @@ export function promoteAddressSecrets(tabId: number, address: string, now = Date
   const tree = live(byTree, treeOfTab(tabId), now);
   if (tree === undefined || address === '' || !matcherOf(tree, true).has(address)) return;
   const own = live(remembered, tabId, now)?.needles;
-  const found = [...tree.needles].filter((needle) => own?.has(needle) !== true && matcher(addressForms([needle])).has(address));
-  if (found.length > 0) store(remembered, tabId, new Set(found), now, MAX_TABS);
+  const lower = address.toLowerCase();
+  const found = new Set<string>();
+  for (const [form, needle] of formsOf(tree)) if (own?.has(needle) !== true && lower.includes(form)) found.add(needle);
+  if (found.size > 0) store(remembered, tabId, found, now, MAX_TABS);
+}
+
+/** Makes every value of the tab's tree its own: a form sent into the tab can have put any of them in its page. */
+export function promoteTreeSecrets(tabId: number, now = Date.now()): void {
+  const tree = live(byTree, treeOfTab(tabId), now);
+  if (tree !== undefined) store(remembered, tabId, tree.needles, now, MAX_TABS);
+}
+
+/**
+ * What a top-frame commit means for a tab's values: one a form sent (`form_submit`, also a POST into a tab of the tree
+ * that echoes what it was sent) makes the tree's values the tab's own.
+ */
+export function noteCommitted(details: { tabId: number; frameId: number; transitionType?: string }): void {
+  if (details.frameId === 0 && details.transitionType === 'form_submit') promoteTreeSecrets(details.tabId);
+}
+
+/** The browser swapped a tab for another (a prerendered page): the new tab takes over the old one's own values. */
+export function replaceSecretsTab(addedTabId: number, removedTabId: number): void {
+  const entry = remembered.get(removedTabId);
+  if (entry === undefined) return;
+  remembered.delete(removedTabId);
+  remembered.set(addedTabId, entry);
+}
+
+/** Text the page wrote (a dialog's message), with the tab's own values taken out. */
+export function scrubKnown(tabId: number, text: string): string {
+  const own = live(remembered, tabId, Date.now());
+  return own === undefined || text === '' ? text : (matcherOf(own, false).scrub(text) ?? text);
 }
 
 /**

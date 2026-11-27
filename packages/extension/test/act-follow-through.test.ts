@@ -233,6 +233,27 @@ describe('the secret values a batch notes', () => {
   });
 });
 
+describe('a dialog a step opened', () => {
+  it('is named without the values the tab\'s fields held', async () => {
+    const { shopTab, act, allowOnce, sessionStore } = await load();
+    const secrets = await import('../src/secret-text');
+    await sessionStore.register(alice);
+    const tab = await shopTab();
+    secrets.rememberSecrets(tab, ['hunter2-secret']);
+    browser.reportMainDocument(tab, 'loader-shop');
+    browser.beforeCommand = (tabId, method) => {
+      if (tabId !== tab || method !== 'Input.dispatchKeyEvent') return;
+      browser.beforeCommand = undefined;
+      browser.openDialog(tab, 'Saved hunter2-secret for you');
+    };
+    const acting = act(tab);
+    await allowOnce();
+    const result = await acting;
+    expect(result.dialog).toContain('Saved <redacted> for you');
+    expect(result.dialog).not.toContain('hunter2');
+  });
+});
+
 describe('a tab a step opened, further', () => {
   it('that redirected from the batch\'s origin to one the session may not read shows that origin only', async () => {
     const { shopTab, opensOnKey, act, allowOnce, sessionStore, siteStore } = await load();

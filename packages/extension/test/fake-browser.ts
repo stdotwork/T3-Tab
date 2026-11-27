@@ -112,6 +112,17 @@ export class FakeBrowser {
     this.emit(tabId, 'Page.loadEventFired', {});
   }
 
+  /** The top frame reports its document with a loader, as a real page does, so the worker knows the tab's main document. */
+  reportMainDocument(tabId: number, loaderId: string): void {
+    const tab = this.mustTab(tabId);
+    this.emit(tabId, 'Page.frameNavigated', { frame: { id: tab.frameId, url: tab.url, loaderId } });
+  }
+
+  /** The page opens a JavaScript alert, as the debugger reports it. */
+  openDialog(tabId: number, message: string): void {
+    this.emit(tabId, 'Page.javascriptDialogOpening', { type: 'alert', message, url: this.mustTab(tabId).url, defaultPrompt: '' });
+  }
+
   /** A network request the page started, as the debugger reports it. */
   request(tabId: number): void {
     this.emit(tabId, 'Network.requestWillBeSent', { type: 'XHR', loaderId: 'x', request: { method: 'GET' } });

@@ -589,16 +589,17 @@ export async function checkRealUse() {
       const clicked = await act(
         tab,
         { action: 'fill', ref: refFor(first.text, 'textbox "Username"'), text: 'ada' },
-        { action: 'fill', ref: refFor(first.text, 'textbox "Password"'), text: 'NEWTAB-SECRET-73' },
+        { action: 'fill', ref: refFor(first.text, 'textbox "Password"'), text: 'NEWTAB!(SECRET)-73' },
         { action: 'click', ref: refFor(first.text, 'button "Log in"') },
       );
       assert(!clicked.error, `click: ${clicked.text}`);
       const opened = Number(/^Opened tab (\d+)/m.exec(clicked.text)?.[1]);
       assert(Number.isInteger(opened), `the reply does not name the new tab:\n${clicked.text}`);
-      assert((await js(opened, 'location.search')).includes('NEWTAB-SECRET-73'), 'the form did not send the value in the new tab\'s address');
-      assert(!/NEWTAB-SECRET-73/i.test(clicked.text) && clicked.text.includes('password=<redacted>'), `the act reply shows the address:\n${clicked.text}`);
+      // A form encodes ! ( ) as %21 %28 %29, which encodeURIComponent leaves as they are.
+      assert((await js(opened, 'location.search')).includes('NEWTAB%21%28SECRET%29-73'), 'the form did not send the value in the new tab\'s address');
+      assert(!/NEWTAB/i.test(clicked.text) && clicked.text.includes('password=<redacted>'), `the act reply shows the address:\n${clicked.text}`);
       const listed = await call('tabs', { action: 'list' });
-      assert(!listed.error && !/NEWTAB-SECRET-73/i.test(listed.text) && listed.text.includes('password=<redacted>'), `tabs list:\n${listed.text}`);
+      assert(!listed.error && !/NEWTAB/i.test(listed.text) && listed.text.includes('password=<redacted>'), `tabs list:\n${listed.text}`);
       await call('tabs', { action: 'close', tab: opened });
     });
 
