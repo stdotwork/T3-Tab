@@ -104,6 +104,10 @@ export async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   assert(/textbox "Password"/.test(text(found)), 'find shows the password field');
   assert(!text(found).includes('link "Contact"'), 'find leaves out the rest of the page');
   assert(text(found).length < firstText.length / 3, `find (${text(found).length}) is not much shorter than the page (${firstText.length})`);
+  // Only the match, and the line before a short one: nothing after it and no separators.
+  assert(!text(found).includes('combobox "Country"') && !text(found).includes('\n--\n'), `find printed more than its match:\n${text(found)}`);
+  const foundLink = await call(mcpClient, 'read', { find: 'contact' });
+  assert(/link "Contact" → \/contact/.test(text(foundLink)), `a link found by name does not say where it goes:\n${text(foundLink)}`);
   const foundRegex = await call(mcpClient, 'read', { find: 'link "(about|home)"', regex: true });
   assert(text(foundRegex).includes('link "About"') && text(foundRegex).includes('link "Home"') && !text(foundRegex).includes('link "Contact"'), `find with a regex:\n${text(foundRegex)}`);
   const notFound = await call(mcpClient, 'read', { find: 'no such thing' });

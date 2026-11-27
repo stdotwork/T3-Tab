@@ -76,8 +76,8 @@
       "tokens": 73
     },
     "long.read-url-find": {
-      "chars": 1251,
-      "tokens": 309
+      "chars": 636,
+      "tokens": 152
     },
     "long.open": {
       "chars": 162,
@@ -88,8 +88,8 @@
       "tokens": 1774
     },
     "long.find": {
-      "chars": 1201,
-      "tokens": 290
+      "chars": 575,
+      "tokens": 131
     },
     "long.read-subtree": {
       "chars": 497,

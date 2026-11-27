@@ -176,12 +176,9 @@ export async function formatRead(
   const lines = rendered.map((item) => item.line);
 
   if (find !== undefined) {
-    // Addresses of links written into text are searched, and printed on a matching line, but not beside one.
-    const found = await findLines(
-      rendered.map((item) => item.search ?? item.line),
-      find,
-      { regex: options.regex, context: lines },
-    );
+    // A search renders a link's own line with its address. A text line is searched with the addresses of the links
+    // written into it as well, and prints them only where the query matched in one.
+    const found = await findLines(rendered, find, { regex: options.regex });
     return limit(`${header}\n${found.text}`);
   }
 
