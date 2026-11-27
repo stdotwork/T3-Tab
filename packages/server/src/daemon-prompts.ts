@@ -1,4 +1,5 @@
 import {
+  cleanActSummary,
   PROTOCOL_VERSION,
   type BrowserPromptClosedMessage,
   type BrowserPromptOpenedMessage,
@@ -32,15 +33,26 @@ export function isPromptClosedMessage(value: unknown): value is BrowserPromptClo
   return typeof value === 'object' && value !== null && (value as { type?: unknown }).type === 'browser.promptClosed';
 }
 
-/** Checks a prompt notice the browser sent. A page controls its own title, so the title is cut to a fixed length. */
+/**
+ * Checks a prompt notice the browser sent. A page controls its own title, so the title is cut to a fixed length. An act
+ * prompt's steps are checked as the extension checks them (`cleanActSummary`), so the question asked in the agent's thread
+ * names the action as the panel's card does.
+ */
 export function parsePromptNotice(value: unknown): PromptNotice | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
-  const { id, tool, origin, tab, url } = value as Record<string, unknown>;
+  const { id, tool, origin, tab, url, steps } = value as Record<string, unknown>;
   if (typeof id !== 'string' || id === '' || id.length > 128) return undefined;
   if (typeof tool !== 'string' || !PROMPT_TOOLS.has(tool)) return undefined;
   if (typeof origin !== 'string' || origin === '' || origin.length > MAX_ORIGIN_CHARS) return undefined;
   if (url !== undefined && (typeof url !== 'string' || url === '' || url.length > MAX_URL_CHARS)) return undefined;
-  const notice: PromptNotice = { id, tool: tool as PromptNotice['tool'], origin, ...(url === undefined ? {} : { url }) };
+  const summary = tool === 'act' ? cleanActSummary(steps) : undefined;
+  const notice: PromptNotice = {
+    id,
+    tool: tool as PromptNotice['tool'],
+    origin,
+    ...(url === undefined ? {} : { url }),
+    ...(summary === undefined || summary.length === 0 ? {} : { steps: summary }),
+  };
   if (tab === undefined) return url === undefined ? undefined : notice;
   if (typeof tab !== 'object' || tab === null) return undefined;
   const { id: tabId, title } = tab as Record<string, unknown>;

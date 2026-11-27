@@ -4,6 +4,8 @@
  * (`ComposerPendingApprovalActions` in T3's web app): Decline and the primary answer on the row, every other answer
  * under More. A browser prompt's lasting choice is one of those others, so it is kept but never the dominant button.
  */
+import { actStepsText, type ActStepSummary } from '@t3-tab/protocol';
+
 import type { PermissionDecision, PermissionPrompt } from '../../src/permissions';
 import type { PendingApproval } from './lib/thread-model';
 import { promptChoices, rowsShifted } from './prompt-choices';
@@ -26,7 +28,7 @@ export interface ApprovalModel<D extends string = string> {
   ask: { who?: string; verb: string; subject: string; mono: boolean };
   /** A line under it: the address a prompt would load, or T3's reason. */
   detail?: { text: string; mono: boolean };
-  /** The tab the ask is about, by its title: `"Title"`, or `in "Title"` under an address. */
+  /** The tab the ask is about, by its title: `“Title”`, or `in “Title”` under an address (the quotes the action's names use). */
   tab?: string;
   /** Absent when the asker offers no such answer: nothing is drawn for it and no key gives it. */
   decline?: ApprovalAction<D>;
@@ -38,6 +40,11 @@ export interface ApprovalModel<D extends string = string> {
 }
 
 const plain = (text: string): string => [...text].filter((character) => (character.codePointAt(0) ?? 0) >= 32).join('');
+/**
+ * A tab's title as the card shows it, in the curly quotes the action's names use: the page chooses it, so its own quote
+ * marks become ' and its bidirectional and zero-width marks are dropped, as `actStepsText` does for a name.
+ */
+const plainTitle = (text: string): string => plain(text.replace(/\p{Cf}/gu, '')).replace(/[\p{Pi}\p{Pf}"＂＇„‚〝〞〟❛❜❝❞❮❯「」『』﹁﹂﹃﹄]/gu, "'");
 
 const VERB: Record<PermissionPrompt['tool'], string> = {
   read: 'wants to read',
@@ -45,6 +52,30 @@ const VERB: Record<PermissionPrompt['tool'], string> = {
   act: 'wants to act on',
   run_js: 'wants to run JavaScript on',
 };
+
+/** Most characters of what an act prompt says it will do, so the ask line, site and all, stays within the card's three lines. */
+const ACT_ASK_MAX = 48;
+
+/**
+ * What an act prompt asks to do, from the steps the MCP server described (`click “Add to cart”`): all of it when it is
+ * short, else its first part and "and more", else its first step alone with a shorter name and "and more". Whatever the
+ * steps, the words stay within `ACT_ASK_MAX`, so "on <site>" is never pushed off the line: when even the first step with
+ * a name of 8 characters is longer, the card asks to act.
+ */
+function actVerb(steps: readonly ActStepSummary[] | undefined): string {
+  if (steps === undefined || steps.length === 0) return VERB.act;
+  for (const limits of [{}, { phrases: 1 }]) {
+    const words = actStepsText(steps, 'ask', limits);
+    if (words.length <= ACT_ASK_MAX) return `wants to ${words} on`;
+  }
+  const [first] = steps;
+  if (first === undefined) return VERB.act;
+  for (const name of [24, 16, 8]) {
+    const words = `${actStepsText([first], 'ask', { name })}${steps.length > 1 ? ' and more' : ''}`;
+    if (words.length <= ACT_ASK_MAX) return `wants to ${words} on`;
+  }
+  return VERB.act;
+}
 
 const hostOf = (origin: string): string => {
   try {
@@ -66,10 +97,10 @@ export function promptApproval(prompt: PermissionPrompt, asker: string): Approva
     return { decision: found.decision, label: found.label, ...(found.detail === undefined ? {} : { detail: found.detail }) };
   };
   const address = prompt.url === undefined ? undefined : plain(prompt.url);
-  const quoted = prompt.tab === undefined ? undefined : `"${plain(prompt.tab.title) || '(untitled)'}"`;
+  const quoted = prompt.tab === undefined ? undefined : `“${plainTitle(prompt.tab.title) || '(untitled)'}”`;
   const tab = quoted === undefined ? undefined : address === undefined ? quoted : `in ${quoted}`;
   return {
-    ask: { who: plain(asker), verb: VERB[prompt.tool], subject: hostOf(prompt.origin), mono: true },
+    ask: { who: plain(asker), verb: prompt.tool === 'act' ? actVerb(prompt.steps) : VERB[prompt.tool], subject: hostOf(prompt.origin), mono: true },
     ...(address === undefined ? {} : { detail: { text: address, mono: true } }),
     ...(tab === undefined ? {} : { tab }),
     decline: pick((decision) => decision === 'decline'),

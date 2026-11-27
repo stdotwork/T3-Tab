@@ -8,6 +8,7 @@ import type {
   TabLoadResult,
   ToolSession,
 } from '@t3-tab/protocol';
+import { summaryForSteps } from '@t3-tab/protocol';
 
 import { actOnPage } from './actions';
 import { claimTabs } from './claims';
@@ -127,7 +128,9 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
       let tab = await resolveSessionTab(session, request.params.tab);
       const origin = tabOrigin(tab);
       await sessionStore.observeTabOrigin(tab.id ?? -1, origin);
-      const pass = await permissionPrompts.authorize(origin, 'act', session, promptTab(tab));
+      // What the batch does, as the MCP server described it from its own redacted read, for the prompt to name; only when
+      // it describes these very steps.
+      const pass = await permissionPrompts.authorize(origin, 'act', session, promptTab(tab), undefined, summaryForSteps(request.params.summary, request.params.steps));
       await registeredSession(session);
       await recordApproval(pass, session.id, tab.id ?? -1, origin);
       const currentSession = await registeredSession(session);

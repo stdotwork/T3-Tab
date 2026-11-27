@@ -386,7 +386,7 @@ try {
   await panel.locator('.screen[data-thread-id]').waitFor();
   await sleep(1500);
   await shoot(panel, '13-thread-running-permission-card');
-  await panel.getByRole('button', { name: 'Allow acting once' }).click();
+  await panel.getByRole('button', { name: 'Allow once' }).click();
   await pendingClick;
   await sleep(600);
   await shoot(panel, '14-thread-running');

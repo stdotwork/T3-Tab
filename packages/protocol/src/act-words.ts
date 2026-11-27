@@ -3,7 +3,7 @@
  * that asks for it ("click “Add to cart”"). Built only from each step's action, the element it targets as a read printed it
  * (role and name), and a key name; what a step types or chooses is never part of it, because it can be a password.
  */
-import type { ActAction } from './index.js';
+import type { ActAction, ActStep } from './index.js';
 
 /** The element a step acts on, as a read printed it: `e12 button "Add to cart"` is `{ role: 'button', name: 'Add to cart' }`. */
 export interface ActTarget {
@@ -24,6 +24,45 @@ const NAME_MAX = 40;
 /** Most phrases a description lists before "and N more". */
 const PHRASES_MAX = 3;
 
+/** Most steps a summary carries, and most characters of a role or name in one; more is not shown anyway. */
+const SUMMARY_STEPS_MAX = 100;
+const SUMMARY_TEXT_MAX = 200;
+const ACTIONS = new Set<string>(['click', 'type', 'fill', 'press', 'select', 'scroll', 'hover', 'wait']);
+
+/**
+ * A summary as it arrives over a link, checked: known actions only, a role and name as short strings, a key only when
+ * `namedKey` shows it. Anything else in it is dropped; a summary that is not a list is none.
+ */
+export function cleanActSummary(value: unknown): ActStepSummary[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.slice(0, SUMMARY_STEPS_MAX).flatMap((step): ActStepSummary[] => {
+    if (typeof step !== 'object' || step === null) return [];
+    const { action, target, key } = step as Record<string, unknown>;
+    if (typeof action !== 'string' || !ACTIONS.has(action)) return [];
+    const role = (target as { role?: unknown } | undefined)?.role;
+    const name = (target as { name?: unknown } | undefined)?.name;
+    const cleanTarget = typeof role === 'string' && typeof name === 'string' ? { role: role.slice(0, SUMMARY_TEXT_MAX), name: name.slice(0, SUMMARY_TEXT_MAX) } : undefined;
+    const cleanKey = action === 'press' && typeof key === 'string' ? namedKey(key.slice(0, SUMMARY_TEXT_MAX)) : undefined;
+    return [{ action: action as ActAction, ...(cleanTarget === undefined ? {} : { target: cleanTarget }), ...(cleanKey === undefined ? {} : { key: cleanKey }) }];
+  });
+}
+
+/**
+ * A batch's summary, checked against the batch itself: kept only when it has one entry per step, each with that step's
+ * action and, for a key, the key the step presses. The names in it are the MCP server's, from its own redacted read; a
+ * summary that does not describe these steps describes nothing.
+ */
+export function summaryForSteps(value: unknown, steps: readonly ActStep[]): ActStepSummary[] | undefined {
+  const summary = cleanActSummary(value);
+  if (summary === undefined || summary.length !== steps.length) return undefined;
+  const matches = summary.every((entry, index) => {
+    const step = steps[index];
+    if (step === undefined || !(entry.action in step)) return false;
+    return entry.key === undefined || ('press' in step && entry.key === namedKey(step.press.key));
+  });
+  return matches ? summary : undefined;
+}
+
 /** Controls and line breaks (a newline, a tab, U+2028 and U+2029), which become a space. */
 const BREAKS = /[\p{Cc}\p{Zl}\p{Zp}]/gu;
 /**
@@ -40,9 +79,9 @@ const FORMAT = /\p{Cf}/gu;
 const QUOTES = /[\p{Pi}\p{Pf}"＂＇„‚〝〞〟❛❜❝❞❮❯「」『』﹁﹂﹃﹄]/gu;
 
 /** A page's own words, safe to show: one line, no hidden characters, no quote marks of its own, at most `NAME_MAX` characters. */
-function plainName(name: string): string {
+function plainName(name: string, max = NAME_MAX): string {
   const text = name.replace(FORMAT, '').replace(BREAKS, ' ').replace(QUOTES, "'").replace(/\s+/g, ' ').trim();
-  return text.length <= NAME_MAX ? text : `${text.slice(0, NAME_MAX - 1).trimEnd()}…`;
+  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
 const NAMED_KEYS = new Set([
@@ -67,17 +106,31 @@ const NAMED_KEYS = new Set([
   'PageDown',
   'Insert',
 ]);
-const MODIFIERS = new Set(['Control', 'Ctrl', 'Shift', 'Alt', 'Option', 'Meta', 'Cmd', 'Command']);
+/** Each modifier, by the names a key may give it. */
+const MODIFIERS = new Map([
+  ['Control', 'control'],
+  ['Ctrl', 'control'],
+  ['Shift', 'shift'],
+  ['Alt', 'alt'],
+  ['Option', 'alt'],
+  ['Meta', 'meta'],
+  ['Cmd', 'meta'],
+  ['Command', 'meta'],
+]);
+/** Most characters of a key shown: four modifiers and a named key, as `Control+Shift+ArrowRight`. */
+const KEY_MAX = 24;
 
 /**
  * The key a `press` step sends, when it is safe to show: a named key (Enter, Escape, an arrow, F5) or a shortcut with
- * Control, Alt or Meta (Control+A). A bare character, or one with Shift alone, is typing, so it is never shown.
+ * Control, Alt or Meta (Control+A), each modifier once and the whole within `KEY_MAX`. A bare character, or one with Shift
+ * alone, is typing, so it is never shown.
  */
 export function namedKey(key: string): string | undefined {
   const parts = key.trim().split('+');
   const last = parts.at(-1) ?? '';
   const modifiers = parts.slice(0, -1);
   if (modifiers.some((part) => !MODIFIERS.has(part))) return undefined;
+  if (new Set(modifiers.map((part) => MODIFIERS.get(part))).size !== modifiers.length || parts.join('+').length > KEY_MAX) return undefined;
   if (NAMED_KEYS.has(last) || /^F\d{1,2}$/.test(last)) return parts.join('+');
   const chord = modifiers.some((part) => part !== 'Shift');
   return chord && /^[A-Za-z0-9]$/.test(last) ? parts.join('+') : undefined;
@@ -111,8 +164,8 @@ const WITHOUT_TARGET: Record<ActAction, { done: string; ask: string }> = {
 const ARTICLE = /^[aeiou]/i;
 
 /** An element in words: its name in quotes, or its role when it has none (`a button`). */
-function targetWords(target: ActTarget): string {
-  const name = plainName(target.name);
+function targetWords(target: ActTarget, nameMax: number): string {
+  const name = plainName(target.name, nameMax);
   if (name !== '') return `“${name}”`;
   const role = plainName(target.role) || 'element';
   return `${ARTICLE.test(role) ? 'an' : 'a'} ${role}`;
@@ -125,7 +178,9 @@ const joinAnd = (items: readonly string[]): string => (items.length < 2 ? (items
  * `ask` is for a prompt, after "wants to" (`fill “Name” and “Email”, click “Create account”`). Steps in a row with the same
  * verb share it; past three phrases the rest are "and more".
  */
-export function actStepsText(steps: readonly ActStepSummary[], mood: Mood): string {
+export function actStepsText(steps: readonly ActStepSummary[], mood: Mood, limits: { phrases?: number; name?: number } = {}): string {
+  const phrasesMax = limits.phrases ?? PHRASES_MAX;
+  const nameMax = limits.name ?? NAME_MAX;
   const phrases: string[] = [];
   // Targets are told apart by their whole role and name, so two fields whose shortened names match are both listed.
   let last: { action: ActAction; targets: string[]; seen: Set<string> } | undefined;
@@ -150,7 +205,7 @@ export function actStepsText(steps: readonly ActStepSummary[], mood: Mood): stri
       if (phrases.at(-1) !== words) phrases.push(words);
       continue;
     }
-    const words = targetWords(step.target);
+    const words = targetWords(step.target, nameMax);
     const id = `${step.target.role}\n${step.target.name}`;
     if (last?.action === step.action) {
       if (!last.seen.has(id)) {
@@ -164,6 +219,6 @@ export function actStepsText(steps: readonly ActStepSummary[], mood: Mood): stri
   }
   flush();
   if (phrases.length === 0) return mood === 'done' ? 'Acted' : 'act';
-  const text = phrases.length > PHRASES_MAX ? `${phrases.slice(0, PHRASES_MAX - 1).join(', ')} and more` : phrases.join(', ');
+  const text = phrases.length > phrasesMax ? `${phrases.slice(0, Math.max(1, phrasesMax - 1)).join(', ')} and more` : phrases.join(', ');
   return mood === 'done' ? `${text[0]?.toUpperCase() ?? ''}${text.slice(1)}` : text;
 }

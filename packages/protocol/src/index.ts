@@ -279,7 +279,11 @@ export interface BrowserMethods {
   'page.screenshot': { params: { tab?: number; maxEdge: number }; result: ScreenshotResult };
   /** `skipReadOver` is for the tabs the batch opened, as for a load. */
   'page.act': {
-    params: LoadOptions & { tab?: number; steps: ActStep[]; backendIds: Array<number | null>; epoch: number };
+    /**
+     * `summary` is what the batch does in the owner's words, one entry per step: built by the MCP server from each step's
+     * action and the element the session's reads printed for its ref, never from text the agent wrote. A prompt shows it.
+     */
+    params: LoadOptions & { tab?: number; steps: ActStep[]; backendIds: Array<number | null>; epoch: number; summary?: ActStepSummary[] };
     result: PageActionResult & ActFollowThrough;
   };
   'page.eval': { params: { tab?: number; expression: string }; result: { value: unknown } };
@@ -303,6 +307,8 @@ export interface PromptNotice {
   tab?: { id: number; title: string };
   /** The address being opened or gone to, without credentials or fragment. */
   url?: string;
+  /** For `act`: what the batch does, as `page.act`'s `summary` (checked by `cleanActSummary`). */
+  steps?: ActStepSummary[];
 }
 
 export type BrowserMethod = keyof BrowserMethods;
@@ -677,4 +683,5 @@ export interface NativeErrorResponse {
 
 export type NativeResponse = NativeDaemonResponse | NativeErrorResponse;
 
-export { actStepsText, namedKey, type ActStepSummary, type ActTarget } from './act-words.js';
+export { actStepsText, cleanActSummary, namedKey, summaryForSteps, type ActStepSummary, type ActTarget } from './act-words.js';
+import type { ActStepSummary } from './act-words.js';

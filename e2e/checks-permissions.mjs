@@ -103,10 +103,15 @@ export async function checkPermissions({ mcpClient, mcpClientB, page, serviceWor
   const firstAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const actPrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
   assertPromptTab(actPrompt, 'Permission A');
+  // The prompt names the step and the element the read printed for its ref, built by the server from the steps.
+  assert(
+    JSON.stringify(actPrompt.steps) === JSON.stringify([{ action: 'click', target: { role: 'button', name: 'Action A' } }]),
+    `The act prompt does not name its step: ${JSON.stringify(actPrompt.steps)}`,
+  );
   await answerInPanel(panelPage, serviceWorker, actPrompt, 'Enter');
   const allowedAct = await firstAct;
   assert(allowedAct.isError !== true && text(allowedAct).includes('Action A completed'), `Allow once did not run the act: ${text(allowedAct)}`);
-  console.log(`Ask origin, Enter on the panel's card (Allow acting once): act succeeded on tab ${actPrompt.tab.id} "${actPrompt.tab.title}"`);
+  console.log(`Ask origin, Enter on the panel's card (Allow once): act succeeded on tab ${actPrompt.tab.id} "${actPrompt.tab.title}"`);
 
   const secondAct = rawCall(mcpClient, 'act', { tab: tabA, steps: [{ action: 'click', ref: actionRef }] });
   const declinePrompt = await waitForPrompt(serviceWorker, (prompt) => prompt.session.id === sessionA.id && prompt.tool === 'act');
@@ -505,11 +510,11 @@ async function assertPromptRows(panelPage, serviceWorker) {
   const actLabels = await labels('Row two');
   const manage = 'Manage sites';
   assert(
-    JSON.stringify(readLabels) === JSON.stringify(['Decline', 'Allow reading once', 'More approval options', 'Always allow reading on this siteOpening, acting and JavaScript still ask', manage]),
+    JSON.stringify(readLabels) === JSON.stringify(['Decline', 'Allow once', 'More approval options', 'Always allow reading on this siteOpening, acting and JavaScript still ask', manage]),
     `Read prompt answers: ${JSON.stringify(readLabels)}`,
   );
   assert(
-    JSON.stringify(actLabels) === JSON.stringify(['Decline', 'Allow acting once', 'More approval options', 'Always allow everything on this siteReading, opening, acting and JavaScript', manage]),
+    JSON.stringify(actLabels) === JSON.stringify(['Decline', 'Allow once', 'More approval options', 'Always allow everything on this siteReading, opening, acting and JavaScript', manage]),
     `Act prompt answers: ${JSON.stringify(actLabels)}`,
   );
   assert((await row('Row one').locator('.key-hint').count()) === 2 && (await row('Row two').locator('.key-hint').count()) === 0, 'Enter and Escape are not shown on the top card alone');
@@ -567,7 +572,7 @@ async function assertPromptUi(panelPage, serviceWorker, prompt) {
   const card = panelPage.locator('li.prompt-card').filter({ has: panelPage.locator('.approval-where.mono', { hasText: prompt.url }) });
   await card.waitFor();
   assert((await card.getAttribute('data-tab-id')) === null, 'A prompt for a page not opened yet is tied to a tab');
-  const allow = panelPage.getByRole('button', { name: 'Allow opening once' });
+  const allow = panelPage.getByRole('button', { name: 'Allow once' });
   await allow.waitFor();
   assert(await allow.isDisabled(), 'New prompt buttons were enabled immediately');
   const handle = await allow.elementHandle();
@@ -608,6 +613,12 @@ async function answerInPanel(panelPage, serviceWorker, prompt, answer) {
     const card = panelPage.locator(`li.prompt-card[data-prompt-id="${prompt.id}"]`);
     await card.waitFor();
     assert((await card.locator('.answer-btn').first().isDisabled()) === true, 'A new card took answers at once');
+    // An act card says what it will do to which element, in the words the prompt carries.
+    const named = prompt.tool === 'act' ? prompt.steps?.find((step) => step.target !== undefined)?.target?.name : undefined;
+    if (named !== undefined) {
+      const ask = await card.locator('.approval-ask').innerText();
+      assert(ask.includes(`“${named}”`), `The act card does not name "${named}": ${ask}`);
+    }
     // Keys go to the top card once the panel sees it whole, which locks it for another 500 ms. That sighting comes from
     // an IntersectionObserver and, in this headless panel tab, sometimes about a second late: wait for it, then the lock.
     await card.locator('[data-keyed="true"]').waitFor({ timeout: 5_000 });

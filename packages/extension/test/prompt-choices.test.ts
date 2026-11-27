@@ -5,7 +5,7 @@ import { promptChoices, rowsShifted, SITE_CHOICES, siteStatus } from '../entrypo
 describe('what each prompt button says it grants', () => {
   it('limits a read prompt\'s lasting choice to reading', () => {
     expect(promptChoices('read').map((choice) => [choice.decision, choice.label])).toEqual([
-      ['allow-once', 'Allow reading once'],
+      ['allow-once', 'Allow once'],
       ['always-allow-read', 'Always allow reading on this site'],
       ['decline', 'Decline'],
     ]);
@@ -19,9 +19,8 @@ describe('what each prompt button says it grants', () => {
       expect(choices[1]?.detail).toBe('Reading, opening, acting and JavaScript');
     }
     expect(promptChoices('read')[1]?.detail).toBe('Opening, acting and JavaScript still ask');
-    expect(promptChoices('act')[0]?.label).toBe('Allow acting once');
-    expect(promptChoices('run_js')[0]?.label).toBe('Allow JavaScript once');
-    expect(promptChoices('open')[0]?.label).toBe('Allow opening once');
+    // The ask line says what is asked; the primary answer is the same plain words for every kind.
+    for (const tool of ['read', 'open', 'act', 'run_js'] as const) expect(promptChoices(tool)[0]?.label).toBe('Allow once');
   });
 
   it('describes each site setting and names what each choice grants', () => {

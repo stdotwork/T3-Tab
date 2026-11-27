@@ -463,7 +463,15 @@ async function checkPromptOverlay(page, shotsDir) {
   const session = { id: 'layout-session', name: 'Claude Code' };
   const tab = { id: 4242, title: 'Cable Shop – USB-C cables, braided and basic, every length in stock' };
   const pending = [
-    { id: 'layout-act', origin: 'http://127.0.0.1:41889', tool: 'act', session, tab },
+    // An act that names a long batch: the ask line must still show it, the site among it, within the card.
+    {
+      id: 'layout-act', origin: 'http://127.0.0.1:41889', tool: 'act', session, tab,
+      steps: [
+        { action: 'fill', target: { role: 'textbox', name: 'Shipping address, the line that holds the street' } },
+        { action: 'fill', target: { role: 'textbox', name: 'Shipping address, the line that holds the suburb' } },
+        { action: 'click', target: { role: 'button', name: 'Continue to payment and review the order' } },
+      ],
+    },
     { id: 'layout-js', origin: 'https://checkout.example-shop.test:8443', tool: 'run_js', session, tab: { id: 4343, title: 'Checkout' } },
     // A goto on another tab: the longest card, with the address, the tab it moves and Go to tab.
     { id: 'layout-goto', origin: 'https://docs.example.test', tool: 'open', session, tab: { id: 4545, title: 'Payments guide – retries and backoff for webhooks' }, url: 'https://docs.example.test/guides/payments/webhooks/retries?section=backoff&lang=en-GB#exponential' },

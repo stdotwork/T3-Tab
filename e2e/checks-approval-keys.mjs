@@ -247,8 +247,8 @@ export async function checkApprovalKeys({ panelPage: page, serviceWorker }) {
   const gotoCard = promptCard('g1');
   await gotoCard.waitFor();
   const gotoText = await gotoCard.innerText();
-  assert(gotoText.includes('https://shop.test/cart?step=2') && gotoText.includes('in "Checkout"') && gotoText.includes('On another tab') && gotoText.includes('Go to tab'), `A goto card reads:\n${gotoText}`);
-  console.log('Approval keys: a goto card names the address, in "Checkout", and that it is another tab');
+  assert(gotoText.includes('https://shop.test/cart?step=2') && gotoText.includes('in “Checkout”') && gotoText.includes('On another tab') && gotoText.includes('Go to tab'), `A goto card reads:\n${gotoText}`);
+  console.log('Approval keys: a goto card names the address, in “Checkout”, and that it is another tab');
 
   await prompts([]);
   await page.evaluate(() => {

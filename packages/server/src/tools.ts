@@ -1,6 +1,8 @@
 import {
+  type ActAction,
   type ActFollowThrough,
   type ActStep,
+  type ActStepSummary,
   actStepRef,
   DEFAULT_SCREENSHOT_MAX_EDGE,
   NO_TAB_MESSAGE,
@@ -11,12 +13,14 @@ import {
   type ToolContent,
   type ToolMethod,
   type ToolSession,
+  namedKey,
 } from '@t3-tab/protocol';
 import type { z } from 'zod';
 
 import type { BrowserLink } from './browser-link.js';
 import type { SetValue } from './reader/echo.js';
 import { type RenderedLine, truncate } from './reader/format.js';
+import type { RefTable } from './reader/refs.js';
 import { formatRead, LOAD_REPLY_MAX, MAX_OUTPUT_CHARS, type ReadOptions, searchView } from './reader/page.js';
 import { actParams, convertStep, MAX_FIND, readParams, runJsParams, screenshotParams, tabsParams } from './tool-schemas.js';
 
@@ -187,6 +191,7 @@ async function runAct(
     backendIds,
     epoch: state.currentEpoch,
     skipReadOver: LOAD_REPLY_MAX,
+    summary: actSummary(params.steps, state.refTable),
   });
   // A failed step is told first and the tabs the batch opened after its own reply, so that reply leaves both their room
   // under the cap.
@@ -208,6 +213,19 @@ async function runAct(
   const whole = `${reply}${await openedLines(link, session, page)}`;
   if (failed !== '') throw new Error(`${failed}${whole}`);
   return whole;
+}
+
+/**
+ * What an `act` batch does, for the owner's prompt: each step's action, the role and name the session's reads printed for
+ * its ref, and a key only when it names one. Nothing the agent wrote: not the text a step types, the option it picks, or a
+ * key that is a character.
+ */
+export function actSummary(steps: ReadonlyArray<{ action: ActAction; ref?: string | undefined; key?: string | undefined }>, refs: RefTable): ActStepSummary[] {
+  return steps.map((step) => {
+    const target = step.ref === undefined ? undefined : refs.targetOf(step.ref);
+    const key = step.action === 'press' && step.key !== undefined ? namedKey(step.key) : undefined;
+    return { action: step.action, ...(target === undefined ? {} : { target }), ...(key === undefined ? {} : { key }) };
+  });
 }
 
 /** What a ref an agent made up looks like: anything but the `e12` a read prints. */

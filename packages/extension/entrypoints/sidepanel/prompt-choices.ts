@@ -9,17 +9,13 @@ export interface PromptChoice {
   danger?: true;
 }
 
-const ONCE: Record<PromptKind, string> = {
-  read: 'Allow reading once',
-  open: 'Allow opening once',
-  act: 'Allow acting once',
-  run_js: 'Allow JavaScript once',
-};
-
-/** The buttons of a permission prompt. A read prompt's lasting choice grants reading only. */
+/**
+ * The buttons of a permission prompt. The ask line says what is asked, so the primary answer is plain "Allow once": it
+ * allows that one request. A read prompt's lasting choice grants reading only.
+ */
 export function promptChoices(tool: PromptKind): PromptChoice[] {
   return [
-    { decision: 'allow-once', label: ONCE[tool] },
+    { decision: 'allow-once', label: 'Allow once' },
     tool === 'read'
       ? { decision: 'always-allow-read', label: 'Always allow reading on this site', detail: 'Opening, acting and JavaScript still ask' }
       : { decision: 'always-allow', label: 'Always allow everything on this site', detail: 'Reading, opening, acting and JavaScript' },

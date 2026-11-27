@@ -8,6 +8,7 @@ import WebSocket from 'ws';
 
 import { Agents } from '../src/agents/conversations.js';
 import type { T3PanelPairing } from '../src/agents/t3-pairing.js';
+import { parsePromptNotice } from '../src/daemon-prompts.js';
 import { startDaemon, type DaemonHandle } from '../src/daemon.js';
 import type { Setup } from '../src/setup.js';
 
@@ -239,5 +240,35 @@ describe('the panel\'s setup and pairing requests', () => {
       'mode:th1',
       'mode:bad',
     ]);
+  });
+});
+
+describe('a prompt notice from the browser', () => {
+  const base = { id: 'p1', tool: 'act', origin: 'https://shop.example', tab: { id: 4, title: 'Shop' } };
+
+  it('keeps an act prompt\'s steps, checked, so the question in the agent\'s thread names the action', () => {
+    const notice = parsePromptNotice({
+      ...base,
+      steps: [
+        { action: 'click', target: { role: 'button', name: 'Add to cart' } },
+        { action: 'press', key: 'Enter' },
+        { action: 'press', key: 'x' },
+        { action: 'type', target: { role: 'textbox', name: 'Email' }, text: 'ada@example.com' },
+        { action: 'launch' },
+      ],
+    });
+    expect(notice?.steps).toEqual([
+      { action: 'click', target: { role: 'button', name: 'Add to cart' } },
+      { action: 'press', key: 'Enter' },
+      { action: 'press' },
+      { action: 'type', target: { role: 'textbox', name: 'Email' } },
+    ]);
+    expect(JSON.stringify(notice)).not.toContain('ada@');
+  });
+
+  it('carries no steps for another kind of prompt, or when none are sent', () => {
+    expect(parsePromptNotice({ ...base, tool: 'read', steps: [{ action: 'click' }] })?.steps).toBeUndefined();
+    expect(parsePromptNotice(base)).toEqual(base);
+    expect(parsePromptNotice({ ...base, steps: 'click' })).toEqual(base);
   });
 });
