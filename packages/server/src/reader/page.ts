@@ -3,6 +3,7 @@ import type { PageReadResult } from '@t3-tab/protocol';
 import { elideEchoes, type SetValue } from './echo.js';
 import { findLines } from './find.js';
 import { collapseGroups, type Keep, LINK_MARK, MORE_INSIDE, RefGoneError, type RenderedLine, renderView, truncate, type View } from './format.js';
+import { OUTLINE_AT, outlineNote, outlineView } from './outline.js';
 import { RefTable } from './refs.js';
 import { createSmartDiff } from './smart-diff.js';
 
@@ -202,7 +203,15 @@ export async function formatRead(
     const room = max - NOTE_ROOM - header.length;
     const shown = options.ref === undefined && options.depth === undefined ? collapseGroups(view, room, budget) : { lines: rendered, folded: [] };
     const within = withinBudget(shown.lines, budget, header.length, shown.folded, max);
-    return limit(`${header}\n${within.text}${depthNote}`, within.note);
+    const reply = limit(`${header}\n${within.text}${depthNote}`, within.note);
+    // A long page is outlined, so a read or an act sends its shape and the refs to read further, not all of it. A load
+    // keeps its own rule, and a ref or a depth asks for that shape.
+    if (options.load === true || options.ref !== undefined || options.depth !== undefined || reply.length - header.length - 1 <= OUTLINE_AT) {
+      return reply;
+    }
+    const outline = outlineView(view);
+    const short = limit(`${header}\n${outline.lines.map((item) => item.line).join('\n')}`, outlineNote(outline));
+    return short.length < reply.length ? short : reply;
   };
   // A load's reply carries the page only when it is short; otherwise the agent's read gets it.
   const wholeReply = (): string => {

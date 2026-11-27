@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { formatRead, LOAD_REPEAT_MS, LOAD_REPLY_MAX, MAX_OUTPUT_CHARS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
-import { ax, buttonPage, docsPage, feed, longArticle, page, signInPage } from './ax-fixtures.js';
+import { OUTLINE_AT } from '../src/reader/outline.js';
+import { formatRead, LOAD_REPEAT_MS, MAX_OUTPUT_CHARS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
+import { ax, buttonPage, docsPage, feed, fieldPage, longArticle, longPage, page, signInPage } from './ax-fixtures.js';
 
 describe('reading a page', () => {
   it('returns the full text on the first read, with a header line', async () => {
@@ -141,7 +142,7 @@ describe('reading a page', () => {
   });
 
   it('cuts a long reply at a line and says how to read the rest', async () => {
-    const reply = await formatRead(new TabState(), 's1', page(buttonPage(2_000)), {});
+    const reply = await formatRead(new TabState(), 's1', page(buttonPage(2_000)), { all: true });
     expect(reply.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
     expect(reply).toMatch(/… truncated at 12000 characters\. Use find, a ref subtree or depth to read the rest\.$/);
     expect(reply).not.toContain('"Button 2000"');
@@ -184,9 +185,10 @@ describe('a load reply', () => {
     const long = page(buttonPage(400));
     const loaded = await formatRead(state, 's', long, { load: true });
     expect(loaded).toMatch(/^tab 7: Test page — http:\/\/localhost\/test\n\(The page is [\d,]+ characters, too long for this reply: read shows it, find searches it\.\)$/);
+    // The read gets the page, outlined because it is long.
     const read = await formatRead(state, 's', long, {});
-    expect(read.length).toBeGreaterThan(LOAD_REPLY_MAX);
-    expect(read).toContain('Button 400');
+    expect(read).toContain('"Button 40"');
+    expect(read).toMatch(/\(Outline of a long page: 360 links and buttons left out\. .*\)$/);
     // A find on a long page is still answered.
     expect(await formatRead(new TabState(), 's', long, { load: true, find: 'Button 399' })).toContain('Button 399');
   });
@@ -357,7 +359,8 @@ describe('text in the default view', () => {
     const nodes = buttonPage(450);
     nodes[0] = { ...nodes[0]!, children: [...nodes[0]!.children, '9000'] };
     nodes.push(ax(9000, 'paragraph', '', [9001]), ax(9001, 'StaticText', 'A closing remark that does not fit.'));
-    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    // A depth that hides nothing shows the default view whole: a long page's outline would leave the buttons out.
+    const reply = await formatRead(new TabState(), 's1', page(nodes), { depth: 5 });
     expect(reply).toContain('"Button 450"');
     expect(reply).not.toContain('closing remark');
     expect(reply).toMatch(/\(1 text lines left out, 35 characters/);
@@ -368,7 +371,7 @@ describe('text in the default view', () => {
     const nodes = buttonPage(2_000);
     nodes[0] = { ...nodes[0]!, children: ['9000', ...nodes[0]!.children] };
     nodes.push(ax(9000, 'paragraph', '', [9001]), ax(9001, 'StaticText', 'An intro.'));
-    const reply = await formatRead(new TabState(), 's1', page(nodes), {});
+    const reply = await formatRead(new TabState(), 's1', page(nodes), { depth: 5 });
     expect(reply).toContain('… truncated at 12000 characters.');
     expect(reply).toMatch(/\(1 text lines left out, 9 characters: .*\)$/);
   });
@@ -462,6 +465,65 @@ describe('text in the default view', () => {
     expect(reloaded).toContain('"Incorrect username or password."');
     expect(reloaded).toContain('textbox "Password" value=<redacted>');
     expect(reloaded).not.toContain('hunter2');
+  });
+});
+
+describe('an outline of a long page', () => {
+  const note = /\n\(Outline of a long page: 91 links and buttons, 8 text lines \(2400 characters\) left out\. find searches them, read a ref for one part, all for the whole page\)$/;
+
+  it('keeps the shape and the first of the rest, and says how to get at what it left out', async () => {
+    const whole = await formatRead(new TabState(), 's1', page(longPage()), { depth: 9 });
+    expect(whole.length).toBeGreaterThan(OUTLINE_AT);
+    const reply = await formatRead(new TabState(), 's1', page(longPage()), {});
+    expect(reply).toMatch(note);
+    expect(reply.length).toBeLessThan(whole.length / 2);
+    // Headings, landmarks, the form with its field and button, the live region and the dialog.
+    for (const line of ['# Report', 'e22 form "Search"', '  e23 textbox "Query"', '  e24 button "Go"', 'e25 list "Items"', 'alert "Report saved."', 'e138 dialog "Cookies"', '  "We use cookies."', '  e139 button "Accept"']) {
+      expect(reply.split('\n')).toContain(line);
+    }
+    // The first links, and the first text of the main content.
+    expect(reply).toContain('e65 link "Item 40"');
+    expect(reply).not.toContain('"Item 41"');
+    expect(reply).toContain('"Paragraph 4 of the report');
+    expect(reply).not.toContain('"Paragraph 5 of the report');
+    // Long lists around the content fold to one line each; a left-out link takes what it holds with it.
+    expect(reply).toContain('e1 navigation "Site" (20 links; read e1): "Nav 1"');
+    expect(reply).toContain('e127 contentinfo "Footer" (10 links; read e127)');
+    expect(reply).not.toContain('Story');
+  });
+
+  it('outlines a full read and the whole page an act replies with, not a load, a ref, depth, all, find or a diff', async () => {
+    expect(await formatRead(new TabState(), 's1', page(longPage()), { full: true })).toMatch(note);
+    expect(await formatRead(new TabState(), 's1', page(longPage()), { echoed: [] })).toMatch(note);
+    expect(await formatRead(new TabState(), 's1', page(longPage()), { load: true })).toContain('too long for this reply');
+    for (const options of [{ ref: 'e25' }, { depth: 9 }, { all: true }, { find: 'Item' }]) {
+      const state = new TabState();
+      // A ref read needs the ref handed out first.
+      await formatRead(state, 's0', page(longPage()), {});
+      expect(await formatRead(state, 's1', page(longPage()), options)).not.toContain('Outline of a long page');
+    }
+    const state = new TabState();
+    await formatRead(state, 's1', page(longPage()), {});
+    const changed = longPage().map((node) => (node.id === '590' ? { ...node, name: 'Item ninety-one' } : node));
+    expect(await formatRead(state, 's1', page(changed), {})).toBe(
+      'tab 7\nChanged since the last read:\n@@\n   e115 link "Item 90"\n-  e116 link "Item 91"\n+  e116 link "Item ninety-one"\n   e117 link "Item 92"',
+    );
+  });
+
+  it('keeps every line in the baseline, so a later read sees a change to what it left out', async () => {
+    const state = new TabState();
+    await formatRead(state, 's1', page(longPage()), {});
+    expect(await formatRead(state, 's1', page(longPage()), {})).toBe('tab 7\nNo changes since the last read.');
+    const changed = longPage().map((node) => (node.id === '323' ? { ...node, name: 'Paragraph 12 was rewritten.' } : node));
+    const reply = await formatRead(state, 's1', page(changed), {});
+    expect(reply).toContain('+"Paragraph 12 was rewritten."');
+  });
+
+  it('leaves a long page whole when its outline would not be shorter', async () => {
+    const reply = await formatRead(new TabState(), 's1', page(fieldPage(300)), {});
+    expect(reply.length).toBeGreaterThan(OUTLINE_AT);
+    expect(reply).toContain('e300 textbox "Field 300"');
+    expect(reply).not.toContain('Outline');
   });
 });
 

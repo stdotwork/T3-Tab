@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { BrowserLink } from '../src/browser-link.js';
 import { TabState } from '../src/reader/page.js';
 import { runTool } from '../src/tools.js';
-import { buttonPage, page, signInPage } from './ax-fixtures.js';
+import { buttonPage, fieldPage, page, signInPage } from './ax-fixtures.js';
 
 type Handlers = { [M in BrowserMethod]?: (params: BrowserMethods[M]['params']) => BrowserMethods[M]['result'] };
 
@@ -371,7 +371,7 @@ describe('act follow-through', () => {
   });
 
   it('keeps the whole reply, the opened tab and its page included, within the cap', async () => {
-    const big = page(buttonPage(900), { tab: 7 });
+    const big = page(fieldPage(900), { tab: 7 });
     const longReport = page(buttonPage(140), { tab: 12, title: 'Annual report', url: 'http://localhost/report' });
     const link = fakeBrowser({
       'page.read': (params) => (params.tab === 12 ? reportPage() : page(buttonPage(1))),
@@ -388,7 +388,7 @@ describe('act follow-through', () => {
   });
 
   it('keeps a failed batch within the cap too, its failure line included', async () => {
-    const big = page(buttonPage(900), { tab: 7 });
+    const big = page(fieldPage(900), { tab: 7 });
     const longReport = page(buttonPage(140), { tab: 12, title: 'Annual report', url: 'http://localhost/report' });
     const link = fakeBrowser({
       'page.read': () => page(buttonPage(1)),

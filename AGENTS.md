@@ -275,7 +275,7 @@ when needed.
 `chrome.debugger` (`Accessibility.getFullAXTree`), trimmed in the extension to what the reader prints
 (`packages/extension/src/ax.ts`). The reader is in `packages/server/src/reader`: `format.ts` turns the
 tree into lines with refs, `refs.ts` keeps a ref stable for an element until the tab's document is
-replaced, `smart-diff.ts` is the line diff, `find.ts` the search, and `page.ts` puts a reply together and
+replaced, `smart-diff.ts` is the line diff, `find.ts` the search, `outline.ts` the outline of a long page, and `page.ts` puts a reply together and
 caps it at 12,000 characters. Diff baselines are kept per MCP server process, so two agents reading the
 same tab do not take each other's diffs. A reply starts with `tab <id>: <title> — <url>`; when the session
 last saw that same title and address for the tab, it starts with `tab <id>` alone.
@@ -406,6 +406,18 @@ buttons; read e14): "Getting Started", "Installation", …`, and the last name t
 `»`). The text a folded list held counts in the note on what was left out. Reading that ref lists them with the refs they already had, and
 `find` searches them. Only the default view of a whole page folds; a `ref` read, `depth`, `all`, `find` and diffs do not,
 and the diff baseline holds every line.
+A long page is outlined (`packages/server/src/reader/outline.ts`). When the default view of a whole page, folded and held to
+the text budget as above, is over `OUTLINE_AT` (6,000 characters), a `read` (a `full` one and `read` with a `url` too) or an
+`act` reply that shows the whole page sends its outline instead: every heading, landmark and other named container, every
+field, and every element inside a form or search landmark; live regions and dialogs whole; the first `OUTLINE_ACTIONS` (40)
+links, buttons and other elements of the kinds a folded list holds, in page order (one left out takes the lines inside it,
+such as a story's heading inside its link, with it); the first `OUTLINE_TEXT` (1,500) characters of the text of `main` or
+`article` (of the page, when it has neither), in order until a line does not fit; and the long lists around the content
+folded to one line each, as above, while the lists in the content keep their first links. It ends in one line, `(Outline of
+a long page: 91 links and buttons, 8 text lines (2400 characters) left out. find searches them, read a ref for one part, all
+for the whole page)`, and is sent only when it is shorter than the view. A load's reply keeps its own rule (a page over
+`LOAD_REPLY_MAX` is left out), and a `ref` read, `depth`, `all`, `find` and diffs are never outlined. The diff baseline
+still holds every line, so a later read's diff is against the whole page.
 An `act` reply names the tabs its steps opened (`noteOpenedTab` in `packages/extension/src/opened-tabs.ts`, from
 `chrome.webNavigation.onCreatedNavigationTarget`, once the tab is adopted), each as a load's reply shows a tab: a tab that
 joined the session shows only its origin and `[needs approval]` until the session may read it without a prompt (its
