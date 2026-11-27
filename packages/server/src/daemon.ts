@@ -214,6 +214,7 @@ function handleBrowserMessage(
   const value = parseJson(data);
   if (!isBrowserMessage(value)) {
     const theirs = otherProtocolVersion(value);
+    if (theirs !== undefined) control.browserRefused = { reason: mismatchReason(theirs), at: Date.now() };
     webSocket.close(1008, theirs === undefined ? 'Invalid protocol message' : mismatchReason(theirs));
     return;
   }
@@ -244,6 +245,7 @@ function handleBrowserMessage(
     }
     browser.id = message.browserId;
     browser.name = message.browserName;
+    delete control.browserRefused;
   } else if (message.type === 'browser.tabCount') {
     if (!Number.isInteger(message.tabCount) || message.tabCount < 0) {
       webSocket.close(1008, 'Invalid tab count');

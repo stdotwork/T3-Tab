@@ -204,8 +204,9 @@ export async function checkProductInstall() {
     assert(!JSON.stringify(entry).includes(home.rootDir), 'The agent entry names the checkout');
     // Run the entry's own command: the installed launcher with `mcp`.
     const entryClient = await connectEntry(entry, env);
-    const entryStatus = text(await entryClient.client.callTool({ name: 'status', arguments: {} }));
-    assert(/^Browsers: 1$/m.test(entryStatus), `The agent entry's command did not reach the browser:\n${entryStatus}`);
+    // A tool call that finds no browser fails; one that reaches it lists this new session's tabs (none yet).
+    const entryReply = await entryClient.client.callTool({ name: 'tabs', arguments: {} });
+    assert(entryReply.isError !== true, `The agent entry's command did not reach the browser:\n${text(entryReply)}`);
     await entryClient.client.close();
     console.log('Product install: Add for Claude Code wrote an entry for the installed launcher; its `mcp` server sees the browser');
 

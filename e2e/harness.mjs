@@ -229,18 +229,49 @@ export async function connectMcp(home, name) {
   return { client, transport };
 }
 
-/** Polls `status` until exactly one browser with at least one tab is connected. */
-export async function waitForBrowser(client) {
-  let statusText = '';
-  let tabCount = 0;
+/**
+ * The browsers the daemon has connected, each with its tab count, from the daemon's own `status` control request (made
+ * with `daemon.json`'s token, as an MCP server connects). No MCP tool reports this: it is the test's view, not an agent's.
+ */
+export async function daemonBrowsers(home) {
+  const { PROTOCOL_VERSION } = await import('../packages/protocol/dist/index.js');
+  const state = JSON.parse(await readFile(home.statePath, 'utf8'));
+  return await new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${state.port}/`, { headers: { authorization: `Bearer ${state.token}` } });
+    const done = (error, browsers) => {
+      clearTimeout(timer);
+      socket.close();
+      if (error === undefined) resolve(browsers);
+      else reject(error);
+    };
+    const timer = setTimeout(() => done(new Error('The daemon did not answer status')), 5_000);
+    socket.addEventListener('open', () => {
+      socket.send(JSON.stringify({ type: 'control.request', protocolVersion: PROTOCOL_VERSION, requestId: 'e2e-status', method: 'status' }));
+    });
+    socket.addEventListener('message', (event) => {
+      const response = JSON.parse(String(event.data));
+      if (response.requestId !== 'e2e-status') return;
+      if (response.ok === true) done(undefined, response.result.browsers);
+      else done(new Error(`The daemon refused status: ${response.error}`));
+    });
+    socket.addEventListener('error', () => done(new Error('Could not reach the daemon')));
+  });
+}
+
+/** Asks the daemon until exactly one browser with at least one tab is connected, and describes it. */
+export async function waitForBrowser(home) {
+  let seen = 'the daemon was not reached';
   for (let attempt = 0; attempt < 160; attempt += 1) {
-    const result = await client.callTool({ name: 'status', arguments: {} });
-    statusText = text(result);
-    tabCount = parseStatusTabCount(statusText);
-    if (/^Browsers: 1$/m.test(statusText) && tabCount >= 1) return statusText;
+    try {
+      const browsers = await daemonBrowsers(home);
+      seen = JSON.stringify(browsers);
+      if (browsers.length === 1 && browsers[0].tabCount >= 1) return `Browsers: 1\n- ${browsers[0].name}: ${browsers[0].tabCount} tabs`;
+    } catch (error) {
+      seen = error.message;
+    }
     await sleep(250);
   }
-  throw new Error(`Expected one connected browser with at least one tab. Got:\n${statusText}`);
+  throw new Error(`Expected one connected browser with at least one tab. Got: ${seen}`);
 }
 
 export async function panelRequest(serviceWorker, request) {
@@ -317,11 +348,6 @@ function processIsAlive(pid) {
   } catch {
     return false;
   }
-}
-
-export function parseStatusTabCount(statusText) {
-  const match = /^- .*: (\d+) tabs?$/m.exec(statusText);
-  return match === null ? 0 : Number(match[1]);
 }
 
 export function text(result) {

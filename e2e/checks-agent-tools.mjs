@@ -111,7 +111,7 @@ export async function checkAgentTools() {
     await installNativeHost(home);
     browser = await launchUndrivenBrowser(home, `${urls.allowed}/start`);
     mcp = await connectMcp(home, 'agent-tools');
-    await waitForBrowser(mcp.client);
+    await waitForBrowser(home);
     await browser.panel({ type: 'panel.setSite', origin: urls.allowed, setting: 'allow' });
 
     const call = async (name, args, client = mcp.client) => {

@@ -18,6 +18,11 @@ export class RefTable {
     return ref;
   }
 
+  /** How many refs the table has handed out. */
+  get size(): number {
+    return this.byRef.size;
+  }
+
   backendIdOf(ref: string): number | undefined {
     return this.byRef.get(ref);
   }

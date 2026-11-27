@@ -390,4 +390,26 @@ describe('protocol version mismatch', () => {
     expect(reason).toContain(said);
     expect(Buffer.byteLength(reason)).toBeLessThanOrEqual(123);
   });
+
+  it('names the refusal in the error of a tool call that finds no browser, until an extension is accepted', async () => {
+    const handle = await start();
+    const refused = await open(handle, EXTENSION_ORIGIN);
+    const closed = new Promise<void>((resolve) => refused.once('close', () => resolve()));
+    refused.send(JSON.stringify({ type: 'browser.hello', protocolVersion: PROTOCOL_VERSION + 1, browserId: 'b', browserName: 'Chromium' }));
+    await closed;
+    const { socket, response } = await registerRaw(handle);
+    const session = (response.result as { session: ToolSession }).session;
+    const call = async (): Promise<Record<string, unknown>> => await tool(socket, session);
+    expect(await call()).toMatchObject({
+      ok: false,
+      error: 'No browser is connected: the T3-Tab extension tried and was refused. The T3-Tab helper is older than the extension. Ask the owner to update T3-Tab.',
+    });
+
+    const accepted = await open(handle, EXTENSION_ORIGIN);
+    accepted.send(JSON.stringify({ type: 'browser.hello', protocolVersion: PROTOCOL_VERSION, browserId: 'b', browserName: 'Chromium' }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    accepted.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await call()).toMatchObject({ ok: false, error: 'No browser is connected. Open the browser with the T3-Tab extension.' });
+  });
 });

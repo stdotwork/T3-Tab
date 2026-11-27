@@ -71,7 +71,7 @@ from the panel's own card: Enter allows once and Escape declines (each after the
 answered nothing), and the More menu's "Always allow everything on this site" sets the site to `allow`. Other tool
 checks run with the site still set to ask and the harness answering prompts with Allow once. The action run fills and submits the
 test form, checks a stale ref after navigation, evaluates page JavaScript and waits past the extension
-worker's idle timeout before another `status` call. It checks the install command through direct config
+worker's idle timeout, then asks the daemon whether the browser is still connected and makes another `tabs` call. It checks the install command through direct config
 edits, `--print`, a second install, uninstall and, when both agent CLIs are available, their CLI path and
 `mcp list` output. The `daemon.json` token sent with the extension's `Origin` is refused. It then checks side-panel sessions (`e2e/panel-sessions.mjs`) with fake `t3`, `claude`
 and `codex` commands (`e2e/fakes/`) first on the daemon's PATH, which record their arguments and drive the
@@ -115,7 +115,7 @@ does nothing; that T3's warning shows on its answer; and that a `goto` card name
 another tab. It renders the panel from that state and, when
 `T3_TAB_E2E_SCREENSHOT` names a file, saves a screenshot there. It prints each reply and its size. Every
 process it starts uses a temporary HOME and XDG directories without the caller's `T3CODE_*` and `T3_TAB_*`
-variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once that the earlier one ended, and that `status` reports each state of its link.
+variables, `t3` is pinned to the fake through `T3_TAB_T3`, and every browser is headless, with a short temporary folder of its own, because Chromium aborts when its socket path gets too long. Last of all it stops the daemon (`e2e/checks-reconnect.mjs`) and checks that an MCP client that was already running gets a new session on its next call, is told once, in the first reply of its new session, that the earlier one ended, and, with the browser's native host manifest moved aside so the browser cannot reach the new daemon, that each call that fails until it is put back and the browser reconnects says no browser is connected. Before an MCP client calls a tool, the e2e and bench harness wait for the browser with the daemon's own `status` control request (`daemonBrowsers` in `e2e/harness.mjs`, with `daemon.json`'s token), which no MCP tool exposes.
 
 `e2e/panel-flow.mjs` (not part of `pnpm e2e`, because it needs a real agent login) walks the panel from first open to
 finished threads against a real throwaway T3 and again with T3 absent, and saves each screen at 400 px in light and
@@ -266,8 +266,14 @@ folder, also `0600`, which the native host passes to the extension. The daemon g
 token together with the extension's `Origin`, so an MCP client using the `daemon.json` token cannot connect as the
 extension. Any program running as the owner can read either file or run `t3-tab native-host` to get the extension
 token. `native-host` is normally started by Chromium, not by hand. `mcp`
-serves the `status`, `tabs`, `read`, `screenshot`, `act` and `run_js` tools over stdio and starts the daemon
-when needed.
+serves the `tabs`, `read`, `screenshot`, `act` and `run_js` tools over stdio and starts the daemon
+when needed. Its `tools/list` (`listedTools` in `mcp.ts`) is made from the same shapes the calls are checked against
+(`tool-schemas.ts`), without the keywords those checks enforce anyway (`$schema`, lengths, ranges, item counts,
+`additionalProperties`) and without `read`'s `regex` and `depth` (`READ_UNLISTED`), which a call may still pass: every call
+is checked against the whole shape by the SDK in the MCP server and again in the daemon. What `tab` defaults to is said once,
+in `read`'s description. Claude Code sends these definitions on every model request, so their wording is measured with
+`pnpm bench:agent` before it changes. A tool call that finds no browser says so, and when the daemon refused the extension's
+last connection in the past minute for another protocol version, it names which side is older.
 
 ## Page tools
 
@@ -290,7 +296,7 @@ characters (a price, a label, a button) also keeps the one line before it, which
 separators. Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
 site) when another link of the same name goes elsewhere, when it has no name, when it is the element a `ref` read asks
 for, and on its own line in `find` (a match, or the line kept before one: a card's cut title is often whole in its
-address). With `depth`, an element with more inside ends in `…`.
+address). With `depth` (accepted, not listed), an element with more inside ends in `…`.
 
 `tabs` also moves a tab: `goto` with a `url`, `back`, `forward` and `reload`. `goto` asks like `open` does. `back`,
 `forward` and `reload` revisit a page the tab has shown, so they ask only for an origin the session holds no approval
@@ -345,7 +351,17 @@ action cannot land on a tab the agent did not mean.
 `ref`, `text`, `key`, `dx`, `dy` and `ms` (`packages/server/src/tool-schemas.ts`): the schema the agent reads
 is one object so the tool definition stays small, and `convertStep` there refuses a step that is missing a
 field its action needs, carries one it does not take, or is out of range, then turns the step into the
-nested form the extension runs (`ActStep` in `packages/protocol`). It resolves refs to backend DOM node ids,
+nested form the extension runs (`ActStep` in `packages/protocol`). A batch with a ref the session does not hold runs
+nothing. When such a ref is not shaped like one (`ref: "State"`, a name in place of `e12`), the error says what refs look
+like and lists, for up to three such names, the elements of the tab as it is now whose name (unescaped) or line holds
+the name, case-insensitive, links written into text included, as `find` prints them with their refs: those named exactly
+so first, five a name, then how many more match in all, so the agent can send the batch again without a separate read
+(`unknownRefError` in `tools.ts`). When the page was replaced since the session's refs were made, it lists nothing and
+says to read the page, because the new page's refs start again from `e1` and an old ref sent again would name another
+element. That read is `page.read` with `ifReadable`, which reads only when no prompt is needed (an origin the session
+holds on the tab, or a site set to `read` or `allow`, from one read of the site's setting) and otherwise fails without
+asking anyone; Full access alone never gives it, since it lets a request through without recording the origin. The error
+then only says to read the page. It resolves refs to backend DOM node ids,
 runs its steps through Chrome DevTools Protocol input and DOM commands, and settles after a click, a key press, a
 scroll, a hover, a wait and the last step by waiting for network, DOM and layout activity to stay quiet. A `fill`, `type` or
 `select` between other steps does not settle on its own: the batch settles once before the next step of the kinds above. The
@@ -458,7 +474,7 @@ host access, and it runs only while the tab is on the origin the running tool ca
 after a reattach only when the main document's loader id is unchanged and `chrome.webNavigation` saw no top-frame
 commit in between. Input that was in flight when the debugger dropped is not sent again.
 
-`find` matches case-insensitive literal text by default. Passing `regex: true` opts into a regular
+`find` matches case-insensitive literal text by default. Passing `regex: true` (accepted, not listed) opts into a regular
 expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. It prints the first 20 matches
 and says how many more there were (`(N more matches; narrow the query)`).
 
@@ -593,10 +609,8 @@ the daemon if needed; if that fails, the error says why and the call after it tr
 tool reply after that says the earlier session ended and that its tabs and approvals are gone, so the agent
 opens tabs again or asks the owner to share one. A claim code, and a claim-file report, go with the first
 registration that succeeds and are never sent again, because a code works once: a direct run's new session
-starts without the owner's tabs. The new session id is bound to its new socket like any other. `status` adds
-one line for the MCP server's own link: connected, not started yet, or ended (the next browser tool call
-starts a new session); its other lines still come from a one-shot connection, so on its own they say nothing
-about this link.
+starts without the owner's tabs. The new session id is bound to its new socket like any other. No tool reports
+the link on its own: the next call is how an agent learns it ended.
 
 Site permissions are stored per HTTP(S) origin: `ask` by default, `read` or `allow`. `read` lets sessions
 read the site without a prompt and never covers opening, acting or `run_js`; `allow` covers all four. A read
