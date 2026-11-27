@@ -6,6 +6,8 @@ import { spawn } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { busyMs } from './stats.mjs';
+
 /** The `claude` binary itself. The mise wrapper on PATH hangs without a terminal, so use the real file. */
 export const CLAUDE_BIN = process.env.T3_TAB_AGENT_CLAUDE ?? process.env.CLAUDE_CODE_EXECPATH ?? 'claude';
 
@@ -131,7 +133,8 @@ export function parseStream(lines) {
     }
   }
   // How long each tool took to answer: from the event that carried the call to the one that carried its reply.
-  const toolMs = toolCalls.map((call) => toolResults.get(call.id)?.at - call.at).filter((ms) => Number.isFinite(ms) && ms >= 0);
+  const spans = toolCalls.map((call) => [call.at, toolResults.get(call.id)?.at]).filter(([from, to]) => Number.isFinite(to - from) && to >= from);
+  const toolMs = spans.map(([from, to]) => to - from);
   const usageOf = (usage) => ({
     uncached: usage?.input_tokens ?? 0,
     cacheRead: usage?.cache_read_input_tokens ?? 0,
@@ -155,6 +158,7 @@ export function parseStream(lines) {
     toolErrors: toolCalls.filter((call) => toolResults.get(call.id)?.error === true).length,
     toolNames: toolCalls.map((call) => call.name),
     toolMs,
+    toolBusyMs: busyMs(spans),
     usage: { ...total, input: total.uncached + total.cacheRead + total.cacheWrite },
     first: { ...first, input: first.uncached + first.cacheRead + first.cacheWrite },
     perCallUsage: perCall,

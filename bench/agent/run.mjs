@@ -15,7 +15,7 @@ import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'no
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CLAUDE_BIN, PROMPT, claudeEnv, runClaude } from './claude.mjs';
+import { CLAUDE_BIN, PROMPT, claudeEnv, parseStream, runClaude } from './claude.mjs';
 import { startTaskSite } from './pages/index.mjs';
 import { REAL_TASKS } from './real-tasks.mjs';
 import { markdown, renderTranscript } from './report.mjs';
@@ -62,7 +62,7 @@ await Promise.all(
   }),
 );
 
-const runs = await readRuns();
+const runs = await withToolBusy(await readRuns());
 const report = markdown({ runs, tools: TOOLS, tasks: TASKS, model: options.model, sites: options.sites });
 await writeFile(join(outDir, 'results.md'), report);
 await writeFile(join(outDir, 'results.json'), `${JSON.stringify({ model: options.model, sites: options.sites, date: new Date().toISOString(), runs }, null, 2)}\n`);
@@ -178,6 +178,17 @@ async function killMarked(mark) {
 function withTimeout(promise, ms, what) {
   let timer;
   return Promise.race([promise, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`timed out ${what}`)), ms)))]).finally(() => clearTimeout(timer));
+}
+
+/** A run recorded before tool-busy time was gets it from its transcript, when the folder still has that. */
+async function withToolBusy(runs) {
+  return await Promise.all(
+    runs.map(async (run) => {
+      if (run.toolBusyMs !== undefined) return run;
+      const stream = await readFile(join(outDir, 'transcripts', `${run.tool}__${run.task}__${run.rep}.jsonl`), 'utf8').catch(() => undefined);
+      return stream === undefined ? run : { ...run, toolBusyMs: parseStream(stream.split('\n')).toolBusyMs };
+    }),
+  );
 }
 
 async function readRuns() {

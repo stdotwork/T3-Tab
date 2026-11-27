@@ -65,7 +65,14 @@ tool is judged on what it adds:
   over the tasks, with a 90% interval from 2,000 bootstrap resamples (the runs of every task cell are resampled with
   replacement, the baseline's too; the generator is seeded, so a table made from the same runs is the same). Below 1.00x, T3-Tab
   used less. A failed run counts with what it spent, and success is shown next to the ratios, not folded into them.
-- **Median tool latency** over every tool call of every run: the time between a call and its reply in the stream.
+- **Median tool latency** over every tool call of every run: the time between a call and its reply in the stream. Calls
+  sent in one message run one after another, so each later one's latency includes the wait for those before it, and tools
+  differ in what one call does (a T3-Tab `act` settles and reads the page back; a script call does neither), so this number
+  does not compare tools on its own. Beside it:
+- **Median tool-busy time per run**: the union of a run's call spans, so the time calls of one message share counts once
+  (`busyMs` in `stats.mjs`; recorded as `toolBusyMs`. A run recorded before that gets it from its transcript in the
+  folder, if the transcript is still there; otherwise the run is left out of this median.)
+- **Median wall time per run**: from starting `claude` to its exit, model time included (the same runs' `Time` above).
 
 `stats.mjs` has the arithmetic and `stats.test.mjs` its unit tests (they run with `pnpm test`).
 

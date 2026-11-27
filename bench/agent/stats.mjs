@@ -113,3 +113,27 @@ export function headToHead({ runs, tools, reference, baselineId, iterations = 20
 export function medianToolLatency(runs) {
   return median(runs.flatMap((run) => run.toolMs ?? []));
 }
+
+/**
+ * How long a run's tools were busy: the length of the union of its calls' spans (`[from, to]`, the call's event and its
+ * reply's). Calls sent in one message run one after another, and each one's span includes the wait for those before it, so
+ * time two spans share is counted once.
+ */
+export function busyMs(spans) {
+  let total = 0;
+  let open;
+  for (const [from, to] of [...spans].sort((a, b) => a[0] - b[0])) {
+    if (open === undefined || from > open[1]) {
+      if (open !== undefined) total += open[1] - open[0];
+      open = [from, to];
+    } else {
+      open[1] = Math.max(open[1], to);
+    }
+  }
+  return open === undefined ? 0 : total + open[1] - open[0];
+}
+
+/** Median over a tool's runs of the time its tools were busy in a run; undefined for runs measured before it was recorded. */
+export function medianToolBusy(runs) {
+  return median(runs.map((run) => run.toolBusyMs).filter((ms) => Number.isFinite(ms)));
+}
