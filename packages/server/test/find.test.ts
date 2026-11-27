@@ -57,17 +57,18 @@ describe('find', () => {
     expect((await findLines(lines, 'row (3|9)$', { regex: true })).text).toBe('row 2\nrow 3\nrow 8\nrow 9');
   });
 
-  it('prints a text line as a read does, unless the query matched only in an address, and a link with its address', async () => {
+  it('prints a text line as a read does, unless the query matched only in an address', async () => {
     const page: FindLine[] = [
-      { line: '## History', text: false },
-      { line: '"Written by [Tim](e1) at CERN."', search: '"Written by [Tim](e1) → /wiki/Tim at CERN."', text: true },
-      { line: '  e2 link "CERN"', search: '  e2 link "CERN" → /wiki/CERN', text: false },
+      { line: '## History' },
+      { line: '"Written by [Tim](e1) at CERN."', search: '"Written by [Tim](e1) → /wiki/Tim at CERN."' },
+      { line: '  e2 link "CERN" → /wiki/CERN' },
+      { line: '"£4"' },
     ];
     for (const options of [{}, { regex: true }]) {
       expect((await findLines(page, 'at CERN', options)).text).toBe('## History\n"Written by [Tim](e1) at CERN."');
       expect((await findLines(page, '/wiki/Tim', options)).text).toBe('## History\n"Written by [Tim](e1) → /wiki/Tim at CERN."');
-      // The link's own line says where it goes; the line before it is printed as a read prints it.
-      expect((await findLines(page, 'link "CERN"', options)).text).toBe('"Written by [Tim](e1) at CERN."\n  e2 link "CERN" → /wiki/CERN');
+      // The line kept before a short match is printed whole, a link with its address.
+      expect((await findLines(page, '£', options)).text).toBe('  e2 link "CERN" → /wiki/CERN\n"£4"');
     }
   });
 

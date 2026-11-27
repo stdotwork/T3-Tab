@@ -20,13 +20,10 @@ export interface FindLine {
   /** The line as a read prints it. */
   line: string;
   /**
-   * The line with the address of every link on it, when that differs from `line`: searched as well. A text line
-   * prints it only when the query matched in an address; an element's own line always does, so a link found by name
-   * says where it goes.
+   * A text line with the address of every link written into it, when that differs from `line`: searched as well, and
+   * printed only when the query matched in an address.
    */
   search?: string | undefined;
-  /** Plain text, not an element or a heading. */
-  text?: boolean | undefined;
 }
 
 export interface FindOptions {
@@ -84,13 +81,9 @@ export async function findLines(lines: ReadonlyArray<string | FindLine>, query: 
   return { text: out.join('\n'), matches: matching.length };
 }
 
-/**
- * The forms of a line a match may print, in the order they are tried: a text line as a read prints it, then with every
- * address in it; an element's line with its address first.
- */
+/** The forms of a line a match may print, in the order they are tried: as a read prints it, then with every address. */
 function forms(entry: FindLine): string[] {
-  if (entry.search === undefined || entry.search === entry.line) return [entry.line];
-  return entry.text === true ? [entry.line, entry.search] : [entry.search, entry.line];
+  return entry.search === undefined || entry.search === entry.line ? [entry.line] : [entry.line, entry.search];
 }
 
 /** A line short enough to print: around its match, or from its start for a context line. Every cut is marked. */

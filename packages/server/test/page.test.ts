@@ -236,8 +236,13 @@ describe('find', () => {
     ];
     const nodes = [ax(1, 'RootWebArea', '', [2]), ax(2, 'list', '', [10, 20]), ...book(10, 'Sharp Objects', '£47.82'), ...book(20, 'The Exiled', '£43.45')];
     const prices = await formatRead(new TabState(), 's1', page(nodes), { find: '£' });
-    // Only the matches and the line before each: no stock lines, no separators, and no address on a line beside a match.
-    expect(prices.split('\n').slice(1)).toEqual(['e1 link "Sharp Objects"', '"£47.82"', 'e2 link "The Exiled"', '"£43.45"']);
+    // Only the matches and the line before each, with its address (a cut title is whole there): no stock lines, no separators.
+    expect(prices.split('\n').slice(1)).toEqual([
+      'e1 link "Sharp Objects" → /catalogue/10/index.html',
+      '"£47.82"',
+      'e2 link "The Exiled" → /catalogue/20/index.html',
+      '"£43.45"',
+    ]);
     const title = await formatRead(new TabState(), 's1', page(nodes), { find: 'exiled' });
     expect(title.split('\n').slice(1)).toEqual(['"In stock"', 'e2 link "The Exiled" → /catalogue/20/index.html']);
   });

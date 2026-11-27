@@ -289,8 +289,8 @@ characters (a price, a label, a button) also keeps the one line before it, which
 (a longer one keeps its start); a longer match (prose) stands alone, nothing after a match is printed, and there are no
 separators. Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
 site) when another link of the same name goes elsewhere, when it has no name, when it is the element a `ref` read asks
-for, and on its own line when `find` matches it; the line `find` keeps before a match shows an address only where a read
-would. With `depth`, an element with more inside ends in `…`.
+for, and on its own line in `find` (a match, or the line kept before one: a card's cut title is often whole in its
+address). With `depth`, an element with more inside ends in `…`.
 
 `tabs` also moves a tab: `goto` with a `url`, `back`, `forward` and `reload`. `goto` asks like `open` does. `back`,
 `forward` and `reload` revisit a page the tab has shown, so they ask only for an origin the session holds no approval
