@@ -598,7 +598,16 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
     await runOn('home-setup-card', { setupCards: ['helper'] });
     await render({ helper: { connected: true }, setup: { agents: [{ id: 'claude', found: true, registered: false }], t3: { state: 'running' } } });
     await panelPage.locator('.setup-card.connect-row').waitFor();
+    // The panel's own attempt to connect failed here (the fake T3 cannot pair): the row is the plain one, no error text.
+    const connectButton = panelPage.locator('.setup-card.connect-row').getByRole('button', { name: 'Connect' });
+    await connectButton.waitFor();
+    await sleep(1500);
+    assert(await connectButton.isEnabled(), 'The Connect row is still busy after the automatic attempt');
+    assert((await panelPage.locator('.setup-card.connect-row .problem').count()) === 0, 'A failed automatic attempt put an error on the Connect row');
     await runOn('home-connect-t3', { setupCards: ['connect'] });
+    // A click is the owner's own: its failure shows the error.
+    await connectButton.click();
+    await panelPage.locator('.setup-card.connect-row .problem').waitFor();
     await render({ helper: { connected: true }, setup: null });
   }
 
