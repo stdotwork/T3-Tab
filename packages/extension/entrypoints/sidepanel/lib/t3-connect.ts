@@ -12,6 +12,14 @@ import { t3, type T3State } from './t3-client';
  */
 export const CONNECT_T3_BY_ITSELF = true;
 
+/**
+ * What a failed pairing leaves on screen. The owner asked for nothing when the attempt was the panel's own, so the row
+ * stays as it was, plain Connect; the error text shows only for a click.
+ */
+export function failureNote(input: { automatic: boolean; message: string }): string | undefined {
+  return input.automatic ? undefined : input.message;
+}
+
 /** Pairs this panel with the T3 Code the helper found. Every Connect, by click or by itself, goes through here. */
 export const connectT3 = async (): Promise<void> => await t3.pair();
 
@@ -35,18 +43,19 @@ export function useT3Connect(live: LiveState, state: T3State): T3Connect {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const found = live.helper.connected ? live.setup?.t3.state : undefined;
-  const connect = useCallback((): void => {
+  const attempt = useCallback((automatic: boolean): void => {
     setBusy(true);
     setError(undefined);
     void connectT3()
-      .catch((failure: unknown) => setError(errorText(failure)))
+      .catch((failure: unknown) => setError(failureNote({ automatic, message: errorText(failure) })))
       .finally(() => setBusy(false));
   }, []);
+  const connect = useCallback((): void => attempt(false), [attempt]);
   useEffect(() => {
     if (!shouldConnectByItself({ enabled: CONNECT_T3_BY_ITSELF, found, status: state.status, tried: triedByItself })) return;
     triedByItself = true;
-    connect();
-  }, [found, state.status, connect]);
+    attempt(true);
+  }, [found, state.status, attempt]);
   const offered = found === 'running' && state.status !== 'ready' && state.status !== 'lost';
   return { offered, busy: busy || state.status === 'connecting', connect, ...(error === undefined ? (state.error === undefined ? {} : { error: state.error }) : { error }) };
 }

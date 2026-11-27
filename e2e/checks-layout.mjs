@@ -16,7 +16,7 @@
 //   one-line buttons inside the card, or a card on the new-thread screen moves the hero or the composer or covers it.
 // - the new-thread screen's setup card (helper missing) or Connect row (T3 Code running, not connected) is not in the
 //   composer's column above it and below the heading, cuts off any of its content, is over 260 px tall, or, for the
-//   Connect row, is more than one line or 42 px (90 px with the note of a failed automatic attempt under its line).
+//   Connect row, is more than one line or 42 px.
 import { dirname, join } from 'node:path';
 
 import { assert, panelRequest, sleep } from './harness.mjs';
@@ -33,8 +33,6 @@ const ANSWER_HEIGHT = 28;
  */
 const SETUP_CARD_MAX = 260;
 const CONNECT_ROW_MAX = 42;
-/** The Connect row once the panel's one automatic attempt failed: its line and button, and the failure's note under them. */
-const CONNECT_ROW_NOTE_MAX = 90;
 
 /** Measures every bar, the composer and the hero on the page as it stands. */
 async function measure(page) {
@@ -302,7 +300,7 @@ async function themeSheetProblems(page) {
 /**
  * The new-thread screen's setup card and Connect row: the kinds expected and no others, each in the composer's column and
  * above it, clear of the heading, nothing in it cut off or scrolled sideways; the card at most SETUP_CARD_MAX px tall, and
- * the Connect row one line of text with its button on that line, at most CONNECT_ROW_MAX px, or CONNECT_ROW_NOTE_MAX with a failure's note.
+ * the Connect row one line of text with its button on that line, at most CONNECT_ROW_MAX px.
  */
 async function setupCardProblems(page, where, kinds) {
   const out = [];
@@ -320,7 +318,6 @@ async function setupCardProblems(page, where, kinds) {
         kind: card.classList.contains('connect-row') ? 'connect' : 'helper',
         box: rect(card),
         cut: [card, ...card.querySelectorAll('*')].some((element) => element.scrollWidth > element.clientWidth + 1 && getComputedStyle(element).overflowX !== 'visible' && element !== line),
-        note: card.querySelector('.setup-card-text.problem')?.textContent ?? null,
         lineRects: line === null ? 0 : line.getClientRects().length,
         lineCut: line === null ? false : line.scrollWidth > line.clientWidth + 1,
         button: rect(button),
@@ -341,8 +338,7 @@ async function setupCardProblems(page, where, kinds) {
     if (card.cut) out.push(`${name} cuts off or scrolls some of its content sideways`);
     if (card.kind === 'helper' && card.box.height > SETUP_CARD_MAX) out.push(`${name} is ${fixed(card.box.height)} px tall, over ${SETUP_CARD_MAX}`);
     if (card.kind === 'connect') {
-      const max = card.note === null ? CONNECT_ROW_MAX : CONNECT_ROW_NOTE_MAX;
-      if (card.box.height > max) out.push(`${name} is ${fixed(card.box.height)} px tall, over ${max}`);
+      if (card.box.height > CONNECT_ROW_MAX) out.push(`${name} is ${fixed(card.box.height)} px tall, over ${CONNECT_ROW_MAX}`);
       if (card.lineRects !== 1 || card.lineCut) out.push(`${name}'s text is not one whole line`);
       if (card.button === null || card.lineBox === null || card.button.top > card.lineBox.bottom || card.button.bottom < card.lineBox.top) out.push(`${name}'s Connect is not on the line of its text`);
     }
@@ -602,7 +598,16 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
     await runOn('home-setup-card', { setupCards: ['helper'] });
     await render({ helper: { connected: true }, setup: { agents: [{ id: 'claude', found: true, registered: false }], t3: { state: 'running' } } });
     await panelPage.locator('.setup-card.connect-row').waitFor();
+    // The panel's own attempt to connect failed here (the fake T3 cannot pair): the row is the plain one, no error text.
+    const connectButton = panelPage.locator('.setup-card.connect-row').getByRole('button', { name: 'Connect' });
+    await connectButton.waitFor();
+    await sleep(1500);
+    assert(await connectButton.isEnabled(), 'The Connect row is still busy after the automatic attempt');
+    assert((await panelPage.locator('.setup-card.connect-row .problem').count()) === 0, 'A failed automatic attempt put an error on the Connect row');
     await runOn('home-connect-t3', { setupCards: ['connect'] });
+    // A click is the owner's own: its failure shows the error.
+    await connectButton.click();
+    await panelPage.locator('.setup-card.connect-row .problem').waitFor();
     await render({ helper: { connected: true }, setup: null });
   }
 

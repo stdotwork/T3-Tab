@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { CONNECT_T3_BY_ITSELF, shouldConnectByItself } from '../entrypoints/sidepanel/lib/t3-connect';
+import { CONNECT_T3_BY_ITSELF, failureNote, shouldConnectByItself } from '../entrypoints/sidepanel/lib/t3-connect';
 
 const when = (input: Partial<Parameters<typeof shouldConnectByItself>[0]>): boolean =>
   shouldConnectByItself({ enabled: true, found: 'running', status: 'off', tried: false, ...input });
@@ -33,5 +33,11 @@ describe('connecting to T3 Code without a click', () => {
 
   it('tries only once per panel, so a failed pairing or a Disconnect is not retried in a loop', () => {
     expect(when({ tried: true })).toBe(false);
+  });
+
+  it('shows no error text for a failed attempt the owner did not ask for, and shows it for a click', () => {
+    const message = 'Error: worker.evaluate: Error: fake t3 supports only `thread`';
+    expect(failureNote({ automatic: true, message })).toBeUndefined();
+    expect(failureNote({ automatic: false, message })).toBe(message);
   });
 });
