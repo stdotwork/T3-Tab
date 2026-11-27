@@ -57,7 +57,7 @@ to a new one, that `uninstall` removes the helper folder, manifest, state and ag
 that `scripts/install-test-build.sh` (through a `file://` address) installs the same helper, and that a browser
 started with its own `--user-data-dir` finds it once `setup` names that folder. Then `e2e/checks-real-use.mjs` runs in a headless Chromium only the extension debugs, because Playwright answers
 dialogs itself and makes hidden tabs act focused: dialogs, background input, another extension's frame
-(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs, same-origin frames, and password inputs under other ARIA roles and text fields masked by `-webkit-text-security` staying redacted in `read`, `find`, a diff and an `act` reply, with the names built from them (a button, link, heading, label, `aria-labelledby` and a script's `ariaLabelledByElements`, open and closed shadow roots, 205 referrers), a 260-character value, show-password toggles by `autocomplete`, a short value that must not scrub other names, secrets in hidden, `aria-hidden`, `display:none`, `visibility:hidden` and closed-dialog content, fields under the roles link, checkbox and switch, a secret passed on through a label and a button, one echoed in the page's text, split over one element per character, upper-cased or taken from a hidden field no name was built from, a password a GET form puts in the address, also of a new tab it opens, of a tab a link opened earlier that the form names as its target, and of a new tab a `select`'s change sends the form into (the reply header, a read and `tabs list` leave it out), and a page of 3,000 masked fields with 200 buttons named from them read in bounded time. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that its reply carries the page (drawn by script too) and is the baseline of the next `read`, that `read` and `goto` with a url open a tab in an empty session behind the same prompt and take `find`, that `read` with the address of a tab the session has reads that tab without loading it again and opens a new tab for any other address, leaving the first where it was, that a load's reply leaves out a page too long for it (a page of long text without reading it) and a page a redirect took to an unapproved origin and names a dialog the page opened, that every tool works on that hidden tab, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, that an `act` reply names the tabs a click opened (with the page on an allowed site, by origin only on one
+(`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs, same-origin frames, and password inputs under other ARIA roles and text fields masked by `-webkit-text-security` staying redacted in `read`, `find`, a diff and an `act` reply, with the names built from them (a button, link, heading, label, `aria-labelledby` and a script's `ariaLabelledByElements`, open and closed shadow roots, 205 referrers), a 260-character value, show-password toggles by `autocomplete`, a short value that must not scrub other names, secrets in hidden, `aria-hidden`, `display:none`, `visibility:hidden` and closed-dialog content, fields under the roles link, checkbox and switch, a secret passed on through a label and a button, one echoed in the page's text, split over one element per character, upper-cased or taken from a hidden field no name was built from, a password a GET form puts in the address, also of a new tab it opens, of a tab a link opened earlier that the form names as its target, and of a new tab a `select`'s change sends the form into (the reply header, a read and `tabs list` leave it out), and a page of 3,000 masked fields with 200 buttons named from them read in bounded time. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that its reply carries the page (drawn by script too) and is the baseline of the next `read`, that `read` and `goto` with a url open a tab in an empty session behind the same prompt and take `find`, that `read` with the address of a tab the session has reads that tab without loading it again and opens a new tab for any other address, leaving the first where it was, that a load's reply leaves out a page too long for it (a page of long text without reading it) and a page a redirect took to an unapproved origin and names a dialog the page opened, that every tool works on that hidden tab, that the session's group is created collapsed and a click, a scroll and a screenshot work in it while it stays collapsed, that a new tab leaves a group the owner expanded open and the owner's own groups as they were, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, that an `act` reply names the tabs a click opened (with the page on an allowed site, by origin only on one
 set to ask or after a redirect to one, as loading while blank), an `act` with `find`, that a long page is read as an outline that keeps its form, that the `act` sending that form to
 a page that flags its field shows the flag and the error, and that `full` then gets the whole view, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
 two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
@@ -80,6 +80,7 @@ real `t3-tab mcp` server: a T3 thread started with project, provider and model c
 reads it, is continued with `t3 thread send` and polled with `t3 thread show`; a made-up claim code and a
 used one are refused; T3 stopped and T3 missing are reported; direct Claude Code and Codex runs start with
 their isolating flags, read the tab, and are resumed with the session id they printed and a new claim code;
+a direct run that opens a tab gets an expanded group, and a T3 thread's agent that opens a tab before it claims gets a collapsed one (the panel opened on that tab names it on the chip and lists the session under "Using the browser"), which opens when the claim arrives;
 Full access is confirmed with a fake T3 per request with no live panel, and an unbound claim, a lowered mode or a stopped T3 prompts; a tab the owner unshares during a direct turn is not shared with the next turn, and neither is one removed
 between turns with the conversation's Remove button; a missing, world-readable or replaced claim file warns in
 the conversation and in the agent's first tool reply. The thread list, given T3 threads as one shell snapshot, shows T3's
@@ -126,12 +127,12 @@ dark to the folder named by `T3_TAB_FLOW_SHOTS`.
 
 `pnpm bench` (after `pnpm build`) measures what an agent is sent, in characters and estimated tokens: the
 `tools/list` payload (total and per tool) and each tool reply on six fixed tasks over five local pages
-(`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link, search a longer page
+(`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link (and a `full` read sent with the click, answered in one line), search a longer page
 with `read` given its address and `find`, then with `find`, a ref subtree, `all` and a screenshot (text part, JPEG bytes and size, estimated image tokens),
-and a catalogue too long to send whole: its outline from `read` with its address, an order sent with a bad address whose
-`act` reply is the next page's outline with the error inside the form, and a `find` for an item the outline left out;
-and a delivery form whose State combobox opens its list of 20 states on a click and closes it when one is picked, the
-`act` reply then counting the options that went in one line.
+a catalogue too long to send whole: its outline from `read` with its address, an order sent with a bad address whose
+`act` reply is the next page's outline with the error inside the form, a `find` for an item the outline left out, and a
+`full` read after that outline, which sends the whole view; and a delivery form whose State combobox opens its list of 20
+states on a click and closes it when one is picked, the `act` reply then counting the options that went in one line.
 It drives the real tools through `e2e/harness.mjs` the way the end-to-end run does, with the bench site
 set to `allow` so no prompt waits. It prints a markdown table and writes `bench/results/latest.json` (not
 committed) and the replies it measured to `bench/results/latest.replies.txt`. Text tokens are an estimate:
@@ -316,9 +317,10 @@ out of a load's reply, which says how long it is and sets no baseline: agents se
 as the load, before they see its reply, and that read then gets the page once. So a load without `find` first asks the
 page how much text it shows (`innerText`, `pageTextLength` in `settle.ts`), and a page with more than `LOAD_REPLY_MAX`
 characters of it is not read for the load at all (`skipReadOver` and `textLength` in the protocol); the reply says how
-much text it has. A `read` with `full` right after a load
-reply that showed the whole page (within 5 seconds, `LOAD_REPEAT_MS`), with nothing changed, says so instead of sending it
-again (once; the next one is whole). The extension reads the page in the same request (`describeLanding` in
+much text it has. A `read` with `full` right after a load's or an `act`'s reply that showed the whole page (within 5
+seconds, `REPEAT_MS`), with nothing changed, says so in one line instead of sending it again (once; the next one is
+whole). It does so only when the reply it would send is the very one the agent got: after an outline, a diff, or an
+`act` reply cut short to leave room for the tabs it opened, `full` sends the whole view. The extension reads the page in the same request (`describeLanding` in
 `requests.ts`) as soon as the new document has loaded and drawn its first frames, without waiting for it to go quiet. If
 the page moved while it was read (its content, layout or document per `settleSnapshot`, not only its network traffic) and
 that read ended within `LOAD_REREAD_MS` (100 ms), it is read once more after the first read ended, and that read is the
@@ -624,6 +626,20 @@ running as the owner, which can already read the owner's home folder, browser pr
 The daemon issues each session id and binds it to the control connection that registered it; tool requests
 on another socket, or with another id, are refused. Tabs a session opens go into its own Chromium tab
 group. It can list and use only tabs in that group or tabs the owner shares from the side panel.
+
+Where that group shows depends on who started the session (`startedFromPanel` in `claims.ts`, `attachToSessionGroup` in
+`tabs.ts`). A session is panel-started when a claim grant lists it (a direct run redeems its code before its first tool
+call) or when the T3 thread the daemon proved it runs for is one the panel bound a claim to. Its group is expanded, and
+expanded again with each tab it opens, as before. Any other session reached for the tools by itself (an MCP client of
+the owner's own, a T3 thread not started from the panel): its group is created collapsed with its first tab, one chip in
+the owner's tab strip, and T3-Tab never collapses it again, so a group the owner expanded stays open. A session taken for
+self-started whose claim arrives after its first tab (a panel-launched T3 agent that opened a tab before claiming, or a
+thread that could not be proven, off Linux) has its group expanded once, when it redeems the code or when the panel binds
+the code to its proven thread (`expandStartedCollapsedGroup`). Only a group T3-Tab created collapsed is expanded that
+way; the owner's own groups are never collapsed or expanded. The tabs open in the background either way, and act,
+screenshots and scrolling work in a collapsed group's tab as in any background tab; `tabs switch` brings the tab to the
+front, which expands its group, as Chrome does. A later turn of a direct run that has no tabs left to share gets no
+code, so it holds no grant and its group starts collapsed.
 
 `tabs open` asks first, for the requested address: nothing is created, fetched or run until the owner says yes. Then
 the page loads in a new tab behind the one the owner is on, with the debugger attached on `about:blank` first. If a

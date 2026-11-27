@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { OUTLINE_AT, OUTLINE_MAX_SHARE } from '../src/reader/outline.js';
-import { formatRead, LOAD_REPEAT_MS, MAX_OUTPUT_CHARS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
+import { formatRead, MAX_OUTPUT_CHARS, REPEAT_MS, TabState, TEXT_BUDGET } from '../src/reader/page.js';
 import { ax, buttonPage, docsPage, feed, fieldPage, longArticle, longPage, page, signInPage } from './ax-fixtures.js';
 
 describe('reading a page', () => {
@@ -166,7 +166,7 @@ describe('a load reply', () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
     try {
       await formatRead(state, 's', page(signInPage()), { load: true });
-      now.mockReturnValue(1_000_000 + LOAD_REPEAT_MS);
+      now.mockReturnValue(1_000_000 + REPEAT_MS);
       expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
     } finally {
       now.mockRestore();
@@ -198,6 +198,82 @@ describe('a load reply', () => {
     await formatRead(state, 's', page(buttonPage(400)), {});
     await formatRead(state, 's', page(buttonPage(400)), { load: true });
     expect(await formatRead(state, 's', page(buttonPage(400)), {})).toBe('tab 7\nNo changes since the last read.');
+  });
+});
+
+describe('a full read after an act', () => {
+  const repeat = "tab 7\nNo changes since the act's reply, which showed the whole page.";
+
+  it('answers in one line when the act showed the whole page and nothing changed, once', async () => {
+    const state = new TabState();
+    const acted = await formatRead(state, 's', page(signInPage()), { act: true });
+    expect(acted).toContain('# Sign in');
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toBe(repeat);
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
+  });
+
+  it('answers in one line when the act fell back to the whole page from a diff', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(buttonPage(10)), {});
+    const acted = await formatRead(state, 's', page(signInPage()), { act: true });
+    expect(acted).toContain('# Sign in');
+    expect(acted).not.toContain('Changed since the last read');
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toBe(repeat);
+  });
+
+  it('sends the whole view when the act sent an outline: the agent saw only the outline', async () => {
+    const state = new TabState();
+    const acted = await formatRead(state, 's', page(longPage()), { act: true });
+    expect(acted).toContain('(Outline of a long page');
+    const full = await formatRead(state, 's', page(longPage()), { full: true });
+    expect(full).not.toContain('Outline of a long page');
+    expect(full).toContain('"Item 150"');
+  });
+
+  it('sends the whole view when the act sent a diff', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(buttonPage(30)), {});
+    const changed = buttonPage(30).map((node) => (node.id === '110' ? { ...node, name: 'Renamed' } : node));
+    expect(await formatRead(state, 's', page(changed), { act: true })).toContain('Changed since the last read:');
+    const full = await formatRead(state, 's', page(changed), { full: true });
+    expect(full).toContain('e30 button "Button 30"');
+    expect(full).toContain('e11 button "Renamed"');
+  });
+
+  it('sends the whole view when the page changed after the act', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(signInPage()), { act: true });
+    const changed = signInPage().map((node) => (node.id === '10' ? { ...node, name: 'Welcome back' } : node));
+    const full = await formatRead(state, 's', page(changed), { full: true });
+    expect(full).toContain('# Sign in');
+    expect(full).toContain('"Welcome back"');
+  });
+
+  it('sends the whole view when the act reply was cut at a lower cap', async () => {
+    const state = new TabState();
+    const acted = await formatRead(state, 's', page(buttonPage(200)), { act: true, cap: 2_000 });
+    expect(acted).toMatch(/… truncated at 2000 characters/);
+    expect(await formatRead(state, 's', page(buttonPage(200)), { full: true })).toContain('"Button 200"');
+  });
+
+  it('sends the whole view when the full read comes later than one sent with the act would', async () => {
+    const state = new TabState();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      await formatRead(state, 's', page(signInPage()), { act: true });
+      now.mockReturnValue(1_000_000 + REPEAT_MS);
+      expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('is only for full reads and for the session that got the reply', async () => {
+    const state = new TabState();
+    await formatRead(state, 's', page(signInPage()), { act: true });
+    expect(await formatRead(state, 's2', page(signInPage()), { full: true })).toContain('# Sign in');
+    expect(await formatRead(state, 's', page(signInPage()), {})).toBe('tab 7\nNo changes since the last read.');
+    expect(await formatRead(state, 's', page(signInPage()), { full: true })).toContain('# Sign in');
   });
 });
 

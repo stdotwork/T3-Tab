@@ -88,6 +88,16 @@ describe('a long run of removed lines in a diff', () => {
     expect(reply).not.toContain('"Extra 5"');
   });
 
+  it('keeps a removed field when the baseline was an act reply that showed the whole page, or a load', async () => {
+    for (const first of [{ act: true }, { load: true }]) {
+      const state = new TabState();
+      await formatRead(state, 's', page(combo(true)), first);
+      const reply = await formatRead(state, 's', page(combo(false)), {});
+      expect(reply).toContain('\n-e3 listbox "States"\n');
+      expect(reply).toContain('-  (30 lines removed: "Option 1", … "Option 30")');
+    }
+  });
+
   it('counts the removed run of an `all` diff too', async () => {
     const reply = await diffAfter(combo(true), combo(false), { all: true });
     expect(reply).toContain('-  (30 lines removed: "Option 1", … "Option 30")');

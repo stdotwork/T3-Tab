@@ -199,7 +199,9 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   first read was quick, so a load does at most two reads. Models send a `read` or `find` with the load in the same turn,
   before they see its reply, so a page over 4,000 characters is left out of the load's reply and comes with that read (a
   page whose text alone is longer is not even read for the load), and a `read` with `full` right after a load that
-  showed the page says it is unchanged instead of resending it.
+  showed the page says it is unchanged instead of resending it. The same holds after an `act` whose reply was the whole
+  page (a new screen): models send `full` with an action as they do with a load. It holds only when the agent got that
+  very reply: an outline, a diff or a reply cut short for opened tabs showed less, so `full` then sends the whole view.
   The `tabs` description says a load replies with "the page", not "a short page": with "short", Haiku asked for `full`
   with the load and after every action, and paid for each page twice.
 - **An action says what it did, so no read follows it.** A click that opened a tab used to reply "No changes", and the
@@ -247,6 +249,21 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
 - **Prompt UI safeguards.** Prompts name the tab id and title, keep arrival order, cap waiting
   prompts at three per session, accept messages only from the real side-panel sender, and lock
   buttons for 500 ms when a prompt appears or rows shift above it.
+- **Agents that reach for the tools by themselves get a collapsed tab group, not a window of their own.** A session not
+  started from the side panel (an MCP client of the owner's own, a T3 thread not started from the panel) has its tabs
+  in its tab group in the owner's window, created collapsed; panel-started sessions keep an expanded group. A separate
+  window for those agents was studied and rejected:
+  - On Wayland (the default session on GNOME and KDE, and the only one on Hyprland and Sway) a new window always shows
+    up: it cannot be created minimized or without focus, and tiling desktops fit it into the owner's workspace.
+  - Chromium refuses a window placed off screen.
+  - The agent's own clicks raise a window whose agent tab is in front, taking focus from the owner (measured on X11 and
+    KDE; Windows and macOS do the same in Chromium's code).
+  - Keeping the agent's tabs as background tabs of that window stops the raising, but then they are throttled exactly
+    like background tabs in the owner's window, so the window gains nothing and still sits in the taskbar or Dock.
+  A collapsed group behaves the same on every platform, never moves or focuses a window, and keeps tool behaviour as it
+  was. A panel-launched agent that opens a tab before it claims its tabs is taken for self-started until the claim
+  arrives, and its group then expands once. Worth revisiting only if Chromium lets a hidden page draw without being the
+  front tab of a window, or stops focusing a window on injected mouse presses.
 
 ## Side-panel sessions
 

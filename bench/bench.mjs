@@ -156,9 +156,11 @@ async function measure() {
     await run('hidden', 'read-diff', 'read', {});
     await run('hidden', 'read-unchanged', 'read', {});
 
-    // 3. Follow a link: the reply to the click is the new page.
+    // 3. Follow a link: the reply to the click is the new page, so a full read sent with it is answered in one line.
     const productsRead = await run('navigate', 'open', 'tabs', { action: 'open', url: `${siteUrl}/products` });
     await run('navigate', 'act-click-link', 'act', { steps: [{ action: 'click', ref: need(productsRead, 'link "Day pack"') }] });
+    const repeated = await run('navigate', 'read-full', 'read', { full: true });
+    assert(/^tab \d+\nNo changes since the act's reply, which showed the whole page\.$/.test(repeated), `navigate/read-full: not the one line:\n${repeated}`);
     await run('navigate', 'tabs-list', 'tabs', {});
 
     // 4. Search a longer page: on the load itself, then in the page it holds. Its load reply leaves the page to the read.
@@ -182,6 +184,9 @@ async function measure() {
     });
     assert(ordered.includes('(Outline of a long page') && /textbox "Email"[^\n]*\[invalid\]/.test(ordered) && ordered.includes('Enter an email address with an @ in it.'), `outline/act-order: the error is not in the outline:\n${ordered}`);
     await run('outline', 'find', 'read', { find: 'Item 61:' });
+    // The act's reply was an outline, so a full read is the whole view.
+    const whole = await run('outline', 'read-full', 'read', { full: true });
+    assert(!whole.includes('Outline of a long page') && !whole.includes('No changes since') && whole.includes('textbox "Email"'), `outline/read-full: not the whole view:\n${whole.slice(0, 400)}`);
 
     // 6. A combobox's list opens and closes: the act that opens it shows every option, the one that picks a state counts
     // the options that went in one line.

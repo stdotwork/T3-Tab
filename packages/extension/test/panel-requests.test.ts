@@ -424,3 +424,40 @@ describe('a prompt in the agent\'s own thread', () => {
     await expect(refused).rejects.toThrow('declined');
   });
 });
+
+describe('a group created collapsed for a session that turns out to be panel-started', () => {
+  /** A session taken for self-started: its group 40 was created collapsed with its first tab. */
+  async function collapsedSession(t3ThreadId?: string) {
+    const loaded = await load();
+    await loaded.sessionStore.register(alice, t3ThreadId);
+    browser.addTab({ id: 41, url: 'https://agent.test/', groupId: 40 });
+    await loaded.sessionStore.rememberGroup(alice.id, 40, true);
+    return loaded;
+  }
+
+  it('expands when the session redeems its claim', async () => {
+    const { handlePanelRequest, handleRequest } = await collapsedSession();
+    const claim = (await handlePanelRequest({ type: 'panel.t3Claim', tabId: 5 })) as { code: string };
+    await handleRequest({ type: 'browser.request', protocolVersion: PROTOCOL_VERSION, requestId: 'r', method: 'session.claim', session: alice, params: { code: claim.code, route: 'message' } } as never);
+    expect(browser.groupUpdates).toEqual([{ groupId: 40, details: { collapsed: false } }]);
+  });
+
+  it('expands when the panel binds a code to the T3 thread the daemon proved the session runs for, and only then', async () => {
+    const { handlePanelRequest, sessionStore } = await collapsedSession('th1');
+    await sessionStore.register(bob, 'th2');
+    browser.addTab({ id: 51, url: 'https://agent.test/', groupId: 50 });
+    await sessionStore.rememberGroup(bob.id, 50, true);
+    const claim = (await handlePanelRequest({ type: 'panel.t3Claim', tabId: 5 })) as { code: string };
+    await handlePanelRequest({ type: 'panel.t3ClaimBind', code: claim.code, threadId: 'th1' });
+    expect(browser.groupUpdates).toEqual([{ groupId: 40, details: { collapsed: false } }]);
+    expect((await sessionStore.get(bob.id))?.groupStartedCollapsed).toBe(true);
+  });
+
+  it('is not expanded by a claim that fails', async () => {
+    const { handleRequest } = await collapsedSession();
+    await expect(
+      handleRequest({ type: 'browser.request', protocolVersion: PROTOCOL_VERSION, requestId: 'r', method: 'session.claim', session: alice, params: { code: 'never-issued-code-0001', route: 'message' } } as never),
+    ).rejects.toThrow('Unknown claim code');
+    expect(browser.groupUpdates).toEqual([]);
+  });
+});
