@@ -8,6 +8,11 @@ export const LAST_PROJECT = 'last';
 /** Where the owner's default for a tab that has not picked a project is kept. */
 export const DEFAULT_PROJECT_KEY = 'newThread.defaultProject';
 
+/** What the panel calls a project: T3's Scratch project is "No project" everywhere, as the pickers and the thread list say. */
+export function projectName(project: Project, scratchRoot: string | undefined): string {
+  return project.workspaceRoot === scratchRoot ? 'No project' : project.title;
+}
+
 /** The projects a picker lists: T3's Scratch project is the "No project" row, not a project of its own. */
 export function pickableProjects(projects: readonly Project[], scratchRoot: string | undefined): Project[] {
   return projects.filter((project) => project.workspaceRoot !== scratchRoot);

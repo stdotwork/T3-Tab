@@ -288,7 +288,7 @@ try {
   await injectT3(panel);
   await panel.evaluate(() => chrome.storage.local.remove(['composer.project']));
   await panel.locator('#btn-new').click().catch(() => undefined);
-  await panel.locator('.hero h1').filter({ hasText: 'What should we work on?' }).waitFor({ timeout: 10_000 });
+  await panel.locator('.hero-picker > button').filter({ hasText: 'No project' }).waitFor({ timeout: 10_000 });
   await shoot(panel, '06-new-thread-t3');
   await panel.locator('.hero-picker > button').click();
   await panel.locator('.project-popover').waitFor();

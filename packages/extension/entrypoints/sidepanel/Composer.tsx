@@ -1,5 +1,5 @@
 import type { AgentImage } from '@t3-tab/protocol';
-import { Check, ChevronUp, FileText, Globe, Lock, Paperclip, PenLine, Search, ShieldCheck, ShieldOff, X } from 'lucide-react';
+import { Check, ChevronUp, FileText, Globe, Lock, Paperclip, PenLine, Plus, Search, ShieldCheck, ShieldOff, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -314,7 +314,7 @@ export function TabChip({
   if (state === 'off') {
     return (
       <button type="button" className="tab-chip off" onClick={onToggle} title={`Share ${noun} when you send`}>
-        <Globe size={ICON.xs} aria-hidden="true" />
+        <Plus size={ICON.xs} aria-hidden="true" />
         <span>{count > 1 ? `Share ${count} tabs` : 'Share this tab'}</span>
       </button>
     );

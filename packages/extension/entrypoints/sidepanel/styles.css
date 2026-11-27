@@ -82,8 +82,14 @@ ul { list-style: none; margin: 0; padding: 0; }
 
 /* Home */
 /* Sits above the middle, so the model picker opening over the composer does not reach the project controls. */
-.home { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; gap: 12px; padding: 0 var(--gutter) 24vh; overflow-y: auto; }
-.hero { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+/* The heading stays where it is whatever comes and goes around it, as T3's does: the setup card, the Connect row, a draft
+   that wraps, browser prompts and the banner float over the screen (the dock at its foot, the banner under the bar), and
+   the hero hangs from a fixed line, so a line added under the heading grows downwards. It moves only when the dock would
+   otherwise cover it (--dock-h and --hero-h, set by useSteadyHero in NewThread.tsx). */
+.home { flex: 1; min-height: 0; position: relative; }
+.hero { --hero-top: calc(50% - 12vh - 88px); position: absolute; left: var(--gutter); right: var(--gutter); top: max(8px, min(var(--hero-top), calc(100% - var(--dock-h, 0px) - var(--hero-h, 0px) - 16px))); display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+.screen.new-thread > .dock { position: absolute; left: 0; right: 0; bottom: 0; }
+.screen.new-thread > .banner { position: absolute; top: 48px; left: 0; right: 0; z-index: 6; }
 .hero-note { max-width: 300px; color: var(--muted-fg); font-size: var(--text-xs); line-height: 1.4; }
 /* T3's draft hero: text-2xl, regular weight, tight tracking. */
 .hero h1 { font-size: var(--text-2xl); font-weight: 400; letter-spacing: -0.025em; line-height: 1.333; }
@@ -144,8 +150,10 @@ ul { list-style: none; margin: 0; padding: 0; }
 .tab-chip small { flex: none; opacity: 0.75; font-size: var(--text-2xs); }
 .tab-chip.pending { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-theme-accent) 55%, var(--line)); }
 .tab-chip.off { background: transparent; color: var(--muted-fg); padding: 0; }
+/* Share this tab is a button: the chip's shape, outlined in the line colour, with a plus. "No tabs shared" stays text. */
+.tab-chip.off:not(.static) { padding: 0 8px 0 6px; box-shadow: inset 0 0 0 1px var(--line); }
 .tab-chip.off.static { cursor: default; }
-.tab-chip.off:not(.static):hover { color: var(--fg); }
+.tab-chip.off:not(.static):hover { color: var(--fg); background: var(--hover); }
 
 .picker { position: relative; min-width: 0; }
 /* Its logo and words share the row's centre line (useInkAlign). */
