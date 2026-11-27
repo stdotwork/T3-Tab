@@ -16,7 +16,11 @@
 //   one-line buttons inside the card, or a card on the new-thread screen moves the hero or the composer or covers it.
 // - the new-thread screen's setup card (helper missing) or Connect row (T3 Code running, not connected) is not in the
 //   composer's column above it and below the heading, cuts off any of its content, is over 260 px tall, or, for the
-//   Connect row, is more than one line or 42 px.
+//   Connect row, is more than one line or 42 px;
+// - the new-thread heading sits at different heights on the states it walks at one width and scheme (direct, a draft
+//   that wraps, the setup card with and without a draft, the Connect row, T3 with no project, with a project, with its
+//   picker open and reconnecting with the banner) by more than 1 px, or asks anything but T3's two questions: "What
+//   should we build?" in a project and "What should we work on?" everywhere else.
 import { dirname, join } from 'node:path';
 
 import { assert, panelRequest, sleep } from './harness.mjs';
@@ -45,7 +49,7 @@ async function measure(page) {
         .map((child) => ({ element: child, ink: window.__ink(child) }))
         .filter((entry) => entry.ink !== null);
     const name = (element) => element.getAttribute('aria-label') ?? element.className ?? element.tagName;
-    const result = { bars: [], composer: null, hero: null, approvals: [] };
+    const result = { bars: [], composer: null, hero: null, heading: null, approvals: [] };
     // Every approval card: its ink height, and whether its answers stand on one row of one-line buttons inside it.
     for (const card of document.querySelectorAll('.approval-card')) {
       if (!shown(card)) continue;
@@ -148,6 +152,7 @@ async function measure(page) {
     }
     const heading = document.querySelector('.hero h1');
     const line = document.querySelector('.hero .hero-picker > button');
+    if (shown(heading)) result.heading = { text: heading.textContent, top: heading.getBoundingClientRect().top };
     if (shown(heading) && shown(line)) {
       const a = window.__ink(heading);
       const b = window.__ink(line);
@@ -346,8 +351,22 @@ async function setupCardProblems(page, where, kinds) {
   return out;
 }
 
+/**
+ * The new-thread heading as it stood on each walked screen, per width and scheme: every one must be at one height, and ask
+ * the question for its state (`expect.heading`).
+ */
+function headingProblems(headings) {
+  const out = [];
+  for (const [key, list] of Object.entries(headings)) {
+    const tops = list.map((entry) => entry.top);
+    if (spread(tops) > TOLERANCE) out.push(`new-thread heading ${key}: at ${list.map((entry) => `${fixed(entry.top)} (${entry.screen})`).join(', ')}`);
+    for (const entry of list) if (entry.expected !== undefined && entry.text !== entry.expected) out.push(`new-thread heading ${key} on ${entry.screen}: "${entry.text}", expected "${entry.expected}"`);
+  }
+  return out;
+}
+
 /** Measures one screen at every width and scheme; returns its problems, how many things it measured and its bars. */
-async function checkScreen(page, screen, shotsDir, bars, expect) {
+async function checkScreen(page, screen, shotsDir, bars, expect, headings) {
   const failures = [];
   let measured = 0;
   for (const width of WIDTHS) {
@@ -362,6 +381,13 @@ async function checkScreen(page, screen, shotsDir, bars, expect) {
       const key = `@${width} ${scheme}`;
       bars[key] ??= [];
       for (const bar of found.bars) bars[key].push({ screen, bar });
+      if (expect?.heading !== undefined) {
+        if (found.heading === null) failures.push(`${screen} ${key}: no new-thread heading`);
+        else {
+          (headings[key] ??= []).push({ screen, top: found.heading.top, text: found.heading.text, expected: expect.heading });
+          measured += 1;
+        }
+      }
       failures.push(...problems(`${screen} @${width} ${scheme}`, found));
       if (expect?.approvals !== undefined && found.approvals.length !== expect.approvals) failures.push(`${screen} @${width} ${scheme}: ${found.approvals.length} approval cards, expected ${expect.approvals}`);
       // Which composer controls the screen draws: Stop in a running composer, the mic only where T3 can transcribe.
@@ -447,8 +473,13 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
   const failures = [];
   const counts = {};
   const bars = {};
+  const headings = {};
+  const WORK_ON = 'What should we work on?';
+  const BUILD = 'What should we build?';
+  // Long enough to wrap the composer's text to three lines at 400 px.
+  const DRAFT = 'Compare the two headphones on this page by battery, weight and price, then add the better value one to my cart and tell me the total.';
   const run = async (screen, expect) => {
-    const { failures: found, measured } = await checkScreen(page, screen, shotsDir, bars, expect);
+    const { failures: found, measured } = await checkScreen(page, screen, shotsDir, bars, expect, headings);
     counts[screen] = measured;
     failures.push(...found);
   };
@@ -460,7 +491,11 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
 
   await home();
   // Without T3 the mic cannot record, so it is not drawn (as T3 Code's composer leaves it out), and the row is three controls.
-  await run('home-direct', { controls: ['Attach files', 'Send'], without: ['Start voice input', 'Voice input'] });
+  await run('home-direct', { controls: ['Attach files', 'Send'], without: ['Start voice input', 'Voice input'], heading: WORK_ON });
+  // A draft that wraps grows the composer upwards; the heading stays.
+  await page.locator('.composer-input').fill(DRAFT);
+  await run('home-direct-draft', { heading: WORK_ON });
+  await page.locator('.composer-input').fill('');
   await page.locator('.model-chip').first().click();
   await page.locator('.model-popover').waitFor();
   await run('model-picker');
@@ -483,14 +518,22 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
   });
   await page.locator('.hero .inline-picker, .hero .project-btn').filter({ hasText: 'No project' }).waitFor();
   // T3 can transcribe here, so the row has the mic as well: paperclip, model, mic and send on one centre line.
-  await run('home-t3-no-project', { controls: ['Attach files', 'Start voice input', 'Send'] });
+  await run('home-t3-no-project', { controls: ['Attach files', 'Start voice input', 'Send'], heading: WORK_ON });
   await page.locator('.hero-picker > button').click();
   await page.locator('.project-popover').getByText('virtus-umbrella').click();
   await page.locator('.hero-picker > button').filter({ hasText: 'virtus-umbrella' }).waitFor();
-  await run('home-t3-project');
+  // A third line, "or start without a project", grows the hero downwards.
+  await run('home-t3-project', { heading: BUILD });
   await page.locator('.hero-picker > button').click();
-  await run('project-picker');
+  await run('project-picker', { heading: BUILD });
   await page.keyboard.press('Escape');
+  // T3's link dropped: the banner floats under the bar, and until T3 is back threads would run directly, so the hero asks
+  // the direct question.
+  await page.evaluate(() => window.__t3tabT3.set({ status: 'lost' }));
+  await page.locator('.banner').filter({ hasText: 'Reconnecting to T3 Code' }).waitFor();
+  await run('home-t3-reconnecting', { heading: WORK_ON });
+  await page.evaluate(() => window.__t3tabT3.set({ status: 'ready' }));
+  await page.locator('.banner').waitFor({ state: 'detached' });
 
   // A T3 thread waiting on an approval: drawn at its row in the running work log, as T3 does, and above the composer when
   // that row is not shown. The thread is handed to the panel's T3 client as the thread-list check hands it threads.
@@ -591,11 +634,14 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
     await render({ helper: { connected: false, problem: 'missing' }, setup: null });
     await panelPage.locator('[data-setup-card] .command-line').waitFor();
     const runOn = async (screen, expect) => {
-      const { failures: found, measured } = await checkScreen(panelPage, screen, shotsDir, bars, expect);
+      const { failures: found, measured } = await checkScreen(panelPage, screen, shotsDir, bars, expect, headings);
       counts[screen] = measured;
       failures.push(...found);
     };
-    await runOn('home-setup-card', { setupCards: ['helper'] });
+    await runOn('home-setup-card', { setupCards: ['helper'], heading: WORK_ON });
+    await panelPage.locator('.composer-input').fill(DRAFT);
+    await runOn('home-setup-card-draft', { setupCards: ['helper'], heading: WORK_ON });
+    await panelPage.locator('.composer-input').fill('');
     await render({ helper: { connected: true }, setup: { agents: [{ id: 'claude', found: true, registered: false }], t3: { state: 'running' } } });
     await panelPage.locator('.setup-card.connect-row').waitFor();
     // The panel's own attempt to connect failed here (the fake T3 cannot pair): the row is the plain one, no error text.
@@ -604,7 +650,7 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
     await sleep(1500);
     assert(await connectButton.isEnabled(), 'The Connect row is still busy after the automatic attempt');
     assert((await panelPage.locator('.setup-card.connect-row .problem').count()) === 0, 'A failed automatic attempt put an error on the Connect row');
-    await runOn('home-connect-t3', { setupCards: ['connect'] });
+    await runOn('home-connect-t3', { setupCards: ['connect'], heading: WORK_ON });
     // A click is the owner's own: its failure shows the error.
     await connectButton.click();
     await panelPage.locator('.setup-card.connect-row .problem').waitFor();
@@ -631,7 +677,9 @@ export async function checkLayout({ livePanel, serviceWorker, panelPage, screens
     }
   }
   for (const [key, list] of Object.entries(bars)) failures.push(...barProblems(key, list));
+  failures.push(...headingProblems(headings));
+  assert(Object.values(headings).every((list) => list.length >= 9), 'The layout check compared the new-thread heading on too few states');
   const barCount = Object.values(bars).reduce((sum, list) => sum + list.length, 0);
   assert(failures.length === 0, `Panel layout, measured on its ink (${failures.length} problems):\n${failures.join('\n')}`);
-  console.log(`Panel layout: ${total} bars, composers, heroes and approval cards measured on ${Object.keys(counts).length} screens at ${WIDTHS.join('/')} px, light and dark (and ${promptCards} prompt cards on the headless new-thread screen); ink insets, centre lines, control sizes and glyph sizes within ${TOLERANCE} px; the ${barCount} top bars are the one bar and agree across screens in height, insets, icon size and stroke, toggle and breadcrumb position; approval cards at most ${CARD_MAX} px with one row of answers, the setup card at most ${SETUP_CARD_MAX} px and the Connect row one line in the composer's column, and prompts on the new-thread screen move neither the hero nor the composer`);
+  console.log(`Panel layout: ${total} bars, composers, heroes and approval cards measured on ${Object.keys(counts).length} screens at ${WIDTHS.join('/')} px, light and dark (and ${promptCards} prompt cards on the headless new-thread screen); ink insets, centre lines, control sizes and glyph sizes within ${TOLERANCE} px; the ${barCount} top bars are the one bar and agree across screens in height, insets, icon size and stroke, toggle and breadcrumb position; the new-thread heading at one height and with T3's two questions on ${Object.values(headings)[0]?.length ?? 0} states, approval cards at most ${CARD_MAX} px with one row of answers, the setup card at most ${SETUP_CARD_MAX} px and the Connect row one line in the composer's column, and prompts on the new-thread screen move neither the hero nor the composer`);
 }

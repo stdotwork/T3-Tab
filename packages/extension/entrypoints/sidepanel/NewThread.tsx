@@ -1,6 +1,6 @@
 import type { AgentConversation } from '@t3-tab/protocol';
 import { Check, FolderPlus, Search } from 'lucide-react';
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 
 import { Composer, dictateInto, ModelPicker, TabChip, useComposerAttachments } from './Composer';
 import { useDictation } from './Dictation';
@@ -138,6 +138,27 @@ function FolderPicker({ value, onChange }: { value: string; onChange: (folder: s
   );
 }
 
+/**
+ * Tells the hero how tall it and the dock are, so it moves up only when the dock would otherwise cover it (a short panel
+ * with the setup card); otherwise it hangs where the stylesheet puts it, whatever the dock holds.
+ */
+function useSteadyHero(hero: RefObject<HTMLDivElement | null>, dock: RefObject<HTMLDivElement | null>): void {
+  useEffect(() => {
+    const heroBox = hero.current;
+    const dockBox = dock.current;
+    if (heroBox === null || dockBox === null) return;
+    const update = (): void => {
+      heroBox.style.setProperty('--hero-h', `${heroBox.offsetHeight}px`);
+      heroBox.style.setProperty('--dock-h', `${dockBox.offsetHeight}px`);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(heroBox);
+    observer.observe(dockBox);
+    return () => observer.disconnect();
+  }, [hero, dock]);
+}
+
 export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; state: T3State; onOpen: (screen: Screen) => void; onNav: (screen: Screen) => void }): ReactNode {
   const catalog = useCatalog(live, state);
   const [text, setText] = useTabStored('draft', '');
@@ -166,12 +187,14 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
   const latestText = useRef(text);
   latestText.current = text;
   const hero = useInkCentre<HTMLDivElement>();
+  const dock = useRef<HTMLDivElement>(null);
+  useSteadyHero(hero, dock);
   const target = useMemo(() => (catalog.source === 't3' ? ({ kind: 't3' } as const) : ({ kind: 'direct', agent: provider?.name ?? 'this agent' } as const)), [catalog.source, provider?.name]);
   const attachments = useComposerAttachments(target);
   const dictation = useDictation(state, (spoken) => setText(dictateInto(latestText.current, spoken)), setNotice);
-  // A direct agent has only the browser tools, so it is asked about the page rather than about building something.
-  // T3 asks what to work on while no project is chosen, and what to build once one is.
-  const heading = catalog.source === 't3' ? (project === undefined ? 'What should we work on?' : 'What should we build?') : !shareable || !shareTab ? 'What should we do?' : targets.tabs.length > 1 ? 'What should we do in these tabs?' : 'What should we do in this tab?';
+  // T3's two questions: what to work on with no project, what to build in one. A direct run has no project, so it asks
+  // what T3 asks then, and the first screen keeps its question when T3 connects (a new tab starts in no project).
+  const heading = catalog.source === 't3' && project !== undefined ? 'What should we build?' : 'What should we work on?';
   const chooseProject = (id: string): void => {
     setTabProject(id);
     if (id !== NO_PROJECT) setLastProject(id);
@@ -233,7 +256,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
 
   return (
     <ApprovalStack order={live.prompts.map((prompt) => promptCardId(prompt.id))} keys={live.prompts.map((prompt) => promptCardId(prompt.id))}>
-    <div className="screen">
+    <div className="screen new-thread">
       <TopBar crumbs={['New thread']}onThreads={() => onNav({ name: 'threads' })} onSettings={() => onNav({ name: 'settings', tab: 'general' })} sessions={live.sessions.length} needsYou={needsYou} />
       {setupCard ? null : <Banner live={live} state={state} onConnections={() => onNav({ name: 'settings', tab: 'general', connections: true })} />}
       <main className="home">
@@ -248,7 +271,7 @@ export function NewThread({ live, state, onOpen, onNav }: { live: LiveState; sta
           {catalog.note === undefined ? null : <p className="hero-note">{catalog.note}</p>}
         </div>
       </main>
-      <div className="dock">
+      <div className="dock" ref={dock}>
         {/* Over the hero's lower part, so a prompt arriving never moves the heading or the composer. */}
         <PromptCards prompts={live.prompts} currentTabId={tab?.id} askerName={askerName(live, state)} onManageSites={() => onNav({ name: 'settings', tab: 'sites' })} overlay />
         {setupCard ? <SetupCard live={live} /> : t3Connect.offered ? <T3ConnectRow connect={t3Connect} /> : null}

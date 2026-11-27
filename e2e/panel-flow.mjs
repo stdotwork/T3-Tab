@@ -668,7 +668,7 @@ async function runDirectFlow() {
     panelPage.on('pageerror', (error) => check('no page error', false, error.message));
 
     // The helper is installed before the browser starts: the panel opens on the new-thread screen with no setup card.
-    await panelPage.getByText('What should we do in this tab?').waitFor({ timeout: 60_000 });
+    await panelPage.getByText('What should we work on?').waitFor({ timeout: 60_000 });
     await panelPage.locator('[data-setup-card]').waitFor({ state: 'detached', timeout: 30_000 });
     check('with the helper installed, the panel opens on a new thread with no setup card', true);
     await shot('01-setup');
@@ -681,7 +681,7 @@ async function runDirectFlow() {
     if (await add.isVisible()) await add.click();
     await claudeRow.getByText('Ready').waitFor({ timeout: 30_000 });
     await panelPage.locator('#btn-settings-back').click();
-    await panelPage.getByText('What should we do in this tab?').waitFor();
+    await panelPage.getByText('What should we work on?').waitFor();
     await shot('02-home');
     await panelPage.locator('.model-chip').first().click();
     await panelPage.locator('.model-popover').waitFor();
