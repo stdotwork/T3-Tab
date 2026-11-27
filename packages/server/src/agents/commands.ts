@@ -204,7 +204,7 @@ const CODEX_DISABLED_FEATURES = [
   'memories',
   'standalone_web_search',
 ];
-const T3_TAB_TOOLS = ['status', 'tabs', 'read', 'screenshot', 'act', 'run_js'];
+const T3_TAB_TOOLS = ['tabs', 'read', 'screenshot', 'act', 'run_js'];
 // Longer than T3-Tab's own wait, so its error arrives first. Codex's default is 60 seconds.
 const CODEX_TOOL_TIMEOUT_SEC = Math.ceil(TOOL_TIMEOUT_MS / 1_000) + 20;
 

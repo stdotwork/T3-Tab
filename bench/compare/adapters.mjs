@@ -59,7 +59,7 @@ const t3tab = {
     const browserContext = await launchBrowser(home);
     const { serviceWorker } = await extensionWorker(browserContext);
     const { client } = await connectMcp(home, 't3-tab-compare');
-    await waitForBrowser(client);
+    await waitForBrowser(home);
     await setSite(serviceWorker, site, 'allow');
     return {
       client,

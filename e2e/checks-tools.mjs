@@ -1,4 +1,4 @@
-import { assert, jpegSize, parseStatusTabCount, refFor, sleep, text } from './harness.mjs';
+import { assert, daemonBrowsers, jpegSize, refFor, sleep, text } from './harness.mjs';
 import { decidePrompt, pendingPrompts } from './checks-permissions.mjs';
 
 let autoPromptSessionId;
@@ -12,7 +12,11 @@ export function setAutoPrompt(serviceWorker, sessionId) {
 export async function checkBrowserTools({ mcpClient, page, siteUrl }) {
   const { tools } = await mcpClient.listTools();
   const names = tools.map((tool) => tool.name).sort();
-  assert(JSON.stringify(names) === JSON.stringify(['act', 'read', 'run_js', 'screenshot', 'status', 'tabs']), `Unexpected tools: ${names}`);
+  assert(JSON.stringify(names) === JSON.stringify(['act', 'read', 'run_js', 'screenshot', 'tabs']), `Unexpected tools: ${names}`);
+  // The list leaves out what each call is checked against anyway, and read's unlisted parameters (still accepted below).
+  assert(!JSON.stringify(tools).includes('"$schema"') && !JSON.stringify(tools).includes('"maxLength"'), 'The tool list carries checked keywords');
+  const readProperties = Object.keys(tools.find((tool) => tool.name === 'read').inputSchema.properties);
+  assert(!readProperties.includes('depth') && !readProperties.includes('regex'), `read lists ${readProperties}`);
   const sizes = tools.map((tool) => `${tool.name} ${JSON.stringify(tool).length}`);
   const definitionChars = JSON.stringify(tools).length;
   console.log(
@@ -229,13 +233,16 @@ export async function checkActionTools({ mcpClient, page }) {
   console.log('Act, stale ref and run_js: all checks passed');
 }
 
-export async function checkKeepalive(mcpClient) {
+export async function checkKeepalive(mcpClient, home) {
   console.log('Keepalive: waiting 36 seconds past the service worker idle timeout...');
   await new Promise((resolve) => setTimeout(resolve, 36_000));
-  const result = await call(mcpClient, 'status', {});
-  show('status after 36s idle', result);
-  assert(/^Browsers: 1$/m.test(text(result)), `The extension did not stay connected: ${text(result)}`);
-  assert(parseStatusTabCount(text(result)) >= 1, `The kept-alive browser reported no tabs: ${text(result)}`);
+  const browsers = await daemonBrowsers(home);
+  console.log(`Daemon status after 36s idle: ${JSON.stringify(browsers)}`);
+  assert(browsers.length === 1, `The extension did not stay connected: ${JSON.stringify(browsers)}`);
+  assert(browsers[0].tabCount >= 1, `The kept-alive browser reported no tabs: ${JSON.stringify(browsers)}`);
+  const result = await call(mcpClient, 'tabs', {});
+  show('tabs after 36s idle', result);
+  assert(result.isError !== true, `A tool call failed after 36s idle: ${text(result)}`);
   console.log('Keepalive after 36s: passed');
 }
 

@@ -356,7 +356,7 @@ export type AgentItem =
   | {
       id: string;
       kind: 'tool';
-      /** The tool's name without its server prefix, such as `read`, `act` or `status`. */
+      /** The tool's name without its server prefix, such as `read`, `act` or `tabs`. */
       name: string;
       /** What was asked, in one short line. */
       summary?: string;

@@ -93,7 +93,7 @@ export interface ThreadView {
   projectId?: string;
 }
 
-const BROWSER_TOOL_NAMES = new Set(['status', 'tabs', 'read', 'screenshot', 'act', 'run_js']);
+const BROWSER_TOOL_NAMES = new Set(['tabs', 'read', 'screenshot', 'act', 'run_js']);
 
 /** `mcp__t3-tab__read` and `t3-tab.read` both name T3-Tab's own browser tools. A direct run's parser leaves the bare name. */
 export function browserToolName(name: string): string | undefined {
@@ -134,8 +134,6 @@ export function browserStepLabel(tool: string, input: unknown, output?: string):
   const site = hostInReply(output);
   const page = site ?? 'the page';
   switch (tool) {
-    case 'status':
-      return 'Checked the browser';
     case 'tabs': {
       if (args.claim !== undefined) return 'Took the shared tabs';
       if (args.action === 'open') return `Opened ${hostOf(args.url) ?? site ?? 'a tab'}`;

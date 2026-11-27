@@ -95,7 +95,7 @@ export const TOOLS = [
       try {
         // Ready when the daemon reports a browser with a tab; this client only looks and is closed again.
         const watcher = await connectMcp(home, 't3-tab-agent-bench-watch');
-        await waitForBrowser(watcher.client);
+        await waitForBrowser(home);
         await watcher.client.close().catch(() => undefined);
         // `allow` for every origin the task may touch, so no permission prompt waits (the same for the local site and the real ones).
         for (const origin of origins) await browser.panel({ type: 'panel.setSite', origin, setting: 'allow' });
