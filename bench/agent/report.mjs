@@ -1,5 +1,5 @@
 // Turns the runs of the agent benchmark into tables and into readable transcripts.
-import { attributable, headToHead, median, medianToolLatency, requestsOf, tokensOf } from './stats.mjs';
+import { attributable, headToHead, median, medianToolBusy, medianToolLatency, requestsOf, tokensOf } from './stats.mjs';
 
 const sum = (values) => values.reduce((total, value) => total + value, 0);
 const int = (value) => (value === undefined ? '-' : Math.round(value).toLocaleString('en-US'));
@@ -32,6 +32,7 @@ function summarise(runs, baseline) {
     requestsMedian: median(runs.map(requestsOf)),
     turnsMedian: median(runs.map((run) => run.turns)),
     latencyMedian: medianToolLatency(runs),
+    busyMedian: medianToolBusy(runs),
     tokensTotal: sum(runs.map(tokensOf)),
     inputTotal: sum(runs.map((run) => run.usage.input)),
     outputTotal: sum(runs.map((run) => run.usage.output)),
@@ -69,19 +70,23 @@ export function markdown({ runs: allRuns, tools: allTools, tasks, model, sites =
   );
   lines.push('Targets: tool-attributable tokens and model requests at most 0.50x the best competitor; total tokens at most 0.65x `chrome-devtools-mcp --slim`; success on every task; median tool latency not worse than the best.', '');
   if (baseline.size === 0) lines.push('No baseline runs are in these results, so tool-attributable tokens are not shown.', '');
-  lines.push('| Tool | Success | Tool-attributable tokens | Model requests | Total tokens | Cost | Time | Median tool latency (ms) |');
-  lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
+  lines.push('| Tool | Success | Tool-attributable tokens | Model requests | Total tokens | Cost | Time | Median tool latency (ms) | Median tool-busy time per run (s) | Median wall time per run (s) |');
+  lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
   if (reference !== undefined && reference.runs > 0) {
-    lines.push(`| T3-Tab (reference) | ${reference.ok}/${reference.runs} | median ${int(reference.attrMedian)} | median ${int(reference.requestsMedian)} | median ${int(reference.tokensMedian)} | median ${usd(reference.costMedian)} | median ${secs(reference.wallMedian)} s | ${int(reference.latencyMedian)} |`);
+    lines.push(`| T3-Tab (reference) | ${reference.ok}/${reference.runs} | median ${int(reference.attrMedian)} | median ${int(reference.requestsMedian)} | median ${int(reference.tokensMedian)} | median ${usd(reference.costMedian)} | median ${secs(reference.wallMedian)} s | ${int(reference.latencyMedian)} | ${secs(reference.busyMedian)} | ${secs(reference.wallMedian)} |`);
   }
   for (const row of versus) {
     const tool = competitors.find((entry) => entry.id === row.tool);
     const s = summaries.get(row.tool);
     lines.push(
-      `| ${tool.label} | ${s.ok}/${s.runs} | ${interval(row.metrics.attributable)} | ${interval(row.metrics.requests)} | ${interval(row.metrics.tokens)} | ${interval(row.metrics.cost)} | ${interval(row.metrics.time)} | ${int(s.latencyMedian)} |`,
+      `| ${tool.label} | ${s.ok}/${s.runs} | ${interval(row.metrics.attributable)} | ${interval(row.metrics.requests)} | ${interval(row.metrics.tokens)} | ${interval(row.metrics.cost)} | ${interval(row.metrics.time)} | ${int(s.latencyMedian)} | ${secs(s.busyMedian)} | ${secs(s.wallMedian)} |`,
     );
   }
   lines.push('');
+  lines.push(
+    'A call\'s latency is from its request to its reply in the stream, so calls sent in one message, which run one after another, each count the wait for the ones before; tools differ in what one call does. Tool-busy time is per run, with the time such calls share counted once. Wall time is from starting `claude` to its exit, model time included.',
+    '',
+  );
   const closest = (metric) => versus.filter((row) => row.metrics[metric] !== undefined).sort((a, b) => b.metrics[metric].geomean - a.metrics[metric].geomean)[0];
   for (const [metric, label] of [['attributable', 'tool-attributable tokens'], ['requests', 'model requests'], ['tokens', 'total tokens']]) {
     const row = closest(metric);

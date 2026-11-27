@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { parseStream } from './claude.mjs';
 import { markdown } from './report.mjs';
-import { attributable, geomean, headToHead, median, medianToolLatency, seeded } from './stats.mjs';
+import { attributable, busyMs, geomean, headToHead, median, medianToolBusy, medianToolLatency, seeded } from './stats.mjs';
 
 const run = (tool, task, tokens, requests, extra = {}) => ({
   tool,
@@ -78,6 +79,25 @@ describe('agent benchmark statistics', () => {
     expect(medianToolLatency([{ toolMs: [100, 300] }, { toolMs: [200] }, {}])).toBe(200);
   });
 
+  it('counts the time calls share once in a run\'s tool-busy time', () => {
+    expect(busyMs([])).toBe(0);
+    // Two calls of one message (the second waits for the first), then a call of its own after a gap.
+    expect(busyMs([[1_000, 1_100], [1_000, 1_250], [2_000, 2_040]])).toBe(290);
+    expect(busyMs([[50, 60], [0, 20], [10, 30]])).toBe(40);
+    // A run recorded before tool-busy time was is left out of the median, not counted as 0.
+    expect(medianToolBusy([{ toolBusyMs: 300 }, { toolBusyMs: 100 }, { toolBusyMs: 200 }, {}])).toBe(200);
+  });
+
+  it('reads a run\'s call latencies and tool-busy time from the stream\'s timestamps', () => {
+    const at = (ms) => new Date(Date.UTC(2026, 10, 27, 12, 0, 0, ms)).toISOString();
+    const use = (id, ms, message) => ({ type: 'assistant', timestamp: at(ms), message: { id: message, content: [{ type: 'tool_use', id, name: 'mcp__t3-tab__read', input: {} }] } });
+    const reply = (id, ms) => ({ type: 'user', timestamp: at(ms), message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] } });
+    const lines = [use('a', 0, 'm1'), use('b', 0, 'm1'), reply('a', 100), reply('b', 250), use('c', 900, 'm2'), reply('c', 960), use('d', 1_000, 'm3')].map((event) => JSON.stringify(event));
+    const parsed = parseStream(lines);
+    expect(parsed.toolMs).toEqual([100, 250, 60]);
+    expect(parsed.toolBusyMs).toBe(310);
+  });
+
   it('writes the tables, with the baseline kept out of the tool rows and a flaky task marked', () => {
     const text = markdown({
       // A baseline run that never finished (a stalled request) is left out: it would raise the baseline to 99,999 tokens.
@@ -93,6 +113,10 @@ describe('agent benchmark statistics', () => {
     });
     expect(text).toContain('held-out public-site tasks');
     expect(text).toContain('| Other | 6/6 | 0.35x'); // sqrt(0.5 x 0.25) = 0.354
+    // These runs carry no tool-busy time; their wall time is 1 s a request, a median of 3.5 s for T3-Tab and 7 s for Other.
+    expect(text).toContain('Median tool-busy time per run (s) | Median wall time per run (s) |');
+    expect(text).toMatch(/\| T3-Tab \(reference\) \|.*\| - \| 3\.5 \|\n/);
+    expect(text).toMatch(/\| Other \| 6\/6 \|.*\| - \| 7\.0 \|\n/);
     expect(text).toContain('flaky: its site timed out twice');
     expect(text).toContain('### No-tool baseline');
     expect(text).not.toMatch(/\| No tools \(baseline\) \| 6 \| 6\/6/);
