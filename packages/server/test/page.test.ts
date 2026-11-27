@@ -469,7 +469,7 @@ describe('text in the default view', () => {
 });
 
 describe('an outline of a long page', () => {
-  const note = /\n\(Outline of a long page: 91 links and buttons, 8 text lines \(2400 characters\) left out\. find searches them, read a ref for one part, all for the whole page\)$/;
+  const note = /\n\(Outline of a long page: 141 links and buttons, 8 text lines \(2400 characters\) left out\. find searches them, read a ref for one part, all for the whole page\)$/;
 
   it('keeps the shape and the first of the rest, and says how to get at what it left out', async () => {
     const whole = await formatRead(new TabState(), 's1', page(longPage()), { depth: 9 });
@@ -478,7 +478,7 @@ describe('an outline of a long page', () => {
     expect(reply).toMatch(note);
     expect(reply.length).toBeLessThan(whole.length / 2);
     // Headings, landmarks, the form with its field and button, the live region and the dialog.
-    for (const line of ['# Report', 'e22 form "Search"', '  e23 textbox "Query"', '  e24 button "Go"', 'e25 list "Items"', 'alert "Report saved."', 'e138 dialog "Cookies"', '  "We use cookies."', '  e139 button "Accept"']) {
+    for (const line of ['# Report', 'e22 form "Search"', '  e23 textbox "Query"', '  e24 button "Go"', 'e25 list "Items"', 'alert "Report saved."', 'e188 dialog "Cookies"', '  "We use cookies."', '  e189 button "Accept"']) {
       expect(reply.split('\n')).toContain(line);
     }
     // The first links, and the first text of the main content.
@@ -488,7 +488,7 @@ describe('an outline of a long page', () => {
     expect(reply).not.toContain('"Paragraph 5 of the report');
     // Long lists around the content fold to one line each; a left-out link takes what it holds with it.
     expect(reply).toContain('e1 navigation "Site" (20 links; read e1): "Nav 1"');
-    expect(reply).toContain('e127 contentinfo "Footer" (10 links; read e127)');
+    expect(reply).toContain('e177 contentinfo "Footer" (10 links; read e177)');
     expect(reply).not.toContain('Story');
   });
 
@@ -520,9 +520,9 @@ describe('an outline of a long page', () => {
   });
 
   it('leaves a long page whole when its outline would not be shorter', async () => {
-    const reply = await formatRead(new TabState(), 's1', page(fieldPage(300)), {});
+    const reply = await formatRead(new TabState(), 's1', page(fieldPage(400)), {});
     expect(reply.length).toBeGreaterThan(OUTLINE_AT);
-    expect(reply).toContain('e300 textbox "Field 300"');
+    expect(reply).toContain('e400 textbox "Field 400"');
     expect(reply).not.toContain('Outline');
   });
 });

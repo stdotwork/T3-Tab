@@ -407,7 +407,7 @@ buttons; read e14): "Getting Started", "Installation", …`, and the last name t
 `find` searches them. Only the default view of a whole page folds; a `ref` read, `depth`, `all`, `find` and diffs do not,
 and the diff baseline holds every line.
 A long page is outlined (`packages/server/src/reader/outline.ts`). When the default view of a whole page, folded and held to
-the text budget as above, is over `OUTLINE_AT` (6,000 characters), a `read` (a `full` one and `read` with a `url` too) or an
+the text budget as above, is over `OUTLINE_AT` (7,000 characters), a `read` (a `full` one and `read` with a `url` too) or an
 `act` reply that shows the whole page sends its outline instead: every heading, landmark and other named container, every
 field, and every element inside a form or search landmark; live regions and dialogs whole; the first `OUTLINE_ACTIONS` (40)
 links, buttons and other elements of the kinds a folded list holds, in page order (one left out takes the lines inside it,

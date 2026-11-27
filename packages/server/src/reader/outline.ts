@@ -1,7 +1,7 @@
 import { GROUP_ROLES, type RenderedLine, type View } from './format.js';
 
 /** A default view longer than this, in characters, is outlined in a `read` or `act` reply. */
-export const OUTLINE_AT = 6_000;
+export const OUTLINE_AT = 7_000;
 /** Links, buttons and the like an outline keeps outside forms, the first in page order. */
 export const OUTLINE_ACTIONS = 40;
 /** Characters of the page's main text an outline keeps, from its start. */

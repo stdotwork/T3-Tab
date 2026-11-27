@@ -61,13 +61,13 @@ export function fieldPage(count: number): AxNode[] {
 
 /**
  * A long page: a navigation of 20 links (`Nav N`), then a main with a heading, 12 paragraphs of 300 characters
- * (`Paragraph N …`), a search form, a list of 100 links (`Item N`), a link past them holding a heading, and an alert; then a
+ * (`Paragraph N …`), a search form, a list of 150 links (`Item N`), a link past them holding a heading, and an alert; then a
  * footer of 10 links and a dialog with a button.
  */
 export function longPage(): AxNode[] {
   const nav = Array.from({ length: 20 }, (_, index) => 100 + index);
   const paragraphs = Array.from({ length: 12 }, (_, index) => 300 + index * 2);
-  const items = Array.from({ length: 100 }, (_, index) => 500 + index);
+  const items = Array.from({ length: 150 }, (_, index) => 500 + index);
   const footer = Array.from({ length: 10 }, (_, index) => 700 + index);
   const paragraph = (index: number): string => `Paragraph ${index + 1} ${'of the report, which goes on. '.repeat(10)}`.slice(0, 300);
   return [
