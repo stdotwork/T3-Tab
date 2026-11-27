@@ -104,6 +104,18 @@
       "tokens": 23,
       "imageBytes": 138189,
       "imageTokens": 1311
+    },
+    "outline.read-url": {
+      "chars": 3506,
+      "tokens": 1050
+    },
+    "outline.act-order": {
+      "chars": 3605,
+      "tokens": 1079
+    },
+    "outline.find": {
+      "chars": 119,
+      "tokens": 44
     }
   }
 }

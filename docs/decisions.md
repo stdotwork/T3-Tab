@@ -50,7 +50,15 @@ For current behaviour, module paths and commands, see [AGENTS.md](../AGENTS.md).
   error message, a list or a table row without a second read or a screenshot. Links in running prose are written into
   its line (`[name](e12)`) instead of a line each, and when the elements would leave the text no room, long lists of
   links or buttons (sidebars, menus, footers, file tables) fold to one line with a count and a ref that lists them,
-  those around the content first; a page that is mostly links keeps them. Replies are capped at 12,000 characters. Password
+  those around the content first; a page that is mostly links keeps them. A page whose default view is still over 7,000
+  characters (a news site, a long article, a repository page) is sent as an outline instead: headings, landmarks,
+  fields, everything inside a form (its errors too), the buttons beside a field, live regions and dialogs, the first 40
+  links and the first 1,500 characters of the main text, with one line saying what it left out and that `find`, a ref
+  read or `read` with `full` gets the rest. Measured on saved pages it is a fifth to a half of the view (a Hacker News
+  item 6,515 → 1,272 tokens), and it is sent only when it is at most three quarters of it. The threshold is 7,000 and
+  not lower because near it an outline saves little and an answer in the text it drops costs a whole extra request (a
+  docs page at 6,270 characters did, at 6,000). Loads keep their own rule; `full`, a ref read, `depth`, `all`, `find` and
+  diffs are never outlined, and the diff baseline still holds the whole page. Replies are capped at 12,000 characters. Password
   field values are stripped before the tree leaves the extension and rendered as `value=<redacted>`
   so neither the value nor its length leaks.
 - **Literal search by default, bounded regex opt-in.** `find` does case-insensitive literal

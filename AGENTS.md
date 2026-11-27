@@ -58,7 +58,8 @@ that `scripts/install-test-build.sh` (through a `file://` address) installs the 
 started with its own `--user-data-dir` finds it once `setup` names that folder. Then `e2e/checks-real-use.mjs` runs in a headless Chromium only the extension debugs, because Playwright answers
 dialogs itself and makes hidden tabs act focused: dialogs, background input, another extension's frame
 (`e2e/fixtures/frame-injector`), `run_js` parsing, plain-text diffs, image refs, same-origin frames, and password inputs under other ARIA roles and text fields masked by `-webkit-text-security` staying redacted in `read`, `find`, a diff and an `act` reply, with the names built from them (a button, link, heading, label, `aria-labelledby` and a script's `ariaLabelledByElements`, open and closed shadow roots, 205 referrers), a 260-character value, show-password toggles by `autocomplete`, a short value that must not scrub other names, secrets in hidden, `aria-hidden`, `display:none`, `visibility:hidden` and closed-dialog content, fields under the roles link, checkbox and switch, a secret passed on through a label and a button, one echoed in the page's text, split over one element per character, upper-cased or taken from a hidden field no name was built from, a password a GET form puts in the address, also of a new tab it opens, of a tab a link opened earlier that the form names as its target, and of a new tab a `select`'s change sends the form into (the reply header, a read and `tabs list` leave it out), and a page of 3,000 masked fields with 200 buttons named from them read in bounded time. `e2e/checks-agent-tools.mjs`, in such a browser too, checks that `tabs open` asks before anything loads and opens behind the owner's tab, that its reply carries the page (drawn by script too) and is the baseline of the next `read`, that `read` and `goto` with a url open a tab in an empty session behind the same prompt and take `find`, that `read` with the address of a tab the session has reads that tab without loading it again and opens a new tab for any other address, leaving the first where it was, that a load's reply leaves out a page too long for it (a page of long text without reading it) and a page a redirect took to an unapproved origin and names a dialog the page opened, that every tool works on that hidden tab, redirects, `find` past a display cut, link addresses, key spellings, `goto`, `back`, `forward` and a `reload` that never resends a form, the `depth` mark, that an `act` reply names the tabs a click opened (with the page on an allowed site, by origin only on one
-set to ask or after a redirect to one, as loading while blank), an `act` with `find`, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
+set to ask or after a redirect to one, as loading while blank), an `act` with `find`, that a long page is read as an outline that keeps its form, that the `act` sending that form to
+a page that flags its field shows the flag and the error, and that `full` then gets the whole view, and that an action leaves no global in the page. Then it launches headless Playwright Chromium with that built extension, starts the real native host and
 two MCP clients, and checks the loopback link and the browser tools against a local test site (a form,
 links and a section that appears on a click): `tabs`, `read` with its diff, `find` and ref subtrees, and
 `screenshot`, `act` and `run_js`. It also checks session tab groups, socket-bound session ids, tab sharing,
@@ -124,9 +125,11 @@ dark to the folder named by `T3_TAB_FLOW_SHOTS`.
 `pnpm captures` (after `pnpm build`, with `T3_TAB_CAPTURES_DIR` naming an output folder; not part of `pnpm e2e`) renders every panel view at 400 x 800 in light and dark from one fixed shopping scenario with the e2e fakes and the product's `npx t3-tab@latest setup` command, and writes it three ways: `panel/` as drawn, `framed/` on one browser-window frame with the product's and T3 Code's names masked (for blind rating beside other products), `framed-named/` on the same frame unmasked, and the welcome tab as a 1280 x 800 browser tab in `welcome/` (`e2e/captures.mjs`).
 
 `pnpm bench` (after `pnpm build`) measures what an agent is sent, in characters and estimated tokens: the
-`tools/list` payload (total and per tool) and each tool reply on four fixed tasks over three local pages
-(`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link, and search a longer page
-with `read` given its address and `find`, then with `find`, a ref subtree, `all` and a screenshot (text part, JPEG bytes and size, estimated image tokens).
+`tools/list` payload (total and per tool) and each tool reply on five fixed tasks over four local pages
+(`bench/pages.mjs`): fill and submit a form, open a hidden section, follow a link, search a longer page
+with `read` given its address and `find`, then with `find`, a ref subtree, `all` and a screenshot (text part, JPEG bytes and size, estimated image tokens),
+and a catalogue too long to send whole: its outline from `read` with its address, an order sent with a bad address whose
+`act` reply is the next page's outline with the error inside the form, and a `find` for an item the outline left out.
 It drives the real tools through `e2e/harness.mjs` the way the end-to-end run does, with the bench site
 set to `allow` so no prompt waits. It prints a markdown table and writes `bench/results/latest.json` (not
 committed) and the replies it measured to `bench/results/latest.replies.txt`. Text tokens are an estimate:
@@ -400,24 +403,29 @@ sidebar, a menu bar, a footer, a table of files, a browser-compatibility table. 
 to one line each until they do: first those around the content (in a `navigation`, `banner`, `contentinfo` or
 `complementary` landmark, or outside `main` and `article` on a page that has one), then the rest, largest first. A group
 in the content folds only when at least 1,000 characters of text lie outside it, so a page that is mostly its links (a
-news site's stories, search results) keeps them, and a cut at the cap still shows the first. The folded line is the
+news site's stories, search results) keeps them, and a cut at the cap still shows the first (a view that is still over
+7,000 characters is outlined instead, below, and keeps only the first 40 links). The folded line is the
 group's own line, or a ref for its node, then the count and the first names: `e14 navigation "Docs sidebar" (66 links, 5
 buttons; read e14): "Getting Started", "Installation", …`, and the last name too when it moves on (`Next`, `More`, `Older`,
 `»`). The text a folded list held counts in the note on what was left out. Reading that ref lists them with the refs they already had, and
 `find` searches them. Only the default view of a whole page folds; a `ref` read, `depth`, `all`, `find` and diffs do not,
 and the diff baseline holds every line.
 A long page is outlined (`packages/server/src/reader/outline.ts`). When the default view of a whole page, folded and held to
-the text budget as above, is over `OUTLINE_AT` (7,000 characters), a `read` (a `full` one and `read` with a `url` too) or an
-`act` reply that shows the whole page sends its outline instead: every heading, landmark and other named container, every
-field, and every element inside a form or search landmark; live regions and dialogs whole; the first `OUTLINE_ACTIONS` (40)
-links, buttons and other elements of the kinds a folded list holds, in page order (one left out takes the lines inside it,
-such as a story's heading inside its link, with it); the first `OUTLINE_TEXT` (1,500) characters of the text of `main` or
-`article` (of the page, when it has neither), in order until a line does not fit; and the long lists around the content
-folded to one line each, as above, while the lists in the content keep their first links. It ends in one line, `(Outline of
-a long page: 91 links and buttons, 8 text lines (2400 characters) left out. find searches them, read a ref for one part, all
-for the whole page)`, and is sent only when it is shorter than the view. A load's reply keeps its own rule (a page over
-`LOAD_REPLY_MAX` is left out), and a `ref` read, `depth`, `all`, `find` and diffs are never outlined. The diff baseline
-still holds every line, so a later read's diff is against the whole page.
+the text budget as above, is over `OUTLINE_AT` (7,000 characters, measured as a plain `read` would send it, whatever room an
+`act` reply that opened tabs leaves), a `read` (also `read` with a `url`) or an `act` reply that shows the whole page sends
+its outline instead: every heading, landmark and other named container; every field; everything inside a form or search
+landmark, its text too (labels, hints, an error under a field); a button among the three elements after a field (a submit
+outside a form); live regions and dialogs whole; the first `OUTLINE_LINKS` (40) links, other buttons and other elements of
+the kinds a folded list holds, in page order (one left out takes the lines inside it, such as a story's heading inside its
+link, with it); the first `OUTLINE_TEXT` (1,500) characters of the text of `main` or `article`, in order until a line does
+not fit, or, on a page with neither, of the page's text up to the last link kept (so the numbers, points and bylines of
+rows whose links went are left out too); and the long lists around the content folded to one line each, as above, while
+the lists in the content keep their first links. It ends in one line, `(Outline of a long page: 141 links and 8 text lines
+left out, 2433 characters, 1 link in them. find searches them, read a ref for one part, full for the whole view)`, and is
+sent only when it is at most `OUTLINE_MAX_SHARE` (three quarters) of the view. A load's reply keeps its own rule (a page
+over `LOAD_REPLY_MAX` is left out), and `read` with `full`, a `ref` read, `depth`, `all`, `find` and diffs are never
+outlined: after an outline and a "No changes", `full` gets the default view. The diff baseline still holds every line, so a
+later read's diff is against the whole page.
 An `act` reply names the tabs its steps opened (`noteOpenedTab` in `packages/extension/src/opened-tabs.ts`, from
 `chrome.webNavigation.onCreatedNavigationTarget`, once the tab is adopted), each as a load's reply shows a tab: a tab that
 joined the session shows only its origin and `[needs approval]` until the session may read it without a prompt (its

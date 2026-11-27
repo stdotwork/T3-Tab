@@ -168,7 +168,7 @@ const ONWARD = /\b(next|more|older|newer|previous|prev|load|show all|see all|vie
 /** Least text outside a list in the main content that folding the list makes room for. */
 const MIN_TEXT_ROOM = 1_000;
 /** What a folded list may hold: elements an agent finds again by reading its ref or with `find`. */
-export const GROUP_ROLES = new Set(['link', 'button', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'option', 'treeitem', 'disclosuretriangle', 'popupbutton']);
+const GROUP_ROLES = new Set(['link', 'button', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'option', 'treeitem', 'disclosuretriangle', 'popupbutton']);
 /** A list holding one of these is not folded: headings, fields, and the elements a page says something with. */
 const BLOCKING_ROLES = new Set([
   'heading',

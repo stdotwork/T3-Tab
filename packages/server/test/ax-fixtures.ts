@@ -61,8 +61,8 @@ export function fieldPage(count: number): AxNode[] {
 
 /**
  * A long page: a navigation of 20 links (`Nav N`), then a main with a heading, 12 paragraphs of 300 characters
- * (`Paragraph N …`), a search form, a list of 150 links (`Item N`), a link past them holding a heading, and an alert; then a
- * footer of 10 links and a dialog with a button.
+ * (`Paragraph N …`, the last with a link in it), a search form with a field marked invalid and its error, a list of 150
+ * links (`Item N`), a link past them holding a heading, and an alert; then a footer of 10 links and a dialog with a button.
  */
 export function longPage(): AxNode[] {
   const nav = Array.from({ length: 20 }, (_, index) => 100 + index);
@@ -76,9 +76,13 @@ export function longPage(): AxNode[] {
     ...nav.map((id, index) => ax(id, 'link', `Nav ${index + 1}`)),
     ax(3, 'main', '', [4, ...paragraphs, 30, 33, 35, 40]),
     ax(4, 'heading', 'Report', [], { props: { level: 1 } }),
-    ...paragraphs.flatMap((id, index) => [ax(id, 'paragraph', '', [id + 1]), ax(id + 1, 'StaticText', paragraph(index))]),
-    ax(30, 'form', 'Search', [31, 32]),
+    ...paragraphs.flatMap((id, index) => [ax(id, 'paragraph', '', index === 11 ? [id + 1, 26, 27] : [id + 1]), ax(id + 1, 'StaticText', paragraph(index))]),
+    ax(26, 'link', 'the appendix', [], { props: { url: 'http://localhost/appendix' } }),
+    ax(27, 'StaticText', ' has the rest.'),
+    ax(30, 'form', 'Search', [31, 37, 38, 32]),
     ax(31, 'textbox', 'Query'),
+    ax(37, 'textbox', 'Code', [], { props: { invalid: 'true' } }),
+    ax(38, 'StaticText', 'A code has three letters.'),
     ax(32, 'button', 'Go'),
     ax(33, 'list', 'Items', items),
     ...items.map((id, index) => ax(id, 'link', `Item ${index + 1}`)),

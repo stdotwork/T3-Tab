@@ -22,7 +22,18 @@ import {
 const page = (title, body) => `<!doctype html><html lang="en"><head><title>${title}</title></head><body><h1>${title}</h1>${body}</body></html>`;
 const LONG_TEXT = `${'Plain words fill this long paragraph so the answer sits well past any display cut. '.repeat(14)}The limit answers with needle-429 here. ${'More words follow it. '.repeat(10)}`;
 
+/** A page too long to send whole, with an order form after its 200 items; sent, the form comes back with an error in it. */
+const catalogue = (ordered) =>
+  `<!doctype html><html lang="en"><head><title>${ordered ? 'Check your order' : 'Catalogue'}</title></head><body>` +
+  `<nav aria-label="Departments">${Array.from({ length: 12 }, (_, index) => `<a href="/d${index + 1}">Department ${index + 1}</a>`).join(' ')}</nav>` +
+  `<main><h1>Catalogue</h1><p>${'Every item ships within two working days from the warehouse nearest to you. '.repeat(6)}</p><ul>` +
+  Array.from({ length: 200 }, (_, index) => `<li><a href="/item/${index + 1}">Item ${index + 1}</a> <span>A field item for long trips, ${200 + index} grams.</span></li>`).join('') +
+  `</ul><form aria-label="Order" action="/ordered" method="get"><label>Email <input name="email"${ordered ? ' aria-invalid="true"' : ''}></label>` +
+  `${ordered ? '<p>Enter an email address with an @ in it.</p>' : ''}<button>Place order</button></form></main></body></html>`;
+
 const PAGES = {
+  '/catalogue': catalogue(false),
+  '/ordered': catalogue(true),
   '/start': page('Start', '<p>start page</p>'),
   '/private': page('Private', "<p>private page</p><script>fetch('/js-ran')</script>"),
   '/landing': page('Landing', '<p>landed</p>'),
@@ -633,6 +644,21 @@ export async function checkAgentTools() {
       // The search set no baseline: the next read still shows the change.
       const read = await call('read', { tab });
       assert(read.text.includes('pressed'), `the read after an act find: ${read.text}`);
+      await closeTab(tab);
+    });
+
+    await check('a long page is read as an outline that keeps its form, and an order sent back with an error shows it', async () => {
+      const { tab } = await openAllowedPage('/catalogue');
+      const read = await call('read', { tab });
+      assert(/\n\(Outline of a long page: \d+ links and \d+ text lines left out, \d+ characters\. find searches them, read a ref for one part, full for the whole view\)$/.test(read.text), `the read of a long page: ${read.text}`);
+      assert(read.text.includes('link "Item 40"') && !read.text.includes('Item 41'), `the outline's links: ${read.text}`);
+      const email = refFor(read.text, 'textbox "Email"');
+      const order = refFor(read.text, 'button "Place order"');
+      assert(email !== undefined && order !== undefined, `the outline left out the form: ${read.text}`);
+      const sent = await call('act', { tab, steps: [{ action: 'fill', ref: email, text: 'ada.example.com' }, { action: 'click', ref: order }] });
+      assert(!sent.error && sent.text.includes('(Outline of a long page') && /textbox "Email"[^\n]*\[invalid\]\n\s*"Enter an email address with an @ in it\."/.test(sent.text), `the act reply to the order: ${sent.text}`);
+      const full = await call('read', { tab, full: true });
+      assert(full.text.includes('link "Item 200"') && !full.text.includes('Outline of a long page'), `a full read of the long page: ${full.text.slice(-400)}`);
       await closeTab(tab);
     });
 
