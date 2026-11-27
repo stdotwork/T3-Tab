@@ -76,7 +76,10 @@ export async function actOnPage(
   const blockedBefore = blockedLoadCount(tabId);
   let failure: ActFailure | undefined;
   let activeSession = session;
-  /** Field steps run since the last settle, each with the document epoch it started on. */
+  /**
+   * Steps run since the last settle, each with the document epoch it started on: field steps, or the one step before a
+   * wait for a time, which leaves its settle to that wait.
+   */
   let unsettled: Array<{ step: number; action: ActAction; epoch: number }> = [];
   /** Which field step replaced the page, when one did, so a later step's stale ref can say so. */
   let replacedNote: string | undefined;
@@ -98,6 +101,28 @@ export async function actOnPage(
     }
   };
 
+  /** After the settle that covers `pending`: what the steps that skipped their own settle would have checked after it. */
+  const settledPending = async (pending: typeof unsettled): Promise<void> => {
+    const first = pending[0];
+    const last = pending[pending.length - 1];
+    if (first === undefined || last === undefined) return;
+    try {
+      assertSameOriginSince(tabId, epoch, expectedOrigin, last.action);
+    } catch (error) {
+      failure = { step: last.step, action: last.action, error: messageOf(error) };
+    }
+    // Only field steps are named for it: a step that starts work is expected to replace the page.
+    if (!startsWork(last.action) && documentEpoch(tabId) !== first.epoch) {
+      replacedNote =
+        pending.length === 1
+          ? `step ${first.step} (${first.action}) replaced the page`
+          : `the page was replaced after the field changes in steps ${first.step} to ${last.step}`;
+    }
+    epoch = documentEpoch(tabId);
+    unsettled = [];
+    await assertAccessAfter(last.step, last.action);
+  };
+
   // The document the page's secret values were last noted on, and whether a step changed a field since.
   let secretsEpoch: number | undefined;
   let fieldsChanged = false;
@@ -108,33 +133,19 @@ export async function actOnPage(
 
     // Field changes since the last settle may have started work the page answers a moment later: a debounced check
     // that enables Submit, a navigation on a timer. Settle once before a step that acts on the page's answer, not
-    // after each field.
+    // after each field. A wait for a time settles while it waits, below, and checks them there.
+    const waitMs = waitStepMs(step);
     const pending = unsettled;
-    if (pending.length > 0 && startsWork(action)) {
-      const first = pending[0];
-      const last = pending[pending.length - 1];
-      if (first !== undefined && last !== undefined) {
-        await settlePage(tabId);
-        try {
-          assertSameOriginSince(tabId, epoch, expectedOrigin, last.action);
-        } catch (error) {
-          failure = { step: last.step, action: last.action, error: messageOf(error) };
-        }
-        if (documentEpoch(tabId) !== first.epoch) {
-          replacedNote =
-            pending.length === 1
-              ? `step ${first.step} (${first.action}) replaced the page`
-              : `the page was replaced after the field changes in steps ${first.step} to ${last.step}`;
-        }
-        epoch = documentEpoch(tabId);
-        unsettled = [];
-        await assertAccessAfter(last.step, last.action);
-        if (failure !== undefined) break;
-      }
+    if (pending.length > 0 && startsWork(action) && waitMs === undefined) {
+      await settlePage(tabId);
+      await settledPending(pending);
+      if (failure !== undefined) break;
     }
 
     const networkBefore = networkRevision(tabId);
     const epochBefore = documentEpoch(tabId);
+    /** How long the settle after this step lasts at the least: a wait for a time, unless a dialog took the step. */
+    let settleMinMs = 0;
     try {
       activeSession = await reloadSession();
       await assertActAccess(activeSession, tabId, expectedOrigin);
@@ -162,6 +173,9 @@ export async function actOnPage(
         const backendId = backendIds[index];
         if (backendId === undefined || backendId === null) throw staleRef(ref, 'the ref has no DOM node id');
         await runElementStep(tabId, step, backendId, ref);
+      } else if (waitMs !== undefined) {
+        // Waited out by the settle below, which watches the page meanwhile.
+        settleMinMs = waitMs;
       } else {
         if (action !== 'wait') releaseFocus ??= await holdInputFocus(tabId);
         await runPageStep(tabId, step);
@@ -184,15 +198,20 @@ export async function actOnPage(
     // A key press can type into a field as well.
     if (!changesNoField(action) && action !== 'click') fieldsChanged = true;
     const readFollows = index === steps.length - 1 || failure !== undefined;
-    if (!readFollows && !startsWork(action)) {
+    // A wait for a time comes next: it settles while it waits, so this step's settle would only add to the wait.
+    const next = steps[index + 1];
+    const leavesSettleToWait = !readFollows && action !== 'wait' && next !== undefined && waitStepMs(next) !== undefined;
+    if (!readFollows && !startsWork(action) && !leavesSettleToWait) {
       // The debugger reports a request or a navigation the step began a moment after its own reply, so ask for
       // one more answer from the page first; what it began is in by then.
       await sendCommand(tabId, 'Page.getLayoutMetrics').catch(() => undefined);
     }
     const moved = documentEpoch(tabId) !== epochBefore || networkRevision(tabId) !== networkBefore;
-    const settles = readFollows || startsWork(action) || moved;
+    const settles = !leavesSettleToWait && (readFollows || startsWork(action) || moved);
     if (settles) {
-      await settlePage(tabId);
+      await settlePage(tabId, settleMinMs);
+      // The step before a wait for a time is checked here, after the wait, as it would have been after its own settle.
+      if (pending.length > 0 && waitMs !== undefined) await settledPending(pending);
       unsettled = [];
     } else {
       unsettled.push({ step: index + 1, action, epoch: epochBefore });
@@ -232,6 +251,11 @@ export async function actOnPage(
   const page = await readPage(activeSession, tabId, expectedOrigin, reloadSession);
   return failure === undefined ? page : { ...page, failure };
   }
+}
+
+/** How long a wait for a time waits, or undefined for any other step. */
+function waitStepMs(step: ActStep): number | undefined {
+  return 'wait' in step && 'ms' in step.wait ? clamp(step.wait.ms, 0, MAX_WAIT_MS) : undefined;
 }
 
 /**
@@ -351,11 +375,8 @@ async function runPageStep(tabId: number, step: ActStep): Promise<void> {
       return;
     case 'wait':
       if (!('wait' in step)) return;
-      if ('ms' in step.wait) {
-        await sleep(clamp(step.wait.ms, 0, MAX_WAIT_MS));
-      } else {
-        await waitForText(tabId, step.wait.for);
-      }
+      // A wait for a time is the settle after it (`actOnPage`).
+      if ('for' in step.wait) await waitForText(tabId, step.wait.for);
       return;
     default:
       throw new Error(`The ${actionOf(step)} step needs a ref`);
