@@ -1,12 +1,26 @@
 import { describe, expect, it } from 'vitest';
 
-import { findLines, MAX_QUERY_LENGTH } from '../src/reader/find.js';
+import { type FindLine, findLines, MAX_QUERY_LENGTH } from '../src/reader/find.js';
 
 const lines = Array.from({ length: 30 }, (_, index) => `row ${index}`);
+/** The longest matching line printed whole. */
+const MAX_PRINTED = 200;
 
 describe('find', () => {
-  it('returns matching lines with one line of context either side', async () => {
-    expect((await findLines(lines, 'row 10')).text).toBe('row 9\nrow 10\nrow 11');
+  it('returns only the matching line, and the line before a short one, which says whose it is', async () => {
+    expect((await findLines(lines, 'row 10')).text).toBe('row 9\nrow 10');
+    // A price keeps its book's line; nothing after it.
+    const books = ['  e5 link "Sharp Objects"', '"£47.82"', '"In stock"', '  e6 button "Add to basket"'];
+    expect((await findLines(books, '£')).text).toBe('  e5 link "Sharp Objects"\n"£47.82"');
+  });
+
+  it('prints a long matching line alone', async () => {
+    const prose = `"${'A rate limit of sixty requests per minute applies to each token, '.repeat(2)}and a limited call returns 429."`;
+    expect(prose.length).toBeGreaterThan(100);
+    expect((await findLines(['## Limits', prose], 'rate limit')).text).toBe(prose);
+    // One past the longest printed whole is cut around its match.
+    const longer = `"${'x'.repeat(MAX_PRINTED)} rate limit"`;
+    expect((await findLines(['## Limits', longer], 'rate limit')).text).toBe(`…${longer.slice(longer.indexOf('rate limit') - 80)}`);
   });
 
   it('prints a long line around its match and marks both cuts', async () => {
@@ -16,7 +30,7 @@ describe('find', () => {
       expect(text).toContain(' needle ');
       expect(text.startsWith('  …')).toBe(true);
       expect(text.endsWith('…')).toBe(true);
-      expect(text.length).toBeLessThan(260);
+      expect(text.length).toBeLessThan(180);
     }
   });
 
@@ -35,15 +49,27 @@ describe('find', () => {
   });
 
   it('matches case-insensitively as a regular expression only when asked', async () => {
-    expect((await findLines(lines, 'ROW (3|5)$', { regex: true })).text).toBe('row 2\nrow 3\nrow 4\nrow 5\nrow 6');
+    expect((await findLines(lines, 'ROW (3|5)$', { regex: true })).text).toBe('row 2\nrow 3\nrow 4\nrow 5');
   });
 
-  it('merges neighbouring matches into one block', async () => {
-    expect((await findLines(lines, 'row (3|4)$', { regex: true })).text).toBe('row 2\nrow 3\nrow 4\nrow 5');
+  it('prints a line once, and no separators', async () => {
+    expect((await findLines(lines, 'row (3|4)$', { regex: true })).text).toBe('row 2\nrow 3\nrow 4');
+    expect((await findLines(lines, 'row (3|9)$', { regex: true })).text).toBe('row 2\nrow 3\nrow 8\nrow 9');
   });
 
-  it('separates distant matches', async () => {
-    expect((await findLines(lines, 'row (3|9)$', { regex: true })).text).toBe('row 2\nrow 3\nrow 4\n--\nrow 8\nrow 9\nrow 10');
+  it('prints a text line as a read does, unless the query matched only in an address', async () => {
+    const page: FindLine[] = [
+      { line: '## History' },
+      { line: '"Written by [Tim](e1) at CERN."', search: '"Written by [Tim](e1) → /wiki/Tim at CERN."' },
+      { line: '  e2 link "CERN" → /wiki/CERN' },
+      { line: '"£4"' },
+    ];
+    for (const options of [{}, { regex: true }]) {
+      expect((await findLines(page, 'at CERN', options)).text).toBe('## History\n"Written by [Tim](e1) at CERN."');
+      expect((await findLines(page, '/wiki/Tim', options)).text).toBe('## History\n"Written by [Tim](e1) → /wiki/Tim at CERN."');
+      // The line kept before a short match is printed whole, a link with its address.
+      expect((await findLines(page, '£', options)).text).toBe('  e2 link "CERN" → /wiki/CERN\n"£4"');
+    }
   });
 
   it('reports no match', async () => {
@@ -53,7 +79,7 @@ describe('find', () => {
   it('treats regex punctuation literally when the flag is absent', async () => {
     const result = await findLines(['a (b', 'c'], '(b');
     expect(result.matches).toBe(1);
-    expect(result.text).toBe('a (b\nc');
+    expect(result.text).toBe('a (b');
   });
 
   it('reports an invalid regular expression clearly', async () => {
