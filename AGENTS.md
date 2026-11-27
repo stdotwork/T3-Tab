@@ -96,7 +96,7 @@ screen (direct, with no mic, and T3, with the mic, with and without a project), 
 thread waiting on an approval (at its work-log row and above the composer), a running thread (its composer's Stop at the size of the icons beside it), three browser prompts on the new-thread
 screen (one a `goto` on another tab), the new-thread screen's setup card (helper missing) and Connect row (T3 Code
 running, not connected) drawn on the headless panel, Settings and a theme sheet at 320, 360 and 400 px in light and dark (and the sheet opened from each scheme, which must open on that scheme's tab with every panel role unchanged and its fields painted with the panel's surface and border), and measures visible ink (SVG strokes and fills, text glyphs
-on their baseline, painted boxes), never padding boxes. It fails when a bar's or the composer row's first and last
+on their baseline, painted boxes), never padding boxes. It also fails when an open popover or menu (the model and project pickers) has a background that is not opaque, or when the element at a grid of points inside it is not the popover, which is how the hero's "or start without a project" line painting over the open project list is caught (the hero's lines are moved with `translate`, which makes each a stacking context, so `.hero-picker` carries its own `z-index`). It fails when a bar's or the composer row's first and last
 controls sit at ink distances from its edges more than 1 px apart, when the composer's send circle is not as far from
 the frame's foot as from its side, when the composer's controls are not one size or their ink (and the model chip's
 logo and words) is off one centre line, when its text does not start on the paperclip's ink, when the hero's project
