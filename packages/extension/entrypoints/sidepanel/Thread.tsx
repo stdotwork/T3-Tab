@@ -1,8 +1,12 @@
 import {
+  AppWindow,
   Bot,
   Brain,
+  Camera,
   ChevronRight,
   CircleHelp,
+  Code,
+  Eye,
   FilePen,
   Globe,
   ListChecks,
@@ -38,6 +42,12 @@ const ICONS: Record<WorkIcon, typeof Brain> = {
   agent: Bot,
   plan: ListChecks,
   note: MessageSquare,
+  'page-read': Eye,
+  'page-find': Search,
+  'page-act': MousePointerClick,
+  'page-shot': Camera,
+  'page-tabs': AppWindow,
+  'page-js': Code,
 };
 
 /** Agent text, as plain text for the moment the markdown renderer takes to load. */
@@ -68,7 +78,7 @@ function Entry({ entry }: { entry: WorkEntry }): ReactNode {
   const className = `work-entry ${entry.status}${entry.icon === 'command' ? ' mono' : ''}`;
   return (
     <div className="work-item">
-      <button type="button" className={className} disabled={!expandable} aria-expanded={expandable ? open : undefined} onClick={() => setOpen(!open)}>
+      <button type="button" className={className} disabled={!expandable} aria-expanded={expandable ? open : undefined} aria-current={entry.status === 'running' ? 'step' : undefined} onClick={() => setOpen(!open)}>
         <Icon size={ICON.sm} aria-hidden="true" />
         <span className={entry.status === 'running' ? 'work-label shimmer' : 'work-label'}>{entry.label}</span>
       </button>

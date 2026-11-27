@@ -757,7 +757,23 @@ card. The keyed card shows the two keys, hidden below 360 px. A T3 approval is d
 row is not among the last eight steps shown; browser prompts sit above the composer, and on the new-thread screen they
 float over the hero's lower part so nothing moves. In a question card, keys 1 to 9 choose
 an option unless the owner is typing, and Enter in the answer box moves on or submits. Browser steps name the action and
-site, and never the text typed into a field.
+the element it was on (`Clicked “Add to cart”`, `Filled “Email” and “Password”`; `actStepsText` in `packages/protocol`),
+taken from what the thread's earlier T3-Tab replies printed for that ref on that tab (`RefNames` in `lib/thread-model.ts`),
+or the site when the element is not known, with one icon per tool; never the text typed into a field, an option chosen or a
+key that is a character. An element's name is the page's own words, so it is shown on one line of at most 40 characters,
+with its quote marks of every kind turned into `'` and its bidirectional and zero-width marks dropped (`plainName` in
+`act-words.ts`): a name cannot end the quotes it is shown in or reorder the words after it, such as the site a permission
+card names. A reply's part about each tab starts at its `tab <id>` or `Opened tab <id>` line (a failed step's
+error before it names no element), and a tab's names start again with a load, a document the session sees for the first
+time (its head names title and address) or a whole read, so a ref of an earlier page is not named after the page changed.
+Each step's reply is taken apart once, not again on every event that redraws the thread. T3 leaves a tool's reply out of the
+thread it streams, so the panel fetches each finished T3-Tab step's reply with `orchestration.getTurnItem`, as T3's own
+client fetches a step's detail: at most four at a time, each given up after ten seconds, and one that failed or timed out
+keeps the words it has and is not asked again while the panel is open (`lib/turn-replies.ts`). The replies stay on the
+panel's T3 client, by thread and step, for the 50 threads shown last, so a thread opened again fetches only its new
+steps. The running step is T3's
+live row: its icon in the text colour and a light sweeping over its words, resting on its first words, so a still frame
+shows it too (with reduced motion, its words in the text colour).
 
 A new tab's thread starts in no project, which is T3's Scratch project (`projects.ensureScratch`), and Settings can change
 that default to the last used project or a fixed one. Settings has two pages: General (default project when T3 is connected, Connections

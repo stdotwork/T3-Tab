@@ -233,7 +233,11 @@ ul { list-style: none; margin: 0; padding: 0; }
 .work-entry.waiting svg { color: var(--app-theme-warning-foreground); }
 .work-entry.mono .work-label { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: var(--text-xs); }
 .work-label { min-width: 0; overflow-wrap: anywhere; }
-.shimmer { background: linear-gradient(90deg, var(--muted-fg) 35%, var(--fg) 50%, var(--muted-fg) 65%); background-size: 220% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.8s linear infinite; }
+/* The step that is running, as T3's live row: its icon in the text colour while the done steps' stay muted, and a light
+   sweeping over its words. At rest the light sits on its first words, so a still frame shows it too; without motion the
+   words are simply in the text colour. */
+.work-entry.running svg { color: var(--fg); }
+.shimmer { background: linear-gradient(90deg, var(--muted-fg) 35%, var(--fg) 50%, var(--muted-fg) 65%); background-size: 220% 100%; background-position: 85% 0; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.8s linear infinite; }
 @keyframes shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 .work-detail { margin: 2px 0 6px 28px; padding: 8px 10px; max-height: 220px; overflow: auto; border-radius: var(--radius); background: var(--app-theme-code-background); color: var(--app-theme-code-foreground); font: var(--text-xs)/1.5 ui-monospace, 'SF Mono', Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .plain-text { white-space: pre-wrap; }
@@ -538,7 +542,7 @@ button.session-text:hover strong { text-decoration: underline; text-underline-of
 .disclosure-body code { white-space: nowrap; padding: 1px 4px; border-radius: var(--radius-xs); background: var(--app-theme-code-background); color: var(--app-theme-code-foreground); font: var(--text-xs) ui-monospace, 'SF Mono', Menlo, Consolas, monospace; overflow-wrap: anywhere; }
 
 @media (prefers-reduced-motion: reduce) {
-  .shimmer { animation: none; background: none; color: var(--muted-fg); }
+  .shimmer { animation: none; background: none; color: var(--fg); }
   .spin { animation-duration: 2s; }
 }
 

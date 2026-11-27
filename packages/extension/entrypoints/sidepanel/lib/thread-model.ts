@@ -2,10 +2,30 @@
  * The one thread view the panel draws. A T3 thread and a direct Claude Code or Codex run both become this, so they
  * look and behave the same; only who started the thread differs.
  */
-import type { AgentConversation, AgentItem } from '@t3-tab/protocol';
-import { withoutClaimNote } from '@t3-tab/protocol';
+import type { ActAction, ActStepSummary, ActTarget, AgentConversation, AgentItem } from '@t3-tab/protocol';
+import { actStepsText, withoutClaimNote } from '@t3-tab/protocol';
 
-export type WorkIcon = 'thinking' | 'read' | 'edit' | 'command' | 'search' | 'web' | 'tool' | 'browser' | 'ask' | 'approval' | 'agent' | 'plan' | 'note';
+/** A step's kind, which picks its icon: T3's kinds, then one per browser tool (`page-*`). */
+export type WorkIcon =
+  | 'thinking'
+  | 'read'
+  | 'edit'
+  | 'command'
+  | 'search'
+  | 'web'
+  | 'tool'
+  | 'browser'
+  | 'ask'
+  | 'approval'
+  | 'agent'
+  | 'plan'
+  | 'note'
+  | 'page-read'
+  | 'page-find'
+  | 'page-act'
+  | 'page-shot'
+  | 'page-tabs'
+  | 'page-js';
 
 export interface WorkEntry {
   id: string;
@@ -111,31 +131,201 @@ const hostOf = (url: unknown): string | undefined => {
 };
 
 /** The site a tool reply is about: every reply about a tab has `<title> — <address>` on its first line. */
-const hostInReply = (output: string | undefined): string | undefined => hostOf(output?.split('\n', 1)[0]?.split(' — ').at(-1)?.trim());
+/**
+ * The first line of a reply's part about one tab: a read's `tab 12: <title> — <url>` (or `tab 12` alone when the session
+ * already saw that title and address), or a load's `Opened tab 12 …`, `Loaded tab 12 …`. An `act` reply can hold several:
+ * its own tab's, then one for each tab the batch opened. A failed step's error comes before the first.
+ */
+const SECTION_HEAD = /^(?:(Opened|Loaded|Back in|Forward in|Reloaded) )?tab (\d+)\b(.*)$/;
+/** The lines that make a reply's part a change list or a note, not the page. */
+const NOT_WHOLE = /^(?:Changed since the last read:|No changes since |Set e\d+.* Nothing else changed\.$)/;
 
-const ACT_WORDS: Record<string, string> = { click: 'Clicked', type: 'Typed', fill: 'Filled a field', select: 'Chose an option', scroll: 'Scrolled', hover: 'Hovered', wait: 'Waited' };
-
-function actWords(steps: unknown): string {
-  if (!Array.isArray(steps) || steps.length === 0) return 'Acted';
-  const words: string[] = [];
-  for (const step of steps as Array<{ action?: unknown; key?: unknown }>) {
-    // What was typed stays out of the label: it can be a password.
-    const word = step.action === 'press' ? (typeof step.key === 'string' ? `Pressed ${step.key.slice(0, 20)}` : 'Pressed a key') : ACT_WORDS[String(step.action)];
-    if (word !== undefined && !words.includes(word)) words.push(word);
-  }
-  if (words.length === 0) return 'Acted';
-  const shown = words.slice(0, 3).map((word, index) => (index === 0 ? word : word[0]?.toLowerCase() + word.slice(1)));
-  return words.length > 3 ? `${shown.join(', ')} and more` : shown.join(', ');
+/** One tab's part of a reply, as `RefNames` takes it in. */
+interface ReplySection {
+  tab: string;
+  /** The line it starts with. */
+  head: string;
+  /** A load: the tab shows a new document. */
+  load: boolean;
+  /** The head names the title and address, as it does on a session's first sight of a document. */
+  titled: boolean;
+  /** It shows the page, not what changed since the last read. */
+  whole: boolean;
+  names: Array<[string, ActTarget]>;
 }
 
-/** One browser step in words, naming the site and what was done, from the tool's arguments and its reply. */
-export function browserStepLabel(tool: string, input: unknown, output?: string): string {
+/** An element's line in a read, a search or a diff: `e12 button "Add to cart"`, its name quoted as JSON (maybe cut). */
+const ELEMENT_LINE = /^(e\d+) ([a-z][a-z-]*)(?: ("(?:[^"\\]|\\.)*"?))?/;
+/** A link written into a line of text, once the line's JSON is read: `[name](e12)` or `[name](e12 → /path)`. */
+const TEXT_LINK = /(?<!\\)(?:\\\\)*\[((?:[^\\[\]]|\\.)*)\]\((e\d+)(?: → [^)]*)?\)/g;
+
+/** A quoted name as printed, whole or cut off by a search (`"Add to ca…`). */
+function quotedName(quoted: string): string {
+  try {
+    const value: unknown = JSON.parse(quoted);
+    if (typeof value === 'string') return value;
+  } catch {
+    // Cut off: read what is there.
+  }
+  return quoted
+    .replace(/^"/, '')
+    .replace(/"?$/, '')
+    .replace(/\\(["\\])/g, '$1')
+    .replace(/…$/, '');
+}
+
+/** The elements one printed line names: its own, or the links written into a line of text. */
+function lineNames(raw: string): Array<[string, ActTarget]> {
+  // A diff's added line counts; a removed one (`-`) matches nothing below, as it is gone from the page.
+  const line = raw.replace(/^\+/, '').trimStart();
+  if (line.startsWith('"')) {
+    let text: unknown;
+    try {
+      text = JSON.parse(line);
+    } catch {
+      return [];
+    }
+    if (typeof text !== 'string') return [];
+    return [...text.matchAll(TEXT_LINK)].map(([, quoted = '', ref = '']) => [ref, { role: 'link', name: quoted.replace(/\\([\\[\]])/g, '$1') }]);
+  }
+  const element = ELEMENT_LINE.exec(line);
+  if (element === null) return [];
+  const [, ref = '', role = '', quoted] = element;
+  return [[ref, { role, name: quoted === undefined ? '' : quotedName(quoted) }]];
+}
+
+/** A reply cut into its parts about tabs. Lines before the first part (a failed step's error) belong to none. */
+function replySections(output: string): ReplySection[] {
+  const sections: ReplySection[] = [];
+  let section: ReplySection | undefined;
+  for (const line of output.split('\n')) {
+    const head = SECTION_HEAD.exec(line);
+    if (head !== null) {
+      const [, verb, tab = '', rest = ''] = head;
+      section = { tab, head: line, load: verb !== undefined, titled: /^(?: \[current\])?: /.test(rest), whole: true, names: [] };
+      sections.push(section);
+      continue;
+    }
+    if (section === undefined) continue;
+    if (NOT_WHOLE.test(line)) section.whole = false;
+    section.names.push(...lineNames(line));
+  }
+  return sections;
+}
+
+/** Replies taken apart once each, by the step that got them: a thread is drawn again on every event. */
+const PARSED_MAX = 4_000;
+const parsed = new Map<string, { output: string; sections: ReplySection[] }>();
+
+function sectionsOf(output: string, key: string | undefined): ReplySection[] {
+  if (key === undefined) return replySections(output);
+  const known = parsed.get(key);
+  if (known !== undefined && known.output === output) return known.sections;
+  const sections = replySections(output);
+  parsed.delete(key);
+  parsed.set(key, { output, sections });
+  if (parsed.size > PARSED_MAX) parsed.delete(parsed.keys().next().value ?? '');
+  return sections;
+}
+
+/** The first tab part of a reply, which is about the tab the call named. */
+const firstSection = (output: string | undefined, key?: string): ReplySection | undefined => (output === undefined ? undefined : sectionsOf(output, key)[0]);
+
+/** The site a reply's first part names in its head (`tab 12: <title> — <url>`). */
+const hostInReply = (output: string | undefined, key?: string): string | undefined => hostOf(firstSection(output, key)?.head.split(' — ').at(-1)?.trim());
+
+const ACT_ACTIONS = new Set<string>(['click', 'type', 'fill', 'press', 'select', 'scroll', 'hover', 'wait']);
+
+/** The tab a reply is about. */
+const tabInReply = (output: string | undefined, key?: string): string | undefined => firstSection(output, key)?.tab;
+
+/**
+ * The elements a thread's browser replies printed, by tab and ref, so a later step that names `e12` can say which element
+ * it was. Only what T3-Tab's own replies printed, which the extension redacted before they left it, and never a value.
+ * A ref stands for an element only within one document, so a tab's names are replaced, not added to, by a reply that shows
+ * a new document (a load, or a head with the title and address, which a new document always gets) or the whole page; a
+ * change list, a search or a part of the page adds to them.
+ */
+export class RefNames {
+  private readonly byTab = new Map<string, Map<string, ActTarget>>();
+  private lastTab: string | undefined;
+
+  /**
+   * Takes in one browser tool's reply. `input` is the call's arguments (a `ref` or a `find` reads a part only), and `key`
+   * names the step, so its reply is taken apart once however often the thread is drawn.
+   */
+  learn(output: string | undefined, input?: unknown, key?: string): void {
+    if (output === undefined) return;
+    const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+    const part = typeof args.ref === 'string' || typeof args.find === 'string';
+    sectionsOf(output, key).forEach((section, index) => {
+      if (index === 0) this.lastTab = section.tab;
+      // The call's arguments are about its own tab, the first part; the others are tabs a batch opened, each a load.
+      const replaces = section.load || section.titled || (section.whole && !(index === 0 && part));
+      let names = this.byTab.get(section.tab);
+      if (names === undefined || replaces) {
+        names = new Map();
+        this.byTab.set(section.tab, names);
+      }
+      for (const [ref, target] of section.names) names.set(ref, target);
+    });
+  }
+
+  /** The element a ref stood for on a tab (the tab last replied about when none is named). */
+  find(ref: string, tab: string | undefined): ActTarget | undefined {
+    const key = tab ?? this.lastTab;
+    return key === undefined ? undefined : this.byTab.get(key)?.get(ref);
+  }
+
+  get currentTab(): string | undefined {
+    return this.lastTab;
+  }
+}
+
+/** An `act` call's steps, each with the element it targets when an earlier reply printed it. What is typed is never read. */
+function actSummaries(args: Record<string, unknown>, output: string | undefined, refs: RefNames | undefined, key?: string): ActStepSummary[] {
+  if (!Array.isArray(args.steps)) return [];
+  const tab = args.tab === undefined ? (tabInReply(output, key) ?? refs?.currentTab) : String(args.tab);
+  const out: ActStepSummary[] = [];
+  for (const step of args.steps as Array<Record<string, unknown>>) {
+    if (typeof step !== 'object' || step === null || !ACT_ACTIONS.has(String(step.action))) continue;
+    const action = String(step.action) as ActAction;
+    const target = typeof step.ref === 'string' ? refs?.find(step.ref, tab) : undefined;
+    out.push({ action, ...(target === undefined ? {} : { target }), ...(action === 'press' && typeof step.key === 'string' ? { key: step.key } : {}) });
+  }
+  return out;
+}
+
+/** Which icon a browser step gets. */
+export function browserStepIcon(tool: string, input: unknown): WorkIcon {
   const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
-  const site = hostInReply(output);
+  switch (tool) {
+    case 'read':
+      return typeof args.find === 'string' ? 'page-find' : 'page-read';
+    case 'act':
+      return 'page-act';
+    case 'screenshot':
+      return 'page-shot';
+    case 'tabs':
+      return 'page-tabs';
+    case 'run_js':
+      return 'page-js';
+    default:
+      return 'browser';
+  }
+}
+
+/**
+ * One browser step in words, from the tool's arguments, its reply and what earlier replies printed: what was done and to
+ * which element (`Clicked “Add to cart”`), or on which site when the element is not known. Never what was typed.
+ */
+export function browserStepLabel(tool: string, input: unknown, output?: string, refs?: RefNames, key?: string): string {
+  const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+  const site = hostInReply(output, key);
   const page = site ?? 'the page';
   switch (tool) {
     case 'tabs': {
-      if (args.claim !== undefined) return 'Took the shared tabs';
+      if (args.claim !== undefined) return 'Got access to the shared tabs';
       if (args.action === 'open') return `Opened ${hostOf(args.url) ?? site ?? 'a tab'}`;
       if (args.action === 'switch') return `Switched to ${site ?? (args.tab === undefined ? 'a tab' : `tab ${String(args.tab)}`)}`;
       if (args.action === 'close') return args.tab === undefined ? 'Closed a tab' : `Closed tab ${String(args.tab)}`;
@@ -146,20 +336,35 @@ export function browserStepLabel(tool: string, input: unknown, output?: string):
       return args.ref === undefined ? `Read ${page}` : `Read part of ${page}`;
     case 'screenshot':
       return `Took a screenshot of ${page}`;
-    case 'act':
-      return `${actWords(args.steps)} on ${page}`;
+    case 'act': {
+      const steps = actSummaries(args, output, refs, key);
+      const words = actStepsText(steps, 'done');
+      // With no element known, the site says where it happened.
+      return steps.some((step) => step.target !== undefined) ? words : `${words} on ${page}`;
+    }
     default:
       return `Ran JavaScript on ${page}`;
   }
 }
 
-/** A direct run carries a tool's arguments as one short line of JSON, cut off when long. */
+/**
+ * A direct run carries a tool's arguments as one short line of JSON, cut off when long. When it was cut, the `act` steps
+ * that came whole before the cut are kept.
+ */
 const parseSummary = (summary: string | undefined): unknown => {
   if (summary === undefined) return undefined;
   try {
     return JSON.parse(summary);
   } catch {
-    return undefined;
+    if (!summary.includes('"steps"')) return undefined;
+    const steps = [...summary.matchAll(/\{[^{}]*\}/g)].flatMap(([object]) => {
+      try {
+        return [JSON.parse(object) as unknown];
+      } catch {
+        return [];
+      }
+    });
+    return steps.length === 0 ? undefined : { steps };
   }
 };
 
@@ -256,6 +461,27 @@ interface T3Item {
   retry?: { attempt?: number; maxAttempts?: number };
   diffStr?: string;
   changes?: Array<{ path?: string }>;
+  /** T3 leaves a tool's reply out of the thread it streams; `orchestration.getTurnItem` has it. */
+  outputOmitted?: boolean;
+}
+
+/** A tool reply as text: T3 hands it on as a string, as MCP content blocks, or as a result holding them. */
+export function toolOutputText(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  const blocks = Array.isArray(value) ? value : typeof value === 'object' && value !== null ? ((value as { content?: unknown }).content ?? (value as { result?: { content?: unknown } }).result?.content) : undefined;
+  if (!Array.isArray(blocks)) return undefined;
+  const texts = blocks.flatMap((block) => (typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text' && typeof (block as { text?: unknown }).text === 'string' ? [(block as { text: string }).text] : []));
+  return texts.length === 0 ? undefined : texts.join('\n');
+}
+
+/**
+ * The finished T3-Tab browser steps of a T3 thread whose reply T3 left out of the stream. The panel fetches each once, so
+ * its row can say which site and which element a step was about, as a direct run's row does.
+ */
+export function omittedBrowserReplies(projection: T3Projection, have: ReadonlyMap<string, string | null>): string[] {
+  return projection.visibleTurnItems.flatMap(({ item }) =>
+    item.type === 'dynamic_tool' && item.outputOmitted === true && item.status !== 'running' && item.status !== 'pending' && browserToolName(item.toolName ?? '') !== undefined && !have.has(item.id) ? [item.id] : [],
+  );
 }
 
 export interface T3Projection {
@@ -284,7 +510,7 @@ function noteFailure(rows: Row[], fallback: string): void {
   rows.push({ kind: 'notice', id: 'notice:failed', tone: 'error', text: fallback });
 }
 
-function t3WorkEntry(item: T3Item): WorkEntry | undefined {
+function t3WorkEntry(item: T3Item, refs: RefNames, replies: ReadonlyMap<string, string | null>, thread: string): WorkEntry | undefined {
   const status: WorkEntry['status'] =
     item.status === 'failed' ? 'failed' : item.status === 'waiting' ? 'waiting' : item.status === 'running' || item.status === 'pending' ? 'running' : 'done';
   const base = { id: item.id, status };
@@ -303,9 +529,11 @@ function t3WorkEntry(item: T3Item): WorkEntry | undefined {
       // Loading a deferred tool's schema is the agent's bookkeeping, not a step the owner needs to follow.
       if (name === 'ToolSearch') return undefined;
       const browser = browserToolName(name);
-      const output = typeof item.output === 'string' ? item.output : undefined;
-      const label = browser === undefined ? (item.title ?? name) : browserStepLabel(browser, item.input, output);
-      return { ...base, icon: browser === undefined ? 'tool' : 'browser', label: oneLine(label), ...(output === undefined ? {} : { detail: output }) };
+      const output = toolOutputText(item.output) ?? replies.get(item.id) ?? undefined;
+      const key = `t3:${thread}:${item.id}`;
+      const label = browser === undefined ? (item.title ?? name) : browserStepLabel(browser, item.input, output, refs, key);
+      if (browser !== undefined) refs.learn(output, item.input, key);
+      return { ...base, icon: browser === undefined ? 'tool' : browserStepIcon(browser, item.input), label: oneLine(label), ...(output === undefined ? {} : { detail: output }) };
     }
     case 'file_change': {
       const counts = item.additions === undefined && item.deletions === undefined ? '' : ` +${item.additions ?? 0} −${item.deletions ?? 0}`;
@@ -333,8 +561,11 @@ function t3WorkEntry(item: T3Item): WorkEntry | undefined {
   }
 }
 
-/** Builds the rows of a T3 thread: each run's steps fold into one work row above the reply that ended it. */
-export function t3ThreadView(projection: T3Projection): ThreadView {
+/**
+ * Builds the rows of a T3 thread: each run's steps fold into one work row above the reply that ended it. `replies` holds
+ * the browser replies fetched for steps whose reply T3 left out (`omittedBrowserReplies`).
+ */
+export function t3ThreadView(projection: T3Projection, replies: ReadonlyMap<string, string | null> = new Map()): ThreadView {
   const rows: Row[] = [];
   const runs = new Map(projection.runs.map((run) => [run.id, run]));
   let work: Extract<Row, { kind: 'work' }> | undefined;
@@ -362,6 +593,7 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
     return created;
   };
 
+  const refs = new RefNames();
   const queuedRuns = projection.runs
     .filter((run) => run.status === 'queued')
     .sort((a, b) => (a.queuePosition ?? a.ordinal ?? 0) - (b.queuePosition ?? b.ordinal ?? 0) || (a.ordinal ?? 0) - (b.ordinal ?? 0));
@@ -396,7 +628,7 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
       else rows.push({ kind: 'notice', id: item.id, tone: 'info', text: `Retrying${item.retry.attempt === undefined ? '' : ` (attempt ${item.retry.attempt}${item.retry.maxAttempts === undefined ? '' : ` of ${item.retry.maxAttempts}`})`}: ${text}` });
       continue;
     }
-    const entry = t3WorkEntry(item);
+    const entry = t3WorkEntry(item, refs, replies, projection.thread.id);
     if (entry === undefined) continue;
     const group = workFor(item);
     for (const earlier of trailing) {
@@ -461,13 +693,17 @@ export function t3ThreadView(projection: T3Projection): ThreadView {
   return withoutCodes(view, claimCodesIn(sources));
 }
 
-function directEntry(item: Extract<AgentItem, { kind: 'tool' }>): WorkEntry {
+function directEntry(item: Extract<AgentItem, { kind: 'tool' }>, refs: RefNames, conversation: string): WorkEntry {
   // A direct run has T3-Tab's tools and no others.
   const browser = browserToolName(item.name);
+  const args = browser === undefined ? undefined : parseSummary(item.summary);
+  const key = `direct:${conversation}:${item.id}`;
+  const label = browser !== undefined ? oneLine(browserStepLabel(browser, args, item.output, refs, key)) : item.summary === undefined ? item.name : `${item.name} ${oneLine(item.summary, 100)}`;
+  if (browser !== undefined) refs.learn(item.output, args, key);
   return {
     id: item.id,
-    icon: browser === undefined ? 'tool' : 'browser',
-    label: browser !== undefined ? oneLine(browserStepLabel(browser, parseSummary(item.summary), item.output)) : item.summary === undefined ? item.name : `${item.name} ${oneLine(item.summary, 100)}`,
+    icon: browser === undefined ? 'tool' : browserStepIcon(browser, args),
+    label,
     status: item.status === 'running' ? 'running' : item.status === 'failed' ? 'failed' : 'done',
     ...(item.output === undefined ? {} : { detail: item.output }),
   };
@@ -480,6 +716,7 @@ export function directThreadView(conversation: AgentConversation): ThreadView {
   let work: Extract<Row, { kind: 'work' }> | undefined;
   let trailing: Array<Extract<Row, { kind: 'assistant' }>> = [];
   const items = conversation.items ?? [];
+  const refs = new RefNames();
   const lastUser = items.findLastIndex((item) => item.kind === 'user');
   items.forEach((item, index) => {
     const live = index > lastUser;
@@ -515,7 +752,7 @@ export function directThreadView(conversation: AgentConversation): ThreadView {
         group.entries.push({ id: earlier.id, icon: 'note', label: oneLine(earlier.text, 220), detail: earlier.text, status: 'done' });
       }
       trailing = [];
-      if (item.kind === 'tool') group.entries.push(directEntry(item));
+      if (item.kind === 'tool') group.entries.push(directEntry(item, refs, conversation.id));
       else if (item.text.trim() !== '') {
         group.entries.push({ id: item.id, icon: 'thinking', label: oneLine(item.text, 220), detail: item.text, status: item.streaming === true ? 'running' : 'done' });
       }
