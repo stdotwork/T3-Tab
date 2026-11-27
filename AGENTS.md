@@ -104,7 +104,7 @@ line is off the heading's ink centre, when one bar's icons, or the composer row'
 sizes or stroke weights, when an approval card's ink is over 160 px tall or its three answers are not on one row of
 one-line 28 px buttons inside it, when the setup card or the Connect row is not in the composer's column between the
 heading and the composer, cuts off any of its content, or is over 260 px tall (the Connect row: over 42 px or more than
-one line), or when a failed automatic attempt leaves error text on the Connect row, or when browser prompts on the new-thread screen move its heading or composer or cover the composer. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
+one line), or when a failed automatic attempt leaves error text on the Connect row, or when browser prompts on the new-thread screen move its heading or composer or cover the composer, or when the new-thread heading is not at one height (within 1 px) across the nine states it walks (direct, with a draft that wraps, the setup card with and without a draft, the Connect row, T3 with no project, with a project, with the project picker open, and reconnecting with the banner) or asks anything but T3's two questions. Every screen it walks must draw the one top bar (`Bar` in `Frame.tsx`, marked `data-bar`), and at
 each width and scheme the bars of all those screens must agree within 1 px (0.25 px for strokes): height, first and last
 ink insets, icon size and stroke, the thread toggle's ink, and the breadcrumb's start and baseline.
 `e2e/checks-approval-keys.mjs` then, on the headless panel with the panel's answers recorded,
@@ -715,6 +715,12 @@ tab's panel keeps its draft, its project and the screen it was on in session sto
 Opened on a tab a thread holds, the panel shows that thread. Opened on any other tab it shows a new thread, with the
 threads working elsewhere listed above the composer, each saying whether it is working or needs the owner; a permission
 card for another tab says so and has a Go to tab button.
+
+The new-thread heading asks T3's two questions: "What should we build?" in a project and "What should we work on?" everywhere
+else, direct runs included, so the first screen keeps its question when T3 connects. It does not move when the setup card,
+the Connect row, a draft that wraps, browser prompts or the banner come and go: the dock floats over the screen's foot, the
+banner under the bar, and the hero hangs from a fixed line, so a line added under the heading grows downwards. It moves
+up only when the dock would otherwise cover it, in a panel too short for both (`useSteadyHero` in `NewThread.tsx`).
 
 The tab chip shows what the next message shares before it is sent: the tab, or the whole tab group when the owner made
 that group. In a thread, a tab waiting for the next message is outlined and says so, and a tab already shared is filled.
