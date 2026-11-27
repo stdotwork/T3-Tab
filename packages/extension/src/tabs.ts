@@ -149,6 +149,7 @@ export async function openSessionTab(
   session: StoredSession,
   url: string,
   store: SessionStore,
+  claims: PanelStartCheck,
 ): Promise<Landing & { tabId: number }> {
   const restricted = restrictedPageError(url);
   if (restricted !== undefined) throw new Error(restricted);
@@ -157,7 +158,7 @@ export async function openSessionTab(
   const created = await chrome.tabs.create({ url: 'about:blank', active: false });
   if (created.id === undefined) throw new Error('The browser did not create a tab');
   try {
-    await attachToSessionGroup(session, created.id, store);
+    await attachToSessionGroup(session, created.id, store, claims);
     await ensureAttached(created.id);
     const landing = await loadAddress(created.id, url);
     await store.setCurrentTab(session.id, created.id);
@@ -352,27 +353,64 @@ function assertAllowedTab(tab: chrome.tabs.Tab): void {
   if (error !== undefined) throw new Error(error);
 }
 
-async function attachToSessionGroup(session: StoredSession, tabId: number, store: SessionStore): Promise<void> {
+/** Answers whether a session was started from the side panel (`ClaimStore.startedFromPanel`). */
+export interface PanelStartCheck {
+  startedFromPanel(sessionId: string, t3ThreadId?: string): Promise<boolean>;
+}
+
+/**
+ * Puts a tab the session opened in the session's group. A session that reached for the tools by itself gets its group
+ * created collapsed, so its tabs stay one chip in the owner's tab strip, and T3-Tab never collapses it again: once the
+ * owner expands it, it stays open. A panel-started session's group is expanded, as it always was.
+ */
+export async function attachToSessionGroup(
+  session: StoredSession,
+  tabId: number,
+  store: SessionStore,
+  claims: PanelStartCheck,
+): Promise<void> {
   await serialize(session.id, async () => {
     const stored = await store.get(session.id);
     if (stored === undefined) throw new Error('Session is not registered');
     let groupId = stored.groupId;
-    if (groupId === undefined) {
-      groupId = await chrome.tabs.group({ tabIds: [tabId] });
-      await store.rememberGroup(session.id, groupId);
-    } else {
+    let created = false;
+    if (groupId !== undefined) {
       try {
         groupId = await chrome.tabs.group({ tabIds: [tabId], groupId });
       } catch {
-        groupId = await chrome.tabs.group({ tabIds: [tabId] });
-        await store.rememberGroup(session.id, groupId);
+        groupId = undefined;
       }
     }
-    await chrome.tabGroups.update(groupId, {
-      title: groupTitle(session.name),
-      color: sessionColor(session.id),
-      collapsed: false,
-    });
+    if (groupId === undefined) {
+      groupId = await chrome.tabs.group({ tabIds: [tabId] });
+      created = true;
+    }
+    // Asked inside the serialized step, so a claim that arrives meanwhile is seen here or expands the group after.
+    const fromPanel = await claims.startedFromPanel(stored.id, stored.t3ThreadId);
+    const details: chrome.tabGroups.UpdateProperties = { title: groupTitle(session.name), color: sessionColor(session.id) };
+    if (created) {
+      await store.rememberGroup(session.id, groupId, !fromPanel);
+      details.collapsed = !fromPanel;
+    } else if (fromPanel) {
+      // As before for a panel-started session; for one that was taken for self-started, this is the expand on its claim.
+      details.collapsed = false;
+      if (stored.groupStartedCollapsed === true) await store.groupExpanded(session.id);
+    }
+    await chrome.tabGroups.update(groupId, details);
+  });
+}
+
+/**
+ * Expands a group T3-Tab created collapsed once its session turns out to be panel-started (its claim arrived after its
+ * first tab). A group that did not start collapsed, or was already expanded for the session, is left as the owner has it.
+ */
+export async function expandStartedCollapsedGroup(sessionId: string, store: SessionStore): Promise<void> {
+  await serialize(sessionId, async () => {
+    const stored = await store.get(sessionId);
+    if (stored?.groupId === undefined || stored.groupStartedCollapsed !== true) return;
+    await store.groupExpanded(sessionId);
+    // The group may be gone: the owner closed or ungrouped its tabs.
+    await chrome.tabGroups.update(stored.groupId, { collapsed: false }).catch(() => undefined);
   });
 }
 

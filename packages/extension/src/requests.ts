@@ -23,6 +23,7 @@ import { canSessionUseTab, type StoredSession } from './sessions';
 import {
   closeSessionTab,
   describeSessionTab,
+  expandStartedCollapsedGroup,
   goToHistoryEntry,
   historyTarget,
   isOpenableUrl,
@@ -77,10 +78,12 @@ export async function handleRequest(request: BrowserRequestMessage): Promise<unk
 
   const session = await registeredSession(request.session);
   switch (request.method) {
-    case 'session.claim':
-      return {
-        shared: await claimTabs(claimStore, sessionStore, session.id, request.params.code, request.params.route),
-      } satisfies BrowserMethods['session.claim']['result'];
+    case 'session.claim': {
+      const shared = await claimTabs(claimStore, sessionStore, session.id, request.params.code, request.params.route);
+      // A session whose claim arrives after its first tab was taken for self-started: its group opens now.
+      await expandStartedCollapsedGroup(session.id, sessionStore).catch(() => undefined);
+      return { shared } satisfies BrowserMethods['session.claim']['result'];
+    }
     case 'prompt.decide': {
       // An agent can answer only a prompt of its own session, and only once or by declining: never a lasting setting.
       const { promptId, decision } = request.params;
@@ -364,7 +367,7 @@ async function openTabForSession(
 ): Promise<TabLoadResult> {
   const origin = loadableOrigin(url);
   const pass = await permissionPrompts.authorize(origin, 'open', session, undefined, promptAddress(url));
-  const { tabId, ...landing } = await openSessionTab(await registeredSession(session), url, sessionStore);
+  const { tabId, ...landing } = await openSessionTab(await registeredSession(session), url, sessionStore, claimStore);
   try {
     return await describeLanding(session, tabId, origin, pass, landing, options);
   } catch (failure) {

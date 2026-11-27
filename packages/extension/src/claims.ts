@@ -137,6 +137,21 @@ export class ClaimStore {
   }
 
   /**
+   * True when the session was started from the side panel: a grant lists it (a direct run redeems its code before its
+   * first tool call), or `t3ThreadId`, the T3 thread the daemon proved it runs for, is one the panel launched. Everything
+   * else reached for the tools by itself. A panel-launched T3 agent that opens a tab before it redeems its code, or whose
+   * thread could not be proven, is taken for self-started until its claim arrives.
+   */
+  async startedFromPanel(sessionId: string, t3ThreadId?: string): Promise<boolean> {
+    await mutation;
+    const { grants } = await this.read();
+    const thread = t3ThreadId === undefined || t3ThreadId === '' ? undefined : `${T3_CONVERSATION_PREFIX}${t3ThreadId}`;
+    return Object.values(grants).some(
+      (grant) => grant.sessionIds.includes(sessionId) || (thread !== undefined && grant.conversationId === thread),
+    );
+  }
+
+  /**
    * The T3 threads whose Full access this session needs: `proven`, the thread the daemon showed its process runs for,
    * and every thread its grants are bound to. Undefined when it has neither, and for any grant of a direct run. A code
    * the panel has not bound yet names no thread, so it counts against a session only when nothing proves its thread.

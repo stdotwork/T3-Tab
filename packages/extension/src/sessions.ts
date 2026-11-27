@@ -14,6 +14,11 @@ export interface StoredSession extends ToolSession {
   currentTabId?: number;
   /** The T3 thread the daemon showed this session's process runs for. Its mode is still asked of T3 per request. */
   t3ThreadId?: string;
+  /**
+   * True while the session's group is one T3-Tab created collapsed, for a session that reached for the tools by itself,
+   * and has not expanded since. Only such a group is expanded when the session turns out to be panel-started.
+   */
+  groupStartedCollapsed?: boolean;
 }
 
 /** What one `shareAll` added for a tab, so a failed redemption can take back exactly that. */
@@ -126,12 +131,22 @@ export class SessionStore {
     });
   }
 
-  async rememberGroup(id: string, groupId: number): Promise<StoredSession> {
+  async rememberGroup(id: string, groupId: number, collapsed = false): Promise<StoredSession> {
     return await this.mutate((sessions) => {
       const session = sessions[id];
       if (session === undefined) throw new Error('Session is not registered');
       session.groupId = groupId;
+      if (collapsed) session.groupStartedCollapsed = true;
+      else delete session.groupStartedCollapsed;
       return session;
+    });
+  }
+
+  /** Records that the session's group was expanded for it, so it is never expanded or collapsed by T3-Tab again. */
+  async groupExpanded(id: string): Promise<void> {
+    await this.mutate((sessions) => {
+      const session = sessions[id];
+      if (session !== undefined) delete session.groupStartedCollapsed;
     });
   }
 
@@ -301,6 +316,7 @@ export class SessionStore {
       if (typeof record.groupId === 'number') session.groupId = record.groupId;
       if (typeof record.currentTabId === 'number') session.currentTabId = record.currentTabId;
       if (typeof record.t3ThreadId === 'string') session.t3ThreadId = record.t3ThreadId;
+      if (record.groupStartedCollapsed === true) session.groupStartedCollapsed = true;
       sessions[id] = session;
     }
     return sessions;
