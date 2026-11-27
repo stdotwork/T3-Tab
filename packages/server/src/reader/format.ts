@@ -211,6 +211,8 @@ interface Item {
   role: string;
   /** The node whose own line this is. */
   source?: AxNode | undefined;
+  /** In a search, the element's line with its address, when the line a read prints leaves it out. */
+  search?: string | undefined;
 }
 
 /** One printed line, and what a size budget needs to know about it. */
@@ -222,7 +224,10 @@ export interface RenderedLine {
   keep: Keep;
   /** Inside the page's `main` or an `article`. */
   main: boolean;
-  /** In a search, the line with the address of every link written into it, which `find` searches. */
+  /**
+   * In a search, the line with every address: of a link written into text, or of a link on its own line. `find`
+   * searches it, and prints it for a link's own line; `line` is the line as a read prints it.
+   */
   search?: string | undefined;
 }
 
@@ -485,9 +490,13 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
           if (name === '') return;
         }
         if (role === 'log' && name === '' && inline.contents(node)?.text.trim() === '') return;
+        // A search prints a link's own line with its address; the line beside a match has it only where a read would.
+        const address = showAddress(node);
+        const readAddress = markAddress(node);
         const item: Item = {
           indent: at.level,
-          line: oneLine ? `${role} ${JSON.stringify(limit(name, MAX_TEXT))}` : elementLine(node, kind, name, refs, limit, showAddress(node)),
+          line: oneLine ? `${role} ${JSON.stringify(limit(name, MAX_TEXT))}` : elementLine(node, kind, name, refs, limit, readAddress),
+          search: oneLine || readAddress === address ? undefined : elementLine(node, kind, name, refs, limit, address),
           isText: false,
           name,
           keep: at.keep,
@@ -522,7 +531,10 @@ export function renderView(nodes: AxNode[], refs: RefTable, options: RenderOptio
 }
 
 function renderedLine(item: Item): RenderedLine {
-  return { line: `${'  '.repeat(item.indent)}${item.line}`, text: item.isText, keep: item.keep, main: item.main };
+  const indent = '  '.repeat(item.indent);
+  const line: RenderedLine = { line: `${indent}${item.line}`, text: item.isText, keep: item.keep, main: item.main };
+  if (item.search !== undefined) line.search = `${indent}${item.search}`;
+  return line;
 }
 
 /** The lines one node printed, `items[start]` up to `items[end]`. */

@@ -1,31 +1,46 @@
 import { Worker } from 'node:worker_threads';
 
-const CONTEXT_LINES = 1;
 const MAX_MATCHES = 20;
 export const MAX_QUERY_LENGTH = 200;
 const REGEX_TIMEOUT_MS = 500;
 /** Characters of a long line kept on each side of its match. */
-const MATCH_WINDOW = 120;
+const MATCH_WINDOW = 80;
 /** Longest matching line printed whole. */
-const MAX_LINE = 320;
-/** Longest context line printed whole; a longer one (a paragraph beside the match) keeps its start. */
+const MAX_LINE = 200;
+/** Longest context line printed whole; a longer one (a paragraph) keeps its start. */
 const MAX_CONTEXT = 120;
+/**
+ * A match shorter than this (a price, a label, a button) keeps the line before it, which says whose it is. A longer
+ * one (prose) stands alone.
+ */
+const SHORT_MATCH = 100;
+
+/** One line of a read, as `find` searches and prints it. */
+export interface FindLine {
+  /** The line as a read prints it. */
+  line: string;
+  /**
+   * The line with the address of every link on it, when that differs from `line`: searched as well. A text line
+   * prints it only when the query matched in an address; an element's own line always does, so a link found by name
+   * says where it goes.
+   */
+  search?: string | undefined;
+  /** Plain text, not an element or a heading. */
+  text?: boolean | undefined;
+}
 
 export interface FindOptions {
   /** Opt in to a regular expression. The default is a literal, case-insensitive search. */
   regex?: boolean | undefined;
   /** Bound for one regular-expression search. */
   timeoutMs?: number | undefined;
-  /**
-   * The lines as printed beside a match, when `lines` (searched, and printed where they match) hold more: the
-   * addresses of the links written into text, which a read prints only where a name is ambiguous.
-   */
-  context?: string[] | undefined;
 }
 
-/** Where a line first matched. */
+/** Where a line first matched, and in which of its forms. */
 interface LineMatch {
   line: number;
+  /** Index into the line's forms (`forms`): the one printed. */
+  form: number;
   start: number;
   length: number;
 }
@@ -36,37 +51,46 @@ export interface FindResult {
 }
 
 /**
- * The lines of a read that match `query`, each with a little context. Literal matching is the
- * default. A regular expression runs in a worker that is terminated at the timeout, so a hostile
- * or accidental backtracking pattern cannot stall the shared daemon.
+ * The lines of a read that match `query`, and nothing else: a short match also keeps the line before it, which says
+ * whose it is. Literal matching is the default. A regular expression runs in a worker that is terminated at the
+ * timeout, so a hostile or accidental backtracking pattern cannot stall the shared daemon.
  */
-export async function findLines(lines: string[], query: string, options: FindOptions = {}): Promise<FindResult> {
+export async function findLines(lines: ReadonlyArray<string | FindLine>, query: string, options: FindOptions = {}): Promise<FindResult> {
   if (query.length > MAX_QUERY_LENGTH) {
     throw new Error(`Find query is too long (${query.length} characters; maximum ${MAX_QUERY_LENGTH}).`);
   }
+  const entries = lines.map((item): FindLine => (typeof item === 'string' ? { line: item } : item));
+  const candidates = entries.map(forms);
   const matching = options.regex === true
-    ? await regexMatches(lines, query, options.timeoutMs ?? REGEX_TIMEOUT_MS)
-    : literalMatches(lines, query);
+    ? await regexMatches(candidates, query, options.timeoutMs ?? REGEX_TIMEOUT_MS)
+    : literalMatches(candidates, query);
   if (matching.length === 0) return { text: `No matches for ${JSON.stringify(query)}.`, matches: 0 };
 
   const shown = matching.slice(0, MAX_MATCHES);
-  const matchAt = new Map(shown.map((match) => [match.line, match]));
   const out: string[] = [];
-  let previousEnd = -1;
-  for (const { line: index } of shown) {
-    const start = Math.max(0, index - CONTEXT_LINES);
-    const end = Math.min(lines.length - 1, index + CONTEXT_LINES);
-    if (previousEnd >= 0 && start > previousEnd + 1) out.push('--');
-    for (let line = Math.max(start, previousEnd + 1); line <= end; line += 1) {
-      const match = matchAt.get(line);
-      out.push(clipLine((match === undefined ? options.context?.[line] : undefined) ?? lines[line] ?? '', match));
+  let printedTo = -1;
+  for (const match of shown) {
+    const printed = candidates[match.line]?.[match.form] ?? '';
+    const before = match.line - 1;
+    if (printed.trim().length < SHORT_MATCH && before > printedTo && before >= 0) {
+      out.push(clipLine(entries[before]?.line ?? '', undefined));
     }
-    previousEnd = Math.max(previousEnd, end);
+    out.push(clipLine(printed, match));
+    printedTo = match.line;
   }
   if (matching.length > shown.length) {
     out.push(`(${matching.length - shown.length} more matches; narrow the query)`);
   }
   return { text: out.join('\n'), matches: matching.length };
+}
+
+/**
+ * The forms of a line a match may print, in the order they are tried: a text line as a read prints it, then with every
+ * address in it; an element's line with its address first.
+ */
+function forms(entry: FindLine): string[] {
+  if (entry.search === undefined || entry.search === entry.line) return [entry.line];
+  return entry.text === true ? [entry.line, entry.search] : [entry.search, entry.line];
 }
 
 /** A line short enough to print: around its match, or from its start for a context line. Every cut is marked. */
@@ -78,17 +102,21 @@ function clipLine(line: string, match: LineMatch | undefined): string {
   return `${line.slice(0, indent)}${from > indent ? '…' : ''}${line.slice(from, to)}${to < line.length ? '…' : ''}`;
 }
 
-function literalMatches(lines: string[], query: string): LineMatch[] {
+function literalMatches(lines: string[][], query: string): LineMatch[] {
   const needle = query.toLowerCase();
   const matching: LineMatch[] = [];
-  lines.forEach((line, index) => {
-    const start = line.toLowerCase().indexOf(needle);
-    if (start >= 0) matching.push({ line: index, start, length: needle.length });
+  lines.forEach((forms, index) => {
+    for (const [form, line] of forms.entries()) {
+      const start = line.toLowerCase().indexOf(needle);
+      if (start < 0) continue;
+      matching.push({ line: index, form, start, length: needle.length });
+      return;
+    }
   });
   return matching;
 }
 
-async function regexMatches(lines: string[], query: string, timeoutMs: number): Promise<LineMatch[]> {
+async function regexMatches(lines: string[][], query: string, timeoutMs: number): Promise<LineMatch[]> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('The regex timeout must be positive');
   const worker = new Worker(REGEX_WORKER_SOURCE, {
     eval: true,
@@ -135,9 +163,13 @@ const { parentPort, workerData } = require('node:worker_threads');
 try {
   const pattern = new RegExp(workerData.query, 'i');
   const matches = [];
-  workerData.lines.forEach((line, index) => {
-    const found = pattern.exec(line);
-    if (found !== null) matches.push({ line: index, start: found.index, length: found[0].length });
+  workerData.lines.forEach((forms, index) => {
+    for (let form = 0; form < forms.length; form += 1) {
+      const found = pattern.exec(forms[form]);
+      if (found === null) continue;
+      matches.push({ line: index, form, start: found.index, length: found[0].length });
+      return;
+    }
   });
   parentPort.postMessage({ ok: true, matches });
 } catch (error) {

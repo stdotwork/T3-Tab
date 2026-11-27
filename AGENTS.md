@@ -283,10 +283,14 @@ last saw that same title and address for the tab, it starts with `tab <id>` alon
 Text is cut for display, never for search. The extension keeps each name up to 8,000 characters (2 MB a page, then 300
 each) and drops the line-wrap boxes the reader never prints; the reader prints a line of text up to 1,000 and a name up to 160, and `find` searches all of it
 and prints a window around the match. A run of text longer than a line is split into lines of up to 1,000 between its pieces
-(text nodes, links, text-level elements); only one piece longer than a line is cut. `find` prints a matching line up to
-320 characters whole (a longer one around its match) and a context line up to 120 (a longer one keeps its start). Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
+(text nodes, links, text-level elements); only one piece longer than a line is cut. `find` prints only the lines that
+match: one up to 200 characters whole, a longer one 80 characters either side of its match. A match shorter than 100
+characters (a price, a label, a button) also keeps the one line before it, which says whose it is, up to 120 characters
+(a longer one keeps its start); a longer match (prose) stands alone, nothing after a match is printed, and there are no
+separators. Every cut ends in `…`. A link shows its address (`→ /path`, relative on its own
 site) when another link of the same name goes elsewhere, when it has no name, when it is the element a `ref` read asks
-for, and in `find`. With `depth`, an element with more inside ends in `…`.
+for, and on its own line when `find` matches it; the line `find` keeps before a match shows an address only where a read
+would. With `depth`, an element with more inside ends in `…`.
 
 `tabs` also moves a tab: `goto` with a `url`, `back`, `forward` and `reload`. `goto` asks like `open` does. `back`,
 `forward` and `reload` revisit a page the tab has shown, so they ask only for an origin the session holds no approval
@@ -367,8 +371,9 @@ as those in its links. Otherwise (a story line on a news site, a menu with `|` b
 the line about it) the links print on lines of their own as before, between the text around them. Text lines and headings
 escape `[`, `]` and `\` with a backslash (a link's name inside its mark too), so a page that writes `[Cancel](e3)` or names
 a link `Continue](e3)` cannot pass for a mark; a printed text line is a JSON string, so the escape shows doubled
-(`\\[Cancel\\](e3)`), and `LINK_MARK` in `format.ts` finds the real marks. In `find`, a matching line also carries
-the address of every link written into it, so a search for an address finds a link in text; the lines beside it do not. The text of a block is run together while it fits on
+(`\\[Cancel\\](e3)`), and `LINK_MARK` in `format.ts` finds the real marks. `find` searches the address of
+every link written into text as well, so a search for an address finds a link in text; a matching text line shows those
+addresses only when the query matched in one of them, and otherwise prints as a read does. The text of a block is run together while it fits on
 one 1,000-character line: with no space added where it flows as one line (the parent holds text of its own, or both
 pieces are text-level elements such as `<em>` or `<sub>`), because Chromium keeps the real spaces of inline text in the
 text (`$<span>1,284</span>.50` is `"$1,284.50"`); with a space between boxes side by side, such as flex items or block
@@ -454,7 +459,8 @@ after a reattach only when the main document's loader id is unchanged and `chrom
 commit in between. Input that was in flight when the debugger dropped is not sent again.
 
 `find` matches case-insensitive literal text by default. Passing `regex: true` opts into a regular
-expression of at most 200 characters; it runs in a worker that is terminated after 500 ms.
+expression of at most 200 characters; it runs in a worker that is terminated after 500 ms. It prints the first 20 matches
+and says how many more there were (`(N more matches; narrow the query)`).
 
 **Redacted fields** (`packages/extension/src/password.ts`, called from `readPage` on the raw tree, before `slimAxNodes` trims
 it). Every node that holds a value, and every field the reader prints a value for (textbox, searchbox, combobox, spinbutton,

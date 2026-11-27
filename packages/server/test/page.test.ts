@@ -225,10 +225,27 @@ describe('find', () => {
     expect(await formatRead(state, 's1', page(buttonPage(30)), {})).toContain('No changes since the last read.');
   });
 
+  it('keeps a price with its book, and a link found by name says where it goes', async () => {
+    const book = (id: number, title: string, price: string): ReturnType<typeof ax>[] => [
+      ax(id, 'listitem', '', [id + 1, id + 2, id + 3]),
+      ax(id + 1, 'link', title, [], { props: { url: `http://localhost/catalogue/${id}/index.html` } }),
+      ax(id + 2, 'paragraph', '', [id + 4]),
+      ax(id + 3, 'paragraph', '', [id + 5]),
+      ax(id + 4, 'StaticText', price),
+      ax(id + 5, 'StaticText', 'In stock'),
+    ];
+    const nodes = [ax(1, 'RootWebArea', '', [2]), ax(2, 'list', '', [10, 20]), ...book(10, 'Sharp Objects', '£47.82'), ...book(20, 'The Exiled', '£43.45')];
+    const prices = await formatRead(new TabState(), 's1', page(nodes), { find: '£' });
+    // Only the matches and the line before each: no stock lines, no separators, and no address on a line beside a match.
+    expect(prices.split('\n').slice(1)).toEqual(['e1 link "Sharp Objects"', '"£47.82"', 'e2 link "The Exiled"', '"£43.45"']);
+    const title = await formatRead(new TabState(), 's1', page(nodes), { find: 'exiled' });
+    expect(title.split('\n').slice(1)).toEqual(['"In stock"', 'e2 link "The Exiled" → /catalogue/20/index.html']);
+  });
+
   it('is much shorter than the page it searches', async () => {
     const full = await formatRead(new TabState(), 's1', page(buttonPage(200)), {});
     const found = await formatRead(new TabState(), 's1', page(buttonPage(200)), { find: 'Button 77"' });
-    expect(found.split('\n')).toHaveLength(1 + 3);
+    expect(found.split('\n')).toHaveLength(1 + 2);
     expect(found.length).toBeLessThan(full.length / 20);
   });
 });
