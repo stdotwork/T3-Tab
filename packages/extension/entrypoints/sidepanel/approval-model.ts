@@ -28,7 +28,7 @@ export interface ApprovalModel<D extends string = string> {
   ask: { who?: string; verb: string; subject: string; mono: boolean };
   /** A line under it: the address a prompt would load, or T3's reason. */
   detail?: { text: string; mono: boolean };
-  /** The tab the ask is about, by its title: `"Title"`, or `in "Title"` under an address. */
+  /** The tab the ask is about, by its title: `“Title”`, or `in “Title”` under an address (the quotes the action's names use). */
   tab?: string;
   /** Absent when the asker offers no such answer: nothing is drawn for it and no key gives it. */
   decline?: ApprovalAction<D>;
@@ -53,7 +53,9 @@ const ACT_ASK_MAX = 48;
 
 /**
  * What an act prompt asks to do, from the steps the MCP server described (`click “Add to cart”`): all of it when it is
- * short, else its first part and "and more", else its first step alone with a shorter name and "and more".
+ * short, else its first part and "and more", else its first step alone with a shorter name and "and more". Whatever the
+ * steps, the words stay within `ACT_ASK_MAX`, so "on <site>" is never pushed off the line: when even the first step with
+ * a name of 8 characters is longer, the card asks to act.
  */
 function actVerb(steps: readonly ActStepSummary[] | undefined): string {
   if (steps === undefined || steps.length === 0) return VERB.act;
@@ -62,8 +64,12 @@ function actVerb(steps: readonly ActStepSummary[] | undefined): string {
     if (words.length <= ACT_ASK_MAX) return `wants to ${words} on`;
   }
   const [first] = steps;
-  const words = first === undefined ? 'act' : actStepsText([first], 'ask', { name: 24 });
-  return `wants to ${words}${steps.length > 1 ? ' and more' : ''} on`;
+  if (first === undefined) return VERB.act;
+  for (const name of [24, 16, 8]) {
+    const words = `${actStepsText([first], 'ask', { name })}${steps.length > 1 ? ' and more' : ''}`;
+    if (words.length <= ACT_ASK_MAX) return `wants to ${words} on`;
+  }
+  return VERB.act;
 }
 
 const hostOf = (origin: string): string => {
@@ -86,7 +92,7 @@ export function promptApproval(prompt: PermissionPrompt, asker: string): Approva
     return { decision: found.decision, label: found.label, ...(found.detail === undefined ? {} : { detail: found.detail }) };
   };
   const address = prompt.url === undefined ? undefined : plain(prompt.url);
-  const quoted = prompt.tab === undefined ? undefined : `"${plain(prompt.tab.title) || '(untitled)'}"`;
+  const quoted = prompt.tab === undefined ? undefined : `“${plain(prompt.tab.title) || '(untitled)'}”`;
   const tab = quoted === undefined ? undefined : address === undefined ? quoted : `in ${quoted}`;
   return {
     ask: { who: plain(asker), verb: prompt.tool === 'act' ? actVerb(prompt.steps) : VERB[prompt.tool], subject: hostOf(prompt.origin), mono: true },

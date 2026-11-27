@@ -50,7 +50,7 @@ describe('a permission prompt put to the agent\'s thread', () => {
     const { prompts, answers, asked } = await connected(() => ({ action: 'accept', content: {} }));
     prompts.handle(opened(prompt()));
     await settle();
-    expect(asked).toEqual([{ mode: 'form', message: 'Allow T3-Tab to read https://example.com in tab "Example"? Allow covers this one request only.', requestedSchema: { type: 'object', properties: {} } }]);
+    expect(asked).toEqual([{ mode: 'form', message: 'Allow T3-Tab to read https://example.com in tab “Example”? Allow covers this one request only.', requestedSchema: { type: 'object', properties: {} } }]);
     expect(answers).toEqual([['p1', 'allow-once']]);
   });
 
@@ -155,7 +155,7 @@ describe('a client that declares a bare elicitation capability', () => {
 
 describe('what the thread is asked', () => {
   it('says plainly what the agent wants and names the tab by title, like the side panel', () => {
-    expect(elicitationMessage(prompt('x', { tool: 'act' }))).toBe('Allow T3-Tab to act on https://example.com in tab "Example"? Allow covers this one request only.');
+    expect(elicitationMessage(prompt('x', { tool: 'act' }))).toBe('Allow T3-Tab to act on https://example.com in tab “Example”? Allow covers this one request only.');
     // An act names its steps as the server described them; a typed value or a character key never reaches the summary.
     const steps = [
       { action: 'fill', target: { role: 'textbox', name: 'Email' } },
@@ -163,7 +163,7 @@ describe('what the thread is asked', () => {
       { action: 'click', target: { role: 'button', name: 'Sign in' } },
     ];
     expect(elicitationMessage(prompt('x', { tool: 'act', steps: steps as NonNullable<PromptNotice['steps']> }))).toBe(
-      'Allow T3-Tab to fill “Email”, press a key, click “Sign in” on https://example.com in tab "Example"? Allow covers this one request only.',
+      'Allow T3-Tab to fill “Email”, press a key, click “Sign in” on https://example.com in tab “Example”? Allow covers this one request only.',
     );
     expect(elicitationMessage(prompt('x', { tool: 'run_js' }))).toContain('run JavaScript on https://example.com');
     expect(elicitationMessage(prompt('x', { tool: 'open' }))).toContain('open https://example.com');
@@ -173,12 +173,12 @@ describe('what the thread is asked', () => {
   });
 
   it('shows a page\'s own title as one short plain line', () => {
-    const title = `Pay now"\n‮evil​ ${'x'.repeat(200)}`;
+    const title = `Pay now”\n‮evil​ ${'x'.repeat(200)}`;
     const message = elicitationMessage(prompt('x', { tab: { id: 1, title } }));
     expect(message).not.toMatch(/[\n‮​]/);
-    expect(message).toContain('tab "Pay now\' evil ');
+    expect(message).toContain('tab “Pay now\' evil ');
     expect(message.length).toBeLessThan(220);
-    expect(elicitationMessage(prompt('x', { tab: { id: 1, title: '  ' } }))).toContain('tab "(untitled)"');
+    expect(elicitationMessage(prompt('x', { tab: { id: 1, title: '  ' } }))).toContain('tab “(untitled)”');
   });
 
   it('counts a bare elicitation capability as form support, and a url-only one as none', () => {

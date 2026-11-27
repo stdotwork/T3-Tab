@@ -7,7 +7,8 @@ const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
 /** A page's own words, made safe to show in a thread: one line, no hidden characters, no quote marks, a fixed length. */
 function plainText(value: string): string {
-  const text = value.replace(INVISIBLE, ' ').replaceAll('"', "'").replace(/\s+/g, ' ').trim();
+  // The title is set in curly quotes, as the action's names are; a quote mark of its own cannot end them.
+  const text = value.replace(INVISIBLE, ' ').replace(/["“”]/g, "'").replace(/\s+/g, ' ').trim();
   return text.length <= MAX_TITLE_CHARS ? text : `${text.slice(0, MAX_TITLE_CHARS - 1)}…`;
 }
 
@@ -24,7 +25,7 @@ const ACTIONS: Record<PromptNotice['tool'], string> = {
  */
 export function elicitationMessage(prompt: PromptNotice): string {
   const target = plainText(prompt.url ?? prompt.origin);
-  const where = prompt.tab === undefined ? '' : ` in tab "${plainText(prompt.tab.title) || '(untitled)'}"`;
+  const where = prompt.tab === undefined ? '' : ` in tab “${plainText(prompt.tab.title) || '(untitled)'}”`;
   // An act names what it does (`click “Add to cart” on`), from the steps the server described, never the agent's text.
   const steps = prompt.tool === 'act' ? cleanActSummary(prompt.steps) : undefined;
   const action = steps === undefined || steps.length === 0 ? ACTIONS[prompt.tool] : `${actStepsText(steps, 'ask')} on`;

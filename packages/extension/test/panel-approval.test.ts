@@ -37,7 +37,7 @@ describe('one approval card for both kinds of ask', () => {
   it('says who asks, what and on which site, then the tab', () => {
     const model = promptApproval(prompt('run_js'), 'Claude Code');
     expect(model.ask).toEqual({ who: 'Claude Code', verb: 'wants to run JavaScript on', subject: '127.0.0.1:41889', mono: true });
-    expect(model.tab).toBe('"Cable Shop – USB-C cables"');
+    expect(model.tab).toBe('“Cable Shop – USB-C cables”');
     expect(model.detail).toBeUndefined();
   });
 
@@ -56,6 +56,18 @@ describe('one approval card for both kinds of ask', () => {
     expect(promptApproval(prompt('act'), 'Codex').ask.verb).toBe('wants to act on');
   });
 
+  it('never lets what an act will do push "on <site>" off its line', () => {
+    const verb = (steps: NonNullable<PermissionPrompt['steps']>): string => promptApproval(prompt('act', { steps }), 'Codex').ask.verb;
+    const named = (name: string) => ({ action: 'select' as const, target: { role: 'combobox', name } });
+    // The first step alone, its name shortened until the words fit.
+    expect(verb([named('Delivery window for the second address'), named('Gift wrap')])).toBe('wants to choose an option in “Delivery window…” and more on');
+    // A key is shown only with each modifier once and within 24 characters; a longer chain is a key, unnamed.
+    expect(verb([{ action: 'press' as const, key: 'Control+Shift+Alt+Meta+ArrowRight+Control+Shift+Alt+Meta' }])).toBe('wants to press a key on');
+    for (const steps of [[named('x'.repeat(200))], [named('x'.repeat(200)), named('y')], [{ action: 'press' as const, key: 'K'.repeat(200) }]]) {
+      expect(verb(steps).length - 'wants to  on'.length).toBeLessThanOrEqual(48);
+    }
+  });
+
   it('names the address for a page not opened yet', () => {
     const model = promptApproval(prompt('open', { tab: null, url: 'http://127.0.0.1:41889/cart?id=1' }), 'Codex');
     expect(model.detail).toEqual({ text: 'http://127.0.0.1:41889/cart?id=1', mono: true });
@@ -65,8 +77,8 @@ describe('one approval card for both kinds of ask', () => {
   it('names both the address and the tab for a goto, back, forward or reload', () => {
     const model = promptApproval(prompt('open', { tab: { id: 9, title: 'Checkout' }, url: 'https://shop.test/cart' }), 'Codex');
     expect(model.detail).toEqual({ text: 'https://shop.test/cart', mono: true });
-    expect(model.tab).toBe('in "Checkout"');
-    expect(promptApproval(prompt('open', { tab: { id: 9, title: '' }, url: 'https://shop.test/' }), 'Codex').tab).toBe('in "(untitled)"');
+    expect(model.tab).toBe('in “Checkout”');
+    expect(promptApproval(prompt('open', { tab: { id: 9, title: '' }, url: 'https://shop.test/' }), 'Codex').tab).toBe('in “(untitled)”');
   });
 
   it('keeps each answer saying what it grants, the lasting one under More', () => {
@@ -81,7 +93,7 @@ describe('one approval card for both kinds of ask', () => {
 
   it('strips control characters a page or an agent put in a title', () => {
     const model = promptApproval(prompt('act', { tab: { id: 7, title: 'Shop\u0007\u001b[2J' } }), 'Claude\u0000 Code');
-    expect(model.tab).toBe('"Shop[2J"');
+    expect(model.tab).toBe('“Shop[2J”');
     expect(model.ask.who).toBe('Claude Code');
   });
 });

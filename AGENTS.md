@@ -668,7 +668,7 @@ action. `tabs list`, `switch` and `open` show only the origin and `[needs approv
 current origin the session has not approved (and the site is not set to `read` or `allow`). A tab opened
 from a tab of a session, through `chrome.webNavigation.onCreatedNavigationTarget`, joins that session's
 group without inheriting origin approval; a tab opened from any other tab, such as one of the owner's own
-(shared or not), is left alone. A prompt names its site and its tab's title, or, for a page being opened (which has no tab yet), the address it would load. An act prompt also says what the batch will do (`click “Add to cart”`): the MCP server builds that from each step's action and the role and name its reads printed for the step's ref (`RefTable.targetOf`, `actSummary` in `tools.ts`), sends it with `page.act` as `summary`, and the extension checks it (`cleanActSummary`) before the prompt carries it; it never holds the text a step types, the option it picks, or a key that is a character, and names come from the tree the extension redacted. It can time out or be declined, and one session may
+(shared or not), is left alone. A prompt names its site and its tab's title, or, for a page being opened (which has no tab yet), the address it would load. An act prompt also says what the batch will do (`click “Add to cart”`): the MCP server builds that from each step's action and the role and name its reads printed for the step's ref (`RefTable.targetOf`, `actSummary` in `tools.ts`), sends it with `page.act` as `summary`, and the extension keeps it only when it describes that very batch (`summaryForSteps`: one entry per step, each with that step's action and, for a key, its key, every field checked as `cleanActSummary` does), else the prompt says "act on". It never holds the text a step types, the option it picks, or a key that is a character (a key is shown only as a named key or a shortcut with each modifier once, at most 24 characters), and its names are the MCP server's own, from its read of the tree the extension redacted; the extension cannot tell them from names a program running as the owner made up, which is outside T3-Tab's trust model (above). The daemon passes the steps on with the prompt, checked the same way (`parsePromptNotice`), so the question in the agent's thread names the action too. It can time out or be declined, and one session may
 have at most three waiting prompts. The side panel keeps prompt rows stable and disables a prompt's buttons
 for 500 ms when it appears, again whenever a row is removed or inserted above another, whenever it becomes the card
 Enter and Escape answer, and when the panel is shown again after it was hidden. A thread's T3 approval is in the same
@@ -737,8 +737,9 @@ A direct run cannot queue, so its composer says to wait and keeps Stop visible.
 
 Browser prompts and a T3 thread's approvals share one card (`Approval.tsx`, built from `approval-model.ts`) in T3 Code's
 anatomy: a line saying what is asked (who asks, the action and the site, for an act what it will do to which element, kept
-to three lines: its first part and "and more" when it is long; or the command or path T3 asks about), then
-the address a prompt would load or T3's reason, then the tab it is about by its title (`in "<title>"` under an
+to three lines: its first part and "and more" when it is long, then its first step with a shorter name, and "act on" when
+even that is over 48 characters, so the site is never pushed off; or the command or path T3 asks about), then
+the address a prompt would load or T3's reason, then the tab it is about by its title in the curly quotes the action's names use (`in “<title>”` under an
 address, as for `goto`, `back`, `forward` and `reload`), then Decline, the primary answer (Allow once, or T3's Approve)
 and More, in T3's order on one row. More holds the other answers with what each grants: for a browser prompt the
 lasting choice and Manage sites, for T3 its own (such as Always allow this session and Cancel), with T3's warning on an

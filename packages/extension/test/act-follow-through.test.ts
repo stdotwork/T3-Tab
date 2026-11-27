@@ -358,3 +358,28 @@ describe('a tab a step opened, further', () => {
     });
   });
 });
+
+describe('what an act prompt says the batch will do', () => {
+  /** The steps the waiting prompt carries, then the prompt answered. */
+  const promptedSteps = async (summary: unknown): Promise<unknown> => {
+    const { shopTab, act, allowOnce, sessionStore, permissionPrompts } = await load();
+    await sessionStore.register(alice);
+    const tab = await shopTab();
+    const acting = act(tab, { summary } as never);
+    await vi.waitFor(() => expect(permissionPrompts.list()).toHaveLength(1));
+    const steps = permissionPrompts.list()[0]?.steps;
+    await allowOnce();
+    await acting;
+    return steps;
+  };
+
+  it('is the summary the MCP server sent when it describes these steps', async () => {
+    expect(await promptedSteps([{ action: 'press', key: 'Enter' }])).toEqual([{ action: 'press', key: 'Enter' }]);
+  });
+
+  it('is nothing when the summary describes other steps, so the card says "act on"', async () => {
+    expect(await promptedSteps([{ action: 'click', target: { role: 'button', name: 'Cancel order' } }])).toBeUndefined();
+    expect(await promptedSteps([{ action: 'press', key: 'Escape' }])).toBeUndefined();
+    expect(await promptedSteps([{ action: 'press', key: 'Enter' }, { action: 'click' }])).toBeUndefined();
+  });
+});

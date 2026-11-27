@@ -3,7 +3,7 @@
  * that asks for it ("click “Add to cart”"). Built only from each step's action, the element it targets as a read printed it
  * (role and name), and a key name; what a step types or chooses is never part of it, because it can be a password.
  */
-import type { ActAction } from './index.js';
+import type { ActAction, ActStep } from './index.js';
 
 /** The element a step acts on, as a read printed it: `e12 button "Add to cart"` is `{ role: 'button', name: 'Add to cart' }`. */
 export interface ActTarget {
@@ -47,6 +47,22 @@ export function cleanActSummary(value: unknown): ActStepSummary[] | undefined {
   });
 }
 
+/**
+ * A batch's summary, checked against the batch itself: kept only when it has one entry per step, each with that step's
+ * action and, for a key, the key the step presses. The names in it are the MCP server's, from its own redacted read; a
+ * summary that does not describe these steps describes nothing.
+ */
+export function summaryForSteps(value: unknown, steps: readonly ActStep[]): ActStepSummary[] | undefined {
+  const summary = cleanActSummary(value);
+  if (summary === undefined || summary.length !== steps.length) return undefined;
+  const matches = summary.every((entry, index) => {
+    const step = steps[index];
+    if (step === undefined || !(entry.action in step)) return false;
+    return entry.key === undefined || ('press' in step && entry.key === namedKey(step.press.key));
+  });
+  return matches ? summary : undefined;
+}
+
 /** Characters that can hide or reorder text on screen: controls, and the bidirectional and zero-width formatting marks. */
 const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
@@ -78,17 +94,31 @@ const NAMED_KEYS = new Set([
   'PageDown',
   'Insert',
 ]);
-const MODIFIERS = new Set(['Control', 'Ctrl', 'Shift', 'Alt', 'Option', 'Meta', 'Cmd', 'Command']);
+/** Each modifier, by the names a key may give it. */
+const MODIFIERS = new Map([
+  ['Control', 'control'],
+  ['Ctrl', 'control'],
+  ['Shift', 'shift'],
+  ['Alt', 'alt'],
+  ['Option', 'alt'],
+  ['Meta', 'meta'],
+  ['Cmd', 'meta'],
+  ['Command', 'meta'],
+]);
+/** Most characters of a key shown: four modifiers and a named key, as `Control+Shift+ArrowRight`. */
+const KEY_MAX = 24;
 
 /**
  * The key a `press` step sends, when it is safe to show: a named key (Enter, Escape, an arrow, F5) or a shortcut with
- * Control, Alt or Meta (Control+A). A bare character, or one with Shift alone, is typing, so it is never shown.
+ * Control, Alt or Meta (Control+A), each modifier once and the whole within `KEY_MAX`. A bare character, or one with Shift
+ * alone, is typing, so it is never shown.
  */
 export function namedKey(key: string): string | undefined {
   const parts = key.trim().split('+');
   const last = parts.at(-1) ?? '';
   const modifiers = parts.slice(0, -1);
   if (modifiers.some((part) => !MODIFIERS.has(part))) return undefined;
+  if (new Set(modifiers.map((part) => MODIFIERS.get(part))).size !== modifiers.length || parts.join('+').length > KEY_MAX) return undefined;
   if (NAMED_KEYS.has(last) || /^F\d{1,2}$/.test(last)) return parts.join('+');
   const chord = modifiers.some((part) => part !== 'Shift');
   return chord && /^[A-Za-z0-9]$/.test(last) ? parts.join('+') : undefined;
