@@ -248,6 +248,49 @@ export async function checkAgentTools() {
       await closeTab(painted);
     });
 
+    await check('a session that reached for the tools by itself gets a collapsed group, and act, scroll and screenshot work in it', async () => {
+      const group = (tab) => browser.worker(`chrome.tabs.get(${tab}).then((t) => t.groupId < 0 ? undefined : chrome.tabGroups.get(t.groupId)).then((g) => g && { id: g.id, collapsed: g.collapsed, title: g.title })`);
+      const front = await frontTab();
+      // One of the owner's own groups, collapsed and expanded, that nothing the session does may change.
+      const ownerTabs = await browser.worker(`Promise.all([chrome.tabs.create({ url: 'about:blank', active: false }), chrome.tabs.create({ url: 'about:blank', active: false })]).then((tabs) => tabs.map((t) => t.id))`);
+      const ownerGroups = await browser.worker(`(async () => {
+        const shut = await chrome.tabs.group({ tabIds: [${ownerTabs[0]}] });
+        const open = await chrome.tabs.group({ tabIds: [${ownerTabs[1]}] });
+        await chrome.tabGroups.update(shut, { collapsed: true, title: 'Owner shut' });
+        await chrome.tabGroups.update(open, { collapsed: false, title: 'Owner open' });
+        return [shut, open];
+      })()`);
+      const { tab, text: loaded } = await openAllowedPage('/red');
+      const first = await group(tab);
+      assert(first?.collapsed === true, `the group of a self-started session is not collapsed: ${JSON.stringify(first)}`);
+      assert(first.title.startsWith('agent-tools ·'), `the group does not name the session: ${JSON.stringify(first)}`);
+      // Straight after the load, as for any background tab: one left idle for seconds draws no frame, group or not.
+      const shot = await call('screenshot', { tab });
+      assert(shot.content.some((item) => item.type === 'image'), `a screenshot of a collapsed group's tab: ${shot.text}`);
+      const acted = await call('act', { tab, steps: [{ action: 'click', ref: refFor(loaded, 'button "Press"') }] });
+      assert(!acted.error && acted.text.includes('pressed'), `a click in a collapsed group's tab: ${acted.text}`);
+      // Scrolled straight after its load too: a background tab idle for seconds may take no wheel, which the scroll
+      // check below covers for any background tab.
+      const tall = await openAllowed('/tall');
+      assert((await group(tall))?.id === first.id && (await group(tall)).collapsed === true, `a second tab expanded the group or went elsewhere: ${JSON.stringify(await group(tall))}`);
+      const scrolled = await call('act', { tab: tall, steps: [{ action: 'scroll', dy: 2000 }] });
+      const scrollY = Number((await call('run_js', { tab: tall, expression: 'window.scrollY' })).text);
+      assert(!scrolled.error && scrollY > 0, `a scroll in a collapsed group's tab: ${scrollY}, ${scrolled.text}`);
+      const after = await group(tab);
+      assert(after?.collapsed === true, `a tool expanded the group: ${JSON.stringify(after)}`);
+      assert((await frontTab()) === front && (await tabInfo(tab)).active === false, 'a tool in a collapsed group took the owner\'s view');
+
+      // The owner expands it; the session's next tab does not collapse it again.
+      await browser.worker(`chrome.tabGroups.update(${first.id}, { collapsed: false })`);
+      const third = await openAllowed('/one');
+      assert((await group(third))?.collapsed === false, `a new tab collapsed the group the owner expanded: ${JSON.stringify(await group(third))}`);
+      const owners = await browser.worker(`Promise.all([${ownerGroups[0]}, ${ownerGroups[1]}].map((id) => chrome.tabGroups.get(id))).then((groups) => groups.map((g) => g.collapsed))`);
+      assert(owners[0] === true && owners[1] === false, `the session changed the owner's own groups: ${JSON.stringify(owners)}`);
+      console.log(`Agent tools: group ${first.id} "${first.title}" created collapsed; click, scroll (to ${scrollY}) and screenshot worked with it collapsed; the owner's expand held over a new tab; the owner's groups kept their state`);
+      for (const id of [tab, tall, third]) await closeTab(id);
+      await browser.worker(`chrome.tabs.remove(${JSON.stringify(ownerTabs)})`);
+    });
+
     await check('a long page is left out of the load reply and comes with the read after it', async () => {
       const { tab, text: loaded } = await openAllowedPage('/huge');
       assert(/too long for this reply: read shows it, find searches it/.test(loaded) && !loaded.includes('Item 1'), `the load reply of a long page: ${loaded}`);

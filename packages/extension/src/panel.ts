@@ -25,6 +25,7 @@ import {
 } from './permissions';
 import { claimStore, permissionPrompts, sessionStore, siteStore } from './runtime';
 import { canSessionUseTab, type StoredSession } from './sessions';
+import { expandStartedCollapsedGroup } from './tabs';
 
 export interface PanelTab {
   id: number;
@@ -131,6 +132,10 @@ export async function handlePanelRequest(
   if (request.type === 'panel.t3Claim') return await issueT3Claim(request.tabId);
   if (request.type === 'panel.t3ClaimBind') {
     if (!(await claimStore.bindByCode(request.code, t3ConversationKey(request.threadId)))) throw new Error('Unknown claim code');
+    // A session the daemon proved runs for this thread is panel-started from now on, even before it redeems the code.
+    for (const session of await sessionStore.list()) {
+      if (session.t3ThreadId === request.threadId) await expandStartedCollapsedGroup(session.id, sessionStore).catch(() => undefined);
+    }
     return { ok: true };
   }
   if (request.type === 'panel.t3ClaimRevoke') {

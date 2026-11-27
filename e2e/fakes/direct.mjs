@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { connect, fakeDir, lookAtTabs, readStdin, record, valueOf } from './common.mjs';
+import { connect, fakeDir, lookAtTabs, openIfAsked, readStdin, record, valueOf } from './common.mjs';
 
 const [name, ...args] = process.argv.slice(2);
 const input = readStdin();
@@ -19,7 +19,7 @@ if (name === 'claude') {
   const client = await connect('claude-code', { command: server.command, args: server.args, env: { ...process.env, ...server.env } });
   const sessionId = valueOf(args, '--resume') ?? randomUUID();
   line({ type: 'system', subtype: 'init', session_id: sessionId, model: valueOf(args, '--model') ?? 'default' });
-  const seen = await lookAtTabs(client, undefined);
+  const seen = (await lookAtTabs(client, undefined)) + (await openIfAsked(client, input));
   await holdIfAsked();
   await client.close();
   line({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: `Claude fake (${input.trim()}).\n${seen}` }] } });

@@ -230,6 +230,11 @@ export async function checkPanelSessions({ browserContext, serviceWorker, panelP
   assert(run.messages[3].text.includes(`read: ${readLine}`), `The resumed Codex run did not get the tab again:\n${run.messages[3].text}`);
   console.log(`Panel direct Codex: thread ${run.threadId}, resumed with codex exec resume; both turns read tab ${tabId}`);
 
+  // Run after the other direct runs, whose checks look at the first `claude` calls; T3 is running again for it.
+  await setT3Mode(fakes, 'running');
+  await checkSessionGroups({ browserContext, serviceWorker, fakes, siteUrl, tabId });
+  await setT3Mode(fakes, 'stopped');
+
   // The panel itself, on the real poll: the new-thread screen with T3 stopped runs a direct agent and offers the
   // current tab, and the thread list opens a finished conversation with the agent's reply in it.
   const realPanelState = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
@@ -539,6 +544,93 @@ async function checkFullAccessConfirmed({ serviceWorker, fakes, home, tabId }) {
       await closeServer(server);
     }
   }
+}
+
+/**
+ * Where the tabs of agents the panel started go: a direct run, which redeems its claim before its first tool call,
+ * gets an expanded group as before; a T3 thread's agent that opens a tab before it claims is taken for self-started,
+ * so its group starts collapsed, and opens when the claim arrives. While collapsed, the panel still lists the session
+ * under "Using the browser" and its tab chip names the agent's tab.
+ */
+async function checkSessionGroups({ browserContext, serviceWorker, fakes, siteUrl, tabId }) {
+  const groupOf = async (id) =>
+    await serviceWorker.evaluate(async (tab) => {
+      const { groupId } = await chrome.tabs.get(tab);
+      return groupId < 0 ? undefined : await chrome.tabGroups.get(groupId);
+    }, id);
+  /** Allows, once, each open prompt of a session named `prefix` until `done` holds; returns the tabs they opened. */
+  const allowOpens = async (prefix, done) => {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      const { pending = [] } = await panelRequest(serviceWorker, { type: 'panel.state' });
+      for (const prompt of pending.filter((item) => item.tool === 'open' && item.session.name.startsWith(prefix))) {
+        await panelRequest(serviceWorker, { type: 'panel.decide', promptId: prompt.id, decision: 'allow-once' });
+      }
+      const result = await done();
+      if (result !== undefined) return result;
+      await sleep(100);
+    }
+    throw new Error(`No tab opened by ${prefix}`);
+  };
+  const openedBy = async (prefix) => {
+    const { sessions } = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
+    const session = sessions.find((entry) => entry.name.startsWith(prefix));
+    if (session?.groupId === undefined) return undefined;
+    const members = await serviceWorker.evaluate(async (groupId) => (await chrome.tabs.query({ groupId })).map((tab) => tab.id), session.groupId);
+    return members.length === 0 ? undefined : { session, tab: members[0] };
+  };
+
+  // A direct Claude Code run from the panel opens a tab: its group is expanded, as before.
+  await rm(join(fakes.fakeDir, 'release'), { force: true });
+  const direct = await panelRequest(serviceWorker, { type: 'panel.agentStart', via: 'claude', message: `[hold] [open:${siteUrl}/perm-a]`, tabId });
+  const directOpened = await allowOpens('claude-code ·', async () => {
+    const found = await openedBy('claude-code ·');
+    return found !== undefined && (await groupOf(found.tab)) !== undefined ? found : undefined;
+  });
+  const directGroup = await groupOf(directOpened.tab);
+  assert(directGroup.collapsed === false, `A panel-started direct run's group was created collapsed: ${JSON.stringify(directGroup)}`);
+  await writeFile(join(fakes.fakeDir, 'release'), '');
+  await waitForConversation(serviceWorker, direct.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 2);
+  await rm(join(fakes.fakeDir, 'release'));
+  console.log(`Session groups: the panel-started direct run's group ${directGroup.id} "${directGroup.title}" was created expanded`);
+
+  // A T3 thread's agent opens a tab before it claims: collapsed, and the tab stays behind the owner's.
+  const front = async () => await serviceWorker.evaluate(async () => (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id);
+  const frontBefore = await front();
+  const thread = await panelRequest(serviceWorker, { type: 'panel.agentStart', via: 't3', project: '/work/demo', message: `Look first [open-first:${siteUrl}/perm-a]`, tabId });
+  const early = await allowOpens('fake-t3-agent ·', async () => {
+    const { sessions } = await panelRequest(serviceWorker, { type: 'panel.state', tabId });
+    const fresh = sessions.filter((entry) => entry.name.startsWith('fake-t3-agent ·') && !entry.sharedTabIds.includes(tabId) && entry.groupId !== undefined);
+    for (const session of fresh) {
+      const members = await serviceWorker.evaluate(async (groupId) => (await chrome.tabs.query({ groupId })).map((tab) => tab.id), session.groupId);
+      if (members.length > 0 && (await groupOf(members[0])) !== undefined) return { session, tab: members[0] };
+    }
+    return undefined;
+  });
+  const collapsed = await groupOf(early.tab);
+  assert(collapsed.collapsed === true, `The group of an agent with no claim yet is not collapsed: ${JSON.stringify(collapsed)}`);
+  assert((await front()) === frontBefore, 'The early tab took the owner\'s view');
+
+  // The panel, opened on that tab, still names it on the chip and lists the session under "Using the browser".
+  const agentTitle = await serviceWorker.evaluate(async (id) => (await chrome.tabs.get(id)).title, early.tab);
+  const livePanel = await openLivePanel(browserContext, serviceWorker, early.tab);
+  await livePanel.locator('.composer-chips .tab-chip').filter({ hasText: agentTitle }).waitFor();
+  await livePanel.locator('#btn-threads').click();
+  const row = livePanel.locator('#connected-sessions li').filter({ hasText: early.session.name.split(' ·')[0] });
+  await row.first().waitFor();
+  const rows = await livePanel.locator('#connected-sessions li').allTextContents();
+  await livePanel.close();
+  assert((await groupOf(early.tab)).collapsed === true, 'Opening the panel on the tab expanded its group');
+  console.log(`Session groups: an agent with no claim yet got collapsed group ${collapsed.id}; the panel on its tab named "${agentTitle}" and listed: ${JSON.stringify(rows)}`);
+
+  // Its claim arrives: the group opens, once.
+  await writeFile(join(fakes.fakeDir, 'claim-go'), '');
+  const done = await waitForConversation(serviceWorker, thread.conversation.id, (conversation) => conversation.status === 'idle' && conversation.messages.length >= 2);
+  assert(done.messages[1].text.includes('claimed'), `The late claim did not go through: ${done.messages[1].text}`);
+  const expanded = await groupOf(early.tab);
+  assert(expanded.collapsed === false, `The group did not open when the claim arrived: ${JSON.stringify(expanded)}`);
+  console.log(`Session groups: the claim arrived after the first tab and group ${expanded.id} opened`);
+  await rm(join(fakes.fakeDir, 'claim-go'));
+  for (const id of [directOpened.tab, early.tab]) await serviceWorker.evaluate(async (tab) => await chrome.tabs.remove(tab), id);
 }
 
 async function calls(fakes) {

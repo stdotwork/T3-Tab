@@ -51,3 +51,11 @@ export async function lookAtTabs(client, claim) {
   const firstLine = textOf(read).split('\n')[0];
   return `tabs:\n${tabsText}\nread: ${read.isError === true ? 'failed: ' : ''}${firstLine}`;
 }
+
+/** A message with `[open:<address>]` has the agent open that address in a tab of its own, as `tabs open` does. */
+export async function openIfAsked(client, message) {
+  const url = /\[open:([^\]\s]+)\]/.exec(message)?.[1];
+  if (url === undefined) return '';
+  const opened = await client.callTool({ name: 'tabs', arguments: { action: 'open', url } }, undefined, { timeout: 60_000 });
+  return `opened: ${opened.isError === true ? 'failed: ' : ''}${textOf(opened).split('\n')[0]}\n`;
+}

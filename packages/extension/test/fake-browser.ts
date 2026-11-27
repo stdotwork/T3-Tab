@@ -29,6 +29,12 @@ export class FakeBrowser {
   /** Every expression that actually ran, and the origin of the page it ran in. */
   readonly evaluated: Array<{ tabId: number; origin: string; expression: string }> = [];
   readonly groupCalls: Array<{ tabIds: number[]; groupId?: number }> = [];
+  /** Every `chrome.tabGroups.update`, in order. */
+  readonly groupUpdates: Array<{ groupId: number; details: Record<string, unknown> }> = [];
+  /** Group ids that no longer exist: grouping into one fails, as the browser's does. */
+  readonly goneGroups = new Set<number>();
+  /** The id the next new group gets. */
+  nextGroupId = 1000;
   /** Runs when a command reaches the browser, before it is handled: the place for a navigation to land. */
   beforeCommand: ((tabId: number, method: string) => Promise<void> | void) | undefined;
   /** Answers an expression before the page would run it: the place to say what a script in the real page would find. */
@@ -53,6 +59,9 @@ export class FakeBrowser {
     this.commands.length = 0;
     this.evaluated.length = 0;
     this.groupCalls.length = 0;
+    this.groupUpdates.length = 0;
+    this.goneGroups.clear();
+    this.nextGroupId = 1000;
     this.beforeCommand = undefined;
     this.evaluateHook = undefined;
     this.redirect = undefined;
@@ -153,13 +162,21 @@ export class FakeBrowser {
         remove: async (id: number) => void this.tabs.delete(id),
         group: async (options: { tabIds: number[]; groupId?: number }) => {
           this.groupCalls.push(options);
-          const groupId = options.groupId ?? 1000;
+          if (options.groupId !== undefined && this.goneGroups.has(options.groupId)) throw new Error(`No group with id: ${options.groupId}.`);
+          const groupId = options.groupId ?? this.nextGroupId++;
           for (const id of options.tabIds) this.mustTab(id).groupId = groupId;
           return groupId;
         },
       },
       windows: { get: async () => ({ id: 1, focused: this.windowFocused, state: this.windowState }) },
-      tabGroups: { TAB_GROUP_ID_NONE: -1, update: async () => undefined },
+      tabGroups: {
+        TAB_GROUP_ID_NONE: -1,
+        update: async (groupId: number, details: Record<string, unknown>) => {
+          if (this.goneGroups.has(groupId)) throw new Error(`No group with id: ${groupId}.`);
+          this.groupUpdates.push({ groupId, details });
+          return undefined;
+        },
+      },
       webNavigation: { onCommitted: { addListener: () => undefined } },
     };
     (globalThis as unknown as { chrome: unknown }).chrome = fake;
