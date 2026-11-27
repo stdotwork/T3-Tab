@@ -187,7 +187,7 @@ async function measure() {
     // the options that went in one line.
     const delivery = await run('combobox', 'open', 'tabs', { action: 'open', url: `${siteUrl}/delivery` });
     const opened = await run('combobox', 'act-open', 'act', { steps: [{ action: 'click', ref: need(delivery, 'button "States"') }] });
-    const picked = await run('combobox', 'act-pick', 'act', { steps: [{ action: 'click', ref: need(opened, 'option "Kansas"') }] });
+    const picked = await run('combobox', 'act-pick', 'act', { steps: [{ action: 'click', ref: need(opened.replace(/^[+-]/gm, ' '), 'option "Kansas"') }] });
     assert(/\(\d+ lines removed: "Alabama", … "Maryland"\)/.test(picked) && picked.includes('value="Kansas"'), `combobox/act-pick: the options that went are not counted:\n${picked}`);
 
     const version = browserContext.browser()?.version() ?? (await serviceWorker.evaluate(() => navigator.userAgent));

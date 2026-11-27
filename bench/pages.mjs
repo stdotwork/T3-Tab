@@ -178,7 +178,7 @@ const DELIVERY = shell(
     <label for="state">State</label>
     <input id="state" name="state" type="text" role="combobox" aria-expanded="false" aria-controls="states" aria-autocomplete="list">
     <button type="button" id="states-button" aria-label="States" aria-expanded="false">▾</button>
-    <ul id="states" role="listbox" aria-label="States" hidden>${STATES.map((name) => `<li role="option">${name}</li>`).join('')}</ul>
+    <ul id="states" role="listbox" aria-label="States" style="list-style: none" hidden>${STATES.map((name) => `<li role="option">${name}</li>`).join('')}</ul>
     <label>Postcode <input name="postcode" type="text"></label>
     <button type="submit">Save address</button>
   </form>

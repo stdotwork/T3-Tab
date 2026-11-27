@@ -112,6 +112,18 @@
     "outline.find": {
       "chars": 118,
       "tokens": 43
+    },
+    "combobox.open": {
+      "chars": 1100,
+      "tokens": 352
+    },
+    "combobox.act-open": {
+      "chars": 825,
+      "tokens": 272
+    },
+    "combobox.act-pick": {
+      "chars": 341,
+      "tokens": 113
     }
   }
 }
