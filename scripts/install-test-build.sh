@@ -3,7 +3,7 @@
 # `npx t3-tab@latest setup` until the package is on npm: it downloads the packed helper (the same file `npm pack`
 # makes) and runs its `setup`, which copies the helper into your own folder. Works from any folder.
 #
-#   curl -fsSL https://raw.githubusercontent.com/stdotwork/T3-Tab/proto/t3-panel/scripts/install-test-build.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/stdotwork/T3-Tab/main/scripts/install-test-build.sh | sh
 #
 # Extra arguments go to `setup`:  ... | sh -s -- --agents
 # T3_TAB_HELPER_URL replaces the download address (any address curl can read, such as file:///path/to/helper.tgz).

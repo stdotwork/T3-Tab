@@ -9,7 +9,7 @@
 export const HELPER_CHANNEL = 'test' as 'test' | 'product';
 
 export const PRODUCT_HELPER_COMMAND = 'npx t3-tab@latest setup';
-export const TEST_HELPER_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/stdotwork/T3-Tab/proto/t3-panel/scripts/install-test-build.sh | sh';
+export const TEST_HELPER_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/stdotwork/T3-Tab/main/scripts/install-test-build.sh | sh';
 
 export const HELPER_COMMAND = HELPER_CHANNEL === 'product' ? PRODUCT_HELPER_COMMAND : TEST_HELPER_COMMAND;
 
